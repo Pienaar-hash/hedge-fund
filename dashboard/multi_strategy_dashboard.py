@@ -14,6 +14,7 @@ st.title("📊 Multi-Strategy Backtest Dashboard")
 # Helper to load equity curves
 def load_equity_curves():
     curves = {}
+    index_union = set()
     for file in glob.glob(f"{LOG_DIR}/equity_curve_*.csv"):
         name = file.replace(f"{LOG_DIR}/equity_curve_", "").replace(".csv", "")
         try:
@@ -26,9 +27,16 @@ def load_equity_curves():
             if df.empty or df['equity'].min() <= 0:
                 continue
             df.set_index('timestamp', inplace=True)
+            df = df[~df.index.duplicated(keep='first')]
+            df = df.sort_index()
             curves[name] = df['equity'] / df['equity'].iloc[0]  # normalize
+            index_union.update(df.index)
         except Exception as e:
             st.warning(f"⚠️ Failed to load {file}: {e}")
+    # Reindex all series to the full union and ffill
+    all_index = sorted(index_union)
+    for k in curves:
+        curves[k] = curves[k].reindex(all_index).ffill()
     return pd.DataFrame(curves)
 
 # Helper to load trade logs
@@ -46,9 +54,20 @@ def load_trade_logs():
             st.warning(f"⚠️ Failed to load {file}: {e}")
     return logs
 
+# Helper to load final factor metrics
+def load_factor_metrics():
+    try:
+        path = os.path.join(LOG_DIR, "factor_blended_metrics.csv")
+        if os.path.exists(path):
+            return pd.read_csv(path, index_col=0)
+    except Exception as e:
+        st.warning(f"⚠️ Failed to load factor_blended_metrics.csv: {e}")
+    return None
+
 # Load equity and trades
 equity_df = load_equity_curves()
 trade_logs = load_trade_logs()
+factor_metrics = load_factor_metrics()
 
 if equity_df.empty:
     st.error("No valid equity curves found in logs/")
@@ -75,6 +94,11 @@ if trade_logs:
     st.subheader("📋 Trade Logs Viewer")
     selected_log = st.selectbox("Select strategy-trade log:", list(trade_logs.keys()))
     st.dataframe(trade_logs[selected_log].sort_values("entry_time", ascending=False).reset_index(drop=True))
+
+# Show blended factor metrics
+if factor_metrics is not None:
+    st.subheader("🧠 Factor Portfolio Metrics")
+    st.dataframe(factor_metrics.T.style.format("{:.2%}"))
 
 # Legacy vs vectorbt comparison
 legacy_keys = [k for k in equity_df.columns if "vectorbt" not in k]
