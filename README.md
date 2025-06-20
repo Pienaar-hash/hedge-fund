@@ -1,31 +1,19 @@
-# 🧠 Crypto Hedge Fund Project
+# Hedge Fund Project
 
-A modular, data-driven crypto hedge fund platform built in Python.  
-We combine quantitative strategies with transparent dashboards and rigorous backtesting to deliver sustainable trading performance.
+A hybrid crypto fund using manual and algorithmic trading strategies.  
+Built for disciplined execution, risk control, and scalable alpha generation.
 
----
+## Core Strategies
+- **Volatility Targeting**: risk-adjusted exposure with TP/SL optimization
+- **Relative Value**: z-score mean-reversion (e.g., ETH/BTC)
+- **Factor-Based Momentum**: trend + volatility filters
 
-## 🏗️ Project Structure
+## Technology
+- Python (pandas, CCXT, Streamlit, NumPy)
+- Real-time trade logs, dashboards, and PnL tracking
+- Binance and KuCoin testnet integrations
 
-
----
-
-## 📈 Available Strategies
-
-| Strategy | Description |
-|----------|-------------|
-| **ETH/BTC Spread (Relative Value)** | Mean-reversion logic between ETH/USDT and BTC/USDT, using z-score thresholds |
-| **Volatility Targeting** | Dynamic position sizing based on rolling volatility |
-| **Factor-Based Momentum** | Momentum filters derived from rolling returns and volume dynamics |
-
----
-
-## 🚀 How to Run
-
-### 1. Clone & Setup
-```bash
-git clone https://github.com/your-repo/hedge-fund.git
-cd hedge-fund
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+## Roadmap Highlights
+- Phase 1: R70k pilot (live + paper trading)
+- Phase 2: R200k scaling + AI risk engine
+- AI modules: LSTM volatility forecasts, anomaly detection, NLP sentiment filters
