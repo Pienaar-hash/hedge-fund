@@ -1,33 +1,15 @@
-# Core (safe to float)
-pandas>=1.5
-matplotlib>=3.5
-seaborn>=0.12
-streamlit>=1.22
-scipy>=1.10
-duckdb>=0.9
-statsmodels>=0.13
+# === Hedge Fund Dashboard Requirements ===
 
-# Strategy Engine (must lock for stability)
-numpy==1.23.5
-vectorbt==0.25.3
-numba==0.56.4
-plotly==5.13.1
-
-# Optional enhancements
-tqdm>=4.67
-schedule>=1.2
-dateparser>=1.2
-requests>=2.32
-
-# === requirements.txt ===
+streamlit
 pandas
 numpy
 matplotlib
-streamlit
-scipy
-vectorbt
-scikit-learn
+altair
 seaborn
-tqdm
-statsmodels
+scikit-learn
+pdfkit
 plotly
+
+# Optional (commented out due to Python 3.13 incompatibility)
+# numba
+# llvmlite
