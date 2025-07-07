@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import pandas as pd
 import altair as alt
-from utils.dashboard_helpers import get_color
+from dashboard.utils.dashboard_helpers import get_color
 
 st.set_page_config(page_title="Strategy Leaderboard", layout="wide")
 st.title("🏆 Strategy Leaderboard")

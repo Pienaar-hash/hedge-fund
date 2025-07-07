@@ -1,5 +1,5 @@
 import streamlit as st
-from utils.dashboard_helpers import list_trade_logs, load_trade_log, compute_trade_summary, compute_pnl_correlation_heatmap, compute_pnl_distribution_clusters, compute_rolling_metrics
+from dashboard.utils.dashboard_helpers import list_trade_logs, load_trade_log, compute_trade_summary, compute_pnl_correlation_heatmap, compute_pnl_distribution_clusters, compute_rolling_metrics
 import pandas as pd
 import io
 import matplotlib.pyplot as plt

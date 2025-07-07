@@ -1,9 +1,12 @@
+# === config_utils.py (root version) ===
 import json
+import os
 from core.duckdb_query import get_top_momentum_symbols
 
 CONFIG_PATH = "config/strategy_config.json"
 
 def load_strategy_config():
+    print("📄 Loading config from:", os.path.abspath(CONFIG_PATH), flush=True)
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
 
@@ -24,14 +27,14 @@ def update_strategy_config_with_top_momentum():
     save_strategy_config(config)
 
 def normalize_strategy_config(config):
-    for strat in config["strategies"]:
-        if strat["name"] == "momentum":
+    for strat in config.get("strategies", []):
+        if strat.get("name") == "momentum":
             symbols = strat["params"].get("symbols", [])
             strat["params"]["symbols"] = [s.replace("_1h", "").upper() for s in symbols]
-        elif strat["name"] == "volatility_target":
+        elif strat.get("name") == "volatility_target":
             for asset in strat["params"].get("assets", []):
                 asset["symbol"] = asset["symbol"].upper()
                 asset["tf"] = asset["tf"].upper()
-        elif strat["name"] == "relative_value":
-            strat["params"]["base"] = strat["params"]["base"].upper()
+        elif strat.get("name") == "relative_value":
+            strat["params"]["base"] = strat["params"].get("base", "").upper()
             strat["params"]["pairs"] = [p.upper() for p in strat["params"].get("pairs", [])]
