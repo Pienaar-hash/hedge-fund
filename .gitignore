@@ -1,28 +1,23 @@
+# === Git Ignore for Hedge Fund Project ===
+
 # Ignore virtual environments
 venv/
-.env/
+.env
 
-# Ignore Python cache
+# Ignore system files
+.DS_Store
 __pycache__/
 *.pyc
 
-# Ignore logs and data files
+# Allow all logs to support dashboard
+!logs/
+!logs/**
+
+# Ignore raw exports (optional)
 *.log
-*.csv
-*.sqlite
-*.db
-*.h5
-*.zip
-*.json
-*.xlsx
+*.tmp
+*.bak
 
-# Jupyter
-.ipynb_checkpoints/
-
-# VS Code
-.vscode/
-
-# OS and editor clutter
-.DS_Store
-*.swp
-v
+# Ignore datasets not needed in repo
+data/raw/
+data/unprocessed/
