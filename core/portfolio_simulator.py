@@ -1,95 +1,115 @@
 # === core/portfolio_simulator.py ===
-import pandas as pd
 import os
+import pandas as pd
 import numpy as np
 
-LOG_DIR = "logs"
+INITIAL_CAPITAL = 10000   # consistent normalization baseline
 
 class PortfolioSimulator:
-    def __init__(self, strategies, capital=100000):
-        self.strategies = strategies
-        self.capital = capital
+    def __init__(self):
         self.equity_curves = {}
+        self.strategies = {}
+        self.load_equity_curves()
 
-    def load_equity(self, name):
-        path = os.path.join(LOG_DIR, f"equity_curve_{name}.csv")
-        try:
-            df = pd.read_csv(path, parse_dates=['timestamp'])
-            if df.empty or 'equity' not in df.columns:
-                raise ValueError("Missing or invalid equity data")
-            df.set_index('timestamp', inplace=True)
-            df = df[~df.index.duplicated(keep='first')]
-            df = df.interpolate(method='linear').ffill().bfill()
-            df['equity'] = df['equity'].clip(lower=1e-8)
-            df['equity'] = df['equity'] / df['equity'].iloc[0] * self.capital
-            df['strategy'] = name
-            self.equity_curves[name] = df[['equity']]
-        except Exception as e:
-            print(f"⚠️ Failed to load {path}: {e}")
+    def load_equity_curves(self):
+        self.equity_curves = {}
+        logs_dir = "logs"
 
-    def simulate_capital_weighted(self, weights):
-        for strat in self.strategies:
-            self.load_equity(strat)
+        for fname in os.listdir(logs_dir):
+            if fname.startswith("equity_curve_") and fname.endswith(".csv"):
+                strategy_name = fname.replace("equity_curve_", "").replace(".csv", "")
+                path = os.path.join(logs_dir, fname)
+                df = pd.read_csv(path, parse_dates=True)
 
-        available = list(self.equity_curves.keys())
-        if not available:
-            print("❌ No valid equity curves loaded. Cannot simulate portfolio.")
-            return pd.DataFrame()
+                if 'equity' in df.columns:
+                    df = df.rename(columns={'equity': strategy_name})
+                else:
+                    equity_col = df.columns[1]
+                    df = df.rename(columns={equity_col: strategy_name})
 
-        combined = pd.concat([self.equity_curves[s].rename(columns={'equity': s}) for s in available], axis=1)
+                df = df.drop_duplicates(subset=df.columns[0])
+                df.set_index(df.columns[0], inplace=True)
+                df = df.sort_index()
+                self.equity_curves[strategy_name] = df[[strategy_name]]
 
-        # Print overlap diagnostics
-        print("\n🔍 Timestamp overlaps:")
-        for strat in available:
-            print(f"{strat}: {self.equity_curves[strat].index.min()} → {self.equity_curves[strat].index.max()}")
+        return self.equity_curves
 
-        # Fill forward and backward to handle partial overlap
-        combined = combined.sort_index().ffill().bfill()
+    def simulate_independent(self, periods_per_year=365):
+        all_summaries = []
+        aligned = pd.concat(self.equity_curves.values(), axis=1).ffill().dropna()
 
-        # Normalize each strategy equity curve
-        combined = combined.apply(lambda x: x / x.iloc[0] if x.iloc[0] != 0 else x)
+        for strat, df in self.equity_curves.items():
+            df = df.copy()
+            df = df.reindex(aligned.index).ffill()
+            df = df / df.iloc[0] * INITIAL_CAPITAL
+            returns = df.pct_change().fillna(0)
 
-        weight_vec = pd.Series({k: weights[k] for k in available})
-        weighted = combined.multiply(weight_vec, axis=1)
-        combined['portfolio'] = weighted.sum(axis=1)
+            equity = INITIAL_CAPITAL * (1 + returns).cumprod()
+            out = equity.copy()
+            out.columns = ["equity"]
+            out.to_csv(f"logs/portfolio_simulated_equity_{strat}.csv")
 
-        print("\n📉 Portfolio Preview:")
-        print(combined.describe())
-        print(combined.tail(10))
+            r = returns[strat]
+            e = equity[strat]
+            cagr = (e.iloc[-1] / e.iloc[0])**(periods_per_year / len(e)) - 1
+            sharpe = r.mean() / r.std() * (periods_per_year ** 0.5) if r.std() > 0 else 0
+            dd = (e / e.cummax() - 1).min()
+            vol = r.std() * (periods_per_year ** 0.5)
 
-        combined.dropna(subset=['portfolio'], inplace=True)
+            all_summaries.append({
+                "strategy": strat,
+                "CAGR": cagr,
+                "Sharpe": sharpe,
+                "MaxDrawdown": dd,
+                "Volatility": vol
+            })
 
-        equity_path = os.path.join(LOG_DIR, "equity_curve_factor_blended.csv")
-        combined.reset_index()[['timestamp', 'portfolio']].rename(columns={'portfolio': 'equity'}).to_csv(equity_path, index=False)
+        # Save blended portfolio curve
+        blended = aligned.mean(axis=1)
+        blended_df = pd.DataFrame({"timestamp": blended.index, "equity": blended.values})
+        blended_df.to_csv("logs/portfolio_simulated_equity.csv", index=False)
 
-        metrics = self.compute_metrics(combined[['portfolio']].rename(columns={"portfolio": "equity"}))
-        metrics_path = os.path.join(LOG_DIR, "factor_blended_metrics.csv")
-        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+        # Compute blended portfolio metrics
+        blended_ret = blended.pct_change().fillna(0)
+        cagr = (blended.iloc[-1] / blended.iloc[0])**(periods_per_year / len(blended)) - 1
+        sharpe = blended_ret.mean() / blended_ret.std() * (periods_per_year ** 0.5) if blended_ret.std() > 0 else 0
+        dd = (blended / blended.cummax() - 1).min()
+        vol = blended_ret.std() * (periods_per_year ** 0.5)
 
-        print("📊 Portfolio Metrics:", metrics)
-        return combined
+        all_summaries.append({
+            "strategy": "portfolio_simulated_equity",
+            "CAGR": cagr,
+            "Sharpe": sharpe,
+            "MaxDrawdown": dd,
+            "Volatility": vol
+        })
 
-    def compute_metrics(self, portfolio_df):
-        portfolio_df = portfolio_df.dropna()
-        portfolio_returns = portfolio_df['equity'].pct_change().dropna()
+        summary = pd.DataFrame(all_summaries)
+        summary.to_csv("logs/portfolio_simulated_summary.csv", index=False)
+        print("📊 Saved individual strategy summaries to logs/portfolio_simulated_summary.csv")
 
-        print("🔎 Sample returns:", portfolio_returns.head())
-        print("🔎 Return stats — Mean:", portfolio_returns.mean(), "Std:", portfolio_returns.std(), "N:", len(portfolio_returns))
+    def simulate_capital_weighted(self, weights, normalize=True, save_path=None):
+        dfs = []
+        for name, weight in weights.items():
+            if name not in self.equity_curves:
+                raise ValueError(f"Missing equity curve: {name}")
+            df = self.equity_curves[name].copy()
+            if normalize:
+                df = df / df.iloc[0] * INITIAL_CAPITAL
+            df *= weight
+            dfs.append(df)
 
-        cumulative_return = portfolio_df['equity'].iloc[-1] / portfolio_df['equity'].iloc[0] - 1
-        sharpe = (portfolio_returns.mean() / portfolio_returns.std()) * np.sqrt(252) if portfolio_returns.std() > 0 else 0
+        combined = pd.concat(dfs, axis=1).fillna(method="ffill").dropna()
+        combined["equity"] = combined.sum(axis=1)
+        combined = combined[["equity"]]
 
-        valid_equity = portfolio_df['equity'].replace(0, np.nan).dropna()
-        peak = valid_equity.cummax()
-        drawdown = (valid_equity - peak) / peak
-        max_drawdown = drawdown.min() if not drawdown.empty else 0
+        if save_path:
+            combined.reset_index().to_csv(save_path, index=False)
 
-        n_years = (portfolio_df.index[-1] - portfolio_df.index[0]).days / 365 if len(portfolio_df) > 1 else 1
-        cagr = (portfolio_df['equity'].iloc[-1] / portfolio_df['equity'].iloc[0])**(1 / n_years) - 1 if n_years > 0 else 0
+        return combined.reset_index()
 
-        return {
-            'Cumulative Return': cumulative_return,
-            'Sharpe Ratio': sharpe,
-            'Max Drawdown': max_drawdown,
-            'CAGR': cagr
-        }
+if __name__ == "__main__":
+    print("🔁 Running portfolio simulation...")
+    sim = PortfolioSimulator()
+    sim.simulate_independent()
+    print("✅ Finished portfolio simulation.")

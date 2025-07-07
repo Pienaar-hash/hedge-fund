@@ -1,10 +1,14 @@
+# === core/config_utils.py ===
 import json
 from core.duckdb_query import get_top_momentum_symbols
 
 CONFIG_PATH = "config/strategy_config.json"
 
 
+import os
+
 def load_strategy_config():
+    print("📄 Loading config from:", os.path.abspath(CONFIG_PATH), flush=True)
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
 

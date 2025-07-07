@@ -18,3 +18,16 @@ tqdm>=4.67
 schedule>=1.2
 dateparser>=1.2
 requests>=2.32
+
+# === requirements.txt ===
+pandas
+numpy
+matplotlib
+streamlit
+scipy
+vectorbt
+scikit-learn
+seaborn
+tqdm
+statsmodels
+plotly
