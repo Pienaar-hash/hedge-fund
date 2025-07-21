@@ -7,10 +7,14 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import base64
 from io import BytesIO
+import zipfile
+import tempfile
+import glob
+import datetime
 
 st.set_page_config(page_title="Strategy Overview", layout="wide")
 
-st.title("📊 Project Overview & System Design")
+st.title("📈 Project Overview & System Design")
 st.markdown("""
 Welcome to the control center of our multi-strategy quant hedge fund. Below you'll find a full breakdown of the project's structure, core components, key metrics, and strategy logic.
 """)
@@ -32,8 +36,9 @@ Backtests simulate live conditions: fees, max leverage, asymmetric stop-outs, re
 
 # === Portfolio vs BTC + SPY Benchmarks ===
 st.header("📈 Portfolio Equity vs Benchmarks")
+st.caption("ℹ️ Trades are sized with fixed capital to isolate strategy performance. Portfolio equity reflects timing-driven compounding across independent strategies.")
 try:
-    eq_curve = pd.read_csv("logs/portfolio_simulated_equity.csv")
+    eq_curve = pd.read_csv("logs/portfolio_simulated_equity_blended.csv")
     eq_curve["timestamp"] = pd.to_datetime(eq_curve["timestamp"])
     eq_curve = eq_curve.sort_values("timestamp")
     eq_curve["norm_equity"] = eq_curve["equity"] / eq_curve["equity"].iloc[0]
@@ -82,26 +87,56 @@ try:
     st.altair_chart(dd_chart, use_container_width=True)
 
     # === Rolling Metrics Overlay ===
-    st.subheader("📉 Rolling Metrics: Sharpe + Drawdown")
-    try:
-        roll_df = pd.read_csv("logs/rolling_metrics_portfolio.csv", parse_dates=["timestamp"])
-        base = alt.Chart(roll_df).encode(x="timestamp:T")
+# (Temporarily disabled — file not available)
+# st.subheader("📉 Rolling Metrics: Sharpe + Drawdown")
+# try:
+#     roll_df = pd.read_csv("logs/rolling_metrics_portfolio.csv", parse_dates=["timestamp"])
+#     base = alt.Chart(roll_df).encode(x="timestamp:T")
+#
+#     sharpe_line = base.mark_line(color="green").encode(
+#         y=alt.Y("rolling_sharpe:Q", title="Rolling Sharpe")
+#     )
+#     dd_line = base.mark_area(opacity=0.3, color="darkred").encode(
+#         y=alt.Y("drawdown:Q", title="Drawdown")
+#     )
+#     st.altair_chart((sharpe_line + dd_line).properties(height=150), use_container_width=True)
+# except Exception as e:
+#     st.warning(f"Could not load rolling metrics: {e}")
 
-        sharpe_line = base.mark_line(color="green").encode(
-            y=alt.Y("rolling_sharpe:Q", title="Rolling Sharpe")
-        )
-        dd_line = base.mark_area(opacity=0.3, color="darkred").encode(
-            y=alt.Y("drawdown:Q", title="Drawdown")
-        )
-        st.altair_chart((sharpe_line + dd_line).properties(height=150), use_container_width=True)
-    except Exception as e:
-        st.warning(f"Could not load rolling metrics: {e}")
+    # === Capital Efficiency Chart ===
+    st.subheader("⚖️ Capital Efficiency (Equity / Capital Used)")
+    try:
+        summary_files = [f for f in os.listdir("logs") if f.startswith("summary_") and f.endswith(".csv")]
+        efficiency_rows = []
+        for f in summary_files:
+            df = pd.read_csv(os.path.join("logs", f))
+            if "Label" in df.columns and "Trades" in df.columns:
+                label = df["Label"].iloc[0]
+                eq_path = f"logs/portfolio_simulated_equity_{label}.csv"
+                if os.path.exists(eq_path):
+                    eq_df = pd.read_csv(eq_path)
+                    final_equity = eq_df["equity"].iloc[-1]
+                    capital_used = 100000  # assumed baseline per strategy
+                    ratio = final_equity / capital_used
+                    efficiency_rows.append({"Strategy": label, "Efficiency": ratio})
+        if efficiency_rows:
+            df_eff = pd.DataFrame(efficiency_rows)
+            chart = alt.Chart(df_eff).mark_bar().encode(
+                x=alt.X("Strategy:N", sort="-y"),
+                y=alt.Y("Efficiency:Q"),
+                color=alt.Color("Strategy:N", legend=None)
+            ).properties(height=300)
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("No strategy summaries found for efficiency chart.")
+    except Exception as ex:
+        st.warning(f"Could not render efficiency chart: {ex}")
 
 except Exception as e:
     st.warning(f"Could not load equity curve or benchmark comparison: {e}")
 
 # === Downloads Section ===
-st.header("📥 Downloadable Materials")
+st.header("📅 Downloadable Materials")
 with st.expander("📁 Investor Downloads"):
     if os.path.exists("docs/one_page_summary.pdf"):
         with open("docs/one_page_summary.pdf", "rb") as f:
@@ -111,50 +146,22 @@ with st.expander("📁 Investor Downloads"):
             st.download_button("📃 Investor Agreement", f.read(), file_name="investor_agreement.pdf")
     if os.path.exists("docs/investor_pitch_deck.pdf"):
         with open("docs/investor_pitch_deck.pdf", "rb") as f:
-            st.download_button("📊 Pitch Deck", f.read(), file_name="investor_pitch_deck.pdf")
+            st.download_button("📈 Pitch Deck", f.read(), file_name="investor_pitch_deck.pdf")
 
-st.subheader("🧾 One-Page Strategy Summary (Coming Soon)")
-st.button("📤 Export PDF Summary", disabled=True)
+# === Export All Logs as ZIP ===
+st.subheader("📁 Export All Logs")
+today_str = datetime.datetime.today().strftime("%Y%m%d")
+zip_filename = f"hedge_logs_{today_str}.zip"
 
-# === Glossary of Terms ===
-st.header("📘 Glossary")
-st.markdown("""
-- **CAGR**: Compounded Annual Growth Rate
-- **Sharpe Ratio**: Annualized return per unit volatility
-- **Max Drawdown**: Worst peak-to-trough equity drop
-- **Expectancy**: Avg profit per trade: `win_rate * avg_win + (1 - win_rate) * avg_loss`
-- **Profit Factor**: Total profit / total loss
-- **Z-score**: Standard deviation of signal or spread from mean
-- **ATR**: Average True Range, proxy for volatility
-- **Rebalance Period**: Interval to refresh positions or signals
-- **Capital Weight**: % of capital allocated per position
-""")
+if st.button("📦 Download Logs as ZIP"):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_zip:
+        with zipfile.ZipFile(tmp_zip.name, 'w') as zipf:
+            for filepath in glob.glob("logs/*.csv") + glob.glob("logs/*.png") + glob.glob("docs/*.pdf"):
+                zipf.write(filepath, arcname=os.path.join(os.path.basename(os.path.dirname(filepath)), os.path.basename(filepath)))
+        with open(tmp_zip.name, "rb") as f:
+            st.download_button("📅 Click to Download", f.read(), file_name=zip_filename)
 
-# === Summary of Signal Logic ===
-st.header("📡 Strategy Signal Logic")
-st.markdown("""
-**1. Momentum Strategy**:
-- Signals from momentum Z-score with filters:
-    - Volatility threshold (20-bar stddev)
-    - EMA trend check (10 vs 50 EMA)
-    - ATR-based stop
-    - Reward-risk filter
-
-**2. Volatility Targeting**:
-- Targets daily/weekly volatility per asset
-- Adjusts leverage based on realized vol vs target
-- Optional trend filter (EMA-based)
-
-**3. Relative Value**:
-- Pairs trading with rolling beta regression (ETH as base)
-- Entry on Z-score of spread divergence, exit on mean reversion or drawdown
-- Dynamic capital weight = `min(0.02 + |z| * 0.01, 0.1)`
-
-**Allocator**:
-- Future: static or Monte Carlo weight sweeps (e.g. factor Sharpe rank)
-- Current: simulate strategies independently or with equal-weight blend
-""")
-
-st.image("assets/signal_flow_diagram.png", caption="Visual Signal Flow - Strategy Modules")
+st.subheader("🩾 One-Page Strategy Summary (Coming Soon)")
+st.button("📄 Export PDF Summary", disabled=True)
 
 st.info("✅ This page summarizes the strategy design, signals, and fund mechanics.")

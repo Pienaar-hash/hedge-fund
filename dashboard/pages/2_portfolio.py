@@ -11,13 +11,15 @@ st.set_page_config(page_title="Portfolio Equity", layout="wide")
 st.title("📈 Portfolio Equity Curve vs Benchmarks")
 
 try:
-    eq = load_equity_curve("portfolio_simulated_equity", normalize=True)
-    if eq is None or eq.empty:
+    eq = pd.read_csv("logs/portfolio_simulated_equity_blended.csv", parse_dates=["timestamp"])
+    eq = eq.sort_values("timestamp")
+    eq["norm_equity"] = eq["equity"] / eq["equity"].iloc[0]
+    eq["drawdown"] = eq["norm_equity"] / eq["norm_equity"].cummax() - 1
+    if eq.empty:
         st.warning("No equity curve data found. Please run the simulator or check filenames.")
         st.stop()
 
-    eq["drawdown"] = eq["equity"] / eq["equity"].cummax() - 1
-
+    
     # Determine common start timestamp
     min_timestamp = eq["timestamp"].min()
 
@@ -28,6 +30,7 @@ try:
     ]
     selected_strategies = st.multiselect("Overlay strategies on equity curve:", strategy_files)
 
+    eq["equity"] = eq["equity"] / eq["equity"].iloc[0]  # Normalize for chart comparison
     overlay_df = eq.copy()
     overlay_df["source"] = "Portfolio"
     drawdown_df = eq[["timestamp", "drawdown"]].copy()
@@ -92,9 +95,11 @@ try:
     )
 
     st.subheader("📊 Performance Metrics")
-    eq["returns"] = eq["equity"].pct_change().fillna(0)
-    total_return = eq["equity"].iloc[-1] - 1
-    cagr = (eq["equity"].iloc[-1]) ** (365 / len(eq)) - 1
+
+    
+    eq["returns"] = eq["norm_equity"].pct_change().fillna(0)
+    total_return = eq["norm_equity"].iloc[-1] - 1
+    cagr = (eq["norm_equity"].iloc[-1]) ** (365 / len(eq)) - 1
     volatility = eq["returns"].std() * np.sqrt(365)
     sharpe = cagr / volatility if volatility != 0 else 0
     max_dd = eq["drawdown"].min()

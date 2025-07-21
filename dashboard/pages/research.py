@@ -45,11 +45,41 @@ st.code("python\nfrom research.llm_research_agent import ask_research_bot")
 st.info("LangChain + Vectorstore agent to query research logs and whitepapers")
 
 st.header("🧬 TensorTrade Agent")
-st.code("python\nfrom research.tensor_trade_agent import train_policy")
+st.code("""python
+from research.tensor_trade_agent import train_policy
+""")
 st.info("RL agent trained on momentum signals using TensorTrade gym wrapper")
+
+# === Research Outputs ===
+st.header("📚 Research Outputs")
+
+with st.expander("📘 Strategy Logic (.md)"):
+    logic_path = Path("research/strategy_logic.md")
+    if logic_path.exists():
+        st.markdown(logic_path.read_text(), unsafe_allow_html=True)
+    else:
+        st.info("No strategy_logic.md file found. Add it to /research to show documentation here.")
+
+with st.expander("🧪 Optimization Runs (.csv)"):
+    opt_path = Path("logs/optimization_results.csv")
+    if opt_path.exists():
+        df = pd.read_csv(opt_path)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No optimization_results.csv file found in /logs.")
+
+with st.expander("📊 Trade Studies (.csv)"):
+    trade_path = Path("logs/trade_study_summary.csv")
+    if trade_path.exists():
+        df = pd.read_csv(trade_path)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No trade_study_summary.csv file found in /logs.")
 
 st.header("📐 MCP Model")
 st.code("python\nfrom research.mcp_model import generate_allocation")
 st.info("Kelly/Multi-Cap/Probabilistic model for signal-based capital allocation")
 
 st.success("✅ All modules available under /research/. Triggered via CLI, notebooks or future dashboard tabs.")
+
+

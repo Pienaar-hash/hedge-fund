@@ -72,6 +72,41 @@ def compute_trade_summary(df):
     summary["Payoff Ratio"] = summary["Avg Win"] / abs(summary["Avg Loss"]) if summary["Avg Loss"] != 0 else float('inf')
     return summary
 
+# === Metrics In-Memory Summary ===
+def compute_all_trade_metrics():
+    summary = []
+    for f in list_trade_logs():
+        df = load_trade_log(f)
+        stats = compute_trade_summary(df)
+        if stats:
+            stats["Strategy"] = f.replace("trades_", "").replace(".csv", "")
+            summary.append(stats)
+    return pd.DataFrame(summary)
+
+def compute_all_equity_metrics():
+    summary = []
+    for f in os.listdir(LOG_DIR):
+        if f.startswith("trades_") and f.endswith(".csv"):
+            df = load_trade_log(f)
+            col = next((c for c in ["pnl_log_return", "net_ret", "pnl_pct"] if c in df.columns), None)
+            if not col or df.empty:
+                continue
+            df = df.sort_values("exit_time")
+            df.set_index("exit_time", inplace=True)
+            df["returns"] = df[col]
+            eq = (1 + df["returns"]).cumprod()
+            r = df["returns"]
+            summary.append({
+                "Strategy": f.replace("trades_", "").replace(".csv", ""),
+                "Total Return": eq.iloc[-1] / eq.iloc[0] - 1,
+                "CAGR": (eq.iloc[-1] / eq.iloc[0]) ** (365 / len(eq)) - 1,
+                "Sharpe": r.mean() / r.std() * (365 ** 0.5) if r.std() else 0,
+                "MaxDrawdown": (eq / eq.cummax() - 1).min(),
+                "Volatility": r.std() * (365 ** 0.5)
+            })
+    return pd.DataFrame(summary)
+
+
 # === Heatmap + Clustering Utilities ===
 def compute_pnl_correlation_heatmap(trade_logs):
     pnl_data = {}

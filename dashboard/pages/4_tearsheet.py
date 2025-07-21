@@ -3,6 +3,7 @@ from dashboard.utils.dashboard_helpers import list_trade_logs, load_trade_log, c
 import pandas as pd
 import io
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 st.set_page_config(page_title="📄 Strategy Tear Sheet", layout="wide")
 st.title("📄 Strategy Tear Sheet")
@@ -37,21 +38,28 @@ if trade_logs:
             if fig:
                 st.pyplot(fig)
 
-            if "pnl_log_return" in df.columns:
-                df = df.sort_values("exit_time")
-                df.set_index("exit_time", inplace=True)
-                returns = df["pnl_log_return"].fillna(0)
-                rolling_sharpe, rolling_dd = compute_rolling_metrics(returns)
+            
 
-                fig, axes = plt.subplots(2, 1, figsize=(8, 5), sharex=True)
-                rolling_sharpe.plot(ax=axes[0], title=f"Rolling Sharpe - {label}")
-                rolling_dd.plot(ax=axes[1], title="Rolling Drawdown", color="red")
-                plt.tight_layout()
-                st.pyplot(fig)
+                if "capital_used" in df.columns:
+                    total_cap = df["capital_used"].sum()
+                    avg_cap = df["capital_used"].mean()
+                    col3.metric("Total Capital Used", f"{total_cap:,.0f}")
+                    col3.metric("Avg Capital/Trade", f"{avg_cap:,.0f}")
 
-        st.subheader("🧠 PnL Correlation Heatmap")
-        fig_corr = compute_pnl_correlation_heatmap(selected_logs)
-        st.pyplot(fig_corr)
+            # Holding Time Analysis
+            if "entry_time" in df.columns and "exit_time" in df.columns:
+                df["entry_time"] = pd.to_datetime(df["entry_time"])
+                df["exit_time"] = pd.to_datetime(df["exit_time"])
+                df["holding_time"] = (df["exit_time"] - df["entry_time"]).dt.total_seconds() / 3600  # in hours
+
+                holding_fig, ax_ht = plt.subplots(figsize=(6, 2.5))
+                sns.histplot(df["holding_time"], bins=30, kde=True, ax=ax_ht, color="skyblue")
+                ax_ht.set_title("Holding Time Distribution (hrs)")
+                ax_ht.set_xlabel("Hours")
+                ax_ht.set_ylabel("Frequency")
+                st.pyplot(holding_fig)
+
+        
 
         # Summary table export
         st.subheader("📋 Exportable Summary Table")
@@ -62,7 +70,6 @@ if trade_logs:
         st.download_button("📥 Download CSV Summary", csv, file_name="tearsheet_summary.csv")
 
         # Placeholder for PDF export
-        st.subheader("📄 Export Tear Sheet PDF (Coming Soon)")
-        st.button("📤 Export PDF", disabled=True)
+        
 else:
     st.info("No trade logs found in /logs directory.")
