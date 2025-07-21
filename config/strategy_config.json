@@ -3,42 +3,51 @@
     {
       "name": "momentum",
       "params": {
-        "symbols": ["btcusdt_1h", "ethusdt_1h", "solusdt_1h"],
+        "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "AVAXUSDT", "DOGEUSDT", "LINKUSDT", "OPUSDT", "LTCUSDT"],
         "timeframe": "1h",
         "lookback": 20,
-        "rebalance_period": 6,
-        "hold_period": 24,
-        "top_n": 2,
-        "zscore_thresholds": [1.0, 1.5, 2.0],
-        "vol_threshold": 0.01,
+        "rebalance_period": 36,
+        "hold_period": 48,
+        "top_n": 3,
+        "zscore_threshold": 0.5,
+        "vol_threshold": 0.005,
         "use_trend_filter": true,
         "allow_shorts": true,
         "atr_multiplier": 1.5,
+        "early_stop_bars": 2,
+        "early_stop_atr": 0.75,
+        "hard_stop_atr": 1.5,
+        "trail_activate_r": 2.0,
         "min_reward_risk": 1.2,
         "fee": 0.001,
         "starting_equity": 100000,
-        "max_trade_loss": 0.3
+        "label": "momentum"
       }
     },
     {
       "name": "volatility_target",
       "params": {
         "lookback": 20,
-        "target_vol": 0.015,
+        "target_vol": 0.010,
+        "rebalance_period": 6,
         "max_leverage": 3,
         "fee": 0.001,
-        "rebalance_period": 1,
+        "use_trend_filter": true,
         "starting_equity": 100000,
-        "max_trade_loss": 0.3,
+        "label": "volatility_target",
+        "short_threshold": 0.02,
+        "allow_shorts": false,
+        "trail_pct": 0.08,
+        "atr_trail": 2.0,
+        "max_hold": 16,
+        "atr_multiplier": 1.5,
         "assets": [
-          { "symbol": "BTCUSDT", "tf": "4H" },
-          { "symbol": "BNBUSDT", "tf": "4H" },
-          { "symbol": "ETHUSDT", "tf": "4H" },
-          { "symbol": "SOLUSDT", "tf": "4H" },
-          { "symbol": "XRPUSDT", "tf": "4H" },
-          { "symbol": "DOGEUSDT", "tf": "4H" },
-          { "symbol": "ARBUSDT", "tf": "4H" },
-          { "symbol": "INJUSDT", "tf": "4H" }
+          { "symbol": "BTCUSDT", "tf": "4h" },
+          { "symbol": "ETHUSDT", "tf": "4h" },
+          { "symbol": "BNBUSDT", "tf": "4h" },
+          { "symbol": "SOLUSDT", "tf": "4h" },
+          { "symbol": "AVAXUSDT", "tf": "4h" },
+          { "symbol": "DOGEUSDT", "tf": "4h" }
         ]
       }
     },
@@ -46,29 +55,19 @@
       "name": "relative_value",
       "params": {
         "base": "ETHUSDT",
-        "pairs": ["BTCUSDT", "AVAXUSDT"],
+        "pairs": ["BTCUSDT", "SOLUSDT", "AVAXUSDT", "MATICUSDT"],
         "lookback": 20,
-        "z_entry": 1.5,
-        "z_exit": 0.5,
-        "hold_period": 3,
-        "max_drawdown": 0.2,
-        "capital": 100000,
-        "capital_weight": 0.05,
+        "z_entry": 1.2,
+        "z_exit": 0.3,
+        "hold_period": 7,
+        "starting_equity": 100000,
+        "capital_weight": 0.10,
         "fee": 0.001,
-        "timeframe": "1d"
-      }
-    },
-    {
-      "name": "factor_allocation",
-      "params": {
-        "mode": "static",
-        "log_path": "logs/factor_monte_carlo.csv",
-        "plot_path": "logs/factor_weight_sweep_plot.png",
-        "factor_map": {
-          "momentum": "momentum_ranked",
-          "volatility": "vol_target_btcusdt",
-          "value": "relative_value"
-        }
+        "asymmetric_drawdown": false,
+        "timeframe": "1d",
+        "label": "relative_value",
+        "dd_mod": false,
+        "min_spread": 5
       }
     }
   ]

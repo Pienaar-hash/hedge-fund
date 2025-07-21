@@ -68,8 +68,8 @@ class StrategyImpl(Strategy):
             }
 
             try:
-                simulator.simulate_capital_weighted(strategy_weights)
-                self.evaluate_portfolio("logs/portfolio_simulated_equity.csv")
+                simulator.simulate_capital_weighted(strategy_weights, save_path="logs/portfolio_simulated_equity_factor_static.csv")
+                self.evaluate_portfolio("logs/portfolio_simulated_equity_factor_static.csv")
             except Exception as e:
                 print(f"❌ Portfolio simulation failed: {e}")
 

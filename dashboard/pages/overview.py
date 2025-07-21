@@ -81,6 +81,22 @@ try:
     ).properties(height=120)
     st.altair_chart(dd_chart, use_container_width=True)
 
+    # === Rolling Metrics Overlay ===
+    st.subheader("📉 Rolling Metrics: Sharpe + Drawdown")
+    try:
+        roll_df = pd.read_csv("logs/rolling_metrics_portfolio.csv", parse_dates=["timestamp"])
+        base = alt.Chart(roll_df).encode(x="timestamp:T")
+
+        sharpe_line = base.mark_line(color="green").encode(
+            y=alt.Y("rolling_sharpe:Q", title="Rolling Sharpe")
+        )
+        dd_line = base.mark_area(opacity=0.3, color="darkred").encode(
+            y=alt.Y("drawdown:Q", title="Drawdown")
+        )
+        st.altair_chart((sharpe_line + dd_line).properties(height=150), use_container_width=True)
+    except Exception as e:
+        st.warning(f"Could not load rolling metrics: {e}")
+
 except Exception as e:
     st.warning(f"Could not load equity curve or benchmark comparison: {e}")
 

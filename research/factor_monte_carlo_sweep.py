@@ -10,15 +10,15 @@ import json
 with open("config/strategy_config.json") as f:
     config = json.load(f)
     equity_start = {
-        strat["name"]: strat["params"].get("starting_equity", 1.0)
+        strat["params"].get("label", strat["name"]): strat["params"].get("starting_equity", 1.0)
         for strat in config["strategies"]
     }
 
 # Load actual equity curves and compute log returns
 LOG_PATHS = {
-    "momentum": "logs/equity_curve_momentum_ranked.csv",
-    "volatility": "logs/equity_curve_vol_target_btcusdt.csv",
-    "value": "logs/equity_curve_relative_value.csv"
+    "momentum_ranked": "logs/portfolio_simulated_equity_momentum_ranked.csv",
+    "volatility_target": "logs/portfolio_simulated_equity_volatility_target.csv",
+    "relative_value_eth_blend": "logs/portfolio_simulated_equity_relative_value_eth_blend.csv"
 }
 
 returns_data = {}
@@ -26,9 +26,10 @@ for factor, path in LOG_PATHS.items():
     if os.path.exists(path):
         df = pd.read_csv(path, parse_dates=['timestamp']).set_index('timestamp')
         df = df[~df.index.duplicated(keep='first')]
-        col = [c for c in df.columns if c != 'timestamp'][0]
-        equity = df[col]
+        equity = df[df.columns[0]]
         equity = equity[equity > 0]  # drop invalid values
+        print(f"📈 {factor} equity preview:")
+        print(equity.head())
         start_value = equity_start.get(factor, equity.iloc[0])
         equity = equity / start_value
         returns = np.log(equity / equity.shift(1)).dropna()
@@ -43,6 +44,9 @@ if len(returns_data) < 3:
     exit()
 
 returns_df = pd.concat(returns_data.values(), axis=1, join="inner").fillna(0)
+print("📊 Combined returns preview:")
+print(returns_df.head())
+
 if returns_df.shape[0] < 30:
     print("⚠️ Warning: Too few overlapping timestamps in equity curves.")
 
@@ -52,7 +56,7 @@ def simulate_return(weights):
         return 0, 0, 0, 0
 
     weighted = returns_df.copy()
-    for i, factor in enumerate(["momentum", "volatility", "value"]):
+    for i, factor in enumerate(["momentum_ranked", "volatility_target", "relative_value_eth_blend"]):
         weighted[factor] = weighted[factor] * weights[i]
 
     portfolio_returns = weighted.sum(axis=1)

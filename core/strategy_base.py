@@ -1,63 +1,69 @@
 # === core/strategy_base.py ===
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+import os
 
 class Strategy:
     def configure(self, params):
-        # Default configure method to avoid frozen config errors
         for k, v in params.items():
             setattr(self, k, v)
 
     def run(self):
         raise NotImplementedError("Strategy must implement run method.")
 
-    def log_results(self, label="default"):
+    def log_results(self, label=None):
+        label = label or getattr(self, "label", "default")
         if not getattr(self, "log_output", True):
+            print(f"⚠️ Logging disabled for {label}.")
             return
+
         if hasattr(self, "trades_df") and not self.trades_df.empty:
-            self.compute_and_save_metrics(self.trades_df, label=label)
-
-    def compute_and_save_metrics(self, df, label="default"):
-        if "pnl_log_return" in df.columns:
-            pnl_col = "pnl_log_return"
-        elif "pnl_pct" in df.columns:
-            pnl_col = "pnl_pct"
-        elif "net_return" in df.columns:
-            pnl_col = "net_return"
+            self.compute_and_save_metrics(self.trades_df, label)
+            trades_path = f"logs/trades_{label}.csv"
+            self.trades_df.to_csv(trades_path, index=False)
+            print(f"📄 Trade log saved to {trades_path}")
         else:
-            print(f"❌ No recognized PnL column in dataframe for {label}.")
+            print(f"⚠️ No trades found for logging under {label}.")
+
+    def compute_and_save_metrics(self, trades_df, label):
+        pnl_col = next((col for col in ["pnl_log_return", "net_return", "pnl_pct"] if col in trades_df.columns), None)
+        if not pnl_col:
+            print(f"❌ No recognized PnL column for {label}.")
             return
 
-        if "exit_time" not in df.columns:
-            print(f"❌ Missing 'exit_time' in trades dataframe for {label}.")
+        if "exit_time" not in trades_df.columns or "entry_time" not in trades_df.columns:
+            print(f"❌ Entry or Exit timestamps missing for {label}.")
             return
 
-        df = df.copy()
-        df = df.sort_values("exit_time")
-        df.set_index("exit_time", inplace=True)
+        trades_df = trades_df.copy()
+        trades_df['exit_time'] = pd.to_datetime(trades_df['exit_time'])
+        trades_df = trades_df.sort_values("exit_time")
+        trades_df.set_index("exit_time", inplace=True)
 
-        equity = (1 + df[pnl_col]).cumprod()
-        returns = df[pnl_col]
+        # Daily-aligned equity curve
+        returns = trades_df[pnl_col]
+        equity_curve = (1 + returns).cumprod()
+        equity_df = equity_curve.resample("1D").last().ffill().reset_index()
+        equity_df.columns = ["timestamp", "equity"]
+        equity_df["equity"] = equity_df["equity"] / equity_df["equity"].iloc[0] * getattr(self, "starting_equity", 100000)
 
-        equity_df = pd.DataFrame({
-            "timestamp": equity.index,
-            "equity": equity / equity.iloc[0]
-        })
-        equity_df.to_csv(f"logs/equity_curve_{label}.csv", index=False)
+        os.makedirs("logs", exist_ok=True)
+        equity_path = f"logs/portfolio_simulated_equity_{label}.csv"
+        equity_df.to_csv(equity_path, index=False)
+        print(f"📈 Saved daily-aligned equity to {equity_path}")
 
-        win_trades = df[df[pnl_col] > 0]
-        loss_trades = df[df[pnl_col] < 0]
-        win_rate = len(win_trades) / len(df)
+        # Compute performance metrics
+        win_trades = trades_df[trades_df[pnl_col] > 0]
+        loss_trades = trades_df[trades_df[pnl_col] <= 0]
+        win_rate = len(win_trades) / len(trades_df)
         avg_win = win_trades[pnl_col].mean()
         avg_loss = loss_trades[pnl_col].mean()
         expectancy = win_rate * avg_win + (1 - win_rate) * avg_loss
-        profit_factor = win_trades[pnl_col].sum() / abs(loss_trades[pnl_col].sum()) if not loss_trades.empty else float('inf')
-        payoff_ratio = avg_win / abs(avg_loss) if avg_loss else float('inf')
+        profit_factor = abs(win_trades[pnl_col].sum() / loss_trades[pnl_col].sum()) if loss_trades[pnl_col].sum() != 0 else float('inf')
+        payoff_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
 
-        summary_df = pd.DataFrame([{
+        summary = pd.DataFrame([{
             "Label": label,
-            "Trades": len(df),
+            "Trades": len(trades_df),
             "WinRate": win_rate,
             "AvgWin": avg_win,
             "AvgLoss": avg_loss,
@@ -65,39 +71,19 @@ class Strategy:
             "ProfitFactor": profit_factor,
             "PayoffRatio": payoff_ratio
         }])
-        summary_df.to_csv(f"logs/summary_{label}.csv", index=False)
+        summary_path = f"logs/summary_{label}.csv"
+        summary.to_csv(summary_path, index=False)
+        print(f"📊 Metrics summary saved to {summary_path}")
 
-        # Optional diagnostic plot if entry_strength is available
-        if "entry_strength" in df.columns:
-            plt.figure(figsize=(8, 5))
-            sns.boxplot(data=df.reset_index(), x="entry_strength", y=pnl_col)
-            plt.title(f"PnL by Entry Strength - {label}")
-            plt.ylabel("PnL")
-            plt.xlabel("Entry Strength")
-            plt.grid(True)
-            plt.tight_layout()
-            plot_path = f"logs/pnl_by_strength_{label}.png"
-            plt.savefig(plot_path)
-            plt.close()
-            print(f"📊 Saved diagnostic plot to {plot_path}")
+        # Rolling Metrics
+        rolling_sharpe = returns.rolling(30).mean() / returns.rolling(30).std()
+        rolling_dd = equity_curve / equity_curve.cummax() - 1
+        rolling_metrics_df = pd.DataFrame({
+            "timestamp": rolling_sharpe.index,
+            "rolling_sharpe": rolling_sharpe,
+            "rolling_drawdown": rolling_dd
+        }).dropna()
 
-        # Rolling Sharpe and Drawdown
-        rolling_window = 30
-        rolling_sharpe = returns.rolling(rolling_window).mean() / returns.rolling(rolling_window).std()
-        rolling_dd = equity / equity.cummax() - 1
-
-        plt.figure(figsize=(10, 6))
-        plt.subplot(2, 1, 1)
-        rolling_sharpe.plot(title=f"Rolling Sharpe ({rolling_window} trades) - {label}", grid=True)
-        plt.ylabel("Sharpe Ratio")
-
-        plt.subplot(2, 1, 2)
-        rolling_dd.plot(title=f"Rolling Drawdown - {label}", grid=True)
-        plt.ylabel("Drawdown")
-        plt.xlabel("Date")
-
-        plt.tight_layout()
-        plot_path = f"logs/rolling_metrics_{label}.png"
-        plt.savefig(plot_path)
-        plt.close()
-        print(f"📈 Saved rolling Sharpe and drawdown plot to {plot_path}")
+        rolling_metrics_path = f"logs/rolling_metrics_{label}.csv"
+        rolling_metrics_df.to_csv(rolling_metrics_path, index=False)
+        print(f"📉 Rolling metrics saved to {rolling_metrics_path}")

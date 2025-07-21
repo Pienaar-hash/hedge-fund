@@ -12,8 +12,7 @@ def run_strategy(strategy_name, params):
         strat = StrategyImpl()
         strat.configure(params)
         strat.run()
-        if hasattr(strat, "log_results"):
-            strat.log_results()
+        strat.log_results()  # 🔧 PATCHED to log results after running
         print(f"✅ {strategy_name} completed.\n")
     except Exception as e:
         print(f"❌ Failed to run strategy '{strategy_name}': {e}")
