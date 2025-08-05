@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime
 import pandas as pd
-from core.backtest_runner import run_strategy
+from portfolio.backtest_runner import run_strategy
 
 # === Grid Search Space ===
 search_space = {

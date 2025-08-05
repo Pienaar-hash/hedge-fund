@@ -1,7 +1,7 @@
 # === generate_dashboard_logs.py ===
 import os
-from core.backtest_runner import run_strategy
-from core.portfolio_simulator import PortfolioSimulator
+from portfolio.backtest_runner import run_strategy
+from portfolio.portfolio_simulator import PortfolioSimulator
 import shutil
 import pandas as pd
 from datetime import datetime

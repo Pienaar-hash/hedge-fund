@@ -4,7 +4,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from core.strategy_base import Strategy
-from core.portfolio_simulator import PortfolioSimulator
+from portfolio.portfolio_simulator import PortfolioSimulator
 
 LOG_PATH = 'logs/factor_monte_carlo.csv'
 PLOT_PATH = 'logs/factor_weight_sweep_plot.png'

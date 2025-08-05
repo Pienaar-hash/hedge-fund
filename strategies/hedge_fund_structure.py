@@ -1,0 +1,52 @@
+hedge_fund/
+├── core/
+│   ├── strategy_base.py
+│   ├── momentum.py
+│   ├── volatility_target.py
+│   ├── relative_value.py
+│   └── factor_allocation.py
+
+├── execution/
+│   ├── executor_live.py
+│   ├── signal_generator.py
+│   ├── trade_state_tracker.py
+│   ├── sync_state.py
+│   ├── testnet_config.py
+│   └── execution_utils.py
+
+├── dashboard/
+│   ├── multi_strategy_dashboard.py
+│   ├── pages/
+│   │   ├── execution_panel.py
+│   │   ├── investor_bias.py
+│   │   └── signal_screener.py
+│   ├── utils.py
+│   └── styles.css
+
+├── data/
+│   ├── logs/
+│   ├── state/
+│   └── signals/
+
+├── infrastructure/
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   ├── .env.template
+│   ├── requirements.txt
+│   └── startup.sh
+
+├── portfolio/
+│   ├── portfolio_simulator.py
+│   └── backtest_runner.py
+
+├── research/
+│   ├── strategy_debug.ipynb
+│   ├── factor_sweep.ipynb
+│   └── monte_carlo_sim.ipynb
+
+├── config/
+│   ├── strategy_config.json
+│   └── asset_universe.json
+
+├── README.md
+└── run_all.sh
