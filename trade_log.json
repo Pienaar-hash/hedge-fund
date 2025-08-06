@@ -1,0 +1,83 @@
+[
+  {
+    "timestamp": "2025-08-06T17:03:46.710639",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "price": 115171.67,
+    "qty": 1.11217
+  },
+  {
+    "timestamp": "2025-08-06T17:09:06.306591",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "price": 115024.0,
+    "qty": 1.11217,
+    "pnl": -164.23
+  },
+  {
+    "timestamp": "2025-08-06T17:20:07.043206",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 168.02,
+    "qty": 761.681
+  },
+  {
+    "timestamp": "2025-08-06T17:21:08.658403",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "price": 115241.14,
+    "qty": 0.011
+  },
+  {
+    "timestamp": "2025-08-06T17:43:33.980650",
+    "symbol": "ETHUSDT",
+    "side": "BUY",
+    "price": 3665.53,
+    "qty": 0.0033
+  },
+  {
+    "timestamp": "2025-08-06T17:58:17.847984",
+    "symbol": "ETHUSDT",
+    "side": "BUY",
+    "price": 3678.2,
+    "qty": 7.0616
+  },
+  {
+    "timestamp": "2025-08-06T17:58:20.394488",
+    "symbol": "SOLUSDT",
+    "side": "BUY",
+    "price": 168.95,
+    "qty": 123.0
+  },
+  {
+    "timestamp": "2025-08-06T18:06:51.564273",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "price": 115611.43,
+    "qty": 0.14381
+  },
+  {
+    "timestamp": "2025-08-06T18:22:02.922571",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "price": 115568.52,
+    "qty": 0.14381,
+    "pnl": -17.4
+  },
+  {
+    "timestamp": "2025-08-06T18:22:04.872363",
+    "symbol": "ETHUSDT",
+    "side": "SELL",
+    "price": 3683.72,
+    "qty": 7.0616,
+    "pnl": -80.64
+  },
+  {
+    "timestamp": "2025-08-06T18:22:09.998294",
+    "symbol": "SOLUSDT",
+    "side": "SELL",
+    "price": 169.24,
+    "qty": 123.0,
+    "pnl": -63.96
+  }
+]
