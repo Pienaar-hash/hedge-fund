@@ -1,214 +1,216 @@
+# executor_live.py — Portfolio Strategy Runner
 import time
+import numpy as np
+import pandas as pd
+import sys
 import json
+import logging
 import os
+from datetime import datetime
 from binance.client import Client
-from pathlib import Path
+from binance.enums import *
+from binance.exceptions import BinanceAPIException
+from execution.telegram_utils import send_telegram, send_portfolio_summary_with_pnl
+from execution.testnet_keys import API_KEY, API_SECRET
 
-# Testnet credentials
-API_KEY = "Qb2r9fZI7CMgE05cE1L0Bq6NfzIofzVzU0rYJMCJ3yAtbkPpI6iElikiBfUt1k7V"
-API_SECRET = "2DB812uJt1f0nBnjSLSydPf8DCNiB9DtEXg8gQDDu4RvdwtWT5KMZymo4OheQiOu"
-BASE_URL = "https://testnet.binance.vision"
+# === Logging ===
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+handler.setFormatter(formatter)
+logger.handlers = [handler]
+sys.stdout.reconfigure(encoding='utf-8')
 
+# === Settings ===
 client = Client(API_KEY, API_SECRET)
-client.API_URL = BASE_URL
+client.API_URL = 'https://testnet.binance.vision/api'
+interval = Client.KLINE_INTERVAL_1MINUTE
+lookback = 20
+quantity_fraction = 0.99
+min_order_size = 10
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-signal_dir = "data/signals"
-executed_log = "data/state/executed.json"
-trade_log = "data/state/trade_log.json"
-pnl_log = "data/state/pnl_log.json"
-unrealized_file = "data/state/unrealized.json"
-balance_file = "data/state/balances.json"
+# === Capital Allocation (20% per symbol default) ===
+capital_allocation = {
+    "BTCUSDT": 0.2,
+    "ETHUSDT": 0.2,
+    "SOLUSDT": 0.2,
+}
 
-# Strategy settings
-position_size_pct = 0.05  # 5% of balance per trade
-leverage = 2
+# === Time Sync ===
+def sync_time():
+    try:
+        server_time = client.get_server_time()["serverTime"]
+        local_time = int(time.time() * 1000)
+        client.timestamp_offset = server_time - local_time
+        print(f"TIME OFFSET APPLIED: {client.timestamp_offset} ms")
+    except Exception as e:
+        print(f"ERROR: Failed to sync time: {e}")
 
-# Load executed + trade logs
-executed = {}
-if os.path.exists(executed_log):
-    with open(executed_log, "r") as f:
-        executed = json.load(f)
+sync_time()
 
-trade_history = []
-if os.path.exists(trade_log):
-    with open(trade_log, "r") as f:
-        trade_history = json.load(f)
+# === Helpers ===
+def get_step_size(symbol):
+    info = client.get_symbol_info(symbol)
+    for f in info['filters']:
+        if f['filterType'] == 'LOT_SIZE':
+            return float(f['stepSize'])
+    return 0.000001
 
-realized_pnl = []
-if os.path.exists(pnl_log):
-    with open(pnl_log, "r") as f:
-        realized_pnl = json.load(f)
+def get_balance(asset):
+    balance = client.get_asset_balance(asset=asset)
+    return float(balance['free']) if balance else 0
+
+def round_step_size(quantity, step_size):
+    precision = int(round(-np.log10(step_size)))
+    return round(quantity, precision)
+
+def fetch_ohlcv(symbol):
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=100)
+    df = pd.DataFrame(klines, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_asset_vol', 'num_trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'
+    ])
+    df['close'] = df['close'].astype(float)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('timestamp', inplace=True)
+    df['log_return'] = np.log(df['close'] / df['close'].shift(1))
+    df['momentum'] = df['log_return'].rolling(lookback).sum()
+    df['vol'] = df['log_return'].rolling(lookback).std()
+    df['zscore'] = df['momentum'] / df['vol']
+    df['ema_fast'] = df['close'].ewm(span=10).mean()
+    df['ema_slow'] = df['close'].ewm(span=50).mean()
+    df.dropna(inplace=True)
+    return df
+
+def write_nav_log(symbol, equity):
+    # Deprecated — no longer used
+    pass
+
+def write_nav_snapshot():
+    snapshot = {}
+    for symbol in symbols:
+        asset = symbol.replace("USDT", "")
+        price = fetch_ohlcv(symbol).iloc[-1]['close']
+        qty = get_balance(asset)
+        usdt = get_balance("USDT") if asset == "USDT" else 0
+        snapshot[symbol] = round(qty * price + usdt, 2)
+
+    log_path = "nav_log.json"
+    try:
+        if os.path.exists(log_path):
+            with open(log_path, "r") as f:
+                logs = json.load(f)
+        else:
+            logs = []
+
+        logs.append({
+            "timestamp": datetime.utcnow().replace(microsecond=0).isoformat(),
+            "equity": snapshot
+        })
+
+        with open(log_path, "w") as f:
+            json.dump(logs[-1000:], f, indent=2)
+
+        print(f"✅ NAV snapshot saved: {snapshot}")
+    except Exception as e:
+        print(f"NAV LOG ERROR: {e}")
+
+def write_trade_log(entry):
+    try:
+        with open("trade_log.json", "r") as f:
+            data = json.load(f)
+    except:
+        data = []
+    data.append(entry)
+    with open("trade_log.json", "w") as f:
+        json.dump(data[-1000:], f, indent=2)
 
 def place_order(symbol, side, quantity):
     try:
-        order = client.create_order(
-            symbol=symbol,
-            side=side.upper(),
-            type="MARKET",
-            quantity=quantity
-        )
-        print(f"✅ Order placed: {symbol} {side.upper()} qty={quantity}")
+        order = client.order_market(symbol=symbol, side=side, quantity=quantity)
+        print(f"ORDER: {side} {quantity} of {symbol}")
+        send_telegram(f"✅ {side} {symbol} @ qty {quantity}")
         return order
-    except Exception as e:
-        print(f"❌ Failed to place order: {symbol} → {e}")
+    except BinanceAPIException as e:
+        print(f"ORDER ERROR: {e}")
+        send_telegram(f"❌ Order Error for {symbol}: {e}")
         return None
 
-def get_min_qty(symbol):
-    info = client.get_symbol_info(symbol)
-    for f in info["filters"]:
-        if f["filterType"] == "LOT_SIZE":
-            return float(f["minQty"])
-    return 0.001
+def trade_logic(symbol, state):
+    asset = symbol.replace("USDT", "")
+    df = fetch_ohlcv(symbol)
+    latest = df.iloc[-1]
+    price = latest['close']
+    z = latest['zscore']
+    trend = "UP" if latest['ema_fast'] > latest['ema_slow'] else "DOWN"
+    vol = latest['vol']
+    signal = z > 0.5 and trend == "UP" and vol > 0.0003
 
-def get_price(symbol):
-    return float(client.get_symbol_ticker(symbol=symbol)['price'])
+    print(f"{symbol} | Close: {price:.2f} | Z: {z:+.2f} | Trend: {trend} | Vol: {vol:.4f} | Signal: {'BUY' if signal else '-'}")
 
-def get_usdt_balance():
-    balance = client.get_asset_balance(asset='USDT')
-    return float(balance['free']) if balance else 0.0
+    step = get_step_size(symbol)
+    usdt = get_balance("USDT")
+    coin = get_balance(asset)
+    equity = usdt + coin * price
 
-def print_order_history(symbol):
-    try:
-        orders = client.get_all_orders(symbol=symbol)
-        print(f"📄 Last 5 orders for {symbol}:")
-        for o in orders[-5:]:
-            print(f"  ↪️ {o['side']} | {o['status']} | Qty: {o['origQty']} | Price: {o['price']}")
-    except Exception as e:
-        print(f"⚠️ Could not fetch order history for {symbol}: {e}")
+    alloc = capital_allocation.get(symbol, 0.2)
 
-def print_usdt_balance():
-    try:
-        balance = client.get_asset_balance(asset='USDT')
-        print(f"💰 USDT Balance: {balance['free']} free, {balance['locked']} locked")
-    except Exception as e:
-        print(f"⚠️ Could not fetch balance: {e}")
+    if not state['in_position'] and signal and usdt > min_order_size:
+        qty = round_step_size((usdt * alloc) / price, step)
+        order = place_order(symbol, SIDE_BUY, qty)
+        if order:
+            state.update({"in_position": True, "entry": price, "qty": qty})
+            write_trade_log({"timestamp": datetime.utcnow().isoformat(), "symbol": symbol, "side": "BUY", "price": price, "qty": qty})
 
-def log_trade(symbol, side, qty, price, ts):
-    entry = {
-        "symbol": symbol,
-        "side": side.upper(),
-        "quantity": qty,
-        "price": price,
-        "timestamp": ts
-    }
-    trade_history.append(entry)
-    with open(trade_log, "w") as f:
-        json.dump(trade_history, f, indent=2)
+    elif state['in_position'] and (price < state['entry'] * 0.995 or z < -0.5):
+        order = place_order(symbol, SIDE_SELL, state['qty'])
+        if order:
+            pnl = (price - state['entry']) * state['qty']
+            print(f"EXIT {symbol} @ {price:.2f} | PnL: {pnl:.2f}")
+            send_telegram(f"💰 EXIT {symbol} @ {price:.2f} | PnL: {pnl:.2f}")
+            write_trade_log({"timestamp": datetime.utcnow().isoformat(), "symbol": symbol, "side": "SELL", "price": price, "qty": state['qty'], "pnl": round(pnl, 2)})
+            state.update({"in_position": False, "entry": 0, "qty": 0})
 
-def log_realized_pnl(symbol, pnl, ts):
-    entry = {
-        "symbol": symbol,
-        "realized_pnl": pnl,
-        "timestamp": ts
-    }
-    realized_pnl.append(entry)
-    with open(pnl_log, "w") as f:
-        json.dump(realized_pnl, f, indent=2)
+# === Main Loop ===
+def run_portfolio_loop():
+    print("STARTING PORTFOLIO EXECUTOR...")
+    send_telegram("🚀 Portfolio Executor started on Binance Testnet.")
+    state_map = {}
+    last_alert_hour = -1
 
-def get_avg_entry(symbol):
-    entries = [t for t in trade_history if t["symbol"] == symbol]
-    if not entries:
-        return 0
-    total_qty = sum(float(t["quantity"]) for t in entries)
-    if total_qty == 0:
-        return 0
-    total_val = sum(float(t["quantity"]) * float(t["price"]) for t in entries)
-    return round(total_val / total_qty, 2)
+    for s in symbols:
+        asset = s.replace("USDT", "")
+        coin = get_balance(asset)
+        price = fetch_ohlcv(s).iloc[-1]['close']
+        in_position = coin > 0.0001
+        state_map[s] = {
+            "in_position": in_position,
+            "entry": price if in_position else 0,
+            "qty": coin if in_position else 0,
+            "latest_price": price,
+            "pnl": 0.0
+        }
 
-def calc_position_size(symbol):
-    price = get_price(symbol)
-    balance = get_usdt_balance()
-    exposure = balance * position_size_pct * leverage
-    qty = round(exposure / price, 6)
-    return max(qty, get_min_qty(symbol))
+    while True:
+        for sym in symbols:
+            try:
+                trade_logic(sym, state_map[sym])
+            except Exception as e:
+                print(f"ERROR in {sym}: {e}")
 
-def calc_unrealized_pnl(symbol):
-    avg_entry = get_avg_entry(symbol)
-    current_price = get_price(symbol)
-    entries = [t for t in trade_history if t["symbol"] == symbol]
-    total_qty = sum(float(t["quantity"]) for t in entries)
-    side = entries[-1]["side"] if entries else ""
-    if avg_entry == 0 or total_qty == 0:
-        return 0
-    pnl = (current_price - avg_entry) * total_qty if side == "BUY" else (avg_entry - current_price) * total_qty
-    return round(pnl, 2)
+        try:
+            write_nav_snapshot()
+        except Exception as e:
+            print(f"NAV SNAPSHOT ERROR: {e}")
 
-def get_net_realized_pnl():
-    return round(sum(entry['realized_pnl'] for entry in realized_pnl), 2)
+        current_hour = datetime.utcnow().hour
+        if current_hour % 4 == 0 and current_hour != last_alert_hour:
+            send_portfolio_summary_with_pnl(state_map)
+            last_alert_hour = current_hour
 
-def get_net_unrealized_pnl():
-    symbols = set(t["symbol"] for t in trade_history)
-    return round(sum(calc_unrealized_pnl(sym) for sym in symbols), 2)
+        time.sleep(60)
 
-def log_unrealized():
-    symbols = set(t["symbol"] for t in trade_history)
-    output = {sym: calc_unrealized_pnl(sym) for sym in symbols}
-    with open(unrealized_file, "w") as f:
-        json.dump(output, f, indent=2)
-
-def log_balance():
-    try:
-        balances = client.get_account()["balances"]
-        usdt = next(b for b in balances if b["asset"] == "USDT")
-        with open(balance_file, "w") as f:
-            json.dump({"USDT": usdt}, f, indent=2)
-    except Exception as e:
-        print(f"⚠️ Balance logging failed: {e}")
-
-def close_position(symbol):
-    entries = [t for t in trade_history if t["symbol"] == symbol]
-    if not entries:
-        return
-    qty = sum(float(t["quantity"]) for t in entries)
-    avg_entry = get_avg_entry(symbol)
-    side = "SELL" if entries[-1]["side"] == "BUY" else "BUY"
-    result = place_order(symbol, side, qty)
-    if result:
-        exit_price = float(result['fills'][0]['price'])
-        pnl = (exit_price - avg_entry) * qty if side == "SELL" else (avg_entry - exit_price) * qty
-        ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-        log_realized_pnl(symbol, round(pnl, 2), ts)
-        print(f"💼 Realized PnL for {symbol}: {round(pnl, 2)} USDT")
-
-while True:
-    for file in os.listdir(signal_dir):
-        if not file.endswith(".json"):
-            continue
-
-        path = os.path.join(signal_dir, file)
-        with open(path, "r") as f:
-            signal = json.load(f)
-
-        symbol = signal["symbol"]
-        signal_id = f"{symbol}-{signal['timestamp']}"
-
-        if signal_id in executed:
-            continue  # Already executed
-
-        side = signal["signal"]
-        qty = calc_position_size(symbol)
-
-        result = place_order(symbol, side, qty)
-
-        if result:
-            executed[signal_id] = time.time()
-            with open(executed_log, "w") as f:
-                json.dump(executed, f)
-
-            ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-            executed_price = result['fills'][0]['price']
-            log_trade(symbol, side, qty, executed_price, ts)
-
-            print_order_history(symbol)
-            print_usdt_balance()
-            avg = get_avg_entry(symbol)
-            unrealized = calc_unrealized_pnl(symbol)
-            realized = get_net_realized_pnl()
-            total_unrealized = get_net_unrealized_pnl()
-            print(f"📊 {symbol} Avg Entry: {avg} | Unrealized PnL: {unrealized} USDT")
-            print(f"📈 Total Unrealized: {total_unrealized} | 💼 Total Realized: {realized} USDT")
-
-            log_unrealized()
-            log_balance()
-
-    time.sleep(30)
+if __name__ == "__main__":
+    run_portfolio_loop()
