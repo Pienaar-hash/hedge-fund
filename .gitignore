@@ -21,3 +21,7 @@ __pycache__/
 # Ignore datasets not needed in repo
 data/raw/
 data/unprocessed/
+
+__pycache__
+*.log
+firebase_creds.json
