@@ -1,3 +1,0 @@
-# config/testnet_keys.py
-API_KEY = "dzK0cSksT2c8TigyCtXHxhnGmRF2MWflPbCULrjjCC7yyq1Su7JsTdMSeA7X0b88"
-API_SECRET = "mUQH3Zsl6mDPMerculonfwkRzCTa0lUvEIgWn1fN6IMCjjxlzgLP6zEYO3041CEO"
