@@ -24,4 +24,4 @@ data/unprocessed/
 
 __pycache__
 *.log
-firebase_creds.json
+firebase_creds.jsonexecution/testnet_keys.py
