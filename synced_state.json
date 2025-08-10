@@ -1,0 +1,23 @@
+{
+  "ETHUSDT": {
+    "entry": 3837.85,
+    "in_position": true,
+    "qty": 4.3362,
+    "latest_price": 3815.39,
+    "pnl": -97.39105200000016
+  },
+  "LTCUSDT": {
+    "entry": 120.24,
+    "in_position": true,
+    "qty": 5.0,
+    "latest_price": 121.0,
+    "pnl": 3.8000000000000256
+  },
+  "BNBUSDT": {
+    "entry": 774.18,
+    "in_position": true,
+    "qty": 1.0,
+    "latest_price": 775.53,
+    "pnl": 1.3500000000000227
+  }
+}

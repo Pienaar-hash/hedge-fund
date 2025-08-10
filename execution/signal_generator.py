@@ -1,102 +1,147 @@
-import os
-import json
+# execution/signal_generator.py
 import time
-import logging
-from datetime import datetime
-import traceback
+from datetime import datetime, timezone
+from execution.exchange_utils import fetch_ohlcv, send_telegram, client
 
-from execution.utils import fetch_candles, calculate_indicators, generate_signal
-from firebase_admin import db, credentials, initialize_app
-from dotenv import load_dotenv
-from execution.exchange_utils import send_telegram
+# ==========================
+# CONFIG (4h conservative)
+# ==========================
+CONFIG = {
+    "interval": "4h",
+    "z_buy": 1.25,
+    "z_sell": -1.25,
+    "z_flip_buffer": 0.15,      # hysteresis buffer before reversing
+    "vol_mult": 1.25,           # vol > vol_sma20 * vol_mult
+    "rsi_buy_min": 48, "rsi_buy_max": 68,
+    "rsi_sell_min": 32, "rsi_sell_max": 52,
+    "cooldown_bars": 1,         # 1 x 4h bar after any trade signal
+    "symbols": ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","LTCUSDT"],
+}
 
-load_dotenv()
+STATE_FILE = "signal_state.json"
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# ==========================
+# Helpers: state + RSI
+# ==========================
+def load_state():
+    import json, os
+    return json.load(open(STATE_FILE)) if os.path.exists(STATE_FILE) else {}
 
-# Firebase setup
-FIREBASE_SIGNALS = os.getenv("FIREBASE_SIGNALS")
-DB_URL = os.getenv("FIREBASE_DB_URL")
-cred_path = os.getenv("FIREBASE_CREDS")
+def save_state(state):
+    import json
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
 
-if cred_path and DB_URL:
-    cred = credentials.Certificate(cred_path)
-    if not db._apps:
-        initialize_app(cred, {"databaseURL": DB_URL})
-else:
-    logging.warning("Firebase not configured properly. Skipping sync.")
+def compute_rsi(series, window=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-# Symbols to screen
-symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
-interval = "4h"
+# ==========================
+# Core decision logic
+# ==========================
+def decide_signal(row, df, cfg, last_sig=None, bars_since=None):
+    z = row["zscore"]
+    trend_up = row["ema_fast"] > row["ema_slow"]
+    mom = row["momentum"]
+    vol = row["volume"]
+    rsi = row["rsi"]
 
-# Output folder
-os.makedirs("data/signals", exist_ok=True)
+    vol_ok = vol > (df["volume"].rolling(20).mean().iloc[-1] * cfg["vol_mult"]) / cfg["vol_mult"]
+    # (equivalent to vol > SMA20 * 1.25; written this way to avoid chained float issues below)
+    vol_ok = vol > df["volume"].rolling(20).mean().iloc[-1] * cfg["vol_mult"]
 
-send_telegram("🚦 Signal generator started. Waiting for 4h close...")
+    mom_ok = (mom > 0) if trend_up else (mom < 0)
 
-while True:
-    now = datetime.utcnow()
-    if True:
-        logging.info("⏳ Running signal screening...")
-        send_telegram("⏳ Running signal screening on 4h close...")
+    buy_cond  = (z > cfg["z_buy"])  and trend_up and vol_ok and mom_ok and (cfg["rsi_buy_min"]  <= rsi <= cfg["rsi_buy_max"]) 
+    sell_cond = (z < cfg["z_sell"]) and (not trend_up) and vol_ok and mom_ok and (cfg["rsi_sell_min"] <= rsi <= cfg["rsi_sell_max"]) 
 
-        signal_payloads = []
+    # cooldown
+    if bars_since is not None and bars_since < cfg["cooldown_bars"]:
+        return "HOLD"
 
-        for symbol in symbols:
+    # hysteresis: make reversals harder by adding buffer
+    if last_sig == "BUY" and (z > cfg["z_sell"] + cfg["z_flip_buffer"]):
+        sell_cond = False
+    if last_sig == "SELL" and (z < cfg["z_buy"] - cfg["z_flip_buffer"]):
+        buy_cond = False
+
+    if buy_cond:
+        return "BUY"
+    if sell_cond:
+        return "SELL"
+    return "HOLD"
+
+# ==========================
+# Signal generation per symbol
+# ==========================
+def generate_signal(symbol):
+    df = fetch_ohlcv(client, symbol, interval=CONFIG["interval"], limit=100)
+    # compute indicators (RSI once)
+    rsi_series = compute_rsi(df["close"], window=14)
+    df = df.assign(rsi=rsi_series)
+    latest = df.iloc[-1]
+
+    # state for cooldown / hysteresis
+    state = load_state()
+    st_key = f"{symbol}_state"
+    last = state.get(st_key, {"last_signal": None, "last_bar": None})
+    bars_since = None
+    if last.get("last_bar") is not None:
+        try:
+            bars_since = max(0, len(df) - 1 - int(last["last_bar"]))
+        except Exception:
+            bars_since = None
+
+    sig = decide_signal(latest, df, CONFIG, last_sig=last.get("last_signal"), bars_since=bars_since)
+    # persist
+    state[st_key] = {"last_signal": sig, "last_bar": len(df) - 1}
+    save_state(state)
+
+    zscore = latest["zscore"]
+    trend = "UP" if latest["ema_fast"] > latest["ema_slow"] else "DOWN"
+    momentum = latest["momentum"]
+    volume = latest["volume"]
+    rsi = latest["rsi"]
+
+    return {
+        "timestamp": latest.name.strftime("%Y-%m-%d %H:%M:%S"),
+        "symbol": symbol,
+        "close": latest["close"],
+        "zscore": float(zscore),
+        "trend": trend,
+        "momentum": float(momentum),
+        "volume": float(volume),
+        "rsi": float(rsi),
+        "signal": sig,
+    }
+
+# ==========================
+# Main loop (4h cadence)
+# ==========================
+def main_loop():
+    while True:
+        now = datetime.now(timezone.utc)
+        print(f"\n📡 Signal Generator Tick @ {now.isoformat()} ")
+        messages = []
+        for symbol in CONFIG["symbols"]:
             try:
-                df = fetch_candles(symbol=symbol, interval=interval)
-                if df is None or df.empty:
-                    logging.warning(f"⚠️ No data fetched for {symbol}. Skipping.")
-                    continue
-                logging.info(f"✅ {symbol} data fetched:\n{df.tail(1).to_string()}")
-
-                df = calculate_indicators(df)
-                signal_data = generate_signal(df)
-
-                payload = {
-                    "symbol": symbol,
-                    **signal_data,
-                    "timestamp": now.isoformat()
-                }
-
-                # Save locally
-                path = f"data/signals/{symbol.lower()}.json"
-                with open(path, "w") as f:
-                    json.dump(payload, f, indent=2)
-
-                # Push to Firebase
-                if FIREBASE_SIGNALS:
-                    db.reference(FIREBASE_SIGNALS).child(symbol).set(payload)
-
-                payload['score'] = abs(payload.get('z_score', 0))  # use z-score as strength proxy
-                signal_payloads.append(payload)
-
+                s = generate_signal(symbol)
+                formatted = (
+                    f"🕒 {s['timestamp']} | {symbol} | Close: {s['close']:.2f} | "
+                    f"Mom: {s['momentum']:+.4f} | Vol: {s['volume']:.0f} | "
+                    f"Z: {s['zscore']:+.2f} | RSI: {s['rsi']:.1f} | Trend: {s['trend']} | "
+                    f"Signal: {'✅ ' + s['signal'] if s['signal'] in ['BUY','SELL'] else '—'}"
+                )
+                messages.append(formatted)
+                print(formatted)
             except Exception as e:
-                logging.error(f"Error processing {symbol}: {e}\n{traceback.format_exc()}")
+                print(f"❌ Error generating signal for {symbol}: {e}")
+        if messages:
+            send_telegram("\n".join(messages))
+        time.sleep(60 * 60 * 4)  # every 4 hours
 
-        # 📊 Telegram Summary Logic
-        filtered = [p for p in signal_payloads if p['signal'] and abs(p['z_score']) > 1.0]
-        filtered.sort(key=lambda x: abs(x['z_score']), reverse=True)
-
-        summary_lines = []
-        for p in filtered[:3]:
-            emoji = "✅" if p['signal'] == 'buy' else "❌"
-            trend = "UP" if p['momentum'] > 0 else "DOWN"
-            line = (
-                f"{emoji} {p['signal'].upper()} | {p['symbol']} | Z: {p['z_score']:+.2f} | RSI: {p['rsi']:.1f} | Trend: {trend}"
-            )
-            summary_lines.append(line)
-
-        if not summary_lines:
-            summary_lines.append("⚠️ No strong signals this cycle.")
-
-        summary = "\n".join(summary_lines)
-        logging.info(f"📊 4h Signal Summary:\n{summary}")
-        send_telegram(f"📊 4h Signal Summary:\n{summary}")
-
-        time.sleep(300)  # Restore default 5-min delay after 4h close
-    else:
-        logging.info("Waiting for next 4h close...")
-        time.sleep(60)
+if __name__ == "__main__":
+    main_loop()

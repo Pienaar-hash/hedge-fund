@@ -26,4 +26,4 @@ __pycache__
 *.log
 firebase_creds.json
 config/testnet_keys.py
-config/testnet_keys.py
+config/testnet_keys.json

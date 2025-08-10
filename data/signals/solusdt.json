@@ -1,9 +1,9 @@
 {
   "symbol": "SOLUSDT",
   "signal": null,
-  "z_score": 1.18,
-  "rsi": 58.44,
-  "momentum": 6.41,
-  "price": 168.27,
-  "timestamp": "2025-08-06T19:44:00.844346"
+  "z_score": 0.28,
+  "rsi": 52.55,
+  "momentum": -1.27,
+  "price": 178.68,
+  "timestamp": "2025-08-10T14:01:14.794108"
 }

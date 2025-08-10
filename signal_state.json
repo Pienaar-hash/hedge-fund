@@ -1,0 +1,22 @@
+{
+  "BTCUSDT_state": {
+    "last_signal": "HOLD",
+    "last_bar": 79
+  },
+  "ETHUSDT_state": {
+    "last_signal": "HOLD",
+    "last_bar": 79
+  },
+  "SOLUSDT_state": {
+    "last_signal": "HOLD",
+    "last_bar": 79
+  },
+  "BNBUSDT_state": {
+    "last_signal": "HOLD",
+    "last_bar": 79
+  },
+  "LTCUSDT_state": {
+    "last_signal": "HOLD",
+    "last_bar": 79
+  }
+}
