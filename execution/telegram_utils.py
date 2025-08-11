@@ -1,71 +1,70 @@
+# execution/telegram_utils.py
+
+import os
 import requests
-import pandas as pd
-import numpy as np
 from datetime import datetime
-from execution.telegram_config import BOT_TOKEN, CHAT_ID
 
-BINANCE_BASE = "https://api.binance.com"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-def send_telegram(message):
+def send_telegram(message: str, silent: bool = False) -> bool:
+    """
+    Sends a message to the Telegram bot if credentials are available.
+
+    Args:
+        message (str): The message content.
+        silent (bool): If True, disables notification.
+
+    Returns:
+        bool: True if sent successfully, False otherwise.
+    """
+    if not BOT_TOKEN or not CHAT_ID:
+        print("❌ Telegram BOT_TOKEN or CHAT_ID not set.")
+        return False
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
         "text": message,
-        "parse_mode": "Markdown"
+        "disable_notification": silent,
+        "parse_mode": "HTML",
     }
+
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
         if response.status_code != 200:
-            print(f"Telegram send failed: {response.text}")
+            print(f"❌ Telegram error {response.status_code}: {response.text}")
+            return False
+        return True
     except Exception as e:
-        print(f"Telegram error: {e}")
+        print(f"❌ Telegram exception: {e}")
+        return False
 
-def fetch_candles(symbol="BTCUSDT", interval="4h", limit=200):
-    url = f"{BINANCE_BASE}/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    response = requests.get(url, params=params)
-    data = response.json()
+def send_trade_alert(trade: dict, silent: bool = False) -> bool:
+    """
+    Formats and sends a trade summary to Telegram.
 
-    df = pd.DataFrame(data, columns=[
-        "timestamp", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base", "taker_buy_quote", "ignore"
-    ])
+    Args:
+        trade (dict): Trade metadata including timestamp, symbol, price, qty, etc.
+        silent (bool): If True, disables notification.
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df.set_index("timestamp", inplace=True)
-    df = df[["open", "high", "low", "close", "volume"]].astype(float)
-    return df
+    Returns:
+        bool: Success status
+    """
+    ts = trade.get("timestamp") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    symbol = trade.get("symbol", "?")
+    side = trade.get("side", "?")
+    price = trade.get("price", 0)
+    qty = trade.get("qty", 0)
+    strategy = trade.get("strategy", "?")
 
-def calculate_indicators(df):
-    df["rsi"] = compute_rsi(df["close"], period=14)
-    df["z_score"] = (df["close"] - df["close"].rolling(20).mean()) / df["close"].rolling(20).std()
-    df["momentum"] = df["close"] - df["close"].shift(4)
-    return df
-
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-def generate_signal(df):
-    latest = df.iloc[-1]
-    signal = None
-
-    if latest["z_score"] > 1.5 and latest["rsi"] > 60 and latest["momentum"] > 0:
-        signal = "BUY"
-    elif latest["z_score"] < -1.5 and latest["rsi"] < 40 and latest["momentum"] < 0:
-        signal = "SELL"
-
-    return {
-        "signal": signal,
-        "z_score": round(latest["z_score"], 2),
-        "rsi": round(latest["rsi"], 2),
-        "momentum": round(latest["momentum"], 2),
-        "price": round(latest["close"], 2)
-    }
+    msg = (
+        f"🚀 <b>Trade Executed</b>\n"
+        f"<b>⏰ Time:</b> {ts}\n"
+        f"<b>📈 Symbol:</b> {symbol}\n"
+        f"<b>🔁 Side:</b> {side}\n"
+        f"<b>💸 Qty:</b> {qty}\n"
+        f"<b>💰 Price:</b> {price:.2f} USDT\n"
+        f"<b>🧠 Strategy:</b> {strategy}"
+    )
+    return send_telegram(msg, silent=silent)

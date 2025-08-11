@@ -1,35 +1,65 @@
+# execution/sync_state.py
+
 import os
 import json
 import time
-import firebase_admin
-from firebase_admin import credentials, firestore
+from pathlib import Path
+from firebase_admin import credentials, firestore, initialize_app
+from execution.telegram_utils import send_telegram
 
-# Firebase setup
-if not firebase_admin._apps:
-    cred = credentials.Certificate("/root/hedge-fund/firebase_creds.json")
-    firebase_admin.initialize_app(cred)
+STATE_FILE = "synced_state.json"
+FIREBASE_CREDS = os.getenv("FIREBASE_CREDS_PATH", "config/firebase_creds.json")
 
-db = firestore.client()
-signal_dir = "data/signals"
+def init_firebase():
+    if not Path(FIREBASE_CREDS).exists():
+        print(f"❌ Firebase credentials not found at {FIREBASE_CREDS}")
+        return None
 
-def sync_signals():
-    for filename in os.listdir(signal_dir):
-        if filename.endswith(".json"):
-            filepath = os.path.join(signal_dir, filename)
+    try:
+        cred = credentials.Certificate(FIREBASE_CREDS)
+        initialize_app(cred)
+        return firestore.client()
+    except Exception as e:
+        print(f"❌ Failed to initialize Firebase: {e}")
+        return None
 
-            try:
-                with open(filepath, "r") as f:
-                    signal = json.load(f)
+def load_local_state() -> dict:
+    if Path(STATE_FILE).exists():
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-                symbol = signal.get("symbol") or filename.replace(".json", "")
-                doc_ref = db.collection("signals").document(symbol)
-                doc_ref.set(signal)
+def save_local_state(state: dict):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
 
-                print(f"✅ Synced to Firebase: {symbol}")
+def sync_portfolio_state():
+    db = init_firebase()
+    if db is None:
+        send_telegram("❌ Firebase not initialized — skipping sync.")
+        return
 
-            except Exception as e:
-                print(f"❌ Failed to sync {filename}:", e)
+    local_state = load_local_state()
+    print(f"📥 Local state loaded: {local_state}")
 
-while True:
-    sync_signals()
-    time.sleep(30)
+    try:
+        doc_ref = db.collection("hedge_fund").document("synced_state")
+        remote_doc = doc_ref.get()
+        remote_state = remote_doc.to_dict() if remote_doc.exists else {}
+
+        merged = {**remote_state, **local_state}
+        doc_ref.set(merged)
+        save_local_state(merged)
+
+        print("✅ Synced portfolio state with Firestore.")
+        send_telegram("✅ Portfolio state synced with Firestore.", silent=True)
+
+    except Exception as e:
+        print(f"❌ Sync error: {e}")
+        send_telegram(f"❌ Sync error: {e}", silent=True)
+
+
+if __name__ == "__main__":
+    while True:
+        sync_portfolio_state()
+        time.sleep(600)  # Sync every 10 minutes
