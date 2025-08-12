@@ -13,3 +13,8 @@ plotly
 # Optional (commented out due to Python 3.13 incompatibility)
 # numba
 # llvmlite
+numpy==2.3.2
+pandas==2.3.1
+python-binance==1.0.29
+requests==2.32.4
+streamlit==1.48.0
