@@ -4,13 +4,23 @@
     "telegram_enabled": false
   },
   "alerts": {
-    "dd_alert_pct": 0.10
+    "dd_alert_pct": 0.1
   },
   "strategies": [
     {
       "name": "momentum",
       "params": {
-        "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "AVAXUSDT", "DOGEUSDT", "LINKUSDT", "OPUSDT", "LTCUSDT"],
+        "symbols": [
+          "BTCUSDT",
+          "ETHUSDT",
+          "SOLUSDT",
+          "BNBUSDT",
+          "AVAXUSDT",
+          "DOGEUSDT",
+          "LINKUSDT",
+          "OPUSDT",
+          "LTCUSDT"
+        ],
         "timeframe": "1h",
         "lookback": 20,
         "rebalance_period": 36,
@@ -31,14 +41,16 @@
         "rsi_buy": 60,
         "rsi_sell": 40,
         "starting_equity": 100000,
-        "label": "momentum"
+        "label": "momentum",
+        "sell_close_pct": 1.0,
+        "min_notional_usdt": 10.0
       }
     },
     {
       "name": "volatility_target",
       "params": {
         "lookback": 20,
-        "target_vol": 0.010,
+        "target_vol": 0.01,
         "rebalance_period": 6,
         "max_leverage": 3,
         "fee": 0.001,
@@ -55,26 +67,51 @@
         "rsi_buy": 55,
         "rsi_sell": 45,
         "assets": [
-          { "symbol": "BTCUSDT", "tf": "4h" },
-          { "symbol": "ETHUSDT", "tf": "4h" },
-          { "symbol": "BNBUSDT", "tf": "4h" },
-          { "symbol": "SOLUSDT", "tf": "4h" },
-          { "symbol": "AVAXUSDT", "tf": "4h" },
-          { "symbol": "DOGEUSDT", "tf": "4h" }
-        ]
+          {
+            "symbol": "BTCUSDT",
+            "tf": "4h"
+          },
+          {
+            "symbol": "ETHUSDT",
+            "tf": "4h"
+          },
+          {
+            "symbol": "BNBUSDT",
+            "tf": "4h"
+          },
+          {
+            "symbol": "SOLUSDT",
+            "tf": "4h"
+          },
+          {
+            "symbol": "AVAXUSDT",
+            "tf": "4h"
+          },
+          {
+            "symbol": "DOGEUSDT",
+            "tf": "4h"
+          }
+        ],
+        "sell_close_pct": 1.0,
+        "min_notional_usdt": 10.0
       }
     },
     {
       "name": "relative_value",
       "params": {
         "base": "ETHUSDT",
-        "pairs": ["BTCUSDT", "SOLUSDT", "AVAXUSDT", "MATICUSDT"],
+        "pairs": [
+          "BTCUSDT",
+          "SOLUSDT",
+          "AVAXUSDT",
+          "MATICUSDT"
+        ],
         "lookback": 20,
         "z_entry": 1.2,
         "z_exit": 0.3,
         "hold_period": 7,
         "starting_equity": 100000,
-        "capital_weight": 0.10,
+        "capital_weight": 0.1,
         "fee": 0.001,
         "capital_per_trade": 500,
         "rsi_buy": 55,
@@ -83,8 +120,14 @@
         "timeframe": "1d",
         "label": "relative_value",
         "dd_mod": false,
-        "min_spread": 5
+        "min_spread": 5,
+        "sell_close_pct": 1.0,
+        "min_notional_usdt": 10.0
       }
     }
-  ]
+  ],
+  "trade_defaults": {
+    "sell_close_pct": 1.0,
+    "min_notional_usdt": 10.0
+  }
 }

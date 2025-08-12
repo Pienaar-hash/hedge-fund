@@ -39,7 +39,7 @@ def get_price(symbol: str) -> float:
         print(f"❌ Error fetching price for {symbol}")
         return 0.0
 
-# --- Helpers for symbol filters ---
+# --- Filters ---
 def _symbol_filters(symbol: str):
     """Return (stepSize, minQty, minNotional, tickSize) as floats for symbol."""
     try:
@@ -61,51 +61,51 @@ def _floor_step(qty: float, step: float) -> float:
         return qty
     return math.floor(qty / step) * step
 
-def execute_trade(symbol: str, side: str, capital: float, balances: dict):
+def execute_trade(symbol: str, side: str, capital: float, balances: dict, desired_qty: float | None = None, min_notional_usdt: float = 0.0):
     """
-    For BUY (spot): prefer quoteOrderQty=capital in USDT to avoid LOT_SIZE.
-    For SELL: ignore `capital` and sell available (rounded to step), ensuring minQty & minNotional.
+    BUY (spot): spend 'capital' USDT via quoteOrderQty (must be >= min_notional_usdt).
+    SELL: sell 'desired_qty' (or available) rounded to LOT_SIZE, enforcing exchange MIN_NOTIONAL and config min_notional_usdt.
     """
     price = get_price(symbol)
     if price == 0.0:
         return {"error": "Price unavailable"}
 
     base_asset = symbol.replace("USDT", "")
-    step, min_qty, min_notional, _tick = _symbol_filters(symbol)
+    step, min_qty, ex_min_notional, _tick = _symbol_filters(symbol)
+    cfg_min_notional = float(min_notional_usdt or 0.0)
 
     try:
         if side == "BUY":
-            # Spend 'capital' USDT; Binance computes the qty.
-            # Round capital to 2 dp for safety; Binance handles internal precision.
-            qoq = max(0.0, float(capital))
-            if qoq <= 0.0:
+            if capital <= 0.0:
                 return {"error": "Invalid capital for BUY"}
-            order = client.order_market_buy(symbol=symbol, quoteOrderQty=round(qoq, 2))
+            if cfg_min_notional and capital < cfg_min_notional:
+                return {"error": f"Below config MIN_NOTIONAL ({cfg_min_notional} USDT)"}
+            # Exchange will also enforce its own min notional
+            order = client.order_market_buy(symbol=symbol, quoteOrderQty=round(float(capital), 2))
 
         elif side == "SELL":
             available = float(balances.get(base_asset, 0.0))
-            # Sell only what we actually hold (ignore capital here)
-            sell_qty = _floor_step(available, step)
-            if sell_qty <= 0.0:
+            qty_target = float(desired_qty) if desired_qty is not None else available
+            qty = _floor_step(min(qty_target, available), step)
+            if qty <= 0.0:
                 return {"error": f"No {base_asset} available to sell"}
-            # Enforce minQty and minNotional
-            if sell_qty < min_qty:
+            if qty < min_qty:
                 return {"error": f"Below minQty ({min_qty})"}
-            notional = sell_qty * price
-            if min_notional and notional < min_notional:
-                return {"error": f"Below MIN_NOTIONAL ({min_notional} USDT)"}
-            order = client.order_market_sell(symbol=symbol, quantity=sell_qty)
+            notional = qty * price
+            min_required = max(ex_min_notional or 0.0, cfg_min_notional or 0.0)
+            if min_required and notional < min_required:
+                return {"error": f"Below MIN_NOTIONAL ({min_required} USDT)"}
+            order = client.order_market_sell(symbol=symbol, quantity=qty)
 
         else:
             return {"error": f"Invalid side: {side}"}
 
         ts = order.get("transactTime")
-        # For BUY with quoteOrderQty, Binance returns executedQty; compute qty & price from fills if needed
-        qty = float(order.get("executedQty") or order.get("origQty") or 0.0)
+        qty_exec = float(order.get("executedQty") or order.get("origQty") or 0.0)
         return {
             "symbol": symbol,
             "side": side,
-            "qty": qty if qty > 0 else (_floor_step(capital / price, step) if side == "BUY" else 0.0),
+            "qty": qty_exec if qty_exec > 0 else ( _floor_step(capital / price, step) if side == "BUY" else qty ),
             "price": price,
             "order_id": order.get("orderId"),
             "timestamp": ts
