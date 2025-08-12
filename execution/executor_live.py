@@ -1,6 +1,7 @@
 import os, json, time
 from datetime import datetime, timezone
-from typing import Tuple, Set, Dict
+from typing import Tuple, Set, Dict, DefaultDict
+from collections import defaultdict
 
 from execution.exchange_utils import execute_trade, get_balances, get_price
 from execution.signal_screener import generate_signals_from_config
@@ -55,7 +56,6 @@ def build_asset_whitelist(cfg: dict) -> Set[str]:
     return allowed
 
 def refresh_positions_latest_prices(positions: Dict[str, dict]) -> None:
-    """Update latest_price and pnl for each tracked symbol."""
     for sym, pos in positions.items():
         try:
             last = get_price(sym)
@@ -84,7 +84,7 @@ def compute_nav_and_dd(balances: dict, positions: dict, peak: float, allowed_ass
         last = float(pos.get("latest_price", 0.0)) or get_price(sym)
         unreal += (last - entry) * qty
 
-    realized = 0.0  # filled below in main, this is a placeholder for schema consistency
+    realized = 0.0  # will be filled in main()
     new_peak = max(peak, equity) if peak else equity
     dd = 0.0 if new_peak == 0 else (equity - new_peak) / new_peak
     nav_entry = {
@@ -98,7 +98,6 @@ def compute_nav_and_dd(balances: dict, positions: dict, peak: float, allowed_ass
     return nav_entry, new_peak, dd
 
 def compute_asset_dd(symbol: str, positions: dict, asset_peaks: dict) -> Tuple[float, float]:
-    """Return (new_peak, dd) for a single symbol based on marked-to-market position value."""
     pos = positions.get(symbol, {})
     qty = float(pos.get("qty", 0.0))
     last = float(pos.get("latest_price", 0.0)) or get_price(symbol)
@@ -107,6 +106,18 @@ def compute_asset_dd(symbol: str, positions: dict, asset_peaks: dict) -> Tuple[f
     new_peak = max(peak, value)
     dd = 0.0 if new_peak == 0 else (value - new_peak) / new_peak
     return new_peak, dd
+
+def compute_strategy_values(positions: dict) -> Dict[str, float]:
+    """Aggregate current MTM values per strategy key (last-touch wins on symbol)."""
+    values: DefaultDict[str, float] = defaultdict(float)
+    for sym, pos in positions.items():
+        strat_key = pos.get("strategy")
+        if not strat_key:
+            continue
+        qty = float(pos.get("qty", 0.0))
+        last = float(pos.get("latest_price", 0.0)) or get_price(sym)
+        values[strat_key] += qty * last
+    return dict(values)
 
 def get_capital_for_strategy(config: dict, strategy_name: str, usdt_balance: float) -> float:
     fallback = max(10.0, min(usdt_balance * 0.01, 500.0))
@@ -119,8 +130,8 @@ def get_capital_for_strategy(config: dict, strategy_name: str, usdt_balance: flo
                 return fallback
     return fallback
 
-def update_position_after_trade(positions: dict, symbol: str, side: str, price: float, qty: float) -> float:
-    """Update local position book and return realized PnL for this fill."""
+def update_position_after_trade(positions: dict, symbol: str, side: str, price: float, qty: float, strategy_key: str) -> float:
+    """Update local position book, tag with strategy_key, and return realized PnL."""
     state = positions.get(symbol, {"qty": 0.0, "entry": 0.0, "in_position": False})
     q_old = float(state.get("qty", 0.0))
     e_old = float(state.get("entry", 0.0))
@@ -135,27 +146,25 @@ def update_position_after_trade(positions: dict, symbol: str, side: str, price: 
         sell_qty = min(q_old, qty)
         realized = (price - e_old) * sell_qty
         q_new = max(0.0, q_old - sell_qty)
-        # keep entry for remaining qty; if flat, zero out entry
         state.update({"qty": q_new, "entry": (e_old if q_new > 0 else 0.0), "in_position": q_new > 0})
 
     state["latest_price"] = price
+    state["strategy"] = strategy_key  # last-touch ownership
     positions[symbol] = state
     return realized
 
 def main():
     print("🚀 Executor Live (Phase 2)")
     config = load_config()
-    # bridge config toggle → env for telegram_utils
-    tele_cfg = bool(config.get("execution", {}).get("telegram_enabled", False))
-    os.environ["TELEGRAM_ENABLED"] = "1" if tele_cfg else "0"
+    os.environ["TELEGRAM_ENABLED"] = "1" if bool(config.get("execution", {}).get("telegram_enabled", False)) else "0"
 
     poll = int(config.get("execution", {}).get("poll_seconds", 60))
     dd_alert = float(config.get("alerts", {}).get("dd_alert_pct", 0.10))
     one_shot = os.getenv("ONE_SHOT", "0").lower() in ("1", "true", "yes")
 
-    peak_state = load_json(PEAK_STATE) or {"portfolio": {"peak_equity": 0.0}, "assets": {}}
-    if "assets" not in peak_state:
-        peak_state["assets"] = {}
+    peak_state = load_json(PEAK_STATE) or {"portfolio": {"peak_equity": 0.0}, "assets": {}, "strategies": {}}
+    peak_state.setdefault("assets", {})
+    peak_state.setdefault("strategies", {})
 
     allowed_assets = build_asset_whitelist(config)
 
@@ -164,22 +173,23 @@ def main():
             balances = get_balances()
             positions = load_json(STATE_FILE) or {}
 
-            # refresh MTM on all open positions
+            # Refresh MTM for open positions
             refresh_positions_latest_prices(positions)
 
             signals = list(generate_signals_from_config(config))
             print(f"🔎 Signals: {'none' if not signals else signals[:2] + (['...'] if len(signals)>2 else [])}")
 
             realized_total = 0.0
-            # execute signals
+            # Execute signals
             for sig in signals:
-                strat_name = sig.get("strategy_name", "unknown")
+                strat_name = sig.get("strategy_name", "unknown")          # e.g., 'momentum'
+                strategy_key = sig.get("strategy") or strat_name          # e.g., 'momentum_btcusdt'
                 symbol = sig["symbol"]
                 side = sig["signal"]
                 capital = get_capital_for_strategy(config, strat_name, float(balances.get("USDT", 0.0)))
 
                 base_asset = symbol.replace("USDT", "")
-                if side == "SELL" and float(balances.get(base_asset, 0.0)) <= 0.0 and float(positions.get(symbol, {}).get("qty", 0.0)) <= 0.0:
+                if side == "SELL" and float(positions.get(symbol, {}).get("qty", 0.0)) <= 0.0 and float(balances.get(base_asset, 0.0)) <= 0.0:
                     print(f"ℹ️ Skip SELL {symbol}: no holdings.")
                     continue
 
@@ -188,11 +198,18 @@ def main():
                     print(f"❌ Execution error: {result['error']}")
                     continue
 
-                # qty/price from execution; update local book for realized
+                # Update positions & compute realized PnL
                 px = float(result.get("price", 0.0))
                 qty = float(result.get("qty", 0.0))
-                realized = update_position_after_trade(positions, symbol, side, px, qty)
+                realized = update_position_after_trade(positions, symbol, side, px, qty, strategy_key)
                 realized_total += realized
+
+                # Compute *strategy* drawdown snapshot at trade time (before peak update)
+                # Current value for this symbol only (approx for the strategy)
+                sym_qty = float(positions.get(symbol, {}).get("qty", 0.0))
+                sym_val = sym_qty * px
+                strat_peak_prev = float(peak_state["strategies"].get(strategy_key, 0.0))
+                strat_dd_now = 0.0 if max(strat_peak_prev, sym_val) == 0 else (sym_val - max(strat_peak_prev, sym_val)) / max(strat_peak_prev, sym_val)
 
                 trade_entry = {
                     "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -201,26 +218,28 @@ def main():
                     "price": px,
                     "qty": qty,
                     "order_id": result.get("order_id"),
-                    "strategy": sig.get("strategy"),
+                    "strategy": strategy_key,
+                    "strategy_name": strat_name,
+                    "strategy_drawdown_pct": strat_dd_now,
                     "z_score": float(sig.get("z_score") or 0.0),
                     "rsi": float(sig.get("rsi") or 0.0),
                     "momentum": float(sig.get("momentum") or 0.0)
                 }
                 log_trade(trade_entry, path="logs/trade_log.json")
 
-            # persist refreshed/updated positions
+            # Persist positions
             save_json(STATE_FILE, positions)
 
-            # NAV + portfolio drawdown
+            # NAV + portfolio DD
             peak = float(peak_state.get("portfolio", {}).get("peak_equity", 0.0))
             nav_entry, new_peak, dd = compute_nav_and_dd(balances, positions, peak, allowed_assets)
             nav_entry["realized"] = float(realized_total)
             append_nav(nav_entry)
             peak_state["portfolio"]["peak_equity"] = new_peak
 
-            # per-asset peaks & alerts
+            # Per-asset peaks & alerts
             for sym in positions.keys():
-                new_sym_peak, sym_dd = compute_asset_dd(sym, positions, peak_state.get("assets", {}))
+                new_sym_peak, sym_dd = compute_asset_dd(sym, positions, peak_state["assets"])
                 prev = float(peak_state["assets"].get(sym, 0.0))
                 peak_state["assets"][sym] = max(prev, new_sym_peak)
                 if abs(sym_dd) >= dd_alert:
@@ -229,9 +248,22 @@ def main():
                     except Exception:
                         pass
 
+            # Per-strategy peaks & alerts (aggregate across symbols tagged to each strategy)
+            strat_values = compute_strategy_values(positions)
+            for strat_key, value in strat_values.items():
+                prev_peak = float(peak_state["strategies"].get(strat_key, 0.0))
+                new_peak = max(prev_peak, value)
+                peak_state["strategies"][strat_key] = new_peak
+                strat_dd = 0.0 if new_peak == 0 else (value - new_peak) / new_peak
+                if abs(strat_dd) >= dd_alert:
+                    try:
+                        send_drawdown_alert(strat_key, strat_dd, value)
+                    except Exception:
+                        pass
+
             save_json(PEAK_STATE, peak_state)
 
-            # last-trade alert with NAV/DD context (if any trade executed)
+            # Send last-trade alert w/ NAV & DD context (only if any realized)
             try:
                 tlog = load_json("logs/trade_log.json")
                 if tlog and realized_total != 0.0:
@@ -247,7 +279,7 @@ def main():
             except Exception as e:
                 print(f"⚠️ Trade alert enrichment skipped: {e}")
 
-            # sync firebase (soft-fail when creds missing)
+            # Sync Firebase (soft-fail ok)
             sync_portfolio_state()
 
         except Exception as e:

@@ -38,6 +38,7 @@ def send_trade_alert(trade: dict, silent: bool = False) -> bool:
     unrealized = trade.get("unrealized")
     equity = trade.get("equity")
     dd = trade.get("drawdown_pct")
+    sdd = trade.get("strategy_drawdown_pct")
 
     msg = (
         f"🚀 <b>Trade Executed</b>\n"
@@ -53,6 +54,7 @@ def send_trade_alert(trade: dict, silent: bool = False) -> bool:
     if unrealized is not None: extras.append(f"Unrealized: {unrealized:.2f}")
     if equity is not None:    extras.append(f"Equity: {equity:,.2f}")
     if dd is not None:        extras.append(f"DD: {dd*100:.2f}%")
+    if sdd is not None: extras.append(f"Strategy DD: {sdd*100:.2f}%")
     if extras:
         msg += "\n<b>📊 PnL/NAV:</b> " + " | ".join(extras)
     return send_telegram(msg, silent=silent)
