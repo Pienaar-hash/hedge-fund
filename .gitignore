@@ -36,3 +36,8 @@ logs/
 __pycache__/
 *.pyc
 .streamlit/
+
+# Runtime state files
+nav_log.json
+peak_state.json
+synced_state.json
