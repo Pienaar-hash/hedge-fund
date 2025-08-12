@@ -1,104 +1,111 @@
-import streamlit as st
-import zipfile
-import tempfile
-import glob
-import datetime
 import os
+import time
+import streamlit as st
+from google.cloud import firestore
+from google.oauth2 import service_account
+import pandas as pd
+import altair as alt
 
-st.set_page_config(page_title="Hedge Fund Dashboard", layout="wide")
+# --- FIRESTORE INIT ---
+FIREBASE_CREDS_PATH = os.getenv("FIREBASE_CREDS_PATH", "config/firebase_creds.json")
+if not os.path.exists(FIREBASE_CREDS_PATH):
+    st.error(f"Firebase credentials not found at {FIREBASE_CREDS_PATH}")
+    st.stop()
 
-st.title("📊 Multi-Strategy Dashboard")
+creds = service_account.Credentials.from_service_account_file(FIREBASE_CREDS_PATH)
+db = firestore.Client(credentials=creds)
 
-st.markdown("""
-This dashboard provides a structured view of trading strategy performance, capital use, and research outputs across a multi-strategy portfolio.
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Hedge Fund Live Dashboard", layout="wide")
+st.title("📊 Hedge Fund — Live Leaderboard & NAV")
 
-Use the sidebar to navigate between pages:
-- 📈 Portfolio Equity
-- 🏆 Strategy Leaderboard
-- 📋 Trade Logs
-- 📄 Strategy Tear Sheet
-- 📘 Overview & Pitch
-- 📚 Research
-- 🧪 Execution Monitor (coming soon)
+# --- FUNCTIONS ---
+def fetch_leaderboard():
+    """Fetch latest leaderboard from Firestore."""
+    doc_ref = db.collection("hedge-fund").document("leaderboard")
+    doc = doc_ref.get()
+    if doc.exists:
+        return pd.DataFrame(doc.to_dict().get("data", []))
+    return pd.DataFrame(columns=["symbol", "pnl", "pct_return"])
 
-Each page provides insights into performance, risk, strategy logic, and downloadable investor materials.
+def fetch_nav_log():
+    """Fetch NAV log from Firestore."""
+    doc_ref = db.collection("hedge-fund").document("nav_log")
+    doc = doc_ref.get()
+    if doc.exists:
+        data = doc.to_dict().get("data", [])
+        return pd.DataFrame(data)
+    return pd.DataFrame(columns=["timestamp", "total_equity"])
 
----
+def format_leaderboard(df):
+    """Format leaderboard table for display."""
+    if df.empty:
+        return df
+    df = df.copy()
+    df["pnl"] = df["pnl"].astype(float).round(2)
+    df["pct_return"] = (df["pct_return"].astype(float) * 100).round(2)
+    df.rename(columns={"symbol": "Symbol", "pnl": "PnL (USDT)", "pct_return": "% Return"}, inplace=True)
+    df.sort_values("% Return", ascending=False, inplace=True)
+    return df.reset_index(drop=True)
 
-### 🎯 Mission Statement
-To build, evaluate, and showcase a systematic multi-strategy trading fund using robust, transparent, and data-driven methods.
+def format_nav(df):
+    """Format NAV dataframe for chart."""
+    if df.empty:
+        return df
+    df = df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["total_equity"] = df["total_equity"].astype(float)
+    return df
 
-### 🧭 Project Summary
-This dashboard consolidates strategy backtests, portfolio simulation, and trade-level analytics. It supports research workflows, pitch readiness, and strategic optimization.
+def nav_chart(df):
+    """Create Altair NAV chart."""
+    if df.empty:
+        return st.warning("No NAV data found in Firestore.")
+    chart = (
+        alt.Chart(df)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("timestamp:T", title="Time"),
+            y=alt.Y("total_equity:Q", title="Total Equity (USDT)"),
+            tooltip=["timestamp:T", "total_equity:Q"]
+        )
+        .properties(height=400)
+        .interactive()
+    )
+    st.altair_chart(chart, use_container_width=True)
 
-### 💸 Funding Objective
-This platform supports early-stage investor conversations by surfacing alpha signals, capital efficiency, and risk-adjusted performance in a clear, auditable format.
-""")
+# --- LIVE REFRESH ---
+refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 10, 120, 60)
 
-st.info("Select a page from the sidebar to begin.")
+placeholder = st.empty()
+while True:
+    lb_df = format_leaderboard(fetch_leaderboard())
+    nav_df = format_nav(fetch_nav_log())
 
-# === Research Resources ===
-st.header("🔬 Research Resources")
-st.markdown("""
-**Available Modules:**
-- `factor_monte_carlo_sweep.py`: Simulate weight distributions
-- `btc_intraday_gridsearch.py`: RSI/ATR grid optimization
-- `llm_research_agent.py`: LangChain research assistant
-- `tensor_trade_agent.py`: RL environment for signal learning
-- `mcp_model.py`: Kelly + probabilistic allocators
+    with placeholder.container():
+        st.subheader(f"Updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Leaderboard
+        if not lb_df.empty:
+            st.dataframe(lb_df, use_container_width=True, height=400)
+        else:
+            st.warning("No leaderboard data found in Firestore.")
+        
+        st.markdown("---")
+        
+        # NAV Chart
+        st.subheader("📈 Portfolio Equity Over Time")
+        nav_chart(nav_df)
 
-All modules live in `/research/` and are accessible via CLI, notebook, or dashboard tab.
-""")
+        # Investor bundle download
+        st.markdown("---")
+        bundle_path = "docs/investor_bundle.zip"
+        if os.path.exists(bundle_path):
+            st.download_button(
+                "📦 Download Investor Bundle",
+                data=open(bundle_path, "rb").read(),
+                file_name="investor_bundle.zip",
+                mime="application/zip"
+            )
 
-# === Glossary ===
-st.header("📘 Glossary of Terms")
-st.markdown("""
-- **CAGR**: Compounded Annual Growth Rate  
-- **Sharpe Ratio**: Annualized return per unit volatility  
-- **Max Drawdown**: Worst peak-to-trough equity drop  
-- **Expectancy**: Avg profit per trade  
-- **Profit Factor**: Total profit / total loss  
-- **Z-score**: Deviation of signal/spread from mean  
-- **ATR**: Average True Range (volatility proxy)  
-- **Rebalance Period**: Strategy refresh interval  
-- **Capital Weight**: Capital % allocated per trade  
-""")
-
-# === Strategy Logic ===
-st.header("📡 Strategy Signal Logic")
-st.markdown("""
-**1. Momentum Strategy**:
-- Z-score from momentum + EMA trend + volatility filter  
-- Entry filter: reward-risk estimate  
-- Exit: ATR trailing stop
-
-**2. Volatility Targeting**:
-- Vol target per asset  
-- Leverage = target vol / realized vol  
-- Optional trend filter
-
-**3. Relative Value**:
-- Rolling beta regression spread  
-- Z-score triggers mean reversion trades  
-- Stop-out on spread overshoot or drawdown
-
-**Allocator**:
-- Simulated as equal weight  
-- Future: Kelly, Monte Carlo, Sharpe-ranked blends  
-""")
-
-st.markdown("---")
-st.subheader("📁 Investor Download Bundle")
-
-today_str = datetime.datetime.today().strftime("%Y%m%d")
-zip_filename = f"hedge_logs_{today_str}.zip"
-
-if st.button("📦 Download Investor Bundle"):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_zip:
-        with zipfile.ZipFile(tmp_zip.name, 'w') as zipf:
-            for filepath in glob.glob("logs/*.csv") + glob.glob("logs/*.png") + glob.glob("docs/*.pdf"):
-                zipf.write(filepath, arcname=os.path.join(os.path.basename(os.path.dirname(filepath)), os.path.basename(filepath)))
-        with open(tmp_zip.name, "rb") as f:
-            st.download_button("📅 Click to Download", f.read(), file_name=zip_filename, mime='application/zip')
-
-    st.caption("Includes trade logs, performance charts, and PDF documents for investor review.")
+    time.sleep(refresh_interval)

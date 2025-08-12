@@ -6,8 +6,7 @@ from collections import defaultdict
 from execution.exchange_utils import execute_trade, get_balances, get_price
 from execution.signal_screener import generate_signals_from_config
 from execution.sync_state import sync_all
-from execution.telegram_utils import send_telegram_message
-from execution.telegram_utils import send_trade_alert, send_drawdown_alert
+from execution.telegram_utils import send_telegram, send_trade_alert, send_drawdown_alert
 from execution.utils import load_json, save_json, log_trade
 
 NAV_LOG = "nav_log.json"
@@ -239,14 +238,14 @@ def main():
 
             try:
                 sync_all()
-                send_telegram_message("✅ Portfolio & trade log synced with Firestore.")
+                send_telegram("✅ Portfolio & trade log synced with Firestore.")
             except Exception as e:
-                send_telegram_message(f"⚠️ Sync failed: {e}")
+                send_telegram(f"⚠️ Sync failed: {e}")
 
         except Exception as e:
             print(f"❌ Unexpected executor error: {e}")
             try:
-                send_telegram_message(f"❌ Unexpected executor error: {e}")
+                send_telegram(f"❌ Unexpected executor error: {e}")
             except Exception:
                 pass
 

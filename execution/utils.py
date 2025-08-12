@@ -23,3 +23,7 @@ def log_trade(entry, path="logs/trade_log.json"):
     timestamp = datetime.now(timezone.utc).isoformat()
     log[timestamp] = entry
     save_json(path, log)
+
+def load_local_state(path="synced_state.json"):
+    """Loads local synced state from JSON."""
+    return load_json(path)
