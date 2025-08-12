@@ -1,73 +1,73 @@
 {
   "BNBUSDT": {
-    "qty": 10.259999999999998,
-    "entry": 827.6998664717349,
+    "qty": 10.862999999999998,
+    "entry": 827.7503875540829,
     "in_position": true,
-    "latest_price": 828.92,
+    "latest_price": 828.61,
     "strategy": "momentum_bnbusdt",
-    "pnl": 12.518569999999576
+    "pnl": 7.2859699999992324
   },
   "DOGEUSDT": {
-    "qty": 36507.0,
-    "entry": 0.23280068726545589,
+    "qty": 38646.0,
+    "entry": 0.2328499094343528,
     "in_position": true,
-    "latest_price": 0.23388,
+    "latest_price": 0.23369,
     "strategy": "momentum_dogeusdt",
-    "pnl": 40.77719000000076
+    "pnl": 29.910650000001777
   },
   "LINKUSDT": {
     "qty": 276.55,
     "entry": 23.50172410052432,
     "in_position": true,
-    "latest_price": 23.33,
+    "latest_price": 23.34,
     "strategy": "momentum_linkusdt",
-    "pnl": -47.49030000000136
+    "pnl": -44.72480000000093
   },
   "ETHUSDT": {
-    "qty": 1.8931999999999995,
-    "entry": 4487.085317451935,
+    "qty": 2.0045999999999995,
+    "entry": 4487.117809538065,
     "in_position": true,
-    "latest_price": 4488.94,
+    "latest_price": 4487.67,
     "strategy": "momentum_ethusdt",
-    "pnl": 3.529103999996685
+    "pnl": 1.1258529999967826
   },
   "OPUSDT": {
-    "qty": 10833.670000000002,
-    "entry": 0.7843515567670051,
+    "qty": 11471.420000000002,
+    "entry": 0.7844432014519562,
     "in_position": true,
-    "latest_price": 0.784,
+    "latest_price": 0.786,
     "strategy": "momentum_opusdt",
-    "pnl": -3.808649999998167
+    "pnl": 17.85869000000047
   },
   "AVAXUSDT": {
-    "qty": 349.40999999999997,
-    "entry": 24.32284508170917,
+    "qty": 369.90999999999997,
+    "entry": 24.326012543591688,
     "in_position": true,
     "latest_price": 24.38,
     "strategy": "momentum_avaxusdt",
-    "pnl": 19.970499999998516
+    "pnl": 19.97049999999913
   },
   "SOLUSDT": {
-    "qty": 45.30200000000001,
-    "entry": 187.59009094521215,
+    "qty": 47.955000000000005,
+    "entry": 187.63766343446983,
     "in_position": true,
-    "latest_price": 188.47,
+    "latest_price": 188.45,
     "strategy": "momentum_solusdt",
-    "pnl": 39.861640000000364
+    "pnl": 38.9555999999985
   },
   "LTCUSDT": {
-    "qty": 67.364,
-    "entry": 126.14986610058786,
+    "qty": 71.311,
+    "entry": 126.1747806088822,
     "in_position": true,
-    "latest_price": 126.9,
+    "latest_price": 126.6,
     "strategy": "momentum_ltcusdt",
-    "pnl": 50.53202000000085
+    "pnl": 30.32281999999919
   },
   "BTCUSDT": {
-    "pnl": -24.52001610000111,
+    "pnl": -23.65956570000079,
     "in_position": true,
     "strategy": "momentum_btcusdt",
-    "latest_price": 119437.5,
+    "latest_price": 119456.32,
     "entry": 119973.80831364832,
     "qty": 0.04572
   }

@@ -14,14 +14,14 @@
     "BTCUSDT": 5455.0676268
   },
   "strategies": {
-    "momentum_ethusdt": 8498.461207999997,
-    "momentum_solusdt": 8538.06794,
-    "momentum_bnbusdt": 8504.719199999998,
-    "momentum_avaxusdt": 8518.6158,
-    "momentum_dogeusdt": 8538.257160000001,
+    "momentum_ethusdt": 8995.983281999997,
+    "momentum_solusdt": 9037.11975,
+    "momentum_bnbusdt": 9001.190429999999,
+    "momentum_avaxusdt": 9018.405799999999,
+    "momentum_dogeusdt": 9031.18374,
     "momentum_linkusdt": 6471.2699999999995,
-    "momentum_opusdt": 8493.597280000002,
-    "momentum_ltcusdt": 8548.491600000001,
+    "momentum_opusdt": 9016.536120000002,
+    "momentum_ltcusdt": 9027.972600000001,
     "momentum_btcusdt": 5466.735827999999
   }
 }
