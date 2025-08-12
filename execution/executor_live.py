@@ -142,13 +142,13 @@ def main():
                     "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                     "symbol": symbol,
                     "side": side,
-                    "price": result.get("price"),
-                    "qty": result.get("qty"),
+                    "price": float(result.get("price", 0.0)),
+                    "qty": float(result.get("qty", 0.0)),
                     "order_id": result.get("order_id"),
                     "strategy": sig.get("strategy"),
-                    "z_score": sig.get("z_score"),
-                    "rsi": sig.get("rsi"),
-                    "momentum": sig.get("momentum")
+                    "z_score": float(sig.get("z_score") or 0.0),
+                    "rsi": float(sig.get("rsi") or 0.0),
+                    "momentum": float(sig.get("momentum") or 0.0)
                 }
                 log_trade(trade_entry, path="logs/trade_log.json")
 

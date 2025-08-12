@@ -7,6 +7,12 @@ from datetime import datetime
 
 BINANCE_BASE = "https://api.binance.com"
 
+def _to_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
 def fetch_candles(symbol="BTCUSDT", interval="4h", limit=200):
     url = f"{BINANCE_BASE}/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -51,7 +57,7 @@ def screen_symbol(symbol: str, tf: str, thresholds: dict):
           and latest["rsi"] < thresholds.get("rsi_sell", 40)
           and latest["momentum"] < 0):
         sig = "SELL"
-    return sig, round(latest["close"],2), round(latest["z_score"],2), round(latest["rsi"],2), round(latest["momentum"],2)
+    return sig, _to_float(round(latest["close"],2)), _to_float(round(latest["z_score"],2)), _to_float(round(latest["rsi"],2)), _to_float(round(latest["momentum"],2))
 
 def generate_signals_from_config(config: dict):
     for strat in config.get("strategies", []):
@@ -67,9 +73,9 @@ def generate_signals_from_config(config: dict):
                         "strategy_name": name,
                         "symbol": sym,
                         "signal": sig,
-                        "price": price,
-                        "z_score": z,
-                        "rsi": rsi,
-                        "momentum": mom,
+                        "price": _to_float(price),
+                        "z_score": _to_float(z),
+                        "rsi": _to_float(rsi),
+                        "momentum": _to_float(mom),
                         "timeframe": tf
                     }
