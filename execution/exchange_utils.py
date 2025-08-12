@@ -1,30 +1,25 @@
 # execution/exchange_utils.py
-
 import os
 import traceback
-from datetime import datetime, timezone
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-
 from execution.utils import load_env_var
 
-# ✅ Initialize Binance client
 BINANCE_API_KEY = load_env_var("BINANCE_API_KEY")
 BINANCE_API_SECRET = load_env_var("BINANCE_API_SECRET")
-
 if not BINANCE_API_KEY or not BINANCE_API_SECRET:
     print("⚠️ BINANCE_API_KEY / BINANCE_API_SECRET not set — private endpoints will fail.")
 
-client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET, testnet=True)
+TESTNET = str(os.getenv("BINANCE_TESTNET", "1")).lower() in ("1", "true", "yes")
+client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET, testnet=TESTNET)
 
-# ✅ Fetch account balances
 def get_balances():
     try:
         account_info = client.get_account()
         balances = {
-            asset["asset"]: float(asset["free"]) + float(asset["locked"])
-            for asset in account_info["balances"]
-            if float(asset["free"]) + float(asset["locked"]) > 0
+            a["asset"]: float(a["free"]) + float(a["locked"])
+            for a in account_info["balances"]
+            if float(a["free"]) + float(a["locked"]) > 0
         }
         return balances
     except BinanceAPIException as e:
@@ -35,31 +30,21 @@ def get_balances():
         print(traceback.format_exc())
         return {}
 
-# ✅ Get current price for symbol
 def get_price(symbol: str) -> float:
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
         return float(ticker["price"])
-    except Exception as e:
-        print(f"❌ Error fetching price for {symbol}: {e}")
+    except Exception:
+        print(f"❌ Error fetching price for {symbol}")
         return 0.0
 
-# ✅ Execute market order
 def execute_trade(symbol: str, side: str, capital: float, balances: dict):
     price = get_price(symbol)
     if price == 0.0:
         return {"error": "Price unavailable"}
 
     base_asset = symbol.replace("USDT", "")
-    capital = max(capital, 500)  # Ensure capital is sufficient for lot size
-
-    step_size = 0.00001  # LOT_SIZE step size for BTCUSDT
-    raw_qty = capital / price
-    qty = round((raw_qty // step_size) * step_size, 8)  # Floor to step size
-
-    MIN_QTY = 0.0001  # default minimum
-    if qty < MIN_QTY:
-        return {"error": f"Calculated qty {qty} below minimum LOT_SIZE"}
+    qty = round(capital / price, 6)
 
     try:
         if side == "BUY":
@@ -72,13 +57,14 @@ def execute_trade(symbol: str, side: str, capital: float, balances: dict):
         else:
             return {"error": f"Invalid side: {side}"}
 
+        ts = order.get("transactTime")
         return {
             "symbol": symbol,
             "side": side,
             "qty": qty,
             "price": price,
             "order_id": order.get("orderId"),
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": ts
         }
 
     except BinanceAPIException as e:

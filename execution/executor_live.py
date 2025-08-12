@@ -1,252 +1,166 @@
-# execution/executor_live.py — Sprint Phase 2
-# Continuous runner, config-driven capital, NAV + drawdown, Telegram alerts
-# Uses signal_screener.screen_strategy for single source of truth (per-asset overrides)
+import os, json, time
+from datetime import datetime
+from typing import Tuple
 
-import os
-import time
-import json
-from datetime import datetime, timezone
-from typing import Dict, Any, List
-
-# Local imports
 from execution.exchange_utils import execute_trade, get_balances, get_price
-from execution.signal_screener import screen_strategy
+from execution.signal_screener import generate_signals_from_config
 from execution.sync_state import sync_portfolio_state
-from execution.telegram_utils import (
-    send_nav_summary,
-    send_dd_breach,
-    send_trade_alert,
-    send_sync_error,
-    send_executor_error,
-    send_telegram,
-)
+from execution.telegram_utils import send_trade_alert, send_drawdown_alert, send_telegram
 from execution.utils import load_json, save_json, log_trade
 
-CONFIG_PATH = os.getenv("STRATEGY_CONFIG_PATH", "config/strategy_config.json")
-NAV_LOG_PATH = os.getenv("NAV_LOG_PATH", "nav_log.json")
-STATE_PATH = os.getenv("STATE_PATH", "synced_state.json")
-PEAK_PATH = os.getenv("PEAK_PATH", "peak_state.json")
+NAV_LOG = "nav_log.json"
+PEAK_STATE = "peak_state.json"
+STATE_FILE = "synced_state.json"
+CFG_FILE = "config/strategy_config.json"
 
-POLL_SECONDS = int(os.getenv("EXEC_POLL_SECONDS", "60"))
-
-# ---------- Helpers ----------
-
-def utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def load_config() -> Dict[str, Any]:
-    if not os.path.exists(CONFIG_PATH):
-        raise FileNotFoundError(f"Config not found: {CONFIG_PATH}")
-    with open(CONFIG_PATH, "r") as f:
+def load_config() -> dict:
+    if not os.path.exists(CFG_FILE):
+        return {"execution": {"poll_seconds": 60}, "alerts": {"dd_alert_pct": 0.1}, "strategies": []}
+    with open(CFG_FILE, "r") as f:
         return json.load(f)
 
-
-def ensure_json_file(path: str, default):
+def load_list_json(path: str):
     if not os.path.exists(path):
-        save_json(path, default)
-    return load_json(path)
-
-
-def append_nav_log(entry: Dict[str, Any]):
-    data: List[Dict[str, Any]] = []
-    if os.path.exists(NAV_LOG_PATH):
+        return []
+    with open(path, "r") as f:
         try:
-            with open(NAV_LOG_PATH, "r") as f:
-                data = json.load(f)
-                if not isinstance(data, list):
-                    data = []
+            data = json.load(f)
+            return data if isinstance(data, list) else []
         except Exception:
-            data = []
+            return []
+
+def append_nav(entry: dict):
+    data = load_list_json(NAV_LOG)
     data.append(entry)
-    with open(NAV_LOG_PATH, "w") as f:
+    with open(NAV_LOG, "w") as f:
         json.dump(data, f, indent=2)
 
-
-def compute_equity_from_balances(balances: Dict[str, float]) -> float:
-    equity = 0.0
-    for asset, qty in balances.items():
-        if asset.upper() == "USDT":
-            equity += float(qty)
-        else:
-            symbol = f"{asset.upper()}USDT"
-            px = get_price(symbol)
-            equity += float(qty) * float(px)
-    return equity
-
-
-def compute_nav() -> Dict[str, Any]:
-    balances = get_balances()
+def compute_nav_and_dd(balances: dict, positions: dict, peak: float) -> Tuple[dict, float, float]:
     usdt = float(balances.get("USDT", 0.0))
-    equity = compute_equity_from_balances(balances)
-    unrealized = equity - usdt
-    realized = 0.0  # placeholder for closed PnL when available
-    return {
-        "timestamp": utcnow_iso(),
+    equity = usdt
+    for asset, qty in balances.items():
+        if asset == "USDT":
+            continue
+        sym = f"{asset}USDT"
+        px = get_price(sym)
+        equity += float(qty) * float(px)
+
+    unreal = 0.0
+    for sym, pos in positions.items():
+        qty = float(pos.get("qty", 0.0))
+        entry = float(pos.get("entry", 0.0))
+        last = float(pos.get("latest_price", 0.0)) or get_price(sym)
+        unreal += (last - entry) * qty
+
+    realized = 0.0  # TODO: wire realized pnl from accounting
+    new_peak = max(peak, equity) if peak else equity
+    dd = 0.0 if new_peak == 0 else (equity - new_peak) / new_peak
+    nav_entry = {
+        "timestamp": datetime.utcnow().isoformat(),
         "realized": realized,
-        "unrealized": unrealized,
+        "unrealized": unreal,
         "balance": usdt,
         "equity": equity,
+        "drawdown_pct": dd
     }
+    return nav_entry, new_peak, dd
 
-
-def update_peak_and_drawdown(equity: float) -> Dict[str, Any]:
-    peak_state = ensure_json_file(PEAK_PATH, {"peak_equity": equity})
-    peak_equity = float(peak_state.get("peak_equity", equity))
-    if equity > peak_equity:
-        peak_equity = equity
-        peak_state["peak_equity"] = peak_equity
-        save_json(PEAK_PATH, peak_state)
-    drawdown = 0.0 if peak_equity == 0 else (equity - peak_equity) / peak_equity
-    return {"peak_equity": peak_equity, "drawdown": drawdown}
-
-
-def determine_capital_for_trade(strategy_params: Dict[str, Any], equity: float) -> float:
-    # Priority: explicit capital_per_trade (abs USDT) → percent_of_equity → env → default 500
-    if isinstance(strategy_params.get("capital_per_trade"), (int, float)):
-        return float(strategy_params["capital_per_trade"])  # absolute USDT
-    pct = strategy_params.get("percent_of_equity")
-    if isinstance(pct, (int, float)) and pct > 0:
-        return max(10.0, float(equity) * float(pct))
-    env_cap = os.getenv("CAPITAL_PER_TRADE_USDT")
-    if env_cap:
-        try:
-            return max(10.0, float(env_cap))
-        except Exception:
-            pass
-    return 500.0
-
-# ---------- Main loop ----------
-
-def run_once():
-    cfg = load_config()
-
-    # Compute NAV first (for capital sizing + drawdown checks)
-    nav = compute_nav()
-    peak = update_peak_and_drawdown(nav["equity"])
-    nav.update(peak)
-    append_nav_log(nav)
-
-    # Always send compact NAV summary (silenced by bot settings if needed)
-    try:
-        send_nav_summary(nav, silent=True)
-    except Exception:
-        pass
-
-    # Drawdown breach alert
-    dd_threshold = float(os.getenv("DD_ALERT_THRESHOLD", "0.15"))  # 15%
-    if nav["drawdown"] <= -dd_threshold:
-        try:
-            send_dd_breach(nav["drawdown"], nav["equity"])
-        except Exception:
-            pass
-
-    # Iterate strategies and use screen_strategy (single source of truth for thresholds/overrides)
-    strategies = cfg.get("strategies", [])
-    for strat in strategies:
-        name = strat.get("name", "?")
-        params = strat.get("params", {})
-
-        # Per-strategy capital sizing
-        capital_usdt = determine_capital_for_trade(params, nav["equity"])
-
-        # Screen all symbols for this strategy via signal_screener
-        try:
-            signals = screen_strategy(strat)  # returns list of dicts with keys incl. 'signal'
-        except Exception as e:
-            # If screening fails for a strategy, continue with others
+def get_capital_for_strategy(config: dict, strategy_name: str, usdt_balance: float) -> float:
+    fallback = max(10.0, min(usdt_balance * 0.01, 500.0))
+    for s in config.get("strategies", []):
+        if s.get("name") == strategy_name:
+            capital = s.get("params", {}).get("capital_per_trade")
             try:
-                send_executor_error(f"screen_strategy failed for {name}: {e}")
+                return float(capital) if capital is not None else fallback
             except Exception:
-                pass
-            continue
-
-        for sig in signals or []:
-            if not sig or sig.get("signal") is None:
-                continue
-
-            symbol = sig.get("symbol", "BTCUSDT")
-            side = sig.get("signal")
-
-            # Fetch balances and execute
-            balances = get_balances()
-            result = execute_trade(symbol=symbol, side=side, capital=capital_usdt, balances=balances)
-
-            # Build trade entry for logs/alerts
-            trade_entry = {
-                "timestamp": utcnow_iso(),
-                "strategy": sig.get("strategy", name),
-                "symbol": symbol,
-                "side": side,
-                "price": sig.get("price"),
-                "z_score": sig.get("z_score"),
-                "rsi": sig.get("rsi"),
-                "momentum": sig.get("momentum"),
-                "timeframe": sig.get("timeframe"),
-                "capital": capital_usdt,
-                "drawdown": nav["drawdown"],
-                "peak_equity": nav["peak_equity"],
-                **({k: v for k, v in (result or {}).items()}),
-            }
-
-            # Persist trade log
-            try:
-                log_trade(trade_entry, path="logs/trade_log.json")
-            except Exception:
-                print("[WARN] Failed to write trade_log.json — ensure logs/ exists.")
-
-            # Human-friendly alert + compact trade alert
-            msg = (
-                f"🚀 Trade Executed
-"
-                f"🧠 Strategy: {trade_entry['strategy']}
-"
-                f"📈 {symbol} | {side}
-"
-                f"⏱ TF: {trade_entry.get('timeframe','—')}
-"
-                f"💰 Capital: ${capital_usdt:,.2f}
-"
-                f"💵 Price: {trade_entry.get('price', 0):.2f} USDT
-"
-                f"🧮 Qty: {trade_entry.get('qty', '—')}
-"
-                f"📊 z:{trade_entry.get('z_score')} rsi:{trade_entry.get('rsi')} mom:{trade_entry.get('momentum')}
-"
-                f"💼 Equity: ${nav['equity']:,.2f} | Peak: ${nav['peak_equity']:,.2f} | DD: {nav['drawdown']*100:.2f}%"
-            )
-            try:
-                send_telegram(msg)
-            except Exception:
-                pass
-            try:
-                send_trade_alert(trade_entry, nav, silent=True)
-            except Exception:
-                pass
-
-    # Sync portfolio state at end of cycle
-    try:
-        sync_portfolio_state()
-    except Exception as e:
-        try:
-            send_sync_error(str(e))
-        except Exception:
-            pass
-
+                return fallback
+    return fallback
 
 def main():
-    print("🚀 Executor Live — continuous runner")
+    print("🚀 Executor Live (Phase 2)")
+    config = load_config()
+    poll = int(config.get("execution", {}).get("poll_seconds", 60))
+    dd_alert = float(config.get("alerts", {}).get("dd_alert_pct", 0.10))
+    one_shot = os.getenv("ONE_SHOT", "0").lower() in ("1", "true", "yes")
+
+    peak_state = load_json(PEAK_STATE) or {"portfolio": {"peak_equity": 0.0}}
+
     while True:
         try:
-            run_once()
-        except Exception as e:
-            print(f"[ERROR] {e}")
+            balances = get_balances()
+            positions = load_json(STATE_FILE) or {}
+
+            signals = list(generate_signals_from_config(config))
+            if signals:
+                print(f"🔎 Signals: {signals[:2]}{' ...' if len(signals)>2 else ''}")
+            else:
+                print("🔎 Signals: none")
+
+            # execute signals
+            for sig in signals:
+                strat_name = sig.get("strategy_name", "unknown")
+                symbol = sig["symbol"]
+                side = sig["signal"]
+                capital = get_capital_for_strategy(config, strat_name, float(balances.get("USDT", 0.0)))
+
+                result = execute_trade(symbol=symbol, side=side, capital=capital, balances=balances)
+                if "error" in result:
+                    print(f"❌ Execution error: {result['error']}")
+                    continue
+
+                trade_entry = {
+                    "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    "symbol": symbol,
+                    "side": side,
+                    "price": result.get("price"),
+                    "qty": result.get("qty"),
+                    "order_id": result.get("order_id"),
+                    "strategy": sig.get("strategy"),
+                    "z_score": sig.get("z_score"),
+                    "rsi": sig.get("rsi"),
+                    "momentum": sig.get("momentum")
+                }
+                log_trade(trade_entry, path="logs/trade_log.json")
+
+            # NAV + drawdown
+            peak = float(peak_state.get("portfolio", {}).get("peak_equity", 0.0))
+            nav_entry, new_peak, dd = compute_nav_and_dd(balances, positions, peak)
+            append_nav(nav_entry)
+            peak_state["portfolio"]["peak_equity"] = new_peak
+            save_json(PEAK_STATE, peak_state)
+
+            # alerts
+            if abs(dd) >= dd_alert:
+                send_drawdown_alert("portfolio", dd, nav_entry["equity"])
+
             try:
-                send_executor_error(str(e))
+                tlog = load_json("logs/trade_log.json")
+                if tlog:
+                    last_ts = sorted(tlog.keys())[-1]
+                    last_trade = tlog[last_ts]
+                    last_trade.update({
+                        "realized": nav_entry["realized"],
+                        "unrealized": nav_entry["unrealized"],
+                        "equity": nav_entry["equity"],
+                        "drawdown_pct": nav_entry["drawdown_pct"]
+                    })
+                    send_trade_alert(last_trade, silent=False)
+            except Exception as e:
+                print(f"⚠️ Trade alert enrichment skipped: {e}")
+
+            # sync firebase
+            sync_portfolio_state()
+
+        except Exception as e:
+            print(f"❌ Unexpected executor error: {e}")
+            try:
+                send_telegram(f"❌ Unexpected executor error: {e}")
             except Exception:
                 pass
-        time.sleep(POLL_SECONDS)
 
+        if one_shot:
+            break
+        time.sleep(poll)
 
 if __name__ == "__main__":
     main()
