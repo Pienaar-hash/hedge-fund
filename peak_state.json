@@ -1,0 +1,27 @@
+{
+  "portfolio": {
+    "peak_equity": 512914.88694006
+  },
+  "assets": {
+    "ETHUSDT": 2001.7437790000001,
+    "SOLUSDT": 2002.5633800000003,
+    "BNBUSDT": 1999.1861999999999,
+    "AVAXUSDT": 1999.0669999999998,
+    "DOGEUSDT": 2001.6046399999998,
+    "LINKUSDT": 2001.7719000000004,
+    "OPUSDT": 2000.61981,
+    "LTCUSDT": 1999.60992,
+    "BTCUSDT": 5455.0676268
+  },
+  "strategies": {
+    "momentum_ethusdt": 8498.461207999997,
+    "momentum_solusdt": 8538.06794,
+    "momentum_bnbusdt": 8504.719199999998,
+    "momentum_avaxusdt": 8518.6158,
+    "momentum_dogeusdt": 8538.257160000001,
+    "momentum_linkusdt": 6471.2699999999995,
+    "momentum_opusdt": 8493.597280000002,
+    "momentum_ltcusdt": 8548.491600000001,
+    "momentum_btcusdt": 5466.735827999999
+  }
+}

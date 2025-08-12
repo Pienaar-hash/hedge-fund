@@ -1,0 +1,643 @@
+diff --git a/config/strategy_config.json b/config/strategy_config.json
+index 7b5a1f1..7b5a1f2 100644
+--- a/config/strategy_config.json
++++ b/config/strategy_config.json
+@@ -6,6 +6,7 @@
+         "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "AVAXUSDT", "DOGEUSDT", "LINKUSDT", "OPUSDT", "LTCUSDT"],
+         "timeframe": "1h",
+         "lookback": 20,
++        "capital_per_trade": 500,
+         "rebalance_period": 36,
+         "hold_period": 48,
+         "top_n": 3,
+@@ -32,6 +33,7 @@
+       "params": {
+         "lookback": 20,
+         "target_vol": 0.010,
++        "capital_per_trade": 500,
+         "rebalance_period": 6,
+         "max_leverage": 3,
+         "fee": 0.001,
+@@ -65,6 +67,7 @@
+         "pairs": ["BTCUSDT", "SOLUSDT", "AVAXUSDT", "MATICUSDT"],
+         "lookback": 20,
+         "z_entry": 1.2,
++        "capital_per_trade": 500,
+         "z_exit": 0.3,
+         "hold_period": 7,
+         "starting_equity": 100000,
+diff --git a/utils.py b/utils.py
+index 6a1c9b1..2b3d9ad 100644
+--- a/utils.py
++++ b/utils.py
+@@ -1,17 +1,129 @@
+ import os
+ import json
+ from datetime import datetime
++from typing import Dict, Tuple
+ 
+ def load_env_var(key, default=None):
+     val = os.getenv(key)
+     if val is None:
+         print(f"⚠️ Environment variable {key} not set.")
+     return val or default
+ 
+ def load_json(path):
+-    if not os.path.exists(path):
+-        return {}
++    if not os.path.exists(path):
++        # For log-like files, default to list
++        if path.endswith(".json") and ("nav_log" in path or "trade_log" in path):
++            return []
++        return {}
+     with open(path, 'r') as f:
+         return json.load(f)
+ 
+ def save_json(path, data):
++    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+     with open(path, 'w') as f:
+         json.dump(data, f, indent=2)
+ 
+ def log_trade(entry, path="logs/trade_log.json"):
+-    log = load_json(path)
+-    timestamp = datetime.utcnow().isoformat()
+-    log[timestamp] = entry
+-    save_json(path, log)
++    log = load_json(path)
++    ts = datetime.utcnow().isoformat()
++    row = {"timestamp": ts, **entry}
++    if isinstance(log, dict):  # migrate older dict shape
++        log = [{"timestamp": k, **v} for k, v in log.items()]
++    log.append(row)
++    save_json(path, log)
++
++# ---------- NAV / Drawdown helpers ----------
++def compute_equity_usdt(balances: Dict[str, float], prices: Dict[str, float]) -> float:
++    """
++    Equity in USDT = USDT balance + sum(other_assets_qty * asset_price_usdt)
++    """
++    total = float(balances.get("USDT", 0.0))
++    for asset, qty in balances.items():
++        if asset == "USDT":
++            continue
++        symbol = f"{asset}USDT"
++        px = float(prices.get(symbol, 0.0))
++        if px > 0:
++            total += float(qty) * px
++    return float(total)
++
++def load_peak_state(path: str = "logs/peak_state.json") -> Dict[str, float]:
++    data = load_json(path)
++    if isinstance(data, list):
++        # migrate if previously mislogged
++        out = {}
++        for row in data:
++            k = row.get("key") or "portfolio"
++            out[k] = float(row.get("peak", 0.0))
++        return out
++    return data or {}
++
++def save_peak_state(peaks: Dict[str, float], path: str = "logs/peak_state.json"):
++    save_json(path, peaks)
++
++def update_peak_and_drawdown(
++    equity: float,
++    peak_key: str = "portfolio",
++    path: str = "logs/peak_state.json"
++) -> Tuple[float, float]:
++    """
++    Returns (peak, drawdown_pct). Updates peak if new high.
++    drawdown_pct is negative when below peak.
++    """
++    peaks = load_peak_state(path)
++    peak = float(peaks.get(peak_key, 0.0))
++    if equity > peak:
++        peak = equity
++        peaks[peak_key] = peak
++        save_peak_state(peaks, path)
++    dd = 0.0 if peak == 0 else (equity - peak) / peak
++    return peak, dd
++
++def log_nav(
++    realized: float,
++    unrealized: float,
++    balance: float,
++    equity: float,
++    path: str = "nav_log.json"
++):
++    log = load_json(path)
++    row = {
++        "timestamp": datetime.utcnow().isoformat(),
++        "realized": float(realized),
++        "unrealized": float(unrealized),
++        "balance": float(balance),
++        "equity": float(equity)
++    }
++    if isinstance(log, dict):  # migrate older dict shape if present
++        log = [{"timestamp": k, **v} for k, v in log.items()]
++    log.append(row)
++    save_json(path, log)
+diff --git a/telegram_utils.py b/telegram_utils.py
+index 0b83d2a..3a9c6de 100644
+--- a/telegram_utils.py
++++ b/telegram_utils.py
+@@ -1,37 +1,63 @@
+ # execution/telegram_utils.py
+ 
+ import os
+ import requests
+ from datetime import datetime
+ 
+ BOT_TOKEN = os.getenv("BOT_TOKEN")
+ CHAT_ID = os.getenv("CHAT_ID")
++TELEGRAM_ENABLED = str(os.getenv("TELEGRAM_ENABLED", "true")).lower() in ("1", "true", "yes")
++DEFAULT_PARSE_MODE = "HTML"
++DD_THRESHOLD = float(os.getenv("TELEGRAM_DD_THRESHOLD", "0.12"))  # 12% default
+ 
+ def send_telegram(message: str, silent: bool = False) -> bool:
+     """
+     Sends a message to the Telegram bot if credentials are available.
+@@
+-    if not BOT_TOKEN or not CHAT_ID:
++    if not TELEGRAM_ENABLED:
++        return False
++    if not BOT_TOKEN or not CHAT_ID:
+         print("❌ Telegram BOT_TOKEN or CHAT_ID not set.")
+         return False
+ 
+     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+     payload = {
+         "chat_id": CHAT_ID,
+         "text": message,
+         "disable_notification": silent,
+-        "parse_mode": "HTML",
++        "parse_mode": DEFAULT_PARSE_MODE,
+     }
+@@ -39,7 +65,7 @@ def send_telegram(message: str, silent: bool = False) -> bool:
+         if response.status_code != 200:
+             print(f"❌ Telegram error {response.status_code}: {response.text}")
+             return False
+         return True
+     except Exception as e:
+         print(f"❌ Telegram exception: {e}")
+         return False
+ 
+ def send_trade_alert(trade: dict, silent: bool = False) -> bool:
+@@ -58,16 +84,35 @@ def send_trade_alert(trade: dict, silent: bool = False) -> bool:
+     qty = trade.get("qty", 0)
+     strategy = trade.get("strategy", "?")
+ 
+-    msg = (
+-        f"🚀 <b>Trade Executed</b>\n"
+-        f"<b>⏰ Time:</b> {ts}\n"
+-        f"<b>📈 Symbol:</b> {symbol}\n"
+-        f"<b>🔁 Side:</b> {side}\n"
+-        f"<b>💸 Qty:</b> {qty}\n"
+-        f"<b>💰 Price:</b> {price:.2f} USDT\n"
+-        f"<b>🧠 Strategy:</b> {strategy}"
+-    )
+-    return send_telegram(msg, silent=silent)
++    realized = trade.get("realized")
++    unrealized = trade.get("unrealized")
++    equity = trade.get("equity")
++    dd_pct = trade.get("drawdown_pct")
++
++    extra = ""
++    if realized is not None or unrealized is not None:
++        extra += f"\n<b>📊 PnL</b> — Realized: {float(realized or 0):.2f} | Unrealized: {float(unrealized or 0):.2f}"
++    if equity is not None:
++        extra += f"\n<b>💼 Equity:</b> {float(equity):,.2f} USDT"
++    if dd_pct is not None:
++        extra += f"\n<b>📉 Drawdown:</b> {dd_pct*100:.2f}%"
++
++    msg = (
++        f"🚀 <b>Trade Executed</b>\n"
++        f"<b>⏰ Time:</b> {ts}\n"
++        f"<b>📈 Symbol:</b> {symbol}\n"
++        f"<b>🔁 Side:</b> {side}\n"
++        f"<b>💸 Qty:</b> {qty}\n"
++        f"<b>💰 Price:</b> {float(price):.2f} USDT\n"
++        f"<b>🧠 Strategy:</b> {strategy}{extra}"
++    )
++    return send_telegram(msg, silent=silent)
++
++def send_drawdown_alert(strategy_key: str, dd_pct: float) -> bool:
++    if dd_pct <= -DD_THRESHOLD:
++        return send_telegram(
++            f"⚠️ Drawdown breach — <b>{strategy_key}</b> at <b>{dd_pct*100:.2f}%</b>.",
++            silent=False
++        )
++    return False
++
++def send_sync_error(msg: str) -> bool:
++    return send_telegram(f"❌ Sync error: {msg}", silent=False)
+diff --git a/signal_screener.py b/signal_screener.py
+index c8b8c7d..ab3d45e 100644
+--- a/signal_screener.py
++++ b/signal_screener.py
+@@ -1,10 +1,13 @@
+ import requests
+ import pandas as pd
+ import numpy as np
+ import json
+ import os
+ from datetime import datetime
++from typing import Dict, Any
++
++DEFAULTS = {"z": 1.5, "rsi": 60, "mom_bars": 4}
+ 
+ BINANCE_BASE = "https://api.binance.com"
+ 
+@@
+ def generate_signal(df):
+     latest = df.iloc[-1]
+     signal = None
+@@
+     return {
+         "signal": signal,
+         "z_score": round(latest["z_score"], 2),
+         "rsi": round(latest["rsi"], 2),
+         "momentum": round(latest["momentum"], 2),
+         "price": round(latest["close"], 2)
+     }
+ 
+-def get_trade_signal():
+-    return {
+-        "symbol": "BTCUSDT",
+-        "signal": "BUY",
+-        "price": 120000,
+-        "z_score": 2.5,
+-        "rsi": 65,
+-        "momentum": 150
+-    }
++def screen_symbol(symbol: str, interval: str = "4h", z_thr: float = 1.5, rsi_thr: float = 60, mom_bars: int = 4) -> Dict[str, Any]:
++    df = fetch_candles(symbol=symbol, interval=interval, limit=200)
++    df["momentum"] = df["close"] - df["close"].shift(mom_bars)
++    df["z_score"] = (df["close"] - df["close"].rolling(20).mean()) / df["close"].rolling(20).std()
++    df["rsi"] = compute_rsi(df["close"], period=14)
++    latest = df.iloc[-1]
++    sig = None
++    if latest["z_score"] > z_thr and latest["rsi"] > rsi_thr and latest["momentum"] > 0:
++        sig = "BUY"
++    elif latest["z_score"] < -z_thr and latest["rsi"] < (100 - rsi_thr) and latest["momentum"] < 0:
++        sig = "SELL"
++    return {
++        "symbol": symbol,
++        "signal": sig,
++        "price": round(float(latest["close"]), 2),
++        "z_score": round(float(latest["z_score"]), 2),
++        "rsi": round(float(latest["rsi"]), 2),
++        "momentum": round(float(latest["momentum"]), 2),
++    }
++
++def get_trade_signal(strategy_name: str, symbol: str, params: Dict[str, Any]) -> Dict[str, Any]:
++    # Map strategy -> interval / thresholds
++    tf = params.get("timeframe") or params.get("tf") or "4h"
++    z_thr = float(params.get("zscore_threshold", DEFAULTS["z"]))
++    rsi_thr = float(params.get("rsi_threshold", DEFAULTS["rsi"]))
++    mom_bars = int(params.get("mom_bars", DEFAULTS["mom_bars"]))
++    sig = screen_symbol(symbol, interval=tf, z_thr=z_thr, rsi_thr=rsi_thr, mom_bars=mom_bars)
++    sig["strategy"] = f"{strategy_name}_{symbol.lower()}"
++    return sig
+diff --git a/exchange_utils.py b/exchange_utils.py
+index 4f3b5f1..1a9c1d2 100644
+--- a/exchange_utils.py
++++ b/exchange_utils.py
+@@ -1,6 +1,6 @@
+ # execution/exchange_utils.py
+ 
+ import os
+ import traceback
+ from binance.client import Client
+ from binance.exceptions import BinanceAPIException
+ 
+ from execution.utils import load_env_var
+@@
+-def execute_trade(symbol: str, side: str, capital: float, balances: dict):
++def execute_trade(symbol: str, side: str, capital: float, balances: dict):
+     price = get_price(symbol)
+     if price == 0.0:
+         return {"error": "Price unavailable"}
+@@
+-    qty = round(capital / price, 6)
++    qty = round(max(0.0, capital) / price, 6)
+diff --git a/sync_state.py b/sync_state.py
+index 9a5bf0e..f81a2c1 100644
+--- a/sync_state.py
++++ b/sync_state.py
+@@ -1,12 +1,12 @@
+ # execution/sync_state.py
+ 
+ import os
+ import json
+ import time
+ from pathlib import Path
+ from firebase_admin import credentials, firestore, initialize_app
+-from execution.telegram_utils import send_telegram
++from execution.telegram_utils import send_telegram, send_sync_error
+ 
+ STATE_FILE = "synced_state.json"
+ FIREBASE_CREDS = os.getenv("FIREBASE_CREDS_PATH", "config/firebase_creds.json")
+@@
+ def sync_portfolio_state():
+     db = init_firebase()
+     if db is None:
+-        send_telegram("❌ Firebase not initialized — skipping sync.")
++        send_sync_error("Firebase not initialized — skipping sync.")
+         return
+@@
+     except Exception as e:
+         print(f"❌ Sync error: {e}")
+-        send_telegram(f"❌ Sync error: {e}", silent=True)
++        send_sync_error(str(e))
+diff --git a/executor_live.py b/executor_live.py
+index b5f2a8c..7c1fe3d 100644
+--- a/executor_live.py
++++ b/executor_live.py
+@@ -1,129 +1,241 @@
+-import requests
+-import pandas as pd
+-import numpy as np
+-import json
+-import os
+-from datetime import datetime
+-
+-from execution.exchange_utils import execute_trade
+-from execution.signal_screener import get_trade_signal
+-from execution.sync_state import sync_portfolio_state
+-from execution.telegram_utils import send_trade_alert
+-from execution.utils import log_trade, load_json, save_json
+-
+-BINANCE_BASE = "https://api.binance.com"
+-
+-
+-def fetch_candles(symbol="BTCUSDT", interval="4h", limit=200):
+-    url = f"{BINANCE_BASE}/api/v3/klines"
+-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+-    response = requests.get(url, params=params)
+-    data = response.json()
+-
+-    df = pd.DataFrame(data, columns=[
+-        "timestamp", "open", "high", "low", "close", "volume",
+-        "close_time", "quote_asset_volume", "number_of_trades",
+-        "taker_buy_base", "taker_buy_quote", "ignore"
+-    ])
+-
+-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+-    df.set_index("timestamp", inplace=True)
+-    df = df[["open", "high", "low", "close", "volume"]].astype(float)
+-    return df
+-
+-
+-def calculate_indicators(df):
+-    df["rsi"] = compute_rsi(df["close"], period=14)
+-    df["z_score"] = (df["close"] - df["close"].rolling(20).mean()) / df["close"].rolling(20).std()
+-    df["momentum"] = df["close"] - df["close"].shift(4)
+-    return df
+-
+-
+-def compute_rsi(series, period=14):
+-    delta = series.diff()
+-    gain = delta.where(delta > 0, 0.0)
+-    loss = -delta.where(delta < 0, 0.0)
+-    avg_gain = gain.rolling(window=period).mean()
+-    avg_loss = loss.rolling(window=period).mean()
+-    rs = avg_gain / avg_loss
+-    rsi = 100 - (100 / (1 + rs))
+-    return rsi
+-
+-
+-def generate_signal(df):
+-    latest = df.iloc[-1]
+-    signal = None
+-
+-    if latest["z_score"] > 1.5 and latest["rsi"] > 60 and latest["momentum"] > 0:
+-        signal = "BUY"
+-    elif latest["z_score"] < -1.5 and latest["rsi"] < 40 and latest["momentum"] < 0:
+-        signal = "SELL"
+-
+-    return {
+-        "signal": signal,
+-        "z_score": round(latest["z_score"], 2),
+-        "rsi": round(latest["rsi"], 2),
+-        "momentum": round(latest["momentum"], 2),
+-        "price": round(latest["close"], 2)
+-    }
+-
+-
+-def get_trade_signal():
+-    return {
+-        "symbol": "BTCUSDT",
+-        "signal": "BUY",
+-        "price": 120000,
+-        "z_score": 2.5,
+-        "rsi": 65,
+-        "momentum": 150
+-    }
+-
+-
+-def load_json(path):
+-    if not os.path.exists(path):
+-        return {}
+-    with open(path, 'r') as f:
+-        return json.load(f)
+-
+-
+-def save_json(path, data):
+-    with open(path, 'w') as f:
+-        json.dump(data, f, indent=2)
+-
+-
+-def log_trade(entry, path="logs/trade_log.json"):
+-    log = load_json(path)
+-    timestamp = datetime.utcnow().isoformat()
+-    log[timestamp] = entry
+-    save_json(path, log)
+-
+-
+-def main():
+-    print("🚀 Executor Live Started")
+-    signal = get_trade_signal()
+-    print("🔍 Trade Signal:", signal)
+-
+-    if signal and signal.get("signal") in ["BUY", "SELL"]:
+-        result = execute_trade(
+-            symbol=signal["symbol"],
+-            side=signal["signal"],
+-            quantity=0.001  # test quantity
+-        )
+-        print("📈 Executed:", result)
+-        log_trade(signal)
+-        send_trade_alert(signal)
+-        sync_portfolio_state()
+-    else:
+-        print("❌ No valid trade signal.")
+-
+-
+-if __name__ == "__main__":
+-    main()
++import os
++import json
++import time
++from datetime import datetime
++from typing import Dict, Any, List
++
++from execution.exchange_utils import execute_trade, get_balances, get_price
++from execution.signal_screener import get_trade_signal
++from execution.sync_state import sync_portfolio_state
++from execution.telegram_utils import send_trade_alert, send_drawdown_alert
++from execution.utils import (
++    log_trade, load_json, save_json,
++    compute_equity_usdt, log_nav, update_peak_and_drawdown
++)
++
++CONFIG_PATH = "config/strategy_config.json"
++POLL_SECONDS = int(os.getenv("EXECUTOR_POLL_SECONDS", "60"))
++TELEGRAM_BATCH_SILENT = str(os.getenv("TELEGRAM_BATCH_SILENT", "true")).lower() in ("1","true","yes")
++
++def load_config() -> Dict[str, Any]:
++    try:
++        with open(CONFIG_PATH, "r") as f:
++            return json.load(f)
++    except Exception as e:
++        print(f"❌ Failed to load config: {e}")
++        return {"strategies": []}
++
++def resolve_capital(params: Dict[str, Any], usdt_balance: float) -> float:
++    """
++    capital per trade fallback: params.capital_per_trade -> params.capital_pct * balance -> env DEFAULT_CAPITAL -> 100
++    """
++    if "capital_per_trade" in params:
++        return float(params["capital_per_trade"])
++    pct = params.get("capital_pct")
++    if pct is not None:
++        try:
++            return float(pct) * float(usdt_balance)
++        except Exception:
++            pass
++    default_cap = float(os.getenv("DEFAULT_CAPITAL_PER_TRADE", "100"))
++    return default_cap
++
++def collect_symbols(strategy: Dict[str, Any]) -> List[str]:
++    name = strategy.get("name")
++    p = strategy.get("params", {})
++    if name == "momentum":
++        return p.get("symbols", ["BTCUSDT"])
++    if name == "volatility_target":
++        assets = p.get("assets", [])
++        return [a.get("symbol") for a in assets if a.get("symbol")]
++    if name == "relative_value":
++        base = p.get("base", "ETHUSDT")
++        return [base]
++    return ["BTCUSDT"]
++
++def prices_for(balances: Dict[str, float]) -> Dict[str, float]:
++    out = {}
++    for asset in balances.keys():
++        if asset == "USDT":
++            continue
++        sym = f"{asset}USDT"
++        out[sym] = float(get_price(sym) or 0.0)
++    return out
++
++def main_loop():
++    print("🚀 Executor Live Started")
++    while True:
++        start_ts = datetime.utcnow().isoformat(timespec="seconds")
++        cfg = load_config()
++        strategies = cfg.get("strategies", [])
++
++        # ---- Portfolio snapshot BEFORE trades
++        balances = get_balances()
++        px = prices_for(balances)
++        equity_before = compute_equity_usdt(balances, px)
++        usdt_bal = float(balances.get("USDT", 0.0))
++
++        # ---- Iterate strategies & symbols
++        for strat in strategies:
++            sname = strat.get("name", "strategy")
++            params = strat.get("params", {})
++            symbols = collect_symbols(strat)
++
++            for sym in symbols:
++                try:
++                    sig = get_trade_signal(sname, sym, params)
++                except Exception as e:
++                    print(f"❌ Screener error {sname}/{sym}: {e}")
++                    continue
++
++                action = sig.get("signal")
++                if action not in ("BUY", "SELL"):
++                    continue
++
++                # Capital allocation
++                capital = resolve_capital(params, usdt_bal)
++                if capital <= 0:
++                    continue
++
++                # Execute
++                result = execute_trade(
++                    symbol=sym,
++                    side=action,
++                    capital=capital,
++                    balances=balances,
++                )
++                if result.get("error"):
++                    print(f"❌ Order error {sname}/{sym}: {result['error']}")
++                    continue
++
++                # Refresh balance snapshot after each trade (conservative)
++                balances = get_balances()
++                px = prices_for(balances)
++                equity_now = compute_equity_usdt(balances, px)
++                realized = 0.0  # TODO: wire to fills/PnL calc once available
++                unrealized = equity_now - float(balances.get("USDT", 0.0))  # coarse proxy
++                peak, dd = update_peak_and_drawdown(equity_now, peak_key="portfolio", path="logs/peak_state.json")
++
++                # Log trade
++                trade_row = {
++                    "timestamp": start_ts,
++                    "strategy": f"{sname}_{sym.lower()}",
++                    "symbol": sym,
++                    "side": action,
++                    "price": result.get("price") or sig.get("price"),
++                    "qty": result.get("qty"),
++                    "capital": capital,
++                    "equity": equity_now,
++                    "realized": realized,
++                    "unrealized": unrealized,
++                    "drawdown_pct": dd,
++                }
++                log_trade(trade_row, path="logs/trade_log.json")
++
++                # NAV log (append point)
++                log_nav(realized, unrealized, float(balances.get("USDT", 0.0)), equity_now, path="nav_log.json")
++
++                # Alerts
++                send_trade_alert(trade_row, silent=TELEGRAM_BATCH_SILENT)
++                send_drawdown_alert(trade_row["strategy"], dd)
++
++        # ---- Sync portfolio state to Firebase (best effort)
++        try:
++            sync_portfolio_state()
++        except Exception as e:
++            print(f"❌ Post-loop sync error: {e}")
++
++        # ---- Sleep until next poll
++        time.sleep(POLL_SECONDS)
++
++if __name__ == "__main__":
++    main_loop()
+diff --git a/execution_monitor.py b/execution_monitor.py
+index 1d1c3df..b2b7f0a 100644
+--- a/execution_monitor.py
++++ b/execution_monitor.py
+@@ -43,6 +43,8 @@ if not nav_df.empty:
+     st.metric(label="💰 USDT Balance", value=f"${latest['balance']:,.2f}")
+     st.metric(label="🔺 Realized PnL", value=f"${latest['realized']:,.2f}")
+     st.metric(label="🔸 Unrealized PnL", value=f"${latest['unrealized']:,.2f}")
+     st.metric(label="🪙 Total Equity", value=f"${latest['equity']:,.2f}")
++    if "drawdown_pct" in latest:
++        st.metric(label="📉 Drawdown", value=f"{latest['drawdown_pct']*100:.2f}%")
+ else:
+     st.warning("No NAV log data found.")
