@@ -2,6 +2,7 @@
 
 import os
 import traceback
+from datetime import datetime, timezone
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
@@ -39,8 +40,8 @@ def get_price(symbol: str) -> float:
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
         return float(ticker["price"])
-    except Exception:
-        print(f"❌ Error fetching price for {symbol}")
+    except Exception as e:
+        print(f"❌ Error fetching price for {symbol}: {e}")
         return 0.0
 
 # ✅ Execute market order
@@ -50,7 +51,15 @@ def execute_trade(symbol: str, side: str, capital: float, balances: dict):
         return {"error": "Price unavailable"}
 
     base_asset = symbol.replace("USDT", "")
-    qty = round(capital / price, 6)
+    capital = max(capital, 500)  # Ensure capital is sufficient for lot size
+
+    step_size = 0.00001  # LOT_SIZE step size for BTCUSDT
+    raw_qty = capital / price
+    qty = round((raw_qty // step_size) * step_size, 8)  # Floor to step size
+
+    MIN_QTY = 0.0001  # default minimum
+    if qty < MIN_QTY:
+        return {"error": f"Calculated qty {qty} below minimum LOT_SIZE"}
 
     try:
         if side == "BUY":
@@ -69,7 +78,7 @@ def execute_trade(symbol: str, side: str, capital: float, balances: dict):
             "qty": qty,
             "price": price,
             "order_id": order.get("orderId"),
-            "timestamp": order.get("transactTime")
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
     except BinanceAPIException as e:

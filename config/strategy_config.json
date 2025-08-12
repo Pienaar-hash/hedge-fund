@@ -5,23 +5,26 @@
       "params": {
         "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "AVAXUSDT", "DOGEUSDT", "LINKUSDT", "OPUSDT", "LTCUSDT"],
         "timeframe": "1h",
-        "lookback": 20,
-        "rebalance_period": 36,
-        "hold_period": 48,
-        "top_n": 3,
-        "zscore_threshold": 0.5,
-        "vol_threshold": 0.005,
+        "rsi_period": 14,
+        "z_lookback": 20,
+        "mom_lookback": 4,
+
+        "zscore_threshold": 1.0,
+        "rsi_buy": 62,
+        "rsi_sell": 38,
+
         "use_trend_filter": true,
         "allow_shorts": true,
         "atr_multiplier": 1.5,
-        "early_stop_bars": 2,
-        "early_stop_atr": 0.75,
-        "hard_stop_atr": 1.5,
-        "trail_activate_r": 2.0,
         "min_reward_risk": 1.2,
         "fee": 0.001,
-        "starting_equity": 100000,
-        "label": "momentum"
+
+        "capital_per_trade": 500,
+
+        "per_asset_overrides": {
+          "BTCUSDT": { "timeframe": "30m", "zscore_threshold": 1.4, "rsi_buy": 64, "rsi_sell": 36, "mom_lookback": 6 },
+          "ETHUSDT": { "timeframe": "30m", "zscore_threshold": 1.4, "rsi_buy": 64, "rsi_sell": 36, "mom_lookback": 6 }
+        }
       }
     },
     {
@@ -41,6 +44,7 @@
         "atr_trail": 2.0,
         "max_hold": 16,
         "atr_multiplier": 1.5,
+        "percent_of_equity": 0.015,
         "assets": [
           { "symbol": "BTCUSDT", "tf": "4h" },
           { "symbol": "ETHUSDT", "tf": "4h" },
@@ -62,6 +66,7 @@
         "hold_period": 7,
         "starting_equity": 100000,
         "capital_weight": 0.10,
+        "percent_of_equity": 0.10,
         "fee": 0.001,
         "asymmetric_drawdown": false,
         "timeframe": "1d",

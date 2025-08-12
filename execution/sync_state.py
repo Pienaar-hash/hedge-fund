@@ -8,7 +8,11 @@ from firebase_admin import credentials, firestore, initialize_app
 from execution.telegram_utils import send_telegram
 
 STATE_FILE = "synced_state.json"
-FIREBASE_CREDS = os.getenv("FIREBASE_CREDS_PATH", "config/firebase_creds.json")
+
+# Use relative path to avoid nesting issues
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FIREBASE_CREDS = os.getenv("FIREBASE_CREDS_PATH", os.path.join(BASE_DIR, "../config/firebase_creds.json"))
+print(f"📂 Trying to load Firebase credentials from: {FIREBASE_CREDS}")
 
 def init_firebase():
     if not Path(FIREBASE_CREDS).exists():
@@ -57,7 +61,6 @@ def sync_portfolio_state():
     except Exception as e:
         print(f"❌ Sync error: {e}")
         send_telegram(f"❌ Sync error: {e}", silent=True)
-
 
 if __name__ == "__main__":
     while True:

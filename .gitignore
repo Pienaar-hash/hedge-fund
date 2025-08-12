@@ -27,3 +27,12 @@ __pycache__
 firebase_creds.json
 config/testnet_keys.py
 config/testnet_keys.json
+# secrets
+.env
+config/firebase_creds.json
+
+# runtime
+logs/
+__pycache__/
+*.pyc
+.streamlit/
