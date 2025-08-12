@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 def load_env_var(key, default=None):
     val = os.getenv(key)
@@ -20,6 +20,6 @@ def save_json(path, data):
 
 def log_trade(entry, path="logs/trade_log.json"):
     log = load_json(path)
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
     log[timestamp] = entry
     save_json(path, log)

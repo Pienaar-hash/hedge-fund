@@ -1,6 +1,6 @@
 import os, json, time
-from datetime import datetime
-from typing import Tuple
+from datetime import datetime, timezone
+from typing import Tuple, Set
 
 from execution.exchange_utils import execute_trade, get_balances, get_price
 from execution.signal_screener import generate_signals_from_config
@@ -35,16 +35,43 @@ def append_nav(entry: dict):
     with open(NAV_LOG, "w") as f:
         json.dump(data, f, indent=2)
 
-def compute_nav_and_dd(balances: dict, positions: dict, peak: float) -> Tuple[dict, float, float]:
+def build_asset_whitelist(cfg: dict) -> Set[str]:
+    """Allow only assets we actually trade (prevents TRY/ZAR/etc noise)."""
+    allowed = {"USDT"}  # always keep cash leg
+    for s in cfg.get("strategies", []):
+        p = s.get("params", {})
+        # momentum symbols like BTCUSDT
+        for sym in p.get("symbols", []):
+            if sym.endswith("USDT"):
+                allowed.add(sym.replace("USDT", ""))
+        # vol-target assets list
+        for a in p.get("assets", []):
+            sym = a.get("symbol", "")
+            if sym.endswith("USDT"):
+                allowed.add(sym.replace("USDT", ""))
+        # relative value pairs
+        for sym in p.get("pairs", []):
+            if sym.endswith("USDT"):
+                allowed.add(sym.replace("USDT", ""))
+        base = p.get("base")
+        if base and base.endswith("USDT"):
+            allowed.add(base.replace("USDT", ""))
+    return allowed
+
+def compute_nav_and_dd(balances: dict, positions: dict, peak: float, allowed_assets: Set[str]) -> Tuple[dict, float, float]:
     usdt = float(balances.get("USDT", 0.0))
     equity = usdt
+
+    # value only allowed assets
     for asset, qty in balances.items():
-        if asset == "USDT":
+        if asset in ("USDT",) or asset not in allowed_assets:
             continue
         sym = f"{asset}USDT"
         px = get_price(sym)
-        equity += float(qty) * float(px)
+        if px > 0:
+            equity += float(qty) * float(px)
 
+    # unrealized from tracked positions
     unreal = 0.0
     for sym, pos in positions.items():
         qty = float(pos.get("qty", 0.0))
@@ -56,7 +83,7 @@ def compute_nav_and_dd(balances: dict, positions: dict, peak: float) -> Tuple[di
     new_peak = max(peak, equity) if peak else equity
     dd = 0.0 if new_peak == 0 else (equity - new_peak) / new_peak
     nav_entry = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "realized": realized,
         "unrealized": unreal,
         "balance": usdt,
@@ -84,6 +111,7 @@ def main():
     one_shot = os.getenv("ONE_SHOT", "0").lower() in ("1", "true", "yes")
 
     peak_state = load_json(PEAK_STATE) or {"portfolio": {"peak_equity": 0.0}}
+    allowed_assets = build_asset_whitelist(config)
 
     while True:
         try:
@@ -91,10 +119,7 @@ def main():
             positions = load_json(STATE_FILE) or {}
 
             signals = list(generate_signals_from_config(config))
-            if signals:
-                print(f"🔎 Signals: {signals[:2]}{' ...' if len(signals)>2 else ''}")
-            else:
-                print("🔎 Signals: none")
+            print(f"🔎 Signals: {'none' if not signals else signals[:2] + (['...'] if len(signals)>2 else [])}")
 
             # execute signals
             for sig in signals:
@@ -103,13 +128,18 @@ def main():
                 side = sig["signal"]
                 capital = get_capital_for_strategy(config, strat_name, float(balances.get("USDT", 0.0)))
 
+                base_asset = symbol.replace("USDT", "")
+                if side == "SELL" and float(balances.get(base_asset, 0.0)) <= 0.0:
+                    print(f"ℹ️ Skip SELL {symbol}: no holdings.")
+                    continue
+
                 result = execute_trade(symbol=symbol, side=side, capital=capital, balances=balances)
                 if "error" in result:
                     print(f"❌ Execution error: {result['error']}")
                     continue
 
                 trade_entry = {
-                    "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                     "symbol": symbol,
                     "side": side,
                     "price": result.get("price"),
@@ -124,7 +154,7 @@ def main():
 
             # NAV + drawdown
             peak = float(peak_state.get("portfolio", {}).get("peak_equity", 0.0))
-            nav_entry, new_peak, dd = compute_nav_and_dd(balances, positions, peak)
+            nav_entry, new_peak, dd = compute_nav_and_dd(balances, positions, peak, allowed_assets)
             append_nav(nav_entry)
             peak_state["portfolio"]["peak_equity"] = new_peak
             save_json(PEAK_STATE, peak_state)
@@ -148,7 +178,7 @@ def main():
             except Exception as e:
                 print(f"⚠️ Trade alert enrichment skipped: {e}")
 
-            # sync firebase
+            # sync firebase (soft-fail if creds missing)
             sync_portfolio_state()
 
         except Exception as e:
@@ -164,3 +194,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
