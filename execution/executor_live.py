@@ -317,7 +317,7 @@ def main():
             # Last-trade alert w/ NAV & DD context (and persist enriched fields)
             try:
                 tlog = load_json("logs/trade_log.json")
-                if tlog and realized_total != 0.0:
+                if tlog:
                     last_ts = sorted(tlog.keys())[-1]
                     last_trade = tlog[last_ts]
                     last_trade.update({
