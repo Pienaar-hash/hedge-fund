@@ -6,6 +6,7 @@ from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from execution.utils import load_env_var
 
+# --- Binance client setup ---
 BINANCE_API_KEY = load_env_var("BINANCE_API_KEY")
 BINANCE_API_SECRET = load_env_var("BINANCE_API_SECRET")
 if not BINANCE_API_KEY or not BINANCE_API_SECRET:
@@ -14,6 +15,7 @@ if not BINANCE_API_KEY or not BINANCE_API_SECRET:
 TESTNET = str(os.getenv("BINANCE_TESTNET", "1")).lower() in ("1", "true", "yes")
 client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET, testnet=TESTNET)
 
+# --- Public helpers ---
 def get_balances():
     try:
         account_info = client.get_account()
@@ -39,7 +41,7 @@ def get_price(symbol: str) -> float:
         print(f"❌ Error fetching price for {symbol}")
         return 0.0
 
-# --- Filters ---
+# --- Filters & formatting ---
 def _symbol_filters(symbol: str):
     """Return (stepSize, minQty, minNotional, tickSize) as floats for symbol."""
     try:
@@ -56,15 +58,36 @@ def _symbol_filters(symbol: str):
     except Exception:
         return 0.0, 0.0, 0.0, 0.0
 
+def _step_decimals(step: float) -> int:
+    """Number of decimal places implied by stepSize (e.g., 0.001 -> 3)."""
+    if step <= 0:
+        return 8  # safe fallback
+    s = f"{step:.20f}".rstrip("0").rstrip(".")
+    return len(s.split(".")[1]) if "." in s else 0
+
 def _floor_step(qty: float, step: float) -> float:
     if step <= 0:
         return qty
     return math.floor(qty / step) * step
 
-def execute_trade(symbol: str, side: str, capital: float, balances: dict, desired_qty: float | None = None, min_notional_usdt: float = 0.0):
+def _format_qty(qty: float, step: float) -> str:
+    """Floor to step and format with exact decimals to avoid 'too much precision'."""
+    dec = _step_decimals(step)
+    floored = _floor_step(qty, step)
+    return f"{floored:.{dec}f}"
+
+# --- Trade entry point ---
+def execute_trade(
+    symbol: str,
+    side: str,
+    capital: float,
+    balances: dict,
+    desired_qty: float | None = None,
+    min_notional_usdt: float = 0.0,
+):
     """
     BUY (spot): spend 'capital' USDT via quoteOrderQty (must be >= min_notional_usdt).
-    SELL: sell 'desired_qty' (or available) rounded to LOT_SIZE, enforcing exchange MIN_NOTIONAL and config min_notional_usdt.
+    SELL: sell 'desired_qty' (or all available) formatted to LOT_SIZE, enforcing exchange MIN_NOTIONAL and config min_notional_usdt.
     """
     price = get_price(symbol)
     if price == 0.0:
@@ -80,22 +103,23 @@ def execute_trade(symbol: str, side: str, capital: float, balances: dict, desire
                 return {"error": "Invalid capital for BUY"}
             if cfg_min_notional and capital < cfg_min_notional:
                 return {"error": f"Below config MIN_NOTIONAL ({cfg_min_notional} USDT)"}
-            # Exchange will also enforce its own min notional
+            # Exchange enforces its own min notional; quoteOrderQty avoids LOT_SIZE qty precision issues
             order = client.order_market_buy(symbol=symbol, quoteOrderQty=round(float(capital), 2))
 
         elif side == "SELL":
             available = float(balances.get(base_asset, 0.0))
             qty_target = float(desired_qty) if desired_qty is not None else available
-            qty = _floor_step(min(qty_target, available), step)
-            if qty <= 0.0:
+            qty_floored = _floor_step(min(qty_target, available), step)
+            if qty_floored <= 0.0:
                 return {"error": f"No {base_asset} available to sell"}
-            if qty < min_qty:
+            if qty_floored < min_qty:
                 return {"error": f"Below minQty ({min_qty})"}
-            notional = qty * price
+            notional = qty_floored * price
             min_required = max(ex_min_notional or 0.0, cfg_min_notional or 0.0)
             if min_required and notional < min_required:
                 return {"error": f"Below MIN_NOTIONAL ({min_required} USDT)"}
-            order = client.order_market_sell(symbol=symbol, quantity=qty)
+            qty_str = _format_qty(qty_floored, step)  # strict decimals to avoid precision error
+            order = client.order_market_sell(symbol=symbol, quantity=qty_str)
 
         else:
             return {"error": f"Invalid side: {side}"}
@@ -105,10 +129,10 @@ def execute_trade(symbol: str, side: str, capital: float, balances: dict, desire
         return {
             "symbol": symbol,
             "side": side,
-            "qty": qty_exec if qty_exec > 0 else ( _floor_step(capital / price, step) if side == "BUY" else qty ),
+            "qty": qty_exec if qty_exec > 0 else (float(_format_qty(capital / price, step)) if side == "BUY" else qty_floored),
             "price": price,
             "order_id": order.get("orderId"),
-            "timestamp": ts
+            "timestamp": ts,
         }
 
     except BinanceAPIException as e:
