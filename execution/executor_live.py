@@ -3,16 +3,54 @@ from datetime import datetime, timezone
 from typing import Tuple, Set, Dict, DefaultDict
 from collections import defaultdict
 
-from execution.exchange_utils import execute_trade, get_balances, get_price
+from execution.exchange_utils import get_balances, get_price as _raw_get_price, place_market_order, get_positions
 from execution.signal_screener import generate_signals_from_config
-from execution.sync_state import sync_all
-from execution.telegram_utils import send_telegram, send_trade_alert, send_drawdown_alert
+from utils.firestore_client import get_db
+from execution.sync_state import sync_leaderboard, sync_nav, sync_positions
+from execution.telegram_utils import send_telegram, send_trade_alert, send_drawdown_alert, should_send_summary
 from execution.utils import load_json, save_json, log_trade
 
 NAV_LOG = "nav_log.json"
 PEAK_STATE = "peak_state.json"
 STATE_FILE = "synced_state.json"
 CFG_FILE = "config/strategy_config.json"
+
+# --- Local shims & helpers (use our new exchange utils safely) ---
+def get_price(symbol: str) -> float:
+    """Shim around exchange_utils.get_price returning a float price."""
+    try:
+        r = _raw_get_price(symbol)
+        if isinstance(r, dict):
+            return float(r.get("price", 0.0))
+        return float(r or 0.0)
+    except Exception:
+        return 0.0
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def execute_trade(symbol: str, side: str, capital: float, balances: dict,
+                  desired_qty: float | None, min_notional_usdt: float) -> dict:
+    """
+    Place a market order using place_market_order.
+    - If desired_qty is provided use it; else qty = capital / price.
+    - Enforces min_notional_usdt.
+    Returns {price, qty, order_id} or {error}.
+    """
+    try:
+        side = side.upper()
+        price = get_price(symbol)
+        if price <= 0:
+            return {"error": "price_unavailable"}
+        qty = float(desired_qty) if desired_qty is not None else max(0.0, float(capital) / price)
+        if qty * price < float(min_notional_usdt):
+            return {"error": "below_min_notional"}
+        res = place_market_order(symbol, side, qty)
+        if not res or not res.get("ok"):
+            return {"error": (res or {}).get("_error", "order_failed")}
+        return {"price": price, "qty": qty, "order_id": res.get("order_id")}
+    except Exception as e:
+        return {"error": str(e)}
 
 def load_config() -> dict:
     if not os.path.exists(CFG_FILE):
@@ -182,22 +220,72 @@ def main():
     peak_state.setdefault("strategies", {})
     allowed_assets = build_asset_whitelist(config)
 
+    # Firestore init
+    ENV = os.environ.get("ENV", "dev")
+    try:
+        db = get_db()
+    except Exception as e:
+        print(f"❌ Firestore init failed: {e}")
+        db = None
+    # Trading mode toggle: Futures vs Spot
+    use_futures = os.getenv("USE_FUTURES", "0").lower() in ("1", "true", "yes")
+
     while True:
         try:
             balances = get_balances()
             positions = load_json(STATE_FILE) or {}
+            if use_futures:
+                # Override/merge with live futures positions from the exchange
+                live = get_positions() or []
+                for p in live:
+                    sym = p.get("symbol")
+                    if not sym:
+                        continue
+                    qty = abs(float(p.get("qty", 0.0)))
+                    entry = float(p.get("entry_price", 0.0))
+                    latest = get_price(sym)
+                    positions[sym] = {
+                        "qty": qty,
+                        "entry": entry,
+                        "latest_price": latest,
+                        "in_position": qty > 0,
+                        "strategy": positions.get(sym, {}).get("strategy"),
+                        "leverage": int(p.get("leverage", 1)),
+                        "pnl": (latest - entry) * qty,
+                    }
+
             refresh_positions_latest_prices(positions)
             prune_empty_positions(positions)
             signals = list(generate_signals_from_config(config))
-            print(f"🔎 Signals: {'none' if not signals else signals[:2] + (['...'] if len(signals)>2 else [])}")
+            preview = signals[:2] + (["..."] if len(signals) > 2 else [])
+            print(f"🔎 Signals: {'none' if not signals else preview}")
             realized_total = 0.0
 
             for sig in signals:
                 strat_name = sig.get("strategy_name", "unknown")
                 strategy_key = sig.get("strategy") or strat_name
                 symbol = sig["symbol"]
-                side = sig["signal"]
+                side = sig["signal"].upper()
+
+                # Trade knobs per strategy (needed in all branches)
                 sell_close_pct, min_notional = get_trade_knobs(config, strat_name)
+
+                # --- Basic exit logic ---
+                # If FLAT → close all. If SELL and we are long → close configured pct.
+                if side == "FLAT":
+                    pos_qty = float((positions.get(symbol) or {}).get("qty", 0.0))
+                    if pos_qty > 0:
+                        result = execute_trade(symbol=symbol, side="SELL", capital=0.0, balances=balances,
+                                               desired_qty=pos_qty, min_notional_usdt=min_notional)
+                        if "error" not in result:
+                            px = float(result.get("price", 0.0)); qty = float(result.get("qty", 0.0))
+                            realized = update_position_after_trade(positions, symbol, "SELL", px, qty, strategy_key)
+                            realized_total += realized
+                            log_trade({"timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                                       "symbol": symbol, "side": "SELL", "price": px, "qty": qty,
+                                       "order_id": result.get("order_id"), "strategy": strategy_key,
+                                       "strategy_name": strat_name})
+                    continue  # handled FLAT; skip buy/sell below
 
                 if side == "SELL":
                     pos_qty = float((positions.get(symbol) or {}).get("qty", 0.0))
@@ -236,9 +324,65 @@ def main():
 
             save_json(PEAK_STATE, peak_state)
 
+            # ---- Granular Firestore syncs ----
             try:
-                sync_all()
-                send_telegram("✅ Portfolio & trade log synced with Firestore.")
+                if db is not None:
+                    # NAV payload
+                    nav_payload = {
+                        "series": [{"ts": nav_entry["timestamp"], "equity": float(nav_entry.get("equity", 0.0))}],
+                        "total_equity": float(nav_entry.get("equity", 0.0)),
+                        "realized_pnl": float(nav_entry.get("realized", 0.0)),
+                        "unrealized_pnl": float(nav_entry.get("unrealized", 0.0)),
+                        "peak_equity": float(peak_state.get("portfolio", {}).get("peak_equity", 0.0)),
+                        "drawdown": float(nav_entry.get("drawdown_pct", 0.0)),
+                    }
+                    sync_nav(db, nav_payload, ENV)
+
+                    # Positions payload
+                    pos_items = []
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    for sym, pos in positions.items():
+                        qty = float(pos.get("qty", 0.0))
+                        entry = float(pos.get("entry", 0.0))
+                        last = float(pos.get("latest_price", 0.0)) or 0.0
+                        side = "LONG" if qty > 0 else "FLAT"
+                        pos_items.append({
+                            "symbol": sym,
+                            "side": side,
+                            "qty": qty,
+                            "entry_price": entry,
+                            "mark_price": last,
+                            "pnl": float(pos.get("pnl", (last - entry) * qty)),
+                            "leverage": int(pos.get("leverage", 1)),
+                            "notional": abs(qty * last),
+                            "ts": now_iso,
+                        })
+                    sync_positions(db, {"items": pos_items}, ENV)
+
+                    # Leaderboard payload (lightweight placeholder from strategy values)
+                    lb_items = []
+                    rank = 1
+                    for strat_key, value in sorted(strat_values.items(), key=lambda x: x[1], reverse=True):
+                        lb_items.append({
+                            "strategy": str(strat_key),
+                            "cagr": 0.0,
+                            "sharpe": 0.0,
+                            "mdd": 0.0,
+                            "win_rate": 0.0,
+                            "trades": 0,
+                            "pnl": 0.0,
+                            "equity": float(value),
+                            "rank": rank,
+                        })
+                        rank += 1
+                    if lb_items:
+                        sync_leaderboard(db, {"items": lb_items}, ENV)
+
+                    # Telegram summary (rate-limited)
+                    if should_send_summary():
+                        eq = float(nav_payload["total_equity"])
+                        dd_pct = float(nav_payload["drawdown"]) * 100
+                        send_telegram(f"📊 Sync OK — Equity {eq:,.2f} | DD {dd_pct:.2f}% | Positions {len(pos_items)}")
             except Exception as e:
                 send_telegram(f"⚠️ Sync failed: {e}")
 

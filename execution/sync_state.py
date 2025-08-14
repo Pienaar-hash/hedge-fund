@@ -1,102 +1,182 @@
-import os
-import time
+"""
+Granular Firestore sync API for investor-facing state.
+
+Contracts (must match dashboard readers exactly):
+
+leaderboard doc:
+{
+  "updated_at": ISO-UTC str,
+  "items": [
+    {"strategy": str, "cagr": float, "sharpe": float, "mdd": float,
+     "win_rate": float, "trades": int, "pnl": float, "equity": float, "rank": int}
+  ]
+}
+
+nav doc:
+{
+  "updated_at": ISO-UTC str,
+  "series": [{"ts": ISO-UTC str, "equity": float}],
+  "total_equity": float,
+  "realized_pnl": float,
+  "unrealized_pnl": float,
+  "peak_equity": float,
+  "drawdown": float
+}
+
+positions doc:
+{
+  "updated_at": ISO-UTC str,
+  "items": [
+    {"symbol": str, "side": str, "qty": float, "entry_price": float,
+     "mark_price": float, "pnl": float, "leverage": int, "notional": float, "ts": ISO-UTC str}
+  ]
+}
+"""
+from __future__ import annotations
 from datetime import datetime, timezone
-import firebase_admin
-from firebase_admin import credentials, firestore
-from execution.utils import load_json
-from execution.telegram_utils import send_telegram
+from typing import Any, Dict, List, Mapping
 
-# === Config ===
-INTERVAL = int(os.getenv("SYNC_INTERVAL", 60))
-TELEGRAM_COOLDOWN = int(os.getenv("TELEGRAM_COOLDOWN", 3600))  # 1 hour default
-STATE_PATH = "synced_state.json"
-LEADERBOARD_PATH = "logs/leaderboard.json"
-NAV_LOG_PATH = "nav_log.json"
+# ---------- helpers ----------
 
-# === Firebase Init ===
-FIREBASE_CREDS_PATH = os.getenv("FIREBASE_CREDS_PATH", "config/firebase_creds.json")
-if not os.path.exists(FIREBASE_CREDS_PATH):
-    raise FileNotFoundError(f"❌ Firebase credentials not found at {FIREBASE_CREDS_PATH}")
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-cred = credentials.Certificate(FIREBASE_CREDS_PATH)
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
 
-db = firestore.client()
+def _state_doc(db, env: str, name: str):
+    return (
+        db.collection("hedge")
+        .document(env)
+        .collection("state")
+        .document(name)
+    )
 
-# === Helpers ===
-def compute_leaderboard(portfolio_state):
-    leaderboard = []
-    for symbol, info in portfolio_state.items():
-        pnl = info.get("pnl", 0)
-        entry_price = info.get("entry", None)
-        pct_return = 0
-        if entry_price and entry_price != 0:
-            pct_return = (pnl / (entry_price * info.get("qty", 1))) * 100
-        leaderboard.append({
-            "symbol": symbol,
-            "pnl": round(pnl, 2),
-            "pct_return": round(pct_return, 2)
-        })
-    leaderboard.sort(key=lambda x: x["pnl"], reverse=True)
-    return leaderboard
 
-def save_and_push_leaderboard(leaderboard):
-    from execution.utils import save_json
-    save_json(LEADERBOARD_PATH, leaderboard)
-    db.collection("leaderboard").document("latest").set({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "leaderboard": leaderboard
-    })
+def _merge_set(doc_ref, payload: Mapping[str, Any]) -> None:
+    # All state writes are idempotent upserts
+    doc_ref.set(dict(payload), merge=True)
 
-def push_nav_log():
-    nav_data = load_json(NAV_LOG_PATH)
-    db.collection("nav_log").document("latest").set({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "nav": nav_data
-    })
 
-def send_telegram_snapshot(leaderboard):
-    if os.getenv("TELEGRAM_ENABLED") != "1":
-        return
-    top3 = leaderboard[:3]
-    lines = ["📊 Leaderboard:"]
-    for i, entry in enumerate(top3, start=1):
-        lines.append(f"{i}️⃣ {entry['symbol']} {entry['pnl']} USDT")
-    send_telegram("\n".join(lines), silent=True)
+# ---------- shape guards (lenient but protective) ----------
 
-# === Main Loop ===
-if __name__ == "__main__":
-    last_telegram_push = 0
-    while True:
-        try:
-            print(f"🔄 hedge-sync starting (interval={INTERVAL}s) — {datetime.now(timezone.utc)}")
-            state = load_json(STATE_PATH)
-            print(f"📥 Local state loaded: {state}")
+def _coerce_float(x: Any) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return 0.0
 
-            # Push portfolio state
-            db.collection("portfolio_state").document("latest").set({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "state": state
-            })
-            print(f"✅ Synced portfolio state with Firestore — {datetime.now(timezone.utc)}")
 
-            # Compute & push leaderboard
-            leaderboard = compute_leaderboard(state)
-            save_and_push_leaderboard(leaderboard)
-            print(f"🏆 Leaderboard computed & pushed — {leaderboard}")
+def _coerce_int(x: Any) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return 0
 
-            # Push NAV log
-            push_nav_log()
-            print(f"📈 NAV log pushed — {datetime.now(timezone.utc)}")
 
-            # Telegram snapshot on cooldown
-            if time.time() - last_telegram_push >= TELEGRAM_COOLDOWN:
-                send_telegram_snapshot(leaderboard)
-                last_telegram_push = time.time()
-                print(f"📨 Telegram leaderboard snapshot sent — {datetime.now(timezone.utc)}")
+def _ensure_iso(ts: Any) -> str:
+    if isinstance(ts, str):
+        return ts
+    if isinstance(ts, (int, float)):
+        # assume seconds epoch
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    if isinstance(ts, datetime):
+        return ts.astimezone(timezone.utc).isoformat()
+    return _now_iso()
 
-        except Exception as e:
-            print(f"❌ Sync loop error: {e}")
 
-        time.sleep(INTERVAL)
+# ---------- public API ----------
+
+def sync_leaderboard(db, data: Dict[str, Any], env: str) -> None:
+    """Upsert leaderboard state.
+    Expected: {"items": [{strategy,cagr,sharpe,mdd,win_rate,trades,pnl,equity,rank}], ...}
+    """
+    raw_items = data.get("items", []) or []
+    items: List[Dict[str, Any]] = []
+    for row in raw_items:
+        if not isinstance(row, Mapping):
+            continue
+        items.append(
+            {
+                "strategy": str(row.get("strategy", "")),
+                "cagr": _coerce_float(row.get("cagr")),
+                "sharpe": _coerce_float(row.get("sharpe")),
+                "mdd": _coerce_float(row.get("mdd")),
+                "win_rate": _coerce_float(row.get("win_rate")),
+                "trades": _coerce_int(row.get("trades")),
+                "pnl": _coerce_float(row.get("pnl")),
+                "equity": _coerce_float(row.get("equity")),
+                "rank": _coerce_int(row.get("rank", 0)),
+            }
+        )
+
+    payload = {
+        "updated_at": _now_iso(),
+        "items": items,
+    }
+    # allow passthrough of optional fields if provided
+    for k in ("note", "as_of"):
+        if k in data:
+            payload[k] = data[k]
+
+    _merge_set(_state_doc(db, env, "leaderboard"), payload)
+
+
+def sync_nav(db, data: Dict[str, Any], env: str) -> None:
+    """Upsert NAV state.
+    Expected keys: series, total_equity, realized_pnl, unrealized_pnl, peak_equity, drawdown
+    """
+    raw_series = data.get("series", []) or []
+    series: List[Dict[str, Any]] = []
+    for pt in raw_series:
+        if not isinstance(pt, Mapping):
+            continue
+        series.append({"ts": _ensure_iso(pt.get("ts")), "equity": _coerce_float(pt.get("equity"))})
+
+    payload = {
+        "updated_at": _now_iso(),
+        "series": series,
+        "total_equity": _coerce_float(data.get("total_equity")),
+        "realized_pnl": _coerce_float(data.get("realized_pnl")),
+        "unrealized_pnl": _coerce_float(data.get("unrealized_pnl")),
+        "peak_equity": _coerce_float(data.get("peak_equity")),
+        "drawdown": _coerce_float(data.get("drawdown")),
+    }
+
+    _merge_set(_state_doc(db, env, "nav"), payload)
+
+
+def sync_positions(db, positions: Dict[str, Any], env: str) -> None:
+    """Upsert positions state.
+    Expected: {"items": [{symbol, side, qty, entry_price, mark_price, pnl, leverage, notional, ts}]}
+    """
+    raw_items = positions.get("items", []) or []
+    items: List[Dict[str, Any]] = []
+    for row in raw_items:
+        if not isinstance(row, Mapping):
+            continue
+        items.append(
+            {
+                "symbol": str(row.get("symbol", "")),
+                "side": str(row.get("side", "")).upper() or "FLAT",
+                "qty": _coerce_float(row.get("qty")),
+                "entry_price": _coerce_float(row.get("entry_price")),
+                "mark_price": _coerce_float(row.get("mark_price")),
+                "pnl": _coerce_float(row.get("pnl")),
+                "leverage": _coerce_int(row.get("leverage", 1)),
+                "notional": _coerce_float(row.get("notional")),
+                "ts": _ensure_iso(row.get("ts")),
+            }
+        )
+
+    payload = {
+        "updated_at": _now_iso(),
+        "items": items,
+    }
+
+    _merge_set(_state_doc(db, env, "positions"), payload)
+
+
+__all__ = [
+    "sync_leaderboard",
+    "sync_nav",
+    "sync_positions",
+]

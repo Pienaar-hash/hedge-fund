@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Environment variables for Telegram
 TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "0") == "1"
@@ -11,6 +11,7 @@ CHAT_ID = os.getenv("CHAT_ID", "")
 # Cooldown state
 _last_alert_time = {}
 _last_dd_sent = {}
+_last_summary_ts = None
 
 def should_send_alert(strategy, alert_type, dd_value=None, threshold=0.5, cooldown_minutes=5):
     """Decide whether to send an alert based on cooldown and threshold logic."""
@@ -33,6 +34,15 @@ def should_send_alert(strategy, alert_type, dd_value=None, threshold=0.5, cooldo
     if dd_value is not None and dd_value < last_dd - threshold:
         _last_dd_sent[key] = dd_value
         _last_alert_time[key] = now
+        return True
+    return False
+
+def should_send_summary(min_interval_sec: int = 3600) -> bool:
+    """Rate-limit investor summaries to max one per min_interval_sec."""
+    global _last_summary_ts
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if _last_summary_ts is None or (now_ts - _last_summary_ts) >= min_interval_sec:
+        _last_summary_ts = now_ts
         return True
     return False
 

@@ -1,141 +1,198 @@
-# execution/exchange_utils.py
+"""
+Exchange utilities with safe wrappers for Spot and USD-M Futures on Binance.
+- Select Futures via USE_FUTURES=1 (env). Otherwise defaults to Spot.
+- Testnet via BINANCE_TESTNET=1 (env).
+- Creds from API_KEY/API_SECRET or BINANCE_API_KEY/BINANCE_API_SECRET.
+- Functions never hard-crash; they return neutral data and error notes.
+- Outputs are normalized for executor consumption.
+"""
+from __future__ import annotations
 import os
-import math
-import traceback
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
-from execution.utils import load_env_var
+from typing import Any, Dict, Tuple, List, Optional
 
-# --- Binance client setup ---
-BINANCE_API_KEY = load_env_var("BINANCE_API_KEY")
-BINANCE_API_SECRET = load_env_var("BINANCE_API_SECRET")
-if not BINANCE_API_KEY or not BINANCE_API_SECRET:
-    print("⚠️ BINANCE_API_KEY / BINANCE_API_SECRET not set — private endpoints will fail.")
+# Spot client
+try:
+    from binance.client import Client as SpotClient
+except Exception:  # library might not be installed
+    SpotClient = None  # type: ignore
 
-TESTNET = str(os.getenv("BINANCE_TESTNET", "1")).lower() in ("1", "true", "yes")
-client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET, testnet=TESTNET)
+# USD-M futures client
+try:
+    from binance.um_futures import UMFutures
+except Exception:
+    UMFutures = None  # type: ignore
 
-# --- Public helpers ---
-def get_balances():
-    try:
-        account_info = client.get_account()
-        balances = {
-            a["asset"]: float(a["free"]) + float(a["locked"])
-            for a in account_info["balances"]
-            if float(a["free"]) + float(a["locked"]) > 0
-        }
-        return balances
-    except BinanceAPIException as e:
-        print(f"❌ Binance API error: {e.message}")
-        return {}
-    except Exception:
-        print("❌ Error fetching balances:")
-        print(traceback.format_exc())
-        return {}
 
-def get_price(symbol: str) -> float:
-    try:
-        ticker = client.get_symbol_ticker(symbol=symbol)
-        return float(ticker["price"])
-    except Exception:
-        print(f"❌ Error fetching price for {symbol}")
-        return 0.0
+# ------------------ helpers ------------------
 
-# --- Filters & formatting ---
-def _symbol_filters(symbol: str):
-    """Return (stepSize, minQty, minNotional, tickSize) as floats for symbol."""
-    try:
-        info = client.get_symbol_info(symbol)
-        fs = {f["filterType"]: f for f in info.get("filters", [])}
-        lot = fs.get("LOT_SIZE", {})
-        min_notional = fs.get("MIN_NOTIONAL", {}).get("minNotional") or fs.get("NOTIONAL", {}).get("minNotional")
-        price_filter = fs.get("PRICE_FILTER", {})
-        step = float(lot.get("stepSize", 0.0) or 0.0)
-        min_qty = float(lot.get("minQty", 0.0) or 0.0)
-        min_notional = float(min_notional or 0.0)
-        tick = float(price_filter.get("tickSize", 0.0) or 0.0)
-        return step, min_qty, min_notional, tick
-    except Exception:
-        return 0.0, 0.0, 0.0, 0.0
-
-def _step_decimals(step: float) -> int:
-    """Number of decimal places implied by stepSize (e.g., 0.001 -> 3)."""
-    if step <= 0:
-        return 8  # safe fallback
-    s = f"{step:.20f}".rstrip("0").rstrip(".")
-    return len(s.split(".")[1]) if "." in s else 0
-
-def _floor_step(qty: float, step: float) -> float:
-    if step <= 0:
-        return qty
-    return math.floor(qty / step) * step
-
-def _format_qty(qty: float, step: float) -> str:
-    """Floor to step and format with exact decimals to avoid 'too much precision'."""
-    dec = _step_decimals(step)
-    floored = _floor_step(qty, step)
-    return f"{floored:.{dec}f}"
-
-# --- Trade entry point ---
-def execute_trade(
-    symbol: str,
-    side: str,
-    capital: float,
-    balances: dict,
-    desired_qty: float | None = None,
-    min_notional_usdt: float = 0.0,
-):
-    """
-    BUY (spot): spend 'capital' USDT via quoteOrderQty (must be >= min_notional_usdt).
-    SELL: sell 'desired_qty' (or all available) formatted to LOT_SIZE, enforcing exchange MIN_NOTIONAL and config min_notional_usdt.
-    """
-    price = get_price(symbol)
-    if price == 0.0:
-        return {"error": "Price unavailable"}
-
-    base_asset = symbol.replace("USDT", "")
-    step, min_qty, ex_min_notional, _tick = _symbol_filters(symbol)
-    cfg_min_notional = float(min_notional_usdt or 0.0)
-
-    try:
-        if side == "BUY":
-            if capital <= 0.0:
-                return {"error": "Invalid capital for BUY"}
-            if cfg_min_notional and capital < cfg_min_notional:
-                return {"error": f"Below config MIN_NOTIONAL ({cfg_min_notional} USDT)"}
-            # Exchange enforces its own min notional; quoteOrderQty avoids LOT_SIZE qty precision issues
-            order = client.order_market_buy(symbol=symbol, quoteOrderQty=round(float(capital), 2))
-
-        elif side == "SELL":
-            available = float(balances.get(base_asset, 0.0))
-            qty_target = float(desired_qty) if desired_qty is not None else available
-            qty_floored = _floor_step(min(qty_target, available), step)
-            if qty_floored <= 0.0:
-                return {"error": f"No {base_asset} available to sell"}
-            if qty_floored < min_qty:
-                return {"error": f"Below minQty ({min_qty})"}
-            notional = qty_floored * price
-            min_required = max(ex_min_notional or 0.0, cfg_min_notional or 0.0)
-            if min_required and notional < min_required:
-                return {"error": f"Below MIN_NOTIONAL ({min_required} USDT)"}
-            qty_str = _format_qty(qty_floored, step)  # strict decimals to avoid precision error
-            order = client.order_market_sell(symbol=symbol, quantity=qty_str)
-
+def _get_env(name: str, alt: str | None = None, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(name)
+    if v is None or v == "":
+        if alt is not None:
+            v = os.getenv(alt, default)
         else:
-            return {"error": f"Invalid side: {side}"}
+            v = default
+    return v
 
-        ts = order.get("transactTime")
-        qty_exec = float(order.get("executedQty") or order.get("origQty") or 0.0)
-        return {
-            "symbol": symbol,
-            "side": side,
-            "qty": qty_exec if qty_exec > 0 else (float(_format_qty(capital / price, step)) if side == "BUY" else qty_floored),
-            "price": price,
-            "order_id": order.get("orderId"),
-            "timestamp": ts,
-        }
 
-    except BinanceAPIException as e:
-        return {"error": f"Binance API Exception: {e.message}"}
+def _bool_env(name: str, default: bool = False) -> bool:
+    return os.getenv(name, "1" if default else "0") in ("1", "true", "TRUE", "yes", "YES")
+
+
+def _clients() -> Tuple[Optional[SpotClient], Optional[UMFutures], Dict[str, Any]]:
+    key = _get_env("API_KEY", "BINANCE_API_KEY")
+    sec = _get_env("API_SECRET", "BINANCE_API_SECRET")
+    testnet = _bool_env("BINANCE_TESTNET", False)
+    use_futures = _bool_env("USE_FUTURES", False)
+
+    info = {"testnet": testnet, "use_futures": use_futures}
+
+    spot, fut = None, None
+    try:
+        if not use_futures and SpotClient is not None and key and sec:
+            spot = SpotClient(api_key=key, api_secret=sec, testnet=testnet)
+    except Exception as e:
+        info["spot_error"] = str(e)
+        spot = None
+    try:
+        if use_futures and UMFutures is not None and key and sec:
+            fut = UMFutures(key=key, secret=sec, testnet=testnet)
+    except Exception as e:
+        info["futures_error"] = str(e)
+        fut = None
+
+    return spot, fut, info
+
+
+# ------------------ public API ------------------
+
+def get_price(symbol: str) -> Dict[str, Any]:
+    """Return {symbol, price} or {symbol, price:0, _error}. Works for both modes.
+    """
+    spot, fut, meta = _clients()
+    try:
+        if meta.get("use_futures") and fut is not None:
+            r = fut.ticker_price(symbol=symbol)
+            return {"symbol": symbol, "price": float(r["price"]) }
+        if spot is not None:
+            r = spot.get_symbol_ticker(symbol=symbol)
+            return {"symbol": symbol, "price": float(r["price"]) }
+        return {"symbol": symbol, "price": 0.0, "_error": "client_unavailable"}
+    except Exception as e:
+        return {"symbol": symbol, "price": 0.0, "_error": str(e)}
+
+
+def get_balances() -> Dict[str, Any]:
+    """Spot: returns {asset: free}
+       Futures: returns {asset: balance} (wallet balance map)
+       On error, returns minimal neutral map with _error
+    """
+    spot, fut, meta = _clients()
+    try:
+        if meta.get("use_futures") and fut is not None:
+            # futures account balances
+            bals = fut.balance()  # list of {asset, balance, ...}
+            return {b["asset"]: float(b.get("balance", 0.0)) for b in bals}
+        if spot is not None:
+            acct = spot.get_account()
+            return {b["asset"]: float(b.get("free", 0.0)) for b in acct.get("balances", [])}
+        return {"USDT": 0.0, "_error": "client_unavailable"}
+    except Exception as e:
+        return {"USDT": 0.0, "_error": str(e)}
+
+
+def get_positions() -> List[Dict[str, Any]]:
+    """Futures: list of open positions with qty != 0.
+       Spot: returns empty list (spot doesn't have persistent positions in the same sense).
+    """
+    spot, fut, meta = _clients()
+    try:
+        if meta.get("use_futures") and fut is not None:
+            out: List[Dict[str, Any]] = []
+            for p in fut.get_position_risk():
+                amt = float(p.get("positionAmt", 0.0))
+                if amt == 0.0:
+                    continue
+                entry = float(p.get("entryPrice", 0.0))
+                sym = p.get("symbol")
+                out.append({
+                    "symbol": sym,
+                    "qty": amt,
+                    "entry_price": entry,
+                    "side": "LONG" if amt > 0 else "SHORT",
+                    "leverage": int(float(p.get("leverage", 1))),
+                })
+            return out
+        # Spot equivalent: return empty; executor handles inventory separately if needed.
+        return []
     except Exception:
-        return {"error": traceback.format_exc()}
+        return []
+
+
+def cancel_all_orders(symbol: Optional[str] = None) -> Dict[str, Any]:
+    """Cancel open orders. If symbol None, cancel all supported symbols.
+    Works for both modes, best-effort.
+    """
+    spot, fut, meta = _clients()
+    try:
+        if meta.get("use_futures") and fut is not None:
+            if symbol:
+                try:
+                    fut.cancel_open_orders(symbol=symbol)
+                except Exception:
+                    pass
+            else:
+                for o in fut.get_open_orders():
+                    try:
+                        fut.cancel_order(symbol=o["symbol"], orderId=o["orderId"])  # type: ignore
+                    except Exception:
+                        pass
+            return {"ok": True}
+        if spot is not None:
+            if symbol:
+                try:
+                    spot.cancel_open_orders(symbol=symbol)
+                except Exception:
+                    pass
+            else:
+                # Best-effort: fetch tickers to derive symbols and cancel
+                for t in spot.get_all_tickers():
+                    sym = t.get("symbol")
+                    try:
+                        spot.cancel_open_orders(symbol=sym)
+                    except Exception:
+                        pass
+            return {"ok": True}
+        return {"ok": False, "_error": "client_unavailable"}
+    except Exception as e:
+        return {"ok": False, "_error": str(e)}
+
+
+def place_market_order(symbol: str, side: str, quantity: float) -> Dict[str, Any]:
+    """Place a market order across modes. Returns {ok, order_id?, _error?}.
+    side: 'BUY' or 'SELL'
+    """
+    spot, fut, meta = _clients()
+    try:
+        side = side.upper()
+        if meta.get("use_futures") and fut is not None:
+            r = fut.new_order(symbol=symbol, side=side, type="MARKET", quantity=quantity)
+            return {"ok": True, "order_id": r.get("orderId")}
+        if spot is not None:
+            if side == "BUY":
+                r = spot.order_market_buy(symbol=symbol, quantity=quantity)
+            else:
+                r = spot.order_market_sell(symbol=symbol, quantity=quantity)
+            return {"ok": True, "order_id": r.get("orderId")}
+        return {"ok": False, "_error": "client_unavailable"}
+    except Exception as e:
+        return {"ok": False, "_error": str(e)}
+
+
+__all__ = [
+    "get_price",
+    "get_balances",
+    "get_positions",
+    "cancel_all_orders",
+    "place_market_order",
+]

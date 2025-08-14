@@ -1,111 +1,83 @@
 import os
-import time
-import streamlit as st
-from google.cloud import firestore
-from google.oauth2 import service_account
 import pandas as pd
-import altair as alt
+import streamlit as st
+from datetime import datetime
 
-# --- FIRESTORE INIT ---
-FIREBASE_CREDS_PATH = os.getenv("FIREBASE_CREDS_PATH", "config/firebase_creds.json")
-if not os.path.exists(FIREBASE_CREDS_PATH):
-    st.error(f"Firebase credentials not found at {FIREBASE_CREDS_PATH}")
-    st.stop()
-
-creds = service_account.Credentials.from_service_account_file(FIREBASE_CREDS_PATH)
-db = firestore.Client(credentials=creds)
+# Firestore readers (single source of truth)
+from dashboard.firestore_helpers import read_leaderboard, read_nav, read_positions
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Hedge Fund Live Dashboard", layout="wide")
-st.title("📊 Hedge Fund — Live Leaderboard & NAV")
+st.set_page_config(page_title="Hedge — Investor Dashboard", layout="wide")
+st.title("Hedge — Investor Dashboard")
+st.caption("Live Leaderboard • Portfolio NAV • Positions (Firestore)")
 
-# --- FUNCTIONS ---
-def fetch_leaderboard():
-    """Fetch latest leaderboard from Firestore."""
-    doc_ref = db.collection("hedge-fund").document("leaderboard")
-    doc = doc_ref.get()
-    if doc.exists:
-        return pd.DataFrame(doc.to_dict().get("data", []))
-    return pd.DataFrame(columns=["symbol", "pnl", "pct_return"])
+# --- AUTO-REFRESH (60s) ---
+try:
+    from streamlit_autorefresh import st_autorefresh
+    st_autorefresh(interval=60_000, key="ref60")
+except Exception:
+    # If the optional helper isn't installed, we keep the page manual-refresh.
+    pass
 
-def fetch_nav_log():
-    """Fetch NAV log from Firestore."""
-    doc_ref = db.collection("hedge-fund").document("nav_log")
-    doc = doc_ref.get()
-    if doc.exists:
-        data = doc.to_dict().get("data", [])
-        return pd.DataFrame(data)
-    return pd.DataFrame(columns=["timestamp", "total_equity"])
+# --- DATA LOAD ---
+lb = read_leaderboard() or {}
+nav = read_nav() or {}
+pos = read_positions() or {}
 
-def format_leaderboard(df):
-    """Format leaderboard table for display."""
-    if df.empty:
-        return df
-    df = df.copy()
-    df["pnl"] = df["pnl"].astype(float).round(2)
-    df["pct_return"] = (df["pct_return"].astype(float) * 100).round(2)
-    df.rename(columns={"symbol": "Symbol", "pnl": "PnL (USDT)", "pct_return": "% Return"}, inplace=True)
-    df.sort_values("% Return", ascending=False, inplace=True)
-    return df.reset_index(drop=True)
+updated_at = lb.get("updated_at") or nav.get("updated_at") or pos.get("updated_at")
+if updated_at:
+    st.caption(f"Updated: {updated_at}")
 
-def format_nav(df):
-    """Format NAV dataframe for chart."""
-    if df.empty:
-        return df
-    df = df.copy()
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df["total_equity"] = df["total_equity"].astype(float)
-    return df
+# --- LAYOUT: 3 core views ---
+tab_lb, tab_nav, tab_pos = st.tabs(["Leaderboard", "Portfolio NAV", "Positions"]) 
 
-def nav_chart(df):
-    """Create Altair NAV chart."""
-    if df.empty:
-        return st.warning("No NAV data found in Firestore.")
-    chart = (
-        alt.Chart(df)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("timestamp:T", title="Time"),
-            y=alt.Y("total_equity:Q", title="Total Equity (USDT)"),
-            tooltip=["timestamp:T", "total_equity:Q"]
-        )
-        .properties(height=400)
-        .interactive()
-    )
-    st.altair_chart(chart, use_container_width=True)
+# ===== Leaderboard =====
+with tab_lb:
+    lb_df = pd.DataFrame(lb.get("items", []))
+    if lb_df.empty:
+        st.info("No leaderboard data yet.")
+    else:
+        # Column order & clean display
+        cols = [
+            "rank", "strategy", "equity", "pnl", "cagr", "sharpe", "mdd", "win_rate", "trades"
+        ]
+        show_cols = [c for c in cols if c in lb_df.columns]
+        lb_df = lb_df[show_cols].sort_values("rank") if "rank" in lb_df.columns else lb_df
+        st.dataframe(lb_df, use_container_width=True)
 
-# --- LIVE REFRESH ---
-refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 10, 120, 60)
+# ===== Portfolio NAV =====
+with tab_nav:
+    series = pd.DataFrame(nav.get("series", []))
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Equity", f"{float(nav.get('total_equity', 0.0)) :,.2f}")
+    k2.metric("Drawdown", f"{float(nav.get('drawdown', 0.0))*100:.2f}%")
+    k3.metric("Realized PnL", f"{float(nav.get('realized_pnl', 0.0)) :,.2f}")
+    k4.metric("Unrealized PnL", f"{float(nav.get('unrealized_pnl', 0.0)) :,.2f}")
 
-placeholder = st.empty()
-while True:
-    lb_df = format_leaderboard(fetch_leaderboard())
-    nav_df = format_nav(fetch_nav_log())
-
-    with placeholder.container():
-        st.subheader(f"Updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Leaderboard
-        if not lb_df.empty:
-            st.dataframe(lb_df, use_container_width=True, height=400)
+    if series.empty:
+        st.info("No NAV series yet.")
+    else:
+        series = series.copy()
+        if "ts" in series.columns:
+            series["ts"] = pd.to_datetime(series["ts"], errors="coerce")
+            series = series.dropna(subset=["ts"]).sort_values("ts")
+            series = series.set_index("ts")
+        if "equity" in series.columns:
+            st.line_chart(series["equity"], use_container_width=True)
         else:
-            st.warning("No leaderboard data found in Firestore.")
-        
-        st.markdown("---")
-        
-        # NAV Chart
-        st.subheader("📈 Portfolio Equity Over Time")
-        nav_chart(nav_df)
+            st.info("NAV series missing 'equity'.")
 
-        # Investor bundle download
-        st.markdown("---")
-        bundle_path = "docs/investor_bundle.zip"
-        if os.path.exists(bundle_path):
-            st.download_button(
-                "📦 Download Investor Bundle",
-                data=open(bundle_path, "rb").read(),
-                file_name="investor_bundle.zip",
-                mime="application/zip"
-            )
+# ===== Positions =====
+with tab_pos:
+    pos_df = pd.DataFrame(pos.get("items", []))
+    if pos_df.empty:
+        st.info("No open positions.")
+    else:
+        keep = [
+            "symbol", "side", "qty", "entry_price", "mark_price", "pnl", "leverage", "notional", "ts"
+        ]
+        show_cols = [c for c in keep if c in pos_df.columns]
+        st.dataframe(pos_df[show_cols], use_container_width=True)
 
-    time.sleep(refresh_interval)
+# --- Guardrails visibly enforced ---
+st.caption("Firestore is the single source of truth • No local file reads • Auto-refresh 60s")
