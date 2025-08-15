@@ -1,83 +1,142 @@
+import sys
 import os
 import pandas as pd
 import streamlit as st
-from datetime import datetime
+from typing import Any, Dict, List, Tuple
 
-# Firestore readers (single source of truth)
-from dashboard.firestore_helpers import read_leaderboard, read_nav, read_positions
+# Force absolute project root in sys.path for imports
+ROOT = "/root/hedge-fund"
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Hedge — Investor Dashboard", layout="wide")
-st.title("Hedge — Investor Dashboard")
-st.caption("Live Leaderboard • Portfolio NAV • Positions (Firestore)")
-
-# --- AUTO-REFRESH (60s) ---
 try:
-    from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=60_000, key="ref60")
-except Exception:
-    # If the optional helper isn't installed, we keep the page manual-refresh.
-    pass
+    from utils.firestore_client import get_db
+except ModuleNotFoundError as e:
+    raise ImportError(f"Cannot import get_db from utils.firestore_client; sys.path={sys.path}") from e
 
-# --- DATA LOAD ---
-lb = read_leaderboard() or {}
-nav = read_nav() or {}
-pos = read_positions() or {}
+# --------------------
+# Firestore helper (supports live doc fallback)
+# --------------------
 
-updated_at = lb.get("updated_at") or nav.get("updated_at") or pos.get("updated_at")
-if updated_at:
-    st.caption(f"Updated: {updated_at}")
+def fetch_state_document(doc_name: str, env: str = None) -> Dict[str, Any]:
+    db = get_db()
+    env = env or os.getenv("ENV", "prod")
+    # Try direct doc
+    doc_ref = db.collection("hedge").document(env).collection("state").document(doc_name)
+    snapshot = doc_ref.get()
+    if snapshot.exists:
+        return snapshot.to_dict() or {}
+    # Fallback to live doc shape
+    live_ref = db.collection("hedge").document(env).collection("state").document("live")
+    live_snap = live_ref.get()
+    if live_snap.exists:
+        live_data = live_snap.to_dict() or {}
+        return live_data.get(doc_name, {}) if isinstance(live_data, dict) else {}
+    return {}
 
-# --- LAYOUT: 3 core views ---
-tab_lb, tab_nav, tab_pos = st.tabs(["Leaderboard", "Portfolio NAV", "Positions"]) 
+# --------------------
+# Data parsing helpers
+# --------------------
 
-# ===== Leaderboard =====
-with tab_lb:
-    lb_df = pd.DataFrame(lb.get("items", []))
-    if lb_df.empty:
-        st.info("No leaderboard data yet.")
+def coalesce(*vals, default=None):
+    for v in vals:
+        if v is not None:
+            return v
+    return default
+
+def parse_nav(nav: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Normalize NAV payload to df+kpis.
+    Accepts any of:
+      - list of dicts: [{"t": iso, "equity": float}, ...]  ✅ Firestore-safe
+      - list of lists: [[iso, equity], ...]                 ❌ Firestore rejects nested arrays; parse anyway
+      - dict mapping iso->equity: {iso: equity, ...}
+    """
+    series = nav.get("series")
+
+    # list[dict]
+    if isinstance(series, list) and series and isinstance(series[0], dict):
+        rows = [[row.get("t"), row.get("equity")] for row in series]
+    # list[list]
+    elif isinstance(series, list):
+        rows = series
+    # dict
+    elif isinstance(series, dict):
+        rows = [[t, v] for t, v in sorted(series.items())]
     else:
-        # Column order & clean display
-        cols = [
-            "rank", "strategy", "equity", "pnl", "cagr", "sharpe", "mdd", "win_rate", "trades"
-        ]
-        show_cols = [c for c in cols if c in lb_df.columns]
-        lb_df = lb_df[show_cols].sort_values("rank") if "rank" in lb_df.columns else lb_df
-        st.dataframe(lb_df, use_container_width=True)
+        rows = []
 
-# ===== Portfolio NAV =====
-with tab_nav:
-    series = pd.DataFrame(nav.get("series", []))
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total Equity", f"{float(nav.get('total_equity', 0.0)) :,.2f}")
-    k2.metric("Drawdown", f"{float(nav.get('drawdown', 0.0))*100:.2f}%")
-    k3.metric("Realized PnL", f"{float(nav.get('realized_pnl', 0.0)) :,.2f}")
-    k4.metric("Unrealized PnL", f"{float(nav.get('unrealized_pnl', 0.0)) :,.2f}")
+    df = pd.DataFrame(rows, columns=["t", "equity"]) if rows else pd.DataFrame(columns=["t", "equity"])  # type: ignore[call-arg]
+    if not df.empty:
+        df["t"] = pd.to_datetime(df["t"], utc=True, errors="coerce")
+        df = df.dropna(subset=["t"]).sort_values("t").set_index("t")
 
-    if series.empty:
-        st.info("No NAV series yet.")
-    else:
-        series = series.copy()
-        if "ts" in series.columns:
-            series["ts"] = pd.to_datetime(series["ts"], errors="coerce")
-            series = series.dropna(subset=["ts"]).sort_values("ts")
-            series = series.set_index("ts")
-        if "equity" in series.columns:
-            st.line_chart(series["equity"], use_container_width=True)
-        else:
-            st.info("NAV series missing 'equity'.")
+    kpis = {
+        "points": len(df),
+        "peak_equity": coalesce(nav.get("peak_equity"), nav.get("peak"), 0.0),
+        "total_equity": float(nav.get("total_equity")) if nav.get("total_equity") is not None
+                        else (float(df["equity"].iloc[-1]) if len(df) else 0.0),
+        "realized_pnl": float(nav.get("realized_pnl")) if nav.get("realized_pnl") is not None else 0.0,
+        "unrealized_pnl": float(nav.get("unrealized_pnl")) if nav.get("unrealized_pnl") is not None else 0.0,
+        "drawdown": float(nav.get("drawdown")) if nav.get("drawdown") is not None else 0.0,
+        "updated_at": coalesce(nav.get("updated_at"), "—"),
+    }
+    return df, kpis
 
-# ===== Positions =====
-with tab_pos:
-    pos_df = pd.DataFrame(pos.get("items", []))
-    if pos_df.empty:
-        st.info("No open positions.")
-    else:
-        keep = [
-            "symbol", "side", "qty", "entry_price", "mark_price", "pnl", "leverage", "notional", "ts"
-        ]
-        show_cols = [c for c in keep if c in pos_df.columns]
-        st.dataframe(pos_df[show_cols], use_container_width=True)
+# --------------------
+# UI rendering
+# --------------------
 
-# --- Guardrails visibly enforced ---
-st.caption("Firestore is the single source of truth • No local file reads • Auto-refresh 60s")
+st.set_page_config(page_title="Hedge Dashboard", layout="wide")
+ENV = os.getenv("ENV", "prod")
+REFRESH_SEC = int(os.getenv("DASHBOARD_REFRESH_SEC", "60"))
+
+st.title("📊 Hedge Dashboard")
+
+status = st.empty()
+status.info("Loading Firestore…")
+
+try:
+    nav = fetch_state_document("nav", env=ENV)
+    lb = fetch_state_document("leaderboard", env=ENV)
+    pos = fetch_state_document("positions", env=ENV)
+except Exception as e:
+    st.error(f"Firestore read failed: {e}")
+    st.stop()
+
+leaderboard_rows = (lb.get("items") or lb.get("rows") or [])
+positions_rows   = (pos.get("items") or pos.get("rows") or [])
+nav_df, nav_kpis = parse_nav(nav)
+updated_at = coalesce(nav_kpis.get("updated_at"), lb.get("updated_at"), pos.get("updated_at"), default="—")
+
+status.success(f"Loaded · updated_at={updated_at}")
+
+# KPIs
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Equity", f"{nav_kpis['total_equity']:.2f}")
+c2.metric("Peak", f"{nav_kpis['peak_equity']:.2f}")
+c3.metric("Realized PnL", f"{nav_kpis['realized_pnl']:.2f}")
+c4.metric("Unrealized PnL", f"{nav_kpis['unrealized_pnl']:.2f}")
+c5.metric("Drawdown", f"{nav_kpis['drawdown']:.2f}")
+
+# NAV chart
+st.subheader("NAV Equity Curve")
+if nav_df.empty:
+    st.info("No NAV points yet.")
+else:
+    st.line_chart(nav_df["equity"], use_container_width=True)
+
+# Leaderboard
+st.subheader("Leaderboard")
+if leaderboard_rows:
+    st.dataframe(pd.DataFrame(leaderboard_rows), use_container_width=True, hide_index=True)
+else:
+    st.write("No leaderboard items yet.")
+
+# Positions
+st.subheader("Open Positions")
+if positions_rows:
+    st.dataframe(pd.DataFrame(positions_rows), use_container_width=True, hide_index=True)
+else:
+    st.write("No open positions.")
+
+st.caption(f"Data source: Firestore · hedge/{ENV}/state/* (or live)")

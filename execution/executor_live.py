@@ -208,7 +208,7 @@ def update_position_after_trade(positions: dict, symbol: str, side: str, price: 
     return realized
 
 def main():
-    print("🚀 Executor Live (Phase 2)")
+    print("🚀 Executor Live (Phase 2)", flush=True)
     config = load_config()
     tele_cfg = bool(config.get("execution", {}).get("telegram_enabled", False))
     os.environ["TELEGRAM_ENABLED"] = "1" if tele_cfg else "0"
@@ -221,19 +221,23 @@ def main():
     allowed_assets = build_asset_whitelist(config)
 
     # Firestore init
-    ENV = os.environ.get("ENV", "dev")
+    ENV = os.environ.get("ENV", "prod")
     try:
+        print("🚀 Executor Live (Phase 2)", flush=True)
         db = get_db()
     except Exception as e:
-        print(f"❌ Firestore init failed: {e}")
+        print(f"❌ Firestore init failed: {e}", flush=True)
         db = None
+
     # Trading mode toggle: Futures vs Spot
     use_futures = os.getenv("USE_FUTURES", "0").lower() in ("1", "true", "yes")
 
     while True:
         try:
             balances = get_balances()
+            print("[dbg] got balances: %s" % (list(balances)[:5]), flush=True)
             positions = load_json(STATE_FILE) or {}
+            print("[dbg] loaded positions: %d items" % len(positions), flush=True)
             if use_futures:
                 # Override/merge with live futures positions from the exchange
                 live = get_positions() or []
@@ -257,6 +261,7 @@ def main():
             refresh_positions_latest_prices(positions)
             prune_empty_positions(positions)
             signals = list(generate_signals_from_config(config))
+            print("[dbg] generated signals: %d" % len(signals), flush=True)
             preview = signals[:2] + (["..."] if len(signals) > 2 else [])
             print(f"🔎 Signals: {'none' if not signals else preview}")
             realized_total = 0.0
@@ -329,13 +334,14 @@ def main():
                 if db is not None:
                     # NAV payload
                     nav_payload = {
-                        "series": [{"ts": nav_entry["timestamp"], "equity": float(nav_entry.get("equity", 0.0))}],
+                        "series": [{"t": nav_entry["timestamp"], "equity": float(nav_entry.get("equity", 0.0))}],
                         "total_equity": float(nav_entry.get("equity", 0.0)),
                         "realized_pnl": float(nav_entry.get("realized", 0.0)),
                         "unrealized_pnl": float(nav_entry.get("unrealized", 0.0)),
                         "peak_equity": float(peak_state.get("portfolio", {}).get("peak_equity", 0.0)),
                         "drawdown": float(nav_entry.get("drawdown_pct", 0.0)),
                     }
+
                     sync_nav(db, nav_payload, ENV)
 
                     # Positions payload
