@@ -1,0 +1,19 @@
+{
+  "leaderboard": {
+    "updated_at": "iso-utc",
+    "items": [{"strategy":"str","cagr":0.0,"sharpe":0.0,"mdd":0.0,"win_rate":0.0,"trades":0,"pnl":0.0,"equity":0.0,"rank":1}]
+  },
+  "nav": {
+    "updated_at":"iso-utc",
+    "series":[{"ts":"iso-utc","equity":0.0}],
+    "total_equity":0.0,
+    "realized_pnl":0.0,
+    "unrealized_pnl":0.0,
+    "peak_equity":0.0,
+    "drawdown":0.0
+  },
+  "positions": {
+    "updated_at":"iso-utc",
+    "items":[{"symbol":"BTCUSDT","side":"LONG","qty":0.0,"entry_price":0.0,"mark_price":0.0,"pnl":0.0,"leverage":1,"notional":0.0,"ts":"iso-utc"}]
+  }
+}

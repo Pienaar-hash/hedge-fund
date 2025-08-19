@@ -1,111 +1,122 @@
-import os
-import time
-import streamlit as st
-from google.cloud import firestore
-from google.oauth2 import service_account
-import pandas as pd
-import altair as alt
 
-# --- FIRESTORE INIT ---
-FIREBASE_CREDS_PATH = os.getenv("FIREBASE_CREDS_PATH", "config/firebase_creds.json")
-if not os.path.exists(FIREBASE_CREDS_PATH):
-    st.error(f"Firebase credentials not found at {FIREBASE_CREDS_PATH}")
+import os
+import sys
+from typing import Any, Dict, List, Tuple
+import pandas as pd
+import streamlit as st
+
+# Ensure the project root is importable (adjust if your project root differs)
+PROJECT_ROOT = "/root/hedge-fund"
+if PROJECT_ROOT not in sys.path and os.path.isdir(PROJECT_ROOT):
+    sys.path.insert(0, PROJECT_ROOT)
+
+# Local package import (our helpers live alongside this file in dashboard/)
+from dashboard.dashboard_utils import (
+    get_firestore_connection,
+    fetch_state_document,
+    parse_nav_to_df_and_kpis,
+    positions_sorted,
+    read_trade_log_tail,
+    fmt_ccy,
+    fmt_pct,
+)
+
+# --------------------------- Page config -------------------------------------
+st.set_page_config(page_title="Hedge — Portfolio Dashboard", layout="wide")
+ENV = os.getenv("ENV", "prod")
+REFRESH_SEC = int(os.getenv("DASHBOARD_REFRESH_SEC", "60"))
+TRADE_LOG = os.getenv("TRADE_LOG", "trade_log.json")
+
+# Optional auto-refresh (works if streamlit-extras installed)
+try:
+    from streamlit_extras.st_autorefresh import st_autorefresh
+    st_autorefresh(interval=REFRESH_SEC * 1000, key="auto_refresh")
+except Exception:
+    pass  # clean fallback: user can manually refresh
+
+st.title("📊 Hedge — Portfolio Dashboard")
+st.caption(f"ENV = {ENV} · refresh ≈ {REFRESH_SEC}s")
+
+# --------------------------- Load Firestore ----------------------------------
+status = st.empty()
+status.info("Loading data from Firestore…")
+
+try:
+    db = get_firestore_connection()
+    nav_doc = fetch_state_document("nav", env=ENV)
+    pos_doc = fetch_state_document("positions", env=ENV)
+    lb_doc  = fetch_state_document("leaderboard", env=ENV)
+except Exception as e:
+    st.error(f"Firestore read failed: {e}")
     st.stop()
 
-creds = service_account.Credentials.from_service_account_file(FIREBASE_CREDS_PATH)
-db = firestore.Client(credentials=creds)
+nav_df, kpis = parse_nav_to_df_and_kpis(nav_doc)
+positions = pos_doc.get("items") or []
+positions = positions_sorted(positions)
+leaderboard = lb_doc.get("items") or []
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Hedge Fund Live Dashboard", layout="wide")
-st.title("📊 Hedge Fund — Live Leaderboard & NAV")
+status.success(f"Loaded · updated_at={nav_doc.get('updated_at','—')}")
 
-# --- FUNCTIONS ---
-def fetch_leaderboard():
-    """Fetch latest leaderboard from Firestore."""
-    doc_ref = db.collection("hedge-fund").document("leaderboard")
-    doc = doc_ref.get()
-    if doc.exists:
-        return pd.DataFrame(doc.to_dict().get("data", []))
-    return pd.DataFrame(columns=["symbol", "pnl", "pct_return"])
+# --------------------------- KPI header --------------------------------------
+with st.container():
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Equity", fmt_ccy(kpis["total_equity"]), delta=None)
+    c2.metric("Peak", fmt_ccy(kpis["peak_equity"]))
+    c3.metric("DD", fmt_pct(kpis["drawdown"]))
+    c4.metric("U‑PnL", fmt_ccy(kpis["unrealized_pnl"]))
+    c5.metric("R‑PnL", fmt_ccy(kpis["realized_pnl"]))
 
-def fetch_nav_log():
-    """Fetch NAV log from Firestore."""
-    doc_ref = db.collection("hedge-fund").document("nav_log")
-    doc = doc_ref.get()
-    if doc.exists:
-        data = doc.to_dict().get("data", [])
-        return pd.DataFrame(data)
-    return pd.DataFrame(columns=["timestamp", "total_equity"])
+# Exposure row (if present on nav doc)
+exp = {
+    "gross_exposure": nav_doc.get("gross_exposure", 0.0),
+    "net_exposure": nav_doc.get("net_exposure", 0.0),
+    "largest_position_value": nav_doc.get("largest_position_value", 0.0),
+}
+st.subheader("Exposure")
+e1, e2, e3 = st.columns(3)
+e1.metric("Gross", fmt_ccy(exp["gross_exposure"]))
+e2.metric("Net", fmt_ccy(exp["net_exposure"]))
+e3.metric("Largest Pos", fmt_ccy(exp["largest_position_value"]))
 
-def format_leaderboard(df):
-    """Format leaderboard table for display."""
-    if df.empty:
-        return df
-    df = df.copy()
-    df["pnl"] = df["pnl"].astype(float).round(2)
-    df["pct_return"] = (df["pct_return"].astype(float) * 100).round(2)
-    df.rename(columns={"symbol": "Symbol", "pnl": "PnL (USDT)", "pct_return": "% Return"}, inplace=True)
-    df.sort_values("% Return", ascending=False, inplace=True)
-    return df.reset_index(drop=True)
+# --------------------------- NAV chart ---------------------------------------
+st.subheader("NAV Equity Curve")
+if nav_df.empty:
+    st.info("No NAV points yet. Run executor + sync_state to populate.")
+else:
+    st.line_chart(nav_df["equity"], use_container_width=True)
 
-def format_nav(df):
-    """Format NAV dataframe for chart."""
-    if df.empty:
-        return df
-    df = df.copy()
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df["total_equity"] = df["total_equity"].astype(float)
-    return df
+# --------------------------- Positions / Leaderboard -------------------------
+left, right = st.columns([2, 1])
 
-def nav_chart(df):
-    """Create Altair NAV chart."""
-    if df.empty:
-        return st.warning("No NAV data found in Firestore.")
-    chart = (
-        alt.Chart(df)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("timestamp:T", title="Time"),
-            y=alt.Y("total_equity:Q", title="Total Equity (USDT)"),
-            tooltip=["timestamp:T", "total_equity:Q"]
-        )
-        .properties(height=400)
-        .interactive()
-    )
-    st.altair_chart(chart, use_container_width=True)
+with left:
+    st.subheader("Open Positions")
+    if positions:
+        df_pos = pd.DataFrame(positions)
+        # Order columns for readability if present
+        cols = [c for c in ["symbol","side","qty","entry_price","mark_price","pnl","notional","leverage","ts"] if c in df_pos.columns]
+        st.dataframe(df_pos[cols], use_container_width=True, hide_index=True)
+    else:
+        st.write("No open positions.")
 
-# --- LIVE REFRESH ---
-refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 10, 120, 60)
+with right:
+    st.subheader("Leaderboard")
+    if leaderboard:
+        df_lb = pd.DataFrame(leaderboard)
+        st.dataframe(df_lb, use_container_width=True, hide_index=True)
+    else:
+        st.write("No leaderboard items.")
 
-placeholder = st.empty()
-while True:
-    lb_df = format_leaderboard(fetch_leaderboard())
-    nav_df = format_nav(fetch_nav_log())
+# --------------------------- Recent Trades (local file) ----------------------
+st.subheader("Recent Trades (tail of trade_log.json)")
+trades = read_trade_log_tail(TRADE_LOG, tail=10)
+if trades:
+    df_tr = pd.DataFrame(trades)
+    # Friendly column ordering if keys exist
+    order = [c for c in ["ts","symbol","side","qty","price","notional","realized_pnl","comment","strategy"] if c in df_tr.columns]
+    if order:
+        df_tr = df_tr[order]
+    st.dataframe(df_tr, use_container_width=True, hide_index=True)
+else:
+    st.caption(f"No trades found at {TRADE_LOG} (dry‑run or not yet emitted).")
 
-    with placeholder.container():
-        st.subheader(f"Updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Leaderboard
-        if not lb_df.empty:
-            st.dataframe(lb_df, use_container_width=True, height=400)
-        else:
-            st.warning("No leaderboard data found in Firestore.")
-        
-        st.markdown("---")
-        
-        # NAV Chart
-        st.subheader("📈 Portfolio Equity Over Time")
-        nav_chart(nav_df)
-
-        # Investor bundle download
-        st.markdown("---")
-        bundle_path = "docs/investor_bundle.zip"
-        if os.path.exists(bundle_path):
-            st.download_button(
-                "📦 Download Investor Bundle",
-                data=open(bundle_path, "rb").read(),
-                file_name="investor_bundle.zip",
-                mime="application/zip"
-            )
-
-    time.sleep(refresh_interval)
+st.caption(f"Data source: Firestore hedge/{ENV}/state/* · Optional local trade log: {TRADE_LOG}")
