@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os, time, json, traceback
+from datetime import datetime, timezone
 from typing import Dict, Any, List
 
 from execution.exchange_utils import (
@@ -16,6 +17,10 @@ ENV = os.getenv("ENV", "prod")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "60"))
 HEARTBEAT_MIN = int(os.getenv("HEARTBEAT_MINUTES", "10"))
 DD_ALERT_PCT = float(os.getenv("DD_ALERT_PCT", "0.10"))
+# --- tailsafe env knobs ---
+KILL_DD_PCT = float(os.getenv("KILL_DD_PCT", "0.15"))           # kill if peak drawdown ≥ 15%
+KILL_DAILY_LOSS_PCT = float(os.getenv("KILL_DAILY_LOSS_PCT", "0.05"))  # kill if daily loss ≥ 5%
+POS_SL_PCT = float(os.getenv("POS_SL_PCT", "0.02"))             # per-position soft stop 2%
 
 NAV_LOG = "nav_log.json"
 PEAK_STATE = "peak_state.json"
@@ -140,6 +145,72 @@ def _maybe_dd_alert():
         send_drawdown_alert(dd, DD_ALERT_PCT, peak, tail["equity"])
         _last_dd_alert_ts = time.time()
 
+# --- tailsafe helpers ---
+
+def _daily_loss_frac() -> float:
+    """Return today's loss as a positive fraction (e.g., 0.03 for -3%)."""
+    nav = _safe_load_json(NAV_LOG, [])
+    if not nav:
+        return 0.0
+    try:
+        today0 = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+        base = None; last = None
+        for r in nav:
+            ts = r.get("timestamp", "")
+            try:
+                t = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+            except Exception:
+                continue
+            if t >= today0 and base is None:
+                base = float(r.get("equity", 0.0))
+            last = r
+        if base and last:
+            eq = float(last.get("equity", 0.0))
+            ret = (eq / base - 1.0) if base > 0 else 0.0
+            return max(0.0, -ret)
+    except Exception:
+        pass
+    return 0.0
+
+def _tailsafe_blocked() -> bool:
+    """Circuit-breaker: block new trades on large drawdowns/daily loss."""
+    tail = _nav_tail()
+    dd_frac = max(0.0, -float(tail.get("dd", 0.0)))  # dd stored as negative when below peak
+    if KILL_DD_PCT > 0 and dd_frac >= KILL_DD_PCT:
+        print(f"[executor] TAILSAFE: kill by DD {dd_frac:.3f} >= {KILL_DD_PCT:.3f}", flush=True)
+        return True
+    dlp = _daily_loss_frac()
+    if KILL_DAILY_LOSS_PCT > 0 and dlp >= KILL_DAILY_LOSS_PCT:
+        print(f"[executor] TAILSAFE: kill by daily loss {dlp:.3f} >= {KILL_DAILY_LOSS_PCT:.3f}", flush=True)
+        return True
+    return False
+
+def _enforce_position_stops():
+    """Per-position soft stop using entry/mark and side."""
+    if POS_SL_PCT <= 0:
+        return
+    try:
+        for p in get_positions() or []:
+            sym = p.get("symbol"); side = p.get("side")
+            try:
+                qty = abs(float(p.get("qty", 0.0)))
+                entry = float(p.get("entry_price", 0.0))
+                mark  = float(p.get("mark_price", 0.0) or (get_price(sym) if sym else 0.0))
+            except Exception:
+                continue
+            if not sym or qty <= 0 or entry <= 0 or mark <= 0:
+                continue
+            adverse = (entry - mark)/entry if side == "LONG" else (mark - entry)/entry
+            if adverse >= POS_SL_PCT:
+                close_side = "SELL" if side == "LONG" else "BUY"
+                print(f"[executor] STOP {sym} {side} adverse={adverse:.4f}>=SL={POS_SL_PCT:.4f} -> {close_side} reduceOnly", flush=True)
+                try:
+                    place_market_order(sym, close_side, qty, reduceOnly=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 # --- signals ---
 def _apply_sizing_guards(symbol, qty, px, cfg):
     try: min_notional = float(cfg.get("min_notional", 0.0)) if cfg else 0.0
@@ -205,6 +276,14 @@ def main():
     while True:
         t0 = time.time()
         try:
+            # tailsafe: block new entries on big losses; still snapshot & notify
+            if _tailsafe_blocked():
+                _snapshot_and_write(); _maybe_heartbeat(); _maybe_dd_alert()
+                time.sleep(max(1.0, POLL_SECONDS - (time.time()-t0)))
+                continue
+
+            _enforce_position_stops()
+
             signals = list(generate_signals_from_config())
             for s in signals:
                 if str(s.get("signal","" )).upper() in ("BUY","SELL"):

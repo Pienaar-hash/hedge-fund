@@ -265,9 +265,28 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             z = float(inds["z"])  # current z-score
 
             entry_cfg = scfg.get("entry", {})
+            entry_mode = str(entry_cfg.get("mode", "momentum")).lower()
             zmin = float(entry_cfg.get("zscore_min", 0.8))
+            atr_min = float(entry_cfg.get("atr_min", 0.0))
+            atr_ok = (inds.get("atr_proxy", 0.0) >= atr_min)
+
+            # Momentum edges (default)
             cross_up = (prev_z < zmin and z >= zmin)
             cross_down = (prev_z > -zmin and z <= -zmin)
+
+            # Breakout edges (20-bar high/low by default)
+            if entry_mode == "breakout":
+                lookback = int(entry_cfg.get("breakout_lookback", 20))
+                long_ok = False; short_ok = False
+                if len(prices) >= max(lookback + 2, 3):
+                    prev_p = prices[-2]
+                    window = prices[-(lookback+1):-1]  # exclude current bar
+                    res = max(window)
+                    sup = min(window)
+                    long_ok = (prev_p <= res and prices[-1] > res)
+                    short_ok = (prev_p >= sup and prices[-1] < sup)
+                # override momentum edges with breakout edges
+                cross_up, cross_down = long_ok, short_ok
 
             # Reconcile with live exchange positions (on restart or external fills)
             pos_side = _position_side(symbol)
@@ -276,16 +295,21 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 in_trade = True
                 side_meta = pos_side
                 _save_meta(st, symbol, timeframe, in_trade=True, side=side_meta)
+            # If flat on exchange but local meta says in_trade, clear it
+            if not pos_exists and in_trade:
+                in_trade = False
+                side_meta = None
+                _save_meta(st, symbol, timeframe, in_trade=False, side=None)
 
-            # LONG entry
-            if cross_up and not in_trade:
+            # LONG entry (requires ATR filter if set)
+            if cross_up and not in_trade and atr_ok:
                 yield _make_intent(symbol, "BUY", price=px, cfg=scfg)  # non-reduceOnly
                 _save_meta(st, symbol, timeframe, in_trade=True, side="LONG", prev_z=z)
                 emitted += 1
                 continue
 
-            # SHORT entry
-            if cross_down and not in_trade:
+            # SHORT entry (requires ATR filter if set)
+            if cross_down and not in_trade and atr_ok:
                 yield _make_intent(symbol, "SELL", price=px, cfg=scfg)  # non-reduceOnly
                 _save_meta(st, symbol, timeframe, in_trade=True, side="SHORT", prev_z=z)
                 emitted += 1
