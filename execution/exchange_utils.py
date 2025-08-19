@@ -1,141 +1,266 @@
 # execution/exchange_utils.py
-import os
-import math
-import traceback
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
-from execution.utils import load_env_var
+from __future__ import annotations
 
-# --- Binance client setup ---
-BINANCE_API_KEY = load_env_var("BINANCE_API_KEY")
-BINANCE_API_SECRET = load_env_var("BINANCE_API_SECRET")
-if not BINANCE_API_KEY or not BINANCE_API_SECRET:
-    print("⚠️ BINANCE_API_KEY / BINANCE_API_SECRET not set — private endpoints will fail.")
+import os, hmac, time, json, hashlib
+from typing import Any, Dict, List, Optional, Tuple
 
-TESTNET = str(os.getenv("BINANCE_TESTNET", "1")).lower() in ("1", "true", "yes")
-client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET, testnet=TESTNET)
+try:
+    import requests  # type: ignore
+except Exception:
+    requests = None
 
-# --- Public helpers ---
-def get_balances():
+def _bool_env(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+TESTNET = _bool_env("BINANCE_TESTNET", False)
+USE_FUTURES = _bool_env("USE_FUTURES", False) or _bool_env("BINANCE_FUTURES", False)
+DRY_RUN = _bool_env("DRY_RUN", False)
+EXCHANGE_DEBUG = _bool_env("EXCHANGE_DEBUG", False)
+
+SPOT_BASE = "https://testnet.binance.vision" if TESTNET else "https://api.binance.com"
+FAPI_BASE = "https://testnet.binancefuture.com" if TESTNET else "https://fapi.binance.com"
+
+API_KEY = os.getenv("BINANCE_API_KEY", "")
+API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+
+def _ts() -> int:
+    return int(time.time() * 1000)
+
+def _headers() -> Dict[str, str]:
+    return {"X-MBX-APIKEY": API_KEY} if API_KEY else {}
+
+def _sign(params: Dict[str, Any]) -> str:
+    parts = []
+    for k, v in params.items():
+        if v is None:
+            continue
+        parts.append(f"{k}={v}")
+    query = "&".join(parts)
+    return hmac.new(API_SECRET.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+
+def _request(
+    method: str,
+    path: str,
+    *,
+    futures: bool = False,
+    signed: bool = False,
+    params: Optional[Dict[str, Any]] = None,
+    timeout: int = 10,
+) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[str]]:
+    if requests is None:
+        return None, None, "requests-not-available"
+
+    base = FAPI_BASE if futures else SPOT_BASE
+    url = f"{base}{path}"
+    params = dict(params or {})
+
+    if signed:
+        if "timestamp" not in params:
+            params["timestamp"] = _ts()
+        if "recvWindow" not in params:
+            params["recvWindow"] = 5000
+        params["signature"] = _sign(params)
+
     try:
-        account_info = client.get_account()
-        balances = {
-            a["asset"]: float(a["free"]) + float(a["locked"])
-            for a in account_info["balances"]
-            if float(a["free"]) + float(a["locked"]) > 0
-        }
-        return balances
-    except BinanceAPIException as e:
-        print(f"❌ Binance API error: {e.message}")
-        return {}
-    except Exception:
-        print("❌ Error fetching balances:")
-        print(traceback.format_exc())
-        return {}
+        m = method.upper()
+        if m == "GET":
+            r = requests.get(url, params=params, headers=_headers(), timeout=timeout)
+        elif m == "POST":
+            r = requests.post(url, params=params, headers=_headers(), timeout=timeout)
+        else:
+            r = requests.request(m, url, params=params, headers=_headers(), timeout=timeout)
+        try:
+            data = r.json()
+        except Exception:
+            data = None
+        if r.ok:
+            return data, r.status_code, None
+        return data, r.status_code, getattr(r, "text", "http-error")
+    except Exception as e:
+        return None, None, str(e)
 
 def get_price(symbol: str) -> float:
     try:
-        ticker = client.get_symbol_ticker(symbol=symbol)
-        return float(ticker["price"])
-    except Exception:
-        print(f"❌ Error fetching price for {symbol}")
-        return 0.0
-
-# --- Filters & formatting ---
-def _symbol_filters(symbol: str):
-    """Return (stepSize, minQty, minNotional, tickSize) as floats for symbol."""
-    try:
-        info = client.get_symbol_info(symbol)
-        fs = {f["filterType"]: f for f in info.get("filters", [])}
-        lot = fs.get("LOT_SIZE", {})
-        min_notional = fs.get("MIN_NOTIONAL", {}).get("minNotional") or fs.get("NOTIONAL", {}).get("minNotional")
-        price_filter = fs.get("PRICE_FILTER", {})
-        step = float(lot.get("stepSize", 0.0) or 0.0)
-        min_qty = float(lot.get("minQty", 0.0) or 0.0)
-        min_notional = float(min_notional or 0.0)
-        tick = float(price_filter.get("tickSize", 0.0) or 0.0)
-        return step, min_qty, min_notional, tick
-    except Exception:
-        return 0.0, 0.0, 0.0, 0.0
-
-def _step_decimals(step: float) -> int:
-    """Number of decimal places implied by stepSize (e.g., 0.001 -> 3)."""
-    if step <= 0:
-        return 8  # safe fallback
-    s = f"{step:.20f}".rstrip("0").rstrip(".")
-    return len(s.split(".")[1]) if "." in s else 0
-
-def _floor_step(qty: float, step: float) -> float:
-    if step <= 0:
-        return qty
-    return math.floor(qty / step) * step
-
-def _format_qty(qty: float, step: float) -> str:
-    """Floor to step and format with exact decimals to avoid 'too much precision'."""
-    dec = _step_decimals(step)
-    floored = _floor_step(qty, step)
-    return f"{floored:.{dec}f}"
-
-# --- Trade entry point ---
-def execute_trade(
-    symbol: str,
-    side: str,
-    capital: float,
-    balances: dict,
-    desired_qty: float | None = None,
-    min_notional_usdt: float = 0.0,
-):
-    """
-    BUY (spot): spend 'capital' USDT via quoteOrderQty (must be >= min_notional_usdt).
-    SELL: sell 'desired_qty' (or all available) formatted to LOT_SIZE, enforcing exchange MIN_NOTIONAL and config min_notional_usdt.
-    """
-    price = get_price(symbol)
-    if price == 0.0:
-        return {"error": "Price unavailable"}
-
-    base_asset = symbol.replace("USDT", "")
-    step, min_qty, ex_min_notional, _tick = _symbol_filters(symbol)
-    cfg_min_notional = float(min_notional_usdt or 0.0)
-
-    try:
-        if side == "BUY":
-            if capital <= 0.0:
-                return {"error": "Invalid capital for BUY"}
-            if cfg_min_notional and capital < cfg_min_notional:
-                return {"error": f"Below config MIN_NOTIONAL ({cfg_min_notional} USDT)"}
-            # Exchange enforces its own min notional; quoteOrderQty avoids LOT_SIZE qty precision issues
-            order = client.order_market_buy(symbol=symbol, quoteOrderQty=round(float(capital), 2))
-
-        elif side == "SELL":
-            available = float(balances.get(base_asset, 0.0))
-            qty_target = float(desired_qty) if desired_qty is not None else available
-            qty_floored = _floor_step(min(qty_target, available), step)
-            if qty_floored <= 0.0:
-                return {"error": f"No {base_asset} available to sell"}
-            if qty_floored < min_qty:
-                return {"error": f"Below minQty ({min_qty})"}
-            notional = qty_floored * price
-            min_required = max(ex_min_notional or 0.0, cfg_min_notional or 0.0)
-            if min_required and notional < min_required:
-                return {"error": f"Below MIN_NOTIONAL ({min_required} USDT)"}
-            qty_str = _format_qty(qty_floored, step)  # strict decimals to avoid precision error
-            order = client.order_market_sell(symbol=symbol, quantity=qty_str)
-
+        sym = str(symbol).upper()
+        if USE_FUTURES:
+            data, _, _ = _request("GET", "/fapi/v1/ticker/price", futures=True, params={"symbol": sym})
         else:
-            return {"error": f"Invalid side: {side}"}
-
-        ts = order.get("transactTime")
-        qty_exec = float(order.get("executedQty") or order.get("origQty") or 0.0)
-        return {
-            "symbol": symbol,
-            "side": side,
-            "qty": qty_exec if qty_exec > 0 else (float(_format_qty(capital / price, step)) if side == "BUY" else qty_floored),
-            "price": price,
-            "order_id": order.get("orderId"),
-            "timestamp": ts,
-        }
-
-    except BinanceAPIException as e:
-        return {"error": f"Binance API Exception: {e.message}"}
+            data, _, _ = _request("GET", "/api/v3/ticker/price", futures=False, params={"symbol": sym})
+        if isinstance(data, dict) and "price" in data:
+            return float(data["price"])
     except Exception:
-        return {"error": traceback.format_exc()}
+        pass
+    return 0.0
+
+def get_balances() -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    try:
+        if USE_FUTURES:
+            # primary
+            data, status, err = _request("GET", "/fapi/v2/balance", futures=True, signed=True)
+            if isinstance(data, list) and data:
+                for row in data:
+                    try:
+                        asset = row.get("asset")
+                        bal = float(row.get("balance", row.get("withdrawAvailable", 0.0)))
+                        if asset:
+                            out[str(asset).upper()] = bal
+                    except Exception:
+                        continue
+            # fallback
+            if not out:
+                acct, status2, err2 = _request("GET", "/fapi/v2/account", futures=True, signed=True)
+                if isinstance(acct, dict):
+                    for a in acct.get("assets", []) or []:
+                        try:
+                            asset = a.get("asset")
+                            bal = float(a.get("walletBalance", 0.0))
+                            if asset:
+                                out[str(asset).upper()] = bal
+                        except Exception:
+                            continue
+                if EXCHANGE_DEBUG and not out:
+                    out["_status"] = status2
+                    out["_error"] = err2
+            elif EXCHANGE_DEBUG and not out:
+                out["_status"] = status
+                out["_error"] = err
+        else:
+            data, status, err = _request("GET", "/api/v3/account", futures=False, signed=True)
+            if isinstance(data, dict):
+                for b in data.get("balances", []) or []:
+                    try:
+                        asset = b.get("asset")
+                        free = float(b.get("free", 0.0))
+                        if asset:
+                            out[str(asset).upper()] = free
+                    except Exception:
+                        continue
+            if EXCHANGE_DEBUG and not out:
+                out["_status"] = status
+                out["_error"] = err
+    except Exception:
+        pass
+    return out
+
+def _pos_side(qty: float) -> str:
+    try:
+        return "LONG" if float(qty) >= 0 else "SHORT"
+    except Exception:
+        return "LONG"
+
+def get_positions(symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+    if not USE_FUTURES:
+        return []
+    out: List[Dict[str, Any]] = []
+    params: Dict[str, Any] = {}
+    if symbol:
+        params["symbol"] = str(symbol).upper()
+    try:
+        data, status, err = _request("GET", "/fapi/v2/positionRisk", futures=True, signed=True, params=params)
+        if isinstance(data, list):
+            now = int(time.time())
+            for row in data:
+                try:
+                    sym = row.get("symbol")
+                    qty = float(row.get("positionAmt", 0.0))
+                    if abs(qty) < 1e-12:
+                        continue
+                    entry = float(row.get("entryPrice", 0.0))
+                    mark = float(row.get("markPrice", 0.0))
+                    lev = int(float(row.get("leverage", 1)))
+                    pnl = float(row.get("unRealizedProfit", 0.0))
+                    out.append({
+                        "symbol": sym,
+                        "side": _pos_side(qty),
+                        "qty": qty,
+                        "entry_price": entry,
+                        "mark_price": mark,
+                        "leverage": lev,
+                        "notional": abs(qty) * mark,
+                        "pnl": pnl,
+                        "updated_at": now,
+                    })
+                except Exception:
+                    continue
+        if EXCHANGE_DEBUG and not out:
+            out = [{"_status": status, "_error": err}]
+    except Exception:
+        pass
+    return out
+
+def place_market_order(symbol: str, side: str, quantity: float, **kwargs) -> Dict[str, Any]:
+    symbol = str(symbol).upper()
+    side = str(side).upper()
+    qty = float(quantity)
+    if qty <= 0:
+        return {"ok": False, "avgPrice": None, "raw": {"error": "qty<=0"}}
+
+    if DRY_RUN or requests is None:
+        px = get_price(symbol) or 0.0
+        return {"ok": True, "avgPrice": float(px) if px else None, "raw": {"dry_run": True, "symbol": symbol, "side": side, "qty": qty}}
+
+    try:
+        if USE_FUTURES:
+            params = {"symbol": symbol, "side": side, "type": "MARKET", "quantity": qty}
+            if "positionSide" in kwargs and kwargs["positionSide"]:
+                params["positionSide"] = kwargs["positionSide"]
+            if "reduceOnly" in kwargs:
+                params["reduceOnly"] = "true" if bool(kwargs["reduceOnly"]) else "false"
+            data, status, err = _request("POST", "/fapi/v1/order", futures=True, signed=True, params=params)
+        else:
+            params = {"symbol": symbol, "side": side, "type": "MARKET", "quantity": qty}
+            data, status, err = _request("POST", "/api/v3/order", futures=False, signed=True, params=params)
+
+        if err:
+            return {"ok": False, "avgPrice": None, "raw": {"error": err, "status": status, "resp": data}}
+
+        avg = None
+        if isinstance(data, dict):
+            fills = data.get("fills")
+            if isinstance(fills, list) and fills:
+                try:
+                    notional = sum(float(f["price"]) * float(f.get("qty", 0)) for f in fills)
+                    qty_filled = sum(float(f.get("qty", 0)) for f in fills)
+                    if qty_filled > 0:
+                        avg = notional / qty_filled
+                except Exception:
+                    avg = None
+            if avg is None:
+                try:
+                    ap = data.get("avgPrice")
+                    if ap is not None:
+                        avg = float(ap)
+                except Exception:
+                    avg = None
+        if avg is None:
+            avg = get_price(symbol) or None
+        return {"ok": True, "avgPrice": avg, "raw": data}
+    except Exception as e:
+        return {"ok": False, "avgPrice": None, "raw": {"error": str(e)}}
+
+def get_account_overview() -> Dict[str, Any]:
+    balances = get_balances()
+    positions = get_positions() if USE_FUTURES else []
+    hint = None
+    if USE_FUTURES and TESTNET and (not balances):
+        hint = "Futures Testnet: empty balances. Check key permissions, IP whitelist, and USD‑M wallet funding."
+    if USE_FUTURES and TESTNET and positions and isinstance(positions[0], dict) and positions[0].get("_error"):
+        hint = f"Position fetch error: {positions[0].get('_error')}"
+    info = {
+        "use_futures": USE_FUTURES,
+        "testnet": TESTNET,
+        "dry_run": DRY_RUN,
+        "balances": balances,
+        "positions": positions,
+        "ts": int(time.time()),
+    }
+    if EXCHANGE_DEBUG and hint:
+        info["_hint"] = hint
+    return info
+
+if __name__ == "__main__":
+    print(json.dumps(get_account_overview(), indent=2))
