@@ -1,99 +1,105 @@
-import os
-import time
-import requests
+# execution/telegram_utils.py — Phase 4.1
+from __future__ import annotations
+
+import os, time
 from datetime import datetime, timezone
+from typing import List
 
-# Environment variables for Telegram
-TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "0") == "1"
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-CHAT_ID = os.getenv("CHAT_ID", "")
+try:
+    import requests
+except Exception:
+    requests = None  # handled below
 
-# Cooldown state
-_last_alert_time = {}
-_last_dd_sent = {}
-_last_summary_ts = None
 
-def should_send_alert(strategy, alert_type, dd_value=None, threshold=0.5, cooldown_minutes=5):
-    """Decide whether to send an alert based on cooldown and threshold logic."""
-    key = f"{strategy}:{alert_type}"
-    now = time.time()
-    last_time = _last_alert_time.get(key, 0)
-    last_dd = _last_dd_sent.get(key, None)
+# --- Env helpers ---
+def _b(x: str) -> bool:
+    return str(x).strip().lower() in ("1", "true", "yes", "on")
 
-    if alert_type == "trade":
-        _last_alert_time[key] = now
-        return True
-    if last_dd is None:
-        _last_dd_sent[key] = dd_value
-        _last_alert_time[key] = now
-        return True
-    if now - last_time > cooldown_minutes * 60:
-        _last_dd_sent[key] = dd_value
-        _last_alert_time[key] = now
-        return True
-    if dd_value is not None and dd_value < last_dd - threshold:
-        _last_dd_sent[key] = dd_value
-        _last_alert_time[key] = now
-        return True
-    return False
+def _env():
+    return {
+        "enabled": _b(os.getenv("TELEGRAM_ENABLED", "0")),
+        "token": os.getenv("BOT_TOKEN", "").strip(),
+        "chat":  os.getenv("CHAT_ID", "").strip(),
+    }
 
-def should_send_summary(min_interval_sec: int = 3600) -> bool:
-    """Rate-limit investor summaries to max one per min_interval_sec."""
-    global _last_summary_ts
-    now_ts = datetime.now(timezone.utc).timestamp()
-    if _last_summary_ts is None or (now_ts - _last_summary_ts) >= min_interval_sec:
-        _last_summary_ts = now_ts
-        return True
-    return False
+def _utc() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
+
+# --- Core send ---
 def send_telegram(message: str, silent: bool = False) -> bool:
-    """Send a Telegram message if enabled, fail gracefully."""
-    if not TELEGRAM_ENABLED:
-        print("❌ Telegram disabled. Skipping message.")
+    env = _env()
+    if not env["enabled"]:
+        print("❌ Telegram disabled (TELEGRAM_ENABLED!=1).", flush=True)
         return False
-    if not BOT_TOKEN or not CHAT_ID:
-        print("❌ Telegram credentials not set. Skipping message.")
+    if not env["token"] or not env["chat"]:
+        print(f"❌ Telegram missing creds (BOT_TOKEN len={len(env['token'])}, CHAT_ID set={bool(env['chat'])}).", flush=True)
+        return False
+    if requests is None:
+        print("❌ Telegram cannot import requests.", flush=True)
         return False
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{env['token']}/sendMessage"
         payload = {
-            "chat_id": CHAT_ID,
-            "text": f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n{message}",
-            "disable_notification": silent
+            "chat_id": env["chat"],
+            "text": f"{_utc()}\n{message}",
+            "disable_notification": bool(silent),
         }
-        resp = requests.post(url, json=payload, timeout=10)
-        if resp.status_code == 200:
-            print("✅ Telegram message sent.")
+        r = requests.post(url, json=payload, timeout=15)
+        if r.ok:
+            print("✅ Telegram message sent.", flush=True)
             return True
-        else:
-            print(f"❌ Telegram send failed: {resp.text}")
-            return False
+        print(f"❌ Telegram send failed [{r.status_code}]: {r.text}", flush=True)
+        return False
     except Exception as e:
-        print(f"❌ Telegram send error: {e}")
+        print(f"❌ Telegram send error: {e}", flush=True)
         return False
 
-def send_trade_alert(strategy, symbol, side, qty, price, pnl_realized, pnl_unrealized, equity, dd, strategy_dd):
-    if should_send_alert(strategy, "trade"):
-        message = (
-            f"🧰 testnet-exec\n"
-            f"🚀 Trade Executed\n"
-            f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"📈 Symbol: {symbol}\n"
-            f"🔁 Side: {side}\n"
-            f"💸 Qty: {qty:.8f}\n"
-            f"💰 Price: {price} USDT\n"
-            f"🧠 Strategy: {strategy}\n"
-            f"📊 PnL/NAV: Realized: {pnl_realized:.2f} | Unrealized: {pnl_unrealized:.2f} | Equity: {equity:.2f} | DD: {dd:.2f}% | Strategy DD: {strategy_dd:.2f}%"
-        )
-        send_telegram(message)
 
-def send_drawdown_alert(strategy, dd, equity):
-    if should_send_alert(strategy, "drawdown", dd_value=dd, threshold=0.5, cooldown_minutes=5):
-        message = (
-            f"🧰 testnet-exec\n"
-            f"⚠️ Drawdown Alert\n"
-            f"🧠 Strategy: {strategy}\n"
-            f"📉 Drawdown: {dd:.2f}%\n"
-            f"💼 Equity: {equity:.2f}"
-        )
-        send_telegram(message)
+# --- Cadence / rate limiting ---
+_last_summary_ts: float | None = None
+_last_dd_ts: float | None = None
+
+def should_send_summary(last_sent_ts: float | None, minutes: int) -> bool:
+    now = time.time()
+    if not last_sent_ts:
+        return True
+    return (now - float(last_sent_ts)) >= max(60, minutes * 60)
+
+
+# --- Message helpers used by executor_live.py ---
+def send_heartbeat(equity: float, peak: float, dd_pct: float, realized: float, unrealized: float, positions_top: List[str]):
+    msg = (
+        f"💓 Heartbeat\n"
+        f"Equity: {equity:,.2f} | Peak: {peak:,.2f} | DD: {dd_pct*100:+.2f}%\n"
+        f"PnL — R: {realized:,.2f} | U: {unrealized:,.2f}\n"
+        f"Top: {', '.join(positions_top) if positions_top else '—'}"
+    )
+    send_telegram(msg, silent=True)
+
+def send_trade_alert(symbol: str, side: str, qty: float, fill_price: float, realized: float, unrealized: float):
+    msg = (
+        f"🔔 {symbol} {side} {qty:g} @ {fill_price:,.2f}\n"
+        f"R: {realized:,.2f} | U: {unrealized:,.2f}"
+    )
+    send_telegram(msg, silent=False)
+
+def send_drawdown_alert(drawdown_pct: float, threshold_pct: float, peak_equity: float, equity: float):
+    global _last_dd_ts
+    now = time.time()
+    # rate‑limit to once per 15 minutes
+    if _last_dd_ts and (now - _last_dd_ts) < 15 * 60:
+        return
+    _last_dd_ts = now
+    msg = (
+        f"⚠️ Drawdown Alert\n"
+        f"DD: {drawdown_pct*100:.2f}% (thr={threshold_pct*100:.2f}%)\n"
+        f"Equity: {equity:,.2f} | Peak: {peak_equity:,.2f}"
+    )
+    send_telegram(msg, silent=False)
+
+
+# --- CLI smoke test ---
+if __name__ == "__main__":
+    ok = send_telegram("🚀 executor/telegram_utils.py smoke: hello.")
+    print("send_ok:", ok)

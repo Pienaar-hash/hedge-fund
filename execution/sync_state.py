@@ -1,212 +1,384 @@
-# execution/sync_state.py — Firestore-safe sync daemon
 
-import json
+# execution/sync_state.py — Phase‑4.1 “Stability & Signals” (hardened sync)
+#
+# What this does
+#  - Reads local files (nav_log.json, peak_state.json, synced_state.json)
+#  - Applies cutoff filtering to NAV history if configured
+#  - Guards against zero-equity rows and empty tails
+#  - Computes exposure KPIs from positions
+#  - Derives peak from best available source (file, rows, existing Firestore doc)
+#  - Upserts compact docs to Firestore:
+#       hedge/{ENV}/state/nav
+#       hedge/{ENV}/state/positions
+#       hedge/{ENV}/state/leaderboard
+#
+# Env knobs
+#  ENV=prod|dev
+#  NAV_CUTOFF_ISO="2025-08-01T00:00:00+00:00"   # preferred explicit cutoff
+#  NAV_CUTOFF_SECAGO=86400                       # or relative cutoff in seconds
+#  SYNC_INTERVAL_SEC=20
+#
+from __future__ import annotations
+
 import os
+import json
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, List, Optional, Tuple
 
-# Import get_db with a guard for system python
+# ---------------- Firestore import (supports multiple layouts) ---------------
 try:
-    from utils.firestore_client import get_db  # type: ignore
-except Exception:
-    import sys
-    ROOT = "/root/hedge-fund"
-    if ROOT not in sys.path:
-        sys.path.insert(0, ROOT)
-    from utils.firestore_client import get_db  # type: ignore
+    # legacy: project root
+    from firestore_client import get_db  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    try:
+        # sibling package layout
+        from utils.firestore_client import get_db  # type: ignore
+    except ModuleNotFoundError:
+        # monorepo package layout
+        from hedge_fund.utils.firestore_client import get_db  # type: ignore
 
-# Config
-NAV_LOG = os.getenv("NAV_LOG", "nav_log.json")            # local NAV (JSON array or JSON-Lines)
-PEAK_STATE = os.getenv("PEAK_STATE", "peak_state.json")   # {"peak": float, "updated_at": iso}
-STATE_FILE = os.getenv("STATE_FILE", "synced_state.json") # {"items":[...]} or list
-SYNC_INTERVAL_SEC = int(os.getenv("SYNC_INTERVAL_SEC", "20"))
-MAX_POINTS = int(os.getenv("NAV_MAX_POINTS", "1000"))
+# ------------------------------- Files ---------------------------------------
+NAV_LOG: str = "nav_log.json"
+PEAK_STATE: str = "peak_state.json"
+SYNCED_STATE: str = "synced_state.json"
+
+# ------------------------------ Settings ------------------------------------
+MAX_POINTS: int = 500  # dashboard series cap
+
+
+# ------------------------------- Utilities ----------------------------------
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-def _norm_t(rec: Dict[str, Any]) -> str | None:
-    """Normalize time key: accept 't', 'ts', or 'timestamp'."""
-    for k in ("t", "ts", "timestamp"):
-        if k in rec and rec[k]:
-            return str(rec[k])
+
+def _parse_iso(ts: str) -> Optional[datetime]:
+    if not ts:
+        return None
+    try:
+        if ts.endswith("Z"):
+            ts = ts.replace("Z", "+00:00")
+        return datetime.fromisoformat(ts)
+    except Exception:
+        return None
+
+
+def _cutoff_dt() -> Optional[datetime]:
+    """Cutoff datetime from env: NAV_CUTOFF_ISO (preferred) or NAV_CUTOFF_SECAGO."""
+    iso = os.getenv("NAV_CUTOFF_ISO")
+    if iso:
+        dt = _parse_iso(iso)
+        if dt:
+            return dt
+    sec = os.getenv("NAV_CUTOFF_SECAGO")
+    if sec:
+        try:
+            s = int(sec)
+            return datetime.now(timezone.utc) - timedelta(seconds=s)
+        except Exception:
+            pass
     return None
 
+
+# ----------------------------- File readers ---------------------------------
+
 def _read_nav_rows(path: str) -> List[Dict[str, Any]]:
+    """Read nav_log.json list and normalize timestamps to key 't'."""
     rows: List[Dict[str, Any]] = []
     if not os.path.exists(path):
         return rows
     try:
-        # First try whole-file JSON (array)
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            for rec in data:
-                if not isinstance(rec, dict):
-                    continue
-                t = _norm_t(rec)
-                eq = rec.get("equity")
-                if t is None or eq is None:
-                    continue
-                rows.append({"t": t, "equity": float(eq)})
-            return rows
+            cut = _cutoff_dt()
+            for p in data:
+                # normalize timestamp key for series
+                ts = p.get("timestamp") or p.get("t")
+                if ts and "t" not in p:
+                    p = {**p, "t": ts}
+                # enforce cutoff if configured
+                if cut:
+                    dt = _parse_iso(p.get("t") or "")
+                    if dt and dt < cut:
+                        continue
+                rows.append(p)
     except Exception:
-        # Fall through to JSONL parse
         pass
-
-    # JSON-Lines fallback
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-                if not isinstance(rec, dict):
-                    continue
-                t = _norm_t(rec)
-                eq = rec.get("equity")
-                if t is None or eq is None:
-                    continue
-                rows.append({"t": t, "equity": float(eq)})
-            except Exception:
-                continue
     return rows
 
-def _read_peak(path: str) -> float:
+
+def _read_peak_file(path: str) -> float:
     if not os.path.exists(path):
         return 0.0
     try:
         with open(path, "r", encoding="utf-8") as f:
-            d = json.load(f) or {}
-            return float(
-                d.get("peak")
-                or d.get("peak_equity")
-                or (d.get("portfolio") or {}).get("peak_equity")
-                or 0.0
-            )
+            j = json.load(f) or {}
+        return float(j.get("peak_equity") or 0.0)
     except Exception:
         return 0.0
 
-def _read_positions(path: str) -> Dict[str, Any]:
+
+def _read_positions_snapshot(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
-        return {"items": []}
+        return {"items": [], "updated_at": _now_iso()}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            d = json.load(f) or {}
-            if isinstance(d, dict) and "items" in d:
-                return {"items": d.get("items") or []}
-            if isinstance(d, list):
-                return {"items": d}
-            return {"items": []}
+            j = json.load(f) or {}
+        items = j.get("items") or []
+        return {"items": items, "updated_at": j.get("updated_at") or _now_iso()}
     except Exception:
-        return {"items": []}
+        return {"items": [], "updated_at": _now_iso()}
 
-def commit_nav(db, env: str, rows: List[Dict[str, Any]], peak: float) -> Dict[str, Any]:
+
+# --- KPI tail reader for nav card metrics
+def _read_nav_tail_metrics(path: str) -> Dict[str, float]:
+    """Return last point's metrics for nav KPIs (safe defaults)."""
+    out = {"total_equity": 0.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0, "drawdown": 0.0}
+    if not os.path.exists(path):
+        return out
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list) and data:
+            last = data[-1]
+            out["total_equity"]   = float(last.get("equity", 0.0))
+            out["realized_pnl"]   = float(last.get("realized", 0.0))
+            out["unrealized_pnl"] = float(last.get("unrealized", 0.0))
+            out["drawdown"]       = float(last.get("drawdown_pct", 0.0))
+    except Exception:
+        pass
+    return out
+
+
+# --------------------------- Filtering / metrics -----------------------------
+
+def _is_good_nav_row(p: Dict[str, Any]) -> bool:
+    try:
+        eq = float(p.get("equity") or 0.0)
+    except Exception:
+        eq = 0.0
+    if p.get("heartbeat_reason") == "exchange_unhealthy":
+        return False
+    return eq > 0.0
+
+
+def _compute_peak_from_rows(rows: List[Dict[str, Any]]) -> float:
+    try:
+        return max((float(p.get("equity") or 0.0) for p in rows), default=0.0)
+    except Exception:
+        return 0.0
+
+
+# --------------------------- Position normalization -------------------------
+
+def _normalize_positions_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    now = _now_iso()
+    for it in (items or []):
+        try:
+            qty = float(it.get("qty", 0.0))
+            entry = float(it.get("entry", it.get("entry_price", 0.0)))
+            mark  = float(it.get("mark_price", it.get("mark", it.get("latest_price", 0.0))))
+            pnl   = (mark - entry) * qty  # recompute; don't trust inbound 'pnl'
+            side  = it.get("side") or ("LONG" if qty >= 0 else "SHORT")
+            out.append({
+                "symbol": it.get("symbol"),
+                "side": side,
+                "qty": qty,
+                "entry_price": entry,
+                "mark_price": mark,
+                "pnl": pnl,
+                "leverage": int(float(it.get("leverage", 1))),
+                "notional": abs(qty) * mark,
+                "ts": it.get("updated_at", now),
+            })
+        except Exception:
+            continue
+    return out
+
+
+# ------------------------------ Exposure KPIs --------------------------------
+
+def _exposure_from_positions(items: List[Dict[str, Any]]) -> Dict[str, float]:
+    gross = net = 0.0
+    largest = 0.0
+    for it in (items or []):
+        try:
+            qty = float(it.get("qty", 0.0))
+            price = float(it.get("mark_price", it.get("mark", it.get("latest_price", 0.0))))
+            pv = abs(qty) * price
+            gross += pv
+            net += qty * price
+            largest = max(largest, pv)
+        except Exception:
+            continue
+    return {
+        "gross_exposure": gross,
+        "net_exposure": net,
+        "largest_position_value": largest,
+    }
+
+
+# ----------------------------- Firestore helpers ----------------------------
+
+def _get_env() -> str:
+    return os.getenv("ENV", "dev")
+
+def _nav_doc_ref(db):
+    return db.collection("hedge").document(_get_env()).collection("state").document("nav")
+
+def _pos_doc_ref(db):
+    return db.collection("hedge").document(_get_env()).collection("state").document("positions")
+
+def _lb_doc_ref(db):
+    return db.collection("hedge").document(_get_env()).collection("state").document("leaderboard")
+
+def _maybe_fetch_nav_doc(db) -> Dict[str, Any]:
+    try:
+        snap = _nav_doc_ref(db).get()
+        if snap and snap.exists:
+            return snap.to_dict() or {}
+    except Exception:
+        pass
+    return {}
+
+def _commit_nav(db, rows: List[Dict[str, Any]], peak: float) -> Dict[str, Any]:
+    tail = _read_nav_tail_metrics(NAV_LOG)  # include KPIs for dashboard cards
     if not rows:
-        payload = {"series": [], "peak_equity": float(peak), "updated_at": _now_iso()}
+        payload = {"series": [], "peak_equity": float(peak), "updated_at": _now_iso(), **tail}
     else:
         slim = rows[-MAX_POINTS:]
-        payload = {"series": slim, "peak_equity": float(peak), "updated_at": slim[-1]["t"]}
-    (db.collection("hedge").document(env).collection("state")
-       .document("nav").set(payload, merge=True))
+        payload = {
+            "series": slim,
+            "peak_equity": float(peak),
+            "updated_at": slim[-1].get("t", _now_iso()),
+            **tail
+        }
+    _nav_doc_ref(db).set(payload, merge=True)
     return payload
 
-def commit_positions(db, env: str, positions: Dict[str, Any]) -> Dict[str, Any]:
-    payload = {"items": positions.get("items") or [], "updated_at": _now_iso()}
-    (db.collection("hedge").document(env).collection("state")
-       .document("positions").set(payload, merge=True))
+def _commit_positions(db, positions: Dict[str, Any]) -> Dict[str, Any]:
+    items = positions.get("items") or []
+    norm = _normalize_positions_items(items)  # normalize to dashboard schema
+    exp  = _exposure_from_positions(norm)
+    payload = {"items": norm, "updated_at": _now_iso(), **exp}
+    _pos_doc_ref(db).set(payload, merge=True)
     return payload
 
-def commit_leaderboard(db, env: str, positions: Dict[str, Any]) -> Dict[str, Any]:
-    count = len(positions.get("items") or [])
-    payload = {"items": [{"name": "portfolio", "count": count}], "updated_at": _now_iso()}
-    (db.collection("hedge").document(env).collection("state")
-       .document("leaderboard").set(payload, merge=True))
+def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
+    """Minimal leaderboard: aggregate notional and pnl by symbol."""
+    items = positions.get("items") or []
+    agg: Dict[str, Dict[str, float]] = {}
+    for it in items:
+        sym = it.get("symbol") or "UNKNOWN"
+        agg.setdefault(sym, {"notional": 0.0, "pnl": 0.0})
+        try:
+            agg[sym]["notional"] += float(it.get("notional", 0.0))
+            agg[sym]["pnl"] += float(it.get("pnl", 0.0))
+        except Exception:
+            pass
+    leaderboard = sorted(
+        [{"symbol": k, "notional": v["notional"], "pnl": v["pnl"]} for k, v in agg.items()],
+        key=lambda r: r["notional"], reverse=True,
+    )
+    payload = {"items": leaderboard, "updated_at": _now_iso()}
+    _lb_doc_ref(db).set(payload, merge=True)
     return payload
 
-def commit_live(db, env: str, nav: Dict[str, Any], positions: Dict[str, Any], leaderboard: Dict[str, Any]) -> None:
-    live = {"nav": nav, "positions": positions, "leaderboard": leaderboard, "updated_at": _now_iso()}
-    (db.collection("hedge").document(env).collection("state")
-       .document("live").set(live, merge=True))
 
-def sync_once(db=None, env: str | None = None) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    if db is None:
-        db = get_db()
-    env = env or os.getenv("ENV", "prod")
-    rows = _read_nav_rows(NAV_LOG)
-    peak = _read_peak(PEAK_STATE)
-    positions = _read_positions(STATE_FILE)
-    nav_payload = commit_nav(db, env, rows, peak)
-    pos_payload = commit_positions(db, env, positions)
-    lb_payload  = commit_leaderboard(db, env, positions)
-    commit_live(db, env, nav_payload, pos_payload, lb_payload)
+# ------------------------------ Public API ----------------------------------
+
+def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """
+    Read files -> filter/compute -> upsert Firestore once.
+    Returns (nav_payload, positions_payload, leaderboard_payload).
+    """
+    db = get_db()
+
+    # NAV rows with cutoff + zero-equity filter
+    rows = [p for p in _read_nav_rows(NAV_LOG) if _is_good_nav_row(p)]
+
+    # Tail equity guard: avoid writing garbage when executor/sync is cold
+    tail_kpis = _read_nav_tail_metrics(NAV_LOG)
+    if tail_kpis.get("total_equity", 0.0) <= 0.0:
+        # still log positions exposure to nav doc (merge), but skip full write
+        try:
+            pos_snap = _read_positions_snapshot(SYNCED_STATE)
+            exp = _exposure_from_positions(pos_snap.get("items") or [])
+            if exp:
+                _nav_doc_ref(db).set(exp | {"updated_at": _now_iso()}, merge=True)
+        except Exception:
+            pass
+        return {}, {}, {}
+
+    # Peak: choose the best available source in this order:
+    #  1) existing Firestore nav doc (peak_equity)
+    #  2) file peak_state.json
+    #  3) computed from filtered rows
+    nav_existing = _maybe_fetch_nav_doc(db)
+    peak_doc = 0.0
+    try:
+        peak_doc = float(nav_existing.get("peak_equity") or 0.0)
+    except Exception:
+        pass
+    peak_file = _read_peak_file(PEAK_STATE)
+    peak_rows = _compute_peak_from_rows(rows)
+
+    # If we're filtering history (cutoff active), prefer rows-based peak (local regime)
+    cutoff_active = bool(os.getenv("NAV_CUTOFF_ISO") or os.getenv("NAV_CUTOFF_SECAGO"))
+    if cutoff_active:
+        peak = max(peak_rows, peak_doc, peak_file) if peak_rows > 0 else max(peak_doc, peak_file)
+    else:
+        peak = max(peak_doc, peak_file, peak_rows)
+
+    # Positions snapshot (executor populates synced_state.json)
+    pos_snap = _read_positions_snapshot(SYNCED_STATE)
+
+    # Firestore upserts
+    nav_payload = _commit_nav(db, rows, peak)
+
+    # attach exposure locally for prints and persist to the same doc
+    exposure = _exposure_from_positions(pos_snap.get("items") or [])
+    if exposure:
+        nav_payload.update(exposure)
+        _nav_doc_ref(db).set(exposure, merge=True)
+
+    pos_payload = _commit_positions(db, pos_snap)
+    lb_payload  = _commit_leaderboard(db, pos_snap)
+
+    # Console log
+    try:
+        updated_at = nav_payload.get("updated_at")
+        print(f"[sync] upsert ok: points={len(nav_payload.get('series') or [])} "
+              f"peak={nav_payload.get('peak_equity')} at={updated_at}", flush=True)
+    except Exception:
+        pass
+
     return nav_payload, pos_payload, lb_payload
 
-def run_daemon() -> None:
-    db = get_db()
-    env = os.getenv("ENV", "prod")
-    interval = max(5, SYNC_INTERVAL_SEC)
-    print(f"[sync] starting: ENV={env} interval={interval}s files=({NAV_LOG}, {PEAK_STATE}, {STATE_FILE})")
+
+# --------------------------------- Runner -----------------------------------
+
+def _interval_seconds() -> int:
+    try:
+        return int(os.getenv("SYNC_INTERVAL_SEC", "20"))
+    except Exception:
+        return 20
+
+
+def main_loop() -> None:
+    env = os.getenv("ENV", "dev")
+    print("[sync] starting: ENV=%s interval=%ss files=(%s, %s, %s)" %
+          (env, _interval_seconds(), NAV_LOG, PEAK_STATE, SYNCED_STATE), flush=True)
     while True:
         try:
-            nav, pos, lb = sync_once(db=db, env=env)
-            n = len(nav.get("series") or [])
-            print(f"[sync] upsert ok: points={n} peak={nav.get('peak_equity')} at={nav.get('updated_at')}")
+            sync_once()
         except Exception as e:
-            print(f"[sync] error: {e}")
-        time.sleep(interval)
+            print(f"[sync] ERROR: {e}", flush=True)
+        time.sleep(_interval_seconds())
+
 
 if __name__ == "__main__":
-    run_daemon()
-
-# ---- Back-compat shims for executor ----
-def _norm_point(rec):
-    # accept {"t":..} or {"ts":..} or {"timestamp":..}
-    t = rec.get("t") or rec.get("ts") or rec.get("timestamp")
-    return {"t": t, "equity": float(rec.get("equity", 0.0))} if t else None
-
-def sync_nav(db, payload: dict, env: str):
-    """
-    Expected payload (executor): {
-        "series": [{"ts" or "t" or "timestamp": iso, "equity": float}],
-        "total_equity": float,
-        "realized_pnl": float,
-        "unrealized_pnl": float,
-        "peak_equity": float,
-        "drawdown": float
-    }
-    Writes Firestore-safe shape:
-      nav: {
-        series: [{"t": iso, "equity": float}, ...],
-        peak_equity, total_equity, realized_pnl, unrealized_pnl, drawdown, updated_at
-      }
-    """
-    series_in = payload.get("series") or []
-    series = []
-    for rec in series_in:
-        p = _norm_point(rec if isinstance(rec, dict) else {})
-        if p:
-            series.append(p)
-    updated_at = series[-1]["t"] if series else _now_iso()
-    body = {
-        "series": series[-MAX_POINTS:],
-        "peak_equity": float(payload.get("peak_equity") or 0.0),
-        "total_equity": float(payload.get("total_equity") or 0.0),
-        "realized_pnl": float(payload.get("realized_pnl") or 0.0),
-        "unrealized_pnl": float(payload.get("unrealized_pnl") or 0.0),
-        "drawdown": float(payload.get("drawdown") or 0.0),
-        "updated_at": updated_at,
-    }
-    (db.collection("hedge").document(env).collection("state")
-       .document("nav").set(body, merge=True))
-
-def sync_positions(db, payload: dict, env: str):
-    items = payload.get("items") or []
-    body = {"items": items, "updated_at": _now_iso()}
-    (db.collection("hedge").document(env).collection("state")
-       .document("positions").set(body, merge=True))
-
-def sync_leaderboard(db, payload: dict, env: str):
-    items = payload.get("items") or []
-    body = {"items": items, "updated_at": _now_iso()}
-    (db.collection("hedge").document(env).collection("state")
-       .document("leaderboard").set(body, merge=True))
+    main_loop()

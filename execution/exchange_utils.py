@@ -1,198 +1,266 @@
-"""
-Exchange utilities with safe wrappers for Spot and USD-M Futures on Binance.
-- Select Futures via USE_FUTURES=1 (env). Otherwise defaults to Spot.
-- Testnet via BINANCE_TESTNET=1 (env).
-- Creds from API_KEY/API_SECRET or BINANCE_API_KEY/BINANCE_API_SECRET.
-- Functions never hard-crash; they return neutral data and error notes.
-- Outputs are normalized for executor consumption.
-"""
+# execution/exchange_utils.py
 from __future__ import annotations
-import os
-from typing import Any, Dict, Tuple, List, Optional
 
-# Spot client
-try:
-    from binance.client import Client as SpotClient
-except Exception:  # library might not be installed
-    SpotClient = None  # type: ignore
+import os, hmac, time, json, hashlib
+from typing import Any, Dict, List, Optional, Tuple
 
-# USD-M futures client
 try:
-    from binance.um_futures import UMFutures
+    import requests  # type: ignore
 except Exception:
-    UMFutures = None  # type: ignore
-
-
-# ------------------ helpers ------------------
-
-def _get_env(name: str, alt: str | None = None, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(name)
-    if v is None or v == "":
-        if alt is not None:
-            v = os.getenv(alt, default)
-        else:
-            v = default
-    return v
-
+    requests = None
 
 def _bool_env(name: str, default: bool = False) -> bool:
-    return os.getenv(name, "1" if default else "0") in ("1", "true", "TRUE", "yes", "YES")
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
+TESTNET = _bool_env("BINANCE_TESTNET", False)
+USE_FUTURES = _bool_env("USE_FUTURES", False) or _bool_env("BINANCE_FUTURES", False)
+DRY_RUN = _bool_env("DRY_RUN", False)
+EXCHANGE_DEBUG = _bool_env("EXCHANGE_DEBUG", False)
 
-def _clients() -> Tuple[Optional[SpotClient], Optional[UMFutures], Dict[str, Any]]:
-    key = _get_env("API_KEY", "BINANCE_API_KEY")
-    sec = _get_env("API_SECRET", "BINANCE_API_SECRET")
-    testnet = _bool_env("BINANCE_TESTNET", False)
-    use_futures = _bool_env("USE_FUTURES", False)
+SPOT_BASE = "https://testnet.binance.vision" if TESTNET else "https://api.binance.com"
+FAPI_BASE = "https://testnet.binancefuture.com" if TESTNET else "https://fapi.binance.com"
 
-    info = {"testnet": testnet, "use_futures": use_futures}
+API_KEY = os.getenv("BINANCE_API_KEY", "")
+API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    spot, fut = None, None
+def _ts() -> int:
+    return int(time.time() * 1000)
+
+def _headers() -> Dict[str, str]:
+    return {"X-MBX-APIKEY": API_KEY} if API_KEY else {}
+
+def _sign(params: Dict[str, Any]) -> str:
+    parts = []
+    for k, v in params.items():
+        if v is None:
+            continue
+        parts.append(f"{k}={v}")
+    query = "&".join(parts)
+    return hmac.new(API_SECRET.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+
+def _request(
+    method: str,
+    path: str,
+    *,
+    futures: bool = False,
+    signed: bool = False,
+    params: Optional[Dict[str, Any]] = None,
+    timeout: int = 10,
+) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[str]]:
+    if requests is None:
+        return None, None, "requests-not-available"
+
+    base = FAPI_BASE if futures else SPOT_BASE
+    url = f"{base}{path}"
+    params = dict(params or {})
+
+    if signed:
+        if "timestamp" not in params:
+            params["timestamp"] = _ts()
+        if "recvWindow" not in params:
+            params["recvWindow"] = 5000
+        params["signature"] = _sign(params)
+
     try:
-        if not use_futures and SpotClient is not None and key and sec:
-            spot = SpotClient(api_key=key, api_secret=sec, testnet=testnet)
+        m = method.upper()
+        if m == "GET":
+            r = requests.get(url, params=params, headers=_headers(), timeout=timeout)
+        elif m == "POST":
+            r = requests.post(url, params=params, headers=_headers(), timeout=timeout)
+        else:
+            r = requests.request(m, url, params=params, headers=_headers(), timeout=timeout)
+        try:
+            data = r.json()
+        except Exception:
+            data = None
+        if r.ok:
+            return data, r.status_code, None
+        return data, r.status_code, getattr(r, "text", "http-error")
     except Exception as e:
-        info["spot_error"] = str(e)
-        spot = None
+        return None, None, str(e)
+
+def get_price(symbol: str) -> float:
     try:
-        if use_futures and UMFutures is not None and key and sec:
-            fut = UMFutures(key=key, secret=sec, testnet=testnet)
-    except Exception as e:
-        info["futures_error"] = str(e)
-        fut = None
-
-    return spot, fut, info
-
-
-# ------------------ public API ------------------
-
-def get_price(symbol: str) -> Dict[str, Any]:
-    """Return {symbol, price} or {symbol, price:0, _error}. Works for both modes.
-    """
-    spot, fut, meta = _clients()
-    try:
-        if meta.get("use_futures") and fut is not None:
-            r = fut.ticker_price(symbol=symbol)
-            return {"symbol": symbol, "price": float(r["price"]) }
-        if spot is not None:
-            r = spot.get_symbol_ticker(symbol=symbol)
-            return {"symbol": symbol, "price": float(r["price"]) }
-        return {"symbol": symbol, "price": 0.0, "_error": "client_unavailable"}
-    except Exception as e:
-        return {"symbol": symbol, "price": 0.0, "_error": str(e)}
-
-
-def get_balances() -> Dict[str, Any]:
-    """Spot: returns {asset: free}
-       Futures: returns {asset: balance} (wallet balance map)
-       On error, returns minimal neutral map with _error
-    """
-    spot, fut, meta = _clients()
-    try:
-        if meta.get("use_futures") and fut is not None:
-            # futures account balances
-            bals = fut.balance()  # list of {asset, balance, ...}
-            return {b["asset"]: float(b.get("balance", 0.0)) for b in bals}
-        if spot is not None:
-            acct = spot.get_account()
-            return {b["asset"]: float(b.get("free", 0.0)) for b in acct.get("balances", [])}
-        return {"USDT": 0.0, "_error": "client_unavailable"}
-    except Exception as e:
-        return {"USDT": 0.0, "_error": str(e)}
-
-
-def get_positions() -> List[Dict[str, Any]]:
-    """Futures: list of open positions with qty != 0.
-       Spot: returns empty list (spot doesn't have persistent positions in the same sense).
-    """
-    spot, fut, meta = _clients()
-    try:
-        if meta.get("use_futures") and fut is not None:
-            out: List[Dict[str, Any]] = []
-            for p in fut.get_position_risk():
-                amt = float(p.get("positionAmt", 0.0))
-                if amt == 0.0:
-                    continue
-                entry = float(p.get("entryPrice", 0.0))
-                sym = p.get("symbol")
-                out.append({
-                    "symbol": sym,
-                    "qty": amt,
-                    "entry_price": entry,
-                    "side": "LONG" if amt > 0 else "SHORT",
-                    "leverage": int(float(p.get("leverage", 1))),
-                })
-            return out
-        # Spot equivalent: return empty; executor handles inventory separately if needed.
-        return []
+        sym = str(symbol).upper()
+        if USE_FUTURES:
+            data, _, _ = _request("GET", "/fapi/v1/ticker/price", futures=True, params={"symbol": sym})
+        else:
+            data, _, _ = _request("GET", "/api/v3/ticker/price", futures=False, params={"symbol": sym})
+        if isinstance(data, dict) and "price" in data:
+            return float(data["price"])
     except Exception:
+        pass
+    return 0.0
+
+def get_balances() -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    try:
+        if USE_FUTURES:
+            # primary
+            data, status, err = _request("GET", "/fapi/v2/balance", futures=True, signed=True)
+            if isinstance(data, list) and data:
+                for row in data:
+                    try:
+                        asset = row.get("asset")
+                        bal = float(row.get("balance", row.get("withdrawAvailable", 0.0)))
+                        if asset:
+                            out[str(asset).upper()] = bal
+                    except Exception:
+                        continue
+            # fallback
+            if not out:
+                acct, status2, err2 = _request("GET", "/fapi/v2/account", futures=True, signed=True)
+                if isinstance(acct, dict):
+                    for a in acct.get("assets", []) or []:
+                        try:
+                            asset = a.get("asset")
+                            bal = float(a.get("walletBalance", 0.0))
+                            if asset:
+                                out[str(asset).upper()] = bal
+                        except Exception:
+                            continue
+                if EXCHANGE_DEBUG and not out:
+                    out["_status"] = status2
+                    out["_error"] = err2
+            elif EXCHANGE_DEBUG and not out:
+                out["_status"] = status
+                out["_error"] = err
+        else:
+            data, status, err = _request("GET", "/api/v3/account", futures=False, signed=True)
+            if isinstance(data, dict):
+                for b in data.get("balances", []) or []:
+                    try:
+                        asset = b.get("asset")
+                        free = float(b.get("free", 0.0))
+                        if asset:
+                            out[str(asset).upper()] = free
+                    except Exception:
+                        continue
+            if EXCHANGE_DEBUG and not out:
+                out["_status"] = status
+                out["_error"] = err
+    except Exception:
+        pass
+    return out
+
+def _pos_side(qty: float) -> str:
+    try:
+        return "LONG" if float(qty) >= 0 else "SHORT"
+    except Exception:
+        return "LONG"
+
+def get_positions(symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+    if not USE_FUTURES:
         return []
-
-
-def cancel_all_orders(symbol: Optional[str] = None) -> Dict[str, Any]:
-    """Cancel open orders. If symbol None, cancel all supported symbols.
-    Works for both modes, best-effort.
-    """
-    spot, fut, meta = _clients()
+    out: List[Dict[str, Any]] = []
+    params: Dict[str, Any] = {}
+    if symbol:
+        params["symbol"] = str(symbol).upper()
     try:
-        if meta.get("use_futures") and fut is not None:
-            if symbol:
+        data, status, err = _request("GET", "/fapi/v2/positionRisk", futures=True, signed=True, params=params)
+        if isinstance(data, list):
+            now = int(time.time())
+            for row in data:
                 try:
-                    fut.cancel_open_orders(symbol=symbol)
+                    sym = row.get("symbol")
+                    qty = float(row.get("positionAmt", 0.0))
+                    if abs(qty) < 1e-12:
+                        continue
+                    entry = float(row.get("entryPrice", 0.0))
+                    mark = float(row.get("markPrice", 0.0))
+                    lev = int(float(row.get("leverage", 1)))
+                    pnl = float(row.get("unRealizedProfit", 0.0))
+                    out.append({
+                        "symbol": sym,
+                        "side": _pos_side(qty),
+                        "qty": qty,
+                        "entry_price": entry,
+                        "mark_price": mark,
+                        "leverage": lev,
+                        "notional": abs(qty) * mark,
+                        "pnl": pnl,
+                        "updated_at": now,
+                    })
                 except Exception:
-                    pass
-            else:
-                for o in fut.get_open_orders():
-                    try:
-                        fut.cancel_order(symbol=o["symbol"], orderId=o["orderId"])  # type: ignore
-                    except Exception:
-                        pass
-            return {"ok": True}
-        if spot is not None:
-            if symbol:
-                try:
-                    spot.cancel_open_orders(symbol=symbol)
-                except Exception:
-                    pass
-            else:
-                # Best-effort: fetch tickers to derive symbols and cancel
-                for t in spot.get_all_tickers():
-                    sym = t.get("symbol")
-                    try:
-                        spot.cancel_open_orders(symbol=sym)
-                    except Exception:
-                        pass
-            return {"ok": True}
-        return {"ok": False, "_error": "client_unavailable"}
-    except Exception as e:
-        return {"ok": False, "_error": str(e)}
+                    continue
+        if EXCHANGE_DEBUG and not out:
+            out = [{"_status": status, "_error": err}]
+    except Exception:
+        pass
+    return out
 
+def place_market_order(symbol: str, side: str, quantity: float, **kwargs) -> Dict[str, Any]:
+    symbol = str(symbol).upper()
+    side = str(side).upper()
+    qty = float(quantity)
+    if qty <= 0:
+        return {"ok": False, "avgPrice": None, "raw": {"error": "qty<=0"}}
 
-def place_market_order(symbol: str, side: str, quantity: float) -> Dict[str, Any]:
-    """Place a market order across modes. Returns {ok, order_id?, _error?}.
-    side: 'BUY' or 'SELL'
-    """
-    spot, fut, meta = _clients()
+    if DRY_RUN or requests is None:
+        px = get_price(symbol) or 0.0
+        return {"ok": True, "avgPrice": float(px) if px else None, "raw": {"dry_run": True, "symbol": symbol, "side": side, "qty": qty}}
+
     try:
-        side = side.upper()
-        if meta.get("use_futures") and fut is not None:
-            r = fut.new_order(symbol=symbol, side=side, type="MARKET", quantity=quantity)
-            return {"ok": True, "order_id": r.get("orderId")}
-        if spot is not None:
-            if side == "BUY":
-                r = spot.order_market_buy(symbol=symbol, quantity=quantity)
-            else:
-                r = spot.order_market_sell(symbol=symbol, quantity=quantity)
-            return {"ok": True, "order_id": r.get("orderId")}
-        return {"ok": False, "_error": "client_unavailable"}
+        if USE_FUTURES:
+            params = {"symbol": symbol, "side": side, "type": "MARKET", "quantity": qty}
+            if "positionSide" in kwargs and kwargs["positionSide"]:
+                params["positionSide"] = kwargs["positionSide"]
+            if "reduceOnly" in kwargs:
+                params["reduceOnly"] = "true" if bool(kwargs["reduceOnly"]) else "false"
+            data, status, err = _request("POST", "/fapi/v1/order", futures=True, signed=True, params=params)
+        else:
+            params = {"symbol": symbol, "side": side, "type": "MARKET", "quantity": qty}
+            data, status, err = _request("POST", "/api/v3/order", futures=False, signed=True, params=params)
+
+        if err:
+            return {"ok": False, "avgPrice": None, "raw": {"error": err, "status": status, "resp": data}}
+
+        avg = None
+        if isinstance(data, dict):
+            fills = data.get("fills")
+            if isinstance(fills, list) and fills:
+                try:
+                    notional = sum(float(f["price"]) * float(f.get("qty", 0)) for f in fills)
+                    qty_filled = sum(float(f.get("qty", 0)) for f in fills)
+                    if qty_filled > 0:
+                        avg = notional / qty_filled
+                except Exception:
+                    avg = None
+            if avg is None:
+                try:
+                    ap = data.get("avgPrice")
+                    if ap is not None:
+                        avg = float(ap)
+                except Exception:
+                    avg = None
+        if avg is None:
+            avg = get_price(symbol) or None
+        return {"ok": True, "avgPrice": avg, "raw": data}
     except Exception as e:
-        return {"ok": False, "_error": str(e)}
+        return {"ok": False, "avgPrice": None, "raw": {"error": str(e)}}
 
+def get_account_overview() -> Dict[str, Any]:
+    balances = get_balances()
+    positions = get_positions() if USE_FUTURES else []
+    hint = None
+    if USE_FUTURES and TESTNET and (not balances):
+        hint = "Futures Testnet: empty balances. Check key permissions, IP whitelist, and USD‑M wallet funding."
+    if USE_FUTURES and TESTNET and positions and isinstance(positions[0], dict) and positions[0].get("_error"):
+        hint = f"Position fetch error: {positions[0].get('_error')}"
+    info = {
+        "use_futures": USE_FUTURES,
+        "testnet": TESTNET,
+        "dry_run": DRY_RUN,
+        "balances": balances,
+        "positions": positions,
+        "ts": int(time.time()),
+    }
+    if EXCHANGE_DEBUG and hint:
+        info["_hint"] = hint
+    return info
 
-__all__ = [
-    "get_price",
-    "get_balances",
-    "get_positions",
-    "cancel_all_orders",
-    "place_market_order",
-]
+if __name__ == "__main__":
+    print(json.dumps(get_account_overview(), indent=2))

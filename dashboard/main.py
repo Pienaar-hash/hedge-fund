@@ -1,142 +1,122 @@
-import sys
+
 import os
+import sys
+from typing import Any, Dict, List, Tuple
 import pandas as pd
 import streamlit as st
-from typing import Any, Dict, List, Tuple
 
-# Force absolute project root in sys.path for imports
-ROOT = "/root/hedge-fund"
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+# Ensure the project root is importable (adjust if your project root differs)
+PROJECT_ROOT = "/root/hedge-fund"
+if PROJECT_ROOT not in sys.path and os.path.isdir(PROJECT_ROOT):
+    sys.path.insert(0, PROJECT_ROOT)
 
-try:
-    from utils.firestore_client import get_db
-except ModuleNotFoundError as e:
-    raise ImportError(f"Cannot import get_db from utils.firestore_client; sys.path={sys.path}") from e
+# Local package import (our helpers live alongside this file in dashboard/)
+from dashboard.dashboard_utils import (
+    get_firestore_connection,
+    fetch_state_document,
+    parse_nav_to_df_and_kpis,
+    positions_sorted,
+    read_trade_log_tail,
+    fmt_ccy,
+    fmt_pct,
+)
 
-# --------------------
-# Firestore helper (supports live doc fallback)
-# --------------------
-
-def fetch_state_document(doc_name: str, env: str = None) -> Dict[str, Any]:
-    db = get_db()
-    env = env or os.getenv("ENV", "prod")
-    # Try direct doc
-    doc_ref = db.collection("hedge").document(env).collection("state").document(doc_name)
-    snapshot = doc_ref.get()
-    if snapshot.exists:
-        return snapshot.to_dict() or {}
-    # Fallback to live doc shape
-    live_ref = db.collection("hedge").document(env).collection("state").document("live")
-    live_snap = live_ref.get()
-    if live_snap.exists:
-        live_data = live_snap.to_dict() or {}
-        return live_data.get(doc_name, {}) if isinstance(live_data, dict) else {}
-    return {}
-
-# --------------------
-# Data parsing helpers
-# --------------------
-
-def coalesce(*vals, default=None):
-    for v in vals:
-        if v is not None:
-            return v
-    return default
-
-def parse_nav(nav: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Normalize NAV payload to df+kpis.
-    Accepts any of:
-      - list of dicts: [{"t": iso, "equity": float}, ...]  ✅ Firestore-safe
-      - list of lists: [[iso, equity], ...]                 ❌ Firestore rejects nested arrays; parse anyway
-      - dict mapping iso->equity: {iso: equity, ...}
-    """
-    series = nav.get("series")
-
-    # list[dict]
-    if isinstance(series, list) and series and isinstance(series[0], dict):
-        rows = [[row.get("t"), row.get("equity")] for row in series]
-    # list[list]
-    elif isinstance(series, list):
-        rows = series
-    # dict
-    elif isinstance(series, dict):
-        rows = [[t, v] for t, v in sorted(series.items())]
-    else:
-        rows = []
-
-    df = pd.DataFrame(rows, columns=["t", "equity"]) if rows else pd.DataFrame(columns=["t", "equity"])  # type: ignore[call-arg]
-    if not df.empty:
-        df["t"] = pd.to_datetime(df["t"], utc=True, errors="coerce")
-        df = df.dropna(subset=["t"]).sort_values("t").set_index("t")
-
-    kpis = {
-        "points": len(df),
-        "peak_equity": coalesce(nav.get("peak_equity"), nav.get("peak"), 0.0),
-        "total_equity": float(nav.get("total_equity")) if nav.get("total_equity") is not None
-                        else (float(df["equity"].iloc[-1]) if len(df) else 0.0),
-        "realized_pnl": float(nav.get("realized_pnl")) if nav.get("realized_pnl") is not None else 0.0,
-        "unrealized_pnl": float(nav.get("unrealized_pnl")) if nav.get("unrealized_pnl") is not None else 0.0,
-        "drawdown": float(nav.get("drawdown")) if nav.get("drawdown") is not None else 0.0,
-        "updated_at": coalesce(nav.get("updated_at"), "—"),
-    }
-    return df, kpis
-
-# --------------------
-# UI rendering
-# --------------------
-
-st.set_page_config(page_title="Hedge Dashboard", layout="wide")
+# --------------------------- Page config -------------------------------------
+st.set_page_config(page_title="Hedge — Portfolio Dashboard", layout="wide")
 ENV = os.getenv("ENV", "prod")
 REFRESH_SEC = int(os.getenv("DASHBOARD_REFRESH_SEC", "60"))
+TRADE_LOG = os.getenv("TRADE_LOG", "trade_log.json")
 
-st.title("📊 Hedge Dashboard")
+# Optional auto-refresh (works if streamlit-extras installed)
+try:
+    from streamlit_extras.st_autorefresh import st_autorefresh
+    st_autorefresh(interval=REFRESH_SEC * 1000, key="auto_refresh")
+except Exception:
+    pass  # clean fallback: user can manually refresh
 
+st.title("📊 Hedge — Portfolio Dashboard")
+st.caption(f"ENV = {ENV} · refresh ≈ {REFRESH_SEC}s")
+
+# --------------------------- Load Firestore ----------------------------------
 status = st.empty()
-status.info("Loading Firestore…")
+status.info("Loading data from Firestore…")
 
 try:
-    nav = fetch_state_document("nav", env=ENV)
-    lb = fetch_state_document("leaderboard", env=ENV)
-    pos = fetch_state_document("positions", env=ENV)
+    db = get_firestore_connection()
+    nav_doc = fetch_state_document("nav", env=ENV)
+    pos_doc = fetch_state_document("positions", env=ENV)
+    lb_doc  = fetch_state_document("leaderboard", env=ENV)
 except Exception as e:
     st.error(f"Firestore read failed: {e}")
     st.stop()
 
-leaderboard_rows = (lb.get("items") or lb.get("rows") or [])
-positions_rows   = (pos.get("items") or pos.get("rows") or [])
-nav_df, nav_kpis = parse_nav(nav)
-updated_at = coalesce(nav_kpis.get("updated_at"), lb.get("updated_at"), pos.get("updated_at"), default="—")
+nav_df, kpis = parse_nav_to_df_and_kpis(nav_doc)
+positions = pos_doc.get("items") or []
+positions = positions_sorted(positions)
+leaderboard = lb_doc.get("items") or []
 
-status.success(f"Loaded · updated_at={updated_at}")
+status.success(f"Loaded · updated_at={nav_doc.get('updated_at','—')}")
 
-# KPIs
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Equity", f"{nav_kpis['total_equity']:.2f}")
-c2.metric("Peak", f"{nav_kpis['peak_equity']:.2f}")
-c3.metric("Realized PnL", f"{nav_kpis['realized_pnl']:.2f}")
-c4.metric("Unrealized PnL", f"{nav_kpis['unrealized_pnl']:.2f}")
-c5.metric("Drawdown", f"{nav_kpis['drawdown']:.2f}")
+# --------------------------- KPI header --------------------------------------
+with st.container():
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Equity", fmt_ccy(kpis["total_equity"]), delta=None)
+    c2.metric("Peak", fmt_ccy(kpis["peak_equity"]))
+    c3.metric("DD", fmt_pct(kpis["drawdown"]))
+    c4.metric("U‑PnL", fmt_ccy(kpis["unrealized_pnl"]))
+    c5.metric("R‑PnL", fmt_ccy(kpis["realized_pnl"]))
 
-# NAV chart
+# Exposure row (if present on nav doc)
+exp = {
+    "gross_exposure": nav_doc.get("gross_exposure", 0.0),
+    "net_exposure": nav_doc.get("net_exposure", 0.0),
+    "largest_position_value": nav_doc.get("largest_position_value", 0.0),
+}
+st.subheader("Exposure")
+e1, e2, e3 = st.columns(3)
+e1.metric("Gross", fmt_ccy(exp["gross_exposure"]))
+e2.metric("Net", fmt_ccy(exp["net_exposure"]))
+e3.metric("Largest Pos", fmt_ccy(exp["largest_position_value"]))
+
+# --------------------------- NAV chart ---------------------------------------
 st.subheader("NAV Equity Curve")
 if nav_df.empty:
-    st.info("No NAV points yet.")
+    st.info("No NAV points yet. Run executor + sync_state to populate.")
 else:
     st.line_chart(nav_df["equity"], use_container_width=True)
 
-# Leaderboard
-st.subheader("Leaderboard")
-if leaderboard_rows:
-    st.dataframe(pd.DataFrame(leaderboard_rows), use_container_width=True, hide_index=True)
-else:
-    st.write("No leaderboard items yet.")
+# --------------------------- Positions / Leaderboard -------------------------
+left, right = st.columns([2, 1])
 
-# Positions
-st.subheader("Open Positions")
-if positions_rows:
-    st.dataframe(pd.DataFrame(positions_rows), use_container_width=True, hide_index=True)
-else:
-    st.write("No open positions.")
+with left:
+    st.subheader("Open Positions")
+    if positions:
+        df_pos = pd.DataFrame(positions)
+        # Order columns for readability if present
+        cols = [c for c in ["symbol","side","qty","entry_price","mark_price","pnl","notional","leverage","ts"] if c in df_pos.columns]
+        st.dataframe(df_pos[cols], use_container_width=True, hide_index=True)
+    else:
+        st.write("No open positions.")
 
-st.caption(f"Data source: Firestore · hedge/{ENV}/state/* (or live)")
+with right:
+    st.subheader("Leaderboard")
+    if leaderboard:
+        df_lb = pd.DataFrame(leaderboard)
+        st.dataframe(df_lb, use_container_width=True, hide_index=True)
+    else:
+        st.write("No leaderboard items.")
+
+# --------------------------- Recent Trades (local file) ----------------------
+st.subheader("Recent Trades (tail of trade_log.json)")
+trades = read_trade_log_tail(TRADE_LOG, tail=10)
+if trades:
+    df_tr = pd.DataFrame(trades)
+    # Friendly column ordering if keys exist
+    order = [c for c in ["ts","symbol","side","qty","price","notional","realized_pnl","comment","strategy"] if c in df_tr.columns]
+    if order:
+        df_tr = df_tr[order]
+    st.dataframe(df_tr, use_container_width=True, hide_index=True)
+else:
+    st.caption(f"No trades found at {TRADE_LOG} (dry‑run or not yet emitted).")
+
+st.caption(f"Data source: Firestore hedge/{ENV}/state/* · Optional local trade log: {TRADE_LOG}")
