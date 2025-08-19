@@ -1,44 +1,4 @@
-
-"""
-execution/signal_screener.py — Phase-4.1 "Stability & Signals"
-
-Purpose
--------
-Emit actionable BUY/SELL intents from a simple, robust screener that:
-- Loads strategy_config.json (path override via STRATEGY_CFG env)
-- Uses explicit strategies when present; falls back to a 10-symbol whitelist when sparse
-- Maintains a tiny rolling state per symbol/timeframe on disk (screener_state.json)
-- Computes lightweight indicators (z-score of returns, RSI on deltas, ATR proxy)
-- Emits exits (SELL) for basic TP/timeout/ATR-proxy when configured
-- Never raises; returns an iterator of dict intents
-
-Intent shape
-------------
-{
-  "symbol": "BTCUSDT",
-  "signal": "BUY" | "SELL",
-  "price": 60000.0,                 # current price snapshot
-  "qty": 0.001,                     # optional; otherwise executor derives from capital_per_trade
-  "capital_per_trade": 25.0,        # optional passthrough knobs
-  "leverage": 3,
-  "kelly_fraction": 0.25,
-  "min_notional": 5.0,
-  "positionSide": "LONG",           # optional hedge flags passthrough
-  "reduceOnly": true
-}
-
-Environment
------------
-STRATEGY_CFG = "config/strategy_config.json"  (default)
-SCREENER_STATE = "screener_state.json"        (rolling price cache)
-WHITELIST = "ADAUSDT,BNBUSDT,BTCUSDT,DOGEUSDT,DOTUSDT,ETHUSDT,LTCUSDT,SOLUSDT,TONUSDT,XRPUSDT"
-
-Notes
------
-- Indicators are approximate and file-backed so they work without a candles API.
-- If you already have a proper candles/indicators stack, you can plug it into
-  `_fetch_indicators_from_your_stack()` and bypass the rolling cache logic below.
-"""
+# --- execution/signal_screener.py (FULL FILE) ---
 
 from __future__ import annotations
 
@@ -48,13 +8,12 @@ import math
 import time
 from typing import Dict, Any, Iterable, List, Tuple
 
-from execution.exchange_utils import get_price  # we only need spot price snapshot
+from execution.exchange_utils import get_price, get_positions  # price + live positions
 
 # ------------------------ config & constants ------------------------
 
 DEFAULT_WHITELIST = [
-    "ADAUSDT","BNBUSDT","BTCUSDT","DOGEUSDT","DOTUSDT",
-    "ETHUSDT","LTCUSDT","SOLUSDT","TONUSDT","XRPUSDT"
+    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT"
 ]
 
 CFG_PATH = os.getenv("STRATEGY_CFG", "config/strategy_config.json")
@@ -125,6 +84,26 @@ def _series_for(st: dict, symbol: str, timeframe: str) -> List[Tuple[float,float
     arr = ((st.get(symbol, {}) or {}).get(timeframe, [])) or []
     # return list of (ts, price)
     return [(float(x.get("t", 0.0)), float(x.get("p", 0.0))) for x in arr]
+
+# ------------------------ meta state helpers ------------------------
+
+def _load_meta(st: dict, symbol: str, timeframe: str) -> dict:
+    return st.setdefault(symbol, {}).setdefault(f"{timeframe}__meta", {})
+
+def _save_meta(st: dict, symbol: str, timeframe: str, **kv):
+    m = _load_meta(st, symbol, timeframe)
+    m.update(kv)
+
+def _position_side(symbol: str):
+    """Return 'LONG', 'SHORT', or None from live exchange positions."""
+    try:
+        for p in (get_positions(symbol) or []):
+            qty = float(p.get("qty", 0.0))
+            if abs(qty) > 1e-12:
+                return "LONG" if qty > 0 else "SHORT"
+    except Exception:
+        pass
+    return None
 
 # ------------------------ indicators (approximate) ------------------------
 
@@ -234,6 +213,22 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     Yields dicts for executor. Never raises.
     """
     cfg = _load_cfg()
+
+    # --- FORCE_TRADE one-shot (validation toggle) ---
+    if os.getenv("FORCE_TRADE", "0").strip().lower() in ("1","true","yes","on"):
+        sym = None
+        try:
+            sym = next(iter((cfg.get("strategies") or {}).values())).get("symbol")
+        except Exception:
+            sym = None
+        if not sym:
+            # fallback: first from whitelist or BTC
+            wl = cfg.get("whitelist") or []
+            sym = wl[0] if wl else "BTCUSDT"
+        # emit a tiny BUY intent; executor will size from capital_per_trade
+        yield _make_intent(sym, "BUY", cfg={"capital_per_trade": 25.0, "positionSide": "LONG"})
+        return
+
     strategies = cfg.get("strategies") or {}
     whitelist = _symbols_from_cfg(cfg)
 
@@ -246,10 +241,14 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         symbol = scfg.get("symbol")
         if not symbol:
             continue
-        timeframe = scfg.get("timeframe", "1h")
+        timeframe = scfg.get("timeframe", "30m")
         attempted += 1
         try:
             px = float(scfg.get("price") or get_price(symbol))
+            # skip symbols unavailable on testnet or bad price snapshots
+            if (not math.isfinite(px)) or (px <= 0):
+                _save_meta(st, symbol, timeframe, prev_z=float(_load_meta(st, symbol, timeframe).get("prev_z", 0.0)))
+                continue
             ts = _now_ts()
             # update rolling series
             _push_price_point(st, symbol, timeframe, ts, px)
@@ -258,17 +257,53 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             # indicators (prefer external stack; else local)
             inds = _fetch_indicators_from_your_stack(symbol, timeframe, scfg) or _compute_indicators_from_series(prices, scfg)
 
-            # entry
-            if _entry_ok(inds["z"], inds["rsi"], scfg.get("entry", {})):
-                yield _make_intent(symbol, "BUY", price=px, cfg=scfg)
+            # --- edge-triggered entries (LONG/SHORT) + side-aware exits ---
+            meta = _load_meta(st, symbol, timeframe)
+            prev_z = float(meta.get("prev_z", 0.0))
+            in_trade = bool(meta.get("in_trade", False))
+            side_meta = meta.get("side")  # LONG / SHORT / None
+            z = float(inds["z"])  # current z-score
+
+            entry_cfg = scfg.get("entry", {})
+            zmin = float(entry_cfg.get("zscore_min", 0.8))
+            cross_up = (prev_z < zmin and z >= zmin)
+            cross_down = (prev_z > -zmin and z <= -zmin)
+
+            # Reconcile with live exchange positions (on restart or external fills)
+            pos_side = _position_side(symbol)
+            pos_exists = pos_side is not None
+            if pos_exists and not in_trade:
+                in_trade = True
+                side_meta = pos_side
+                _save_meta(st, symbol, timeframe, in_trade=True, side=side_meta)
+
+            # LONG entry
+            if cross_up and not in_trade:
+                yield _make_intent(symbol, "BUY", price=px, cfg=scfg)  # non-reduceOnly
+                _save_meta(st, symbol, timeframe, in_trade=True, side="LONG", prev_z=z)
                 emitted += 1
                 continue
 
-            # exit
-            if _exit_ok(prices, inds, scfg.get("exit", {})):
-                # reduceOnly recommended for exits on futures hedge mode
-                yield _make_intent(symbol, "SELL", price=px, cfg=scfg, extra={"reduceOnly": True})
+            # SHORT entry
+            if cross_down and not in_trade:
+                yield _make_intent(symbol, "SELL", price=px, cfg=scfg)  # non-reduceOnly
+                _save_meta(st, symbol, timeframe, in_trade=True, side="SHORT", prev_z=z)
                 emitted += 1
+                continue
+
+            # Exits only when in_trade or a live position exists
+            if (in_trade or pos_exists) and _exit_ok(prices, inds, scfg.get("exit", {})):
+                eff_side = side_meta or pos_side
+                if eff_side == "SHORT":
+                    # close short
+                    yield _make_intent(symbol, "BUY", price=px, cfg=scfg, extra={"reduceOnly": True})
+                else:
+                    # close long (default)
+                    yield _make_intent(symbol, "SELL", price=px, cfg=scfg, extra={"reduceOnly": True})
+                _save_meta(st, symbol, timeframe, in_trade=False, side=None, prev_z=z)
+                emitted += 1
+            else:
+                _save_meta(st, symbol, timeframe, prev_z=z)
         except Exception:
             # skip but never crash
             continue
@@ -279,8 +314,10 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             attempted += 1
             try:
                 px = float(get_price(symbol))
+                if (not math.isfinite(px)) or (px <= 0):
+                    continue
                 ts = _now_ts()
-                timeframe = "1h"
+                timeframe = "30m"
                 _push_price_point(st, symbol, timeframe, ts, px)
                 # usually no signal on fallback; it's a presence/health check
             except Exception:

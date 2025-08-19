@@ -70,7 +70,7 @@ def should_send_summary(last_sent_ts: float | None, minutes: int) -> bool:
 # --- Message helpers used by executor_live.py ---
 def send_heartbeat(equity: float, peak: float, dd_pct: float, realized: float, unrealized: float, positions_top: List[str]):
     msg = (
-        f"💓 Heartbeat\n"
+        f"Heartbeat\n"
         f"Equity: {equity:,.2f} | Peak: {peak:,.2f} | DD: {dd_pct*100:+.2f}%\n"
         f"PnL — R: {realized:,.2f} | U: {unrealized:,.2f}\n"
         f"Top: {', '.join(positions_top) if positions_top else '—'}"

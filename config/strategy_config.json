@@ -3,70 +3,39 @@
     "use_futures": true,
     "poll_seconds": 300,
     "whitelist": [
-      "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-      "ADAUSDT", "DOGEUSDT", "TONUSDT", "LTCUSDT", "DOTUSDT"
+      "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"
     ]
   },
   "strategies": {
     "momentum_btc": {
-      "symbol": "BTCUSDT", "timeframe": "1h",
+      "symbol": "BTCUSDT", "timeframe": "30m",
       "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
       "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
+      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
     },
     "momentum_eth": {
-      "symbol": "ETHUSDT", "timeframe": "1h",
+      "symbol": "ETHUSDT", "timeframe": "30m",
       "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
       "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
+      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
     },
     "momentum_bnb": {
-      "symbol": "BNBUSDT", "timeframe": "1h",
+      "symbol": "BNBUSDT", "timeframe": "30m",
       "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
       "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
+      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
     },
     "momentum_sol": {
-      "symbol": "SOLUSDT", "timeframe": "1h",
+      "symbol": "SOLUSDT", "timeframe": "30m",
       "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
       "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
+      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
     },
     "momentum_xrp": {
-      "symbol": "XRPUSDT", "timeframe": "1h",
+      "symbol": "XRPUSDT", "timeframe": "30m",
       "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
       "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_ada": {
-      "symbol": "ADAUSDT", "timeframe": "1h",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_doge": {
-      "symbol": "DOGEUSDT", "timeframe": "1h",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_ton": {
-      "symbol": "TONUSDT", "timeframe": "1h",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_ltc": {
-      "symbol": "LTCUSDT", "timeframe": "1h",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_dot": {
-      "symbol": "DOTUSDT", "timeframe": "1h",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.3, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 50.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
+      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
     }
   }
 }
