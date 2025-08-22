@@ -1,54 +1,65 @@
 {
-  "global": {
-    "use_futures": true,
-    "poll_seconds": 300,
-    "whitelist": [
-      "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"
-    ]
-  },
+  "version": 1,
+  "timeframes": ["15m"],
   "strategies": {
-    "momentum_btc": {
-      "symbol": "BTCUSDT", "timeframe": "30m",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.008, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_eth": {
-      "symbol": "ETHUSDT", "timeframe": "30m",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.008, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_bnb": {
-      "symbol": "BNBUSDT", "timeframe": "30m",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.010, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_sol": {
-      "symbol": "SOLUSDT", "timeframe": "30m",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.010, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
-    },
-    "momentum_xrp": {
-      "symbol": "XRPUSDT", "timeframe": "30m",
-      "entry": { "zscore_min": 0.8, "rsi_band": [35, 70] },
-      "exit":  { "tp_pct": 0.010, "atr_period": 14, "atr_multiple": 1.5, "max_bars": 24 },
-      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
+    "btc_breakout_15m": {
+      "enabled": true,
+      "symbol": "BTCUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 75,
+      "leverage": 3,
+      "entry": {
+        "rsi_band": [15, 85],
+        "zscore_min": 0.45,
+        "atr_min": 0.0,
+        "require_cross": true,
+        "cross_key": "cross_up"       // screener sets cross_up/cross_down
+      },
+      "exit": {
+        "sl": { "type": "atr", "atr_mult": 2.5, "fallback_pct": 0.012 },
+        "tp": { "type": "atr", "atr_mult": 3.5, "fallback_pct": 0.018 },
+        "max_bars": 96                 // time stop ~1 day on 15m
+      }
     },
 
-    "breakout_btc": {
-      "symbol": "BTCUSDT", "timeframe": "30m",
-      "entry": { "mode": "breakout", "breakout_lookback": 20, "atr_min": 0.005 },
-      "exit":  { "tp_pct": 0.008, "atr_period": 14, "atr_multiple": 1.2, "max_bars": 48 },
-      "capital_per_trade": 120.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
+    "eth_momentum_15m": {
+      "enabled": true,
+      "symbol": "ETHUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 60,
+      "leverage": 3,
+      "entry": {
+        "rsi_band": [20, 80],
+        "zscore_min": 0.35,
+        "atr_min": 0.0,
+        "require_cross": true,
+        "cross_key": "cross_up"
+      },
+      "exit": {
+        "sl": { "type": "atr", "atr_mult": 2.0, "fallback_pct": 0.010 },
+        "tp": { "type": "atr", "atr_mult": 3.0, "fallback_pct": 0.016 },
+        "max_bars": 96
+      }
     },
-    "breakout_eth": {
-      "symbol": "ETHUSDT", "timeframe": "30m",
-      "entry": { "mode": "breakout", "breakout_lookback": 20, "atr_min": 0.005 },
-      "exit":  { "tp_pct": 0.008, "atr_period": 14, "atr_multiple": 1.2, "max_bars": 48 },
-      "capital_per_trade": 100.0, "leverage": 3, "kelly_fraction": 0.25, "min_notional": 5.0
+
+    "sol_fast_lane_15m": {
+      "enabled": true,
+      "symbol": "SOLUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 45,
+      "leverage": 3,
+      "entry": {
+        "rsi_band": [15, 85],
+        "zscore_min": 0.20,
+        "atr_min": 0.0,
+        "require_cross": true,
+        "cross_key": "either"          // allow up or down cross to emit
+      },
+      "exit": {
+        "sl": { "type": "atr", "atr_mult": 2.8, "fallback_pct": 0.012 },
+        "tp": { "type": "atr", "atr_mult": 3.8, "fallback_pct": 0.020 },
+        "max_bars": 96
+      }
     }
   }
 }

@@ -1,365 +1,221 @@
-# --- execution/signal_screener.py (FULL FILE) ---
-
 from __future__ import annotations
+import json, math, os, time
+from typing import Any, Dict, Iterable, List, Tuple, Optional
+from execution.exchange_utils import get_price, get_positions, get_klines  # needs get_klines in exchange_utils
 
-import os
-import json
-import math
-import time
-from typing import Dict, Any, Iterable, List, Tuple
-
-from execution.exchange_utils import get_price, get_positions  # price + live positions
-
-# ------------------------ config & constants ------------------------
-
-DEFAULT_WHITELIST = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT"
-]
-
-CFG_PATH = os.getenv("STRATEGY_CFG", "config/strategy_config.json")
+CFG_PATH   = os.getenv("STRATEGY_CFG", "config/strategy_config.json")
 STATE_PATH = os.getenv("SCREENER_STATE", "screener_state.json")
-ENV_WHITELIST = os.getenv("WHITELIST", ",".join(DEFAULT_WHITELIST))
-
-# state size per symbol/timeframe
-MAX_POINTS = int(os.getenv("SCREENER_MAX_POINTS", "200"))
-
-# ------------------------ utils ------------------------
+TF_SPACING_SEC = {"15m": 60, "30m": 120, "1h": 180}
+PRICE_EPS = 0.0002
+MAX_POINTS = 240
 
 def _safe_load_json(path: str, default):
     try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except Exception:
-        return default
+        with open(path, "r") as f: return json.load(f)
+    except Exception: return default
 
 def _safe_write_json(path: str, data) -> None:
     tmp = f"{path}.tmp"
     try:
-        with open(tmp, "w") as f:
-            json.dump(data, f)
+        with open(tmp, "w") as f: json.dump(data, f)
         os.replace(tmp, path)
-    except Exception:
-        pass  # fail silent; screener must never crash
+    except Exception: pass
 
-def _now_ts() -> float:
-    return time.time()
+def _now_ts() -> float: return time.time()
 
-def _symbols_from_cfg(cfg: dict) -> List[str]:
-    syms = []
-    for _, scfg in (cfg.get("strategies") or {}).items():
-        s = scfg.get("symbol")
-        if s:
-            syms.append(s)
-    if syms:
-        return syms
-    # fallback: env whitelist or default
-    wl = [s.strip().upper() for s in (ENV_WHITELIST.split(",") if ENV_WHITELIST else []) if s.strip()]
-    return wl or DEFAULT_WHITELIST
-
-def _load_cfg() -> dict:
-    cfg = _safe_load_json(CFG_PATH, {})
-    if "whitelist" not in cfg:
-        cfg["whitelist"] = _symbols_from_cfg(cfg)
-    return cfg
-
-# ------------------------ rolling state (file-backed) ------------------------
-
-def _load_state() -> dict:
-    st = _safe_load_json(STATE_PATH, {})
-    if not isinstance(st, dict):
-        st = {}
+def _load_state() -> Dict[str, Any]:
+    st = _safe_load_json(STATE_PATH, {}) or {}
+    st.setdefault("prices", {}); st.setdefault("meta", {})
     return st
 
-def _save_state(st: dict) -> None:
-    _safe_write_json(STATE_PATH, st)
+def _save_state(st: Dict[str, Any]) -> None: _safe_write_json(STATE_PATH, st)
 
-def _push_price_point(st: dict, symbol: str, timeframe: str, ts: float, price: float) -> None:
-    sym = st.setdefault(symbol, {})
-    tf = sym.setdefault(timeframe, [])
-    tf.append({"t": float(ts), "p": float(price)})
-    if len(tf) > MAX_POINTS:
-        del tf[:len(tf) - MAX_POINTS]
+def _push_price_point(st, symbol, timeframe, ts, price) -> None:
+    prices = st["prices"].setdefault(symbol, {}).setdefault(timeframe, [])
+    keep = True
+    if prices:
+        last_t = float(prices[-1].get("t", 0.0))
+        last_p = float(prices[-1].get("p", price))
+        spacing = TF_SPACING_SEC.get(timeframe, 60)
+        moved = abs((price - last_p) / last_p) if last_p > 0 else 1.0
+        if (ts - last_t) < spacing and moved < PRICE_EPS: keep = False
+    if keep:
+        prices.append({"t": float(ts), "p": float(price)})
+        if len(prices) > MAX_POINTS: del prices[: len(prices) - MAX_POINTS]
 
-def _series_for(st: dict, symbol: str, timeframe: str) -> List[Tuple[float,float]]:
-    arr = ((st.get(symbol, {}) or {}).get(timeframe, [])) or []
-    # return list of (ts, price)
+def _series_for(st, symbol, timeframe) -> List[Tuple[float, float]]:
+    arr = ((st.get("prices", {}) or {}).get(symbol, {}) or {}).get(timeframe, []) or []
     return [(float(x.get("t", 0.0)), float(x.get("p", 0.0))) for x in arr]
 
-# ------------------------ meta state helpers ------------------------
+def _load_meta(st, symbol, timeframe) -> Dict[str, Any]:
+    return st["meta"].setdefault(symbol, {}).setdefault(timeframe, {"in_trade": False, "side": None, "prev_z": 0.0})
 
-def _load_meta(st: dict, symbol: str, timeframe: str) -> dict:
-    return st.setdefault(symbol, {}).setdefault(f"{timeframe}__meta", {})
+def _save_meta(st, symbol, timeframe, **kv) -> None:
+    m = _load_meta(st, symbol, timeframe); m.update(kv)
 
-def _save_meta(st: dict, symbol: str, timeframe: str, **kv):
-    m = _load_meta(st, symbol, timeframe)
-    m.update(kv)
-
-def _position_side(symbol: str):
-    """Return 'LONG', 'SHORT', or None from live exchange positions."""
+def _position_side(symbol: str) -> Optional[str]:
     try:
         for p in (get_positions(symbol) or []):
             qty = float(p.get("qty", 0.0))
-            if abs(qty) > 1e-12:
-                return "LONG" if qty > 0 else "SHORT"
-    except Exception:
-        pass
+            if abs(qty) > 1e-12: return "LONG" if qty > 0 else "SHORT"
+    except Exception: pass
     return None
 
-# ------------------------ indicators (approximate) ------------------------
-
 def _pct_returns(prices: List[float]) -> List[float]:
-    out = []
+    out=[]
     for i in range(1, len(prices)):
         p0, p1 = prices[i-1], prices[i]
-        if p0 > 0:
-            out.append((p1 - p0) / p0)
+        if p0 > 0: out.append((p1 - p0) / p0)
     return out
 
 def _zscore(x: List[float]) -> float:
-    if not x:
-        return 0.0
-    m = sum(x) / len(x)
-    v = sum((xi - m) ** 2 for xi in x) / max(1, len(x) - 1)
-    s = math.sqrt(v) if v > 0 else 0.0
-    return (x[-1] - m) / s if s > 0 else 0.0
+    if not x: return 0.0
+    m = sum(x)/len(x); v = sum((xi - m)**2 for xi in x) / max(1, len(x)-1)
+    s = math.sqrt(v) if v>0 else 0.0
+    return (x[-1] - m) / s if s>0 else 0.0
 
 def _rsi(deltas: List[float], period: int = 14) -> float:
-    """RSI on deltas; returns 0..100; 50 when flat/no data."""
-    if len(deltas) < 1:
-        return 50.0
-    gains = [max(d, 0.0) for d in deltas[-period:]]
-    losses = [max(-d, 0.0) for d in deltas[-period:]]
-    avg_gain = sum(gains) / max(1, len(gains))
-    avg_loss = sum(losses) / max(1, len(losses))
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
+    if len(deltas) < 1: return 50.0
+    gains=[max(d,0.0) for d in deltas[-period:]]; losses=[max(-d,0.0) for d in deltas[-period:]]
+    avg_gain = sum(gains)/max(1,len(gains)); avg_loss = sum(losses)/max(1,len(losses))
+    if avg_loss == 0: return 100.0 if avg_gain>0 else 50.0
+    rs = avg_gain/avg_loss; return 100.0 - (100.0/(1.0+rs))
 
 def _atr_proxy(prices: List[float], period: int = 14) -> float:
-    """ATR proxy using absolute percent changes (no OHLC)."""
     rets = [abs(x) for x in _pct_returns(prices)]
-    if not rets:
-        return 0.0
+    if not rets: return 0.0
     return sum(rets[-period:]) / max(1, min(period, len(rets)))
 
-def _compute_indicators_from_series(prices: List[float], scfg: dict) -> Dict[str, float]:
-    # Inputs
+def _compute_inds(prices: List[float], scfg: Dict[str, Any]) -> Dict[str, float]:
     rsi_period = int((scfg.get("exit", {}) or {}).get("rsi_period", 14))
     atr_period = int((scfg.get("exit", {}) or {}).get("atr_period", 14))
-    # Derived
     rets = _pct_returns(prices)
-    z = _zscore(rets[-50:])  # use last 50 rets if available
+    z = _zscore(rets[-50:])
     rsi = _rsi(rets, period=rsi_period)
-    atrp = _atr_proxy(prices, period=atr_period)  # fraction, e.g., 0.01 = 1%
+    atrp = _atr_proxy(prices, period=atr_period)
     return {"z": z, "rsi": rsi, "atr_proxy": atrp}
 
-# Placeholder for teams with a proper indicators stack
-def _fetch_indicators_from_your_stack(symbol: str, timeframe: str, scfg: dict) -> Dict[str, float] | None:
-    return None
-
-# ------------------------ entry / exit logic ------------------------
-
-def _entry_ok(z: float, rsi: float, entry_cfg: dict) -> bool:
-    zmin = float(entry_cfg.get("zscore_min", 0.8))
-    rsi_band = entry_cfg.get("rsi_band", [30, 70])
-    rlo, rhi = float(rsi_band[0]), float(rsi_band[1])
-    return (z >= zmin) and (rlo <= rsi <= rhi)
-
-def _exit_ok(prices: List[float], inds: Dict[str,float], exit_cfg: dict) -> bool:
-    """
-    Basic exits: tp_pct vs last N bars, ATR-proxy trail, or max_bars timeout.
-    Since we don't track per-trade entry price here, treat tp_pct as
-    price drift over last window.
-    """
-    if not prices or len(prices) < 5:
-        return False
-    tp_pct = float(exit_cfg.get("tp_pct", 0.0))  # 0.003 = 0.3%
-    max_bars = int(exit_cfg.get("max_bars", 0))
-    atr_mult = float(exit_cfg.get("atr_multiple", 0.0))
-    # Take-profit proxy: last price vs median of last 10
-    p_now = prices[-1]
-    base = sum(prices[-10:]) / max(1, min(10, len(prices)))
-    if tp_pct > 0 and base > 0 and (p_now - base) / base >= tp_pct:
-        return True
-    # ATR trail proxy (if volatility contraction after spike)
-    if atr_mult > 0 and inds.get("atr_proxy", 0.0) <= (atr_mult * 0.001):  # heuristic
-        return True
-    # Timeout
-    if max_bars > 0 and len(prices) >= max_bars:
-        return True
-    return False
-
-def _make_intent(symbol, side, price=None, cfg=None, qty=None, extra=None):
-    out = {"symbol": symbol, "signal": side}
+def _make_intent(symbol, timeframe, side, price=None, scfg=None, reduce=False):
+    out = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+           "symbol": symbol, "timeframe": timeframe,
+           "signal": "SELL" if (side in ("EXIT_LONG","ENTER_SHORT")) else "BUY"}
+    if reduce: out["reduceOnly"] = True
     if price is not None:
         try: out["price"] = float(price)
         except Exception: pass
-    if qty is not None:
-        try: out["qty"] = float(qty)
-        except Exception: pass
-    if cfg:
-        for k in ("capital_per_trade","leverage","kelly_fraction","min_notional","positionSide","reduceOnly"):
-            if k in cfg:
-                out[k] = cfg[k]
-    if extra:
-        out.update(extra)
+    if scfg:
+        for k in ("capital_per_trade","leverage","min_notional"):
+            if k in scfg: out[k] = scfg[k]
     return out
 
-# ------------------------ main generator ------------------------
+def _seed_series_with_klines(st, symbol: str, timeframe: str, need: int = 80):
+    cur = st["prices"].setdefault(symbol, {}).setdefault(timeframe, [])
+    if len(cur) >= need: return
+    tf_map = {"15m":"15m","30m":"30m","1h":"1h"}
+    k = get_klines(symbol, tf_map.get(timeframe,"15m"), limit=max(need, 120)) or []
+    if not k: return
+    cur[:] = [{"t": float(ts/1000.0), "p": float(px)} for ts, px in k][-need:]
+
+def _exit_ok(prices: List[float], inds: Dict[str, float], exit_cfg: Dict[str, Any]) -> bool:
+    if len(prices) < 5: return False
+    tp_pct   = float(exit_cfg.get("tp_pct", 0.0))
+    max_bars = int(exit_cfg.get("max_bars", 0))
+    atr_mult = float(exit_cfg.get("atr_multiple", 0.0))
+    p_now = prices[-1]; base = sum(prices[-10:]) / max(1, min(10, len(prices)))
+    if tp_pct>0 and base>0 and (p_now-base)/base >= tp_pct: return True
+    if atr_mult>0 and inds.get("atr_proxy",0.0) <= (atr_mult * 0.001): return True
+    if max_bars>0 and len(prices) >= max_bars: return True
+    return False
 
 def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
-    """
-    Yields dicts for executor. Never raises.
-    """
-    cfg = _load_cfg()
+    cfg = _safe_load_json(CFG_PATH, {}) or {}; strategies = cfg.get("strategies") or {}
+    st = _load_state(); attempted=0; emitted=0
 
-    # --- FORCE_TRADE one-shot (validation toggle) ---
-    if os.getenv("FORCE_TRADE", "0").strip().lower() in ("1","true","yes","on"):
-        sym = None
-        try:
-            sym = next(iter((cfg.get("strategies") or {}).values())).get("symbol")
-        except Exception:
-            sym = None
-        if not sym:
-            # fallback: first from whitelist or BTC
-            wl = cfg.get("whitelist") or []
-            sym = wl[0] if wl else "BTCUSDT"
-        # emit a tiny BUY intent; executor will size from capital_per_trade
-        yield _make_intent(sym, "BUY", cfg={"capital_per_trade": 25.0, "positionSide": "LONG"})
-        return
-
-    strategies = cfg.get("strategies") or {}
-    whitelist = _symbols_from_cfg(cfg)
-
-    st = _load_state()
-    emitted = 0
-    attempted = 0
-
-    # 1) Walk explicit strategies
     for name, scfg in strategies.items():
-        symbol = scfg.get("symbol")
-        if not symbol:
-            continue
-        timeframe = scfg.get("timeframe", "30m")
+        symbol = scfg.get("symbol"); tf = scfg.get("timeframe","15m")
+        if not symbol: continue
         attempted += 1
         try:
-            px = float(scfg.get("price") or get_price(symbol))
-            # skip symbols unavailable on testnet or bad price snapshots
-            if (not math.isfinite(px)) or (px <= 0):
-                _save_meta(st, symbol, timeframe, prev_z=float(_load_meta(st, symbol, timeframe).get("prev_z", 0.0)))
-                continue
+            px = float(get_price(symbol) or 0.0)
+            if not (math.isfinite(px) and px>0):
+                m = _load_meta(st, symbol, tf); _save_meta(st, symbol, tf, prev_z=float(m.get("prev_z",0.0))); continue
+
             ts = _now_ts()
-            # update rolling series
-            _push_price_point(st, symbol, timeframe, ts, px)
-            series = _series_for(st, symbol, timeframe)
-            prices = [p for _, p in series]
-            # indicators (prefer external stack; else local)
-            inds = _fetch_indicators_from_your_stack(symbol, timeframe, scfg) or _compute_indicators_from_series(prices, scfg)
+            _push_price_point(st, symbol, tf, ts, px)
+            _seed_series_with_klines(st, symbol, tf, need=80)
+            series = _series_for(st, symbol, tf); prices = [p for _,p in series]
+            if len(prices) < 10: _save_meta(st, symbol, tf, prev_z=0.0); continue
 
-            # --- edge-triggered entries (LONG/SHORT) + side-aware exits ---
-            meta = _load_meta(st, symbol, timeframe)
-            prev_z = float(meta.get("prev_z", 0.0))
-            in_trade = bool(meta.get("in_trade", False))
-            side_meta = meta.get("side")  # LONG / SHORT / None
-            z = float(inds["z"])  # current z-score
+            inds = _compute_inds(prices, scfg)
+            z=float(inds["z"]); rsi=float(inds["rsi"]); atrp=float(inds["atr_proxy"])
+            meta = _load_meta(st, symbol, tf); prev_z=float(meta.get("prev_z",0.0))
+            in_trade = bool(meta.get("in_trade", False)); side_meta = meta.get("side")
 
-            entry_cfg = scfg.get("entry", {})
-            entry_mode = str(entry_cfg.get("mode", "momentum")).lower()
-            zmin = float(entry_cfg.get("zscore_min", 0.8))
-            atr_min = float(entry_cfg.get("atr_min", 0.0))
-            atr_ok = (inds.get("atr_proxy", 0.0) >= atr_min)
-
-            # Momentum edges (default)
-            cross_up = (prev_z < zmin and z >= zmin)
-            cross_down = (prev_z > -zmin and z <= -zmin)
-
-            # Breakout edges (20-bar high/low by default)
-            if entry_mode == "breakout":
-                lookback = int(entry_cfg.get("breakout_lookback", 20))
-                long_ok = False; short_ok = False
-                if len(prices) >= max(lookback + 2, 3):
-                    prev_p = prices[-2]
-                    window = prices[-(lookback+1):-1]  # exclude current bar
-                    res = max(window)
-                    sup = min(window)
-                    long_ok = (prev_p <= res and prices[-1] > res)
-                    short_ok = (prev_p >= sup and prices[-1] < sup)
-                # override momentum edges with breakout edges
+            entry_cfg = scfg.get("entry", {}) or {}
+            mode=str(entry_cfg.get("mode","momentum")).lower()
+            zmin=float(entry_cfg.get("zscore_min",0.8))
+            rlo,rhi = [float(x) for x in entry_cfg.get("rsi_band",[30,70])]
+            atr_min=float(entry_cfg.get("atr_min",0.0))
+            cross_up = (prev_z <  zmin and z >=  zmin); cross_down = (prev_z > -zmin and z <= -zmin)
+            if mode=="breakout":
+                lb=int(entry_cfg.get("breakout_lookback",20))
+                long_ok=short_ok=False
+                if len(prices) >= max(lb+2,3):
+                    prev_p = prices[-2]; window = prices[-(lb+1):-1]
+                    res=max(window); sup=min(window)
+                    long_ok=(prev_p<=res and prices[-1]>res); short_ok=(prev_p>=sup and prices[-1]<sup)
                 cross_up, cross_down = long_ok, short_ok
 
-            # Reconcile with live exchange positions (on restart or external fills)
-            pos_side = _position_side(symbol)
-            pos_exists = pos_side is not None
-            if pos_exists and not in_trade:
-                in_trade = True
-                side_meta = pos_side
-                _save_meta(st, symbol, timeframe, in_trade=True, side=side_meta)
-            # If flat on exchange but local meta says in_trade, clear it
-            if not pos_exists and in_trade:
-                in_trade = False
-                side_meta = None
-                _save_meta(st, symbol, timeframe, in_trade=False, side=None)
+            rsi_ok=(rlo<=rsi<=rhi); atr_ok=(atrp>=atr_min)
 
-            # LONG entry (requires ATR filter if set)
-            if cross_up and not in_trade and atr_ok:
-                yield _make_intent(symbol, "BUY", price=px, cfg=scfg)  # non-reduceOnly
-                _save_meta(st, symbol, timeframe, in_trade=True, side="LONG", prev_z=z)
-                emitted += 1
-                continue
+            pos_side = _position_side(symbol); pos_exists = pos_side is not None
+            if pos_exists and not in_trade: in_trade,side_meta=True,pos_side; _save_meta(st,symbol,tf,in_trade=True,side=side_meta)
+            if (not pos_exists) and in_trade: in_trade,side_meta=False,None; _save_meta(st,symbol,tf,in_trade=False,side=None)
 
-            # SHORT entry (requires ATR filter if set)
-            if cross_down and not in_trade and atr_ok:
-                yield _make_intent(symbol, "SELL", price=px, cfg=scfg)  # non-reduceOnly
-                _save_meta(st, symbol, timeframe, in_trade=True, side="SHORT", prev_z=z)
-                emitted += 1
-                continue
+            veto=[]
+            if not (cross_up or cross_down): veto.append("no_cross")
+            if not rsi_ok: veto.append("rsi_veto")
+            if not atr_ok: veto.append("atr_floor")
+            if in_trade: veto.append("already_in_trade")
 
-            # Exits only when in_trade or a live position exists
-            if (in_trade or pos_exists) and _exit_ok(prices, inds, scfg.get("exit", {})):
+            cap=float(scfg.get("capital_per_trade",0.0) or 0.0)
+            lev=float(scfg.get("leverage",1) or 1)
+            min_notional=float(scfg.get("min_notional",0.0) or 0.0)
+            notional=cap*lev
+            if min_notional>0 and notional<min_notional: veto.append("below_min_notional")
+
+            print(f"[screener] {symbol} {tf} z={z:+.3f} rsi={rsi:.1f} atr={atrp:.5f} cross_up={bool(cross_up)} cross_down={bool(cross_down)} in_trade={in_trade} side={(side_meta or '-')}", flush=True)
+            print("[decision] " + json.dumps({"symbol":symbol,"tf":tf,"z":round(z,4),"prev_z":round(prev_z,4),"zmin":zmin,
+                                             "cross_up":bool(cross_up),"cross_down":bool(cross_down),
+                                             "rsi":rsi,"band":[rlo,rhi],"rsi_ok":rsi_ok,
+                                             "atr":atrp,"atr_min":atr_min,"atr_ok":atr_ok,
+                                             "in_trade":in_trade,"pos_side":pos_side,
+                                             "cap":cap,"lev":lev,"min_notional":min_notional,"notional":notional,
+                                             "veto":veto}, sort_keys=True), flush=True)
+
+            if cross_up and not in_trade and rsi_ok and atr_ok and "below_min_notional" not in veto:
+                intent=_make_intent(symbol,tf,"ENTER_LONG",price=px,scfg=scfg,reduce=False)
+                print("[screener->executor] " + json.dumps(intent, sort_keys=True), flush=True)
+                _save_meta(st,symbol,tf,in_trade=True,side="LONG",prev_z=z); emitted+=1; yield intent; continue
+            if cross_down and not in_trade and rsi_ok and atr_ok and "below_min_notional" not in veto:
+                intent=_make_intent(symbol,tf,"ENTER_SHORT",price=px,scfg=scfg,reduce=False)
+                print("[screener->executor] " + json.dumps(intent, sort_keys=True), flush=True)
+                _save_meta(st,symbol,tf,in_trade=True,side="SHORT",prev_z=z); emitted+=1; yield intent; continue
+
+            exit_cfg=scfg.get("exit",{}) or {}
+            if (in_trade or pos_exists) and _exit_ok(prices, inds, exit_cfg):
                 eff_side = side_meta or pos_side
-                if eff_side == "SHORT":
-                    # close short
-                    yield _make_intent(symbol, "BUY", price=px, cfg=scfg, extra={"reduceOnly": True})
-                else:
-                    # close long (default)
-                    yield _make_intent(symbol, "SELL", price=px, cfg=scfg, extra={"reduceOnly": True})
-                _save_meta(st, symbol, timeframe, in_trade=False, side=None, prev_z=z)
-                emitted += 1
+                intent=_make_intent(symbol,tf,"EXIT_SHORT" if eff_side=="SHORT" else "EXIT_LONG",price=px,scfg=scfg,reduce=True)
+                print("[screener->executor] " + json.dumps(intent, sort_keys=True), flush=True)
+                _save_meta(st,symbol,tf,in_trade=False,side=None,prev_z=z); emitted+=1; yield intent
             else:
-                _save_meta(st, symbol, timeframe, prev_z=z)
+                _save_meta(st,symbol,tf,prev_z=z)
         except Exception:
-            # skip but never crash
             continue
 
-    # 2) Fallback scan when no strategies present
-    if not strategies:
-        for symbol in whitelist:
-            attempted += 1
-            try:
-                px = float(get_price(symbol))
-                if (not math.isfinite(px)) or (px <= 0):
-                    continue
-                ts = _now_ts()
-                timeframe = "30m"
-                _push_price_point(st, symbol, timeframe, ts, px)
-                # usually no signal on fallback; it's a presence/health check
-            except Exception:
-                continue
+    _save_state(st); print(f"[screener] attempted={attempted} emitted={emitted}", flush=True)
 
-    # persist state
-    _save_state(st)
-
-    # lightweight console trace (optional)
-    try:
-        print(f"[screener] attempted={attempted} emitted={emitted}", flush=True)
-    except Exception:
-        pass
-
-# CLI for ad-hoc testing: `python -m execution.signal_screener`
-if __name__ == "__main__":
-    for sig in generate_signals_from_config() or []:
-        try:
-            print(sig)
-        except Exception:
-            pass
+if __name__=="__main__":
+    for sig in (generate_signals_from_config() or []):
+        try: print(sig)
+        except Exception: pass

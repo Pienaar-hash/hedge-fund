@@ -1,0 +1,21 @@
+/* Minimal, neutral theme for Streamlit */
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --text: #e6e6e6;
+  --muted: #9aa0a6;
+  --accent: #6aa0ff;
+  --good: #35c759;
+  --bad: #ff453a;
+}
+
+body, .stApp { background: var(--bg) !important; color: var(--text) !important; }
+section[data-testid="stSidebar"] { background: var(--panel) !important; }
+div[data-testid="stMetricValue"] { color: var(--text) !important; }
+div[data-testid="stMetricDelta"] { color: var(--muted) !important; }
+.block-container { padding-top: 1.5rem; }
+hr { border: 0; height: 1px; background: #222631; margin: 1rem 0; }
+.stDataFrame thead tr th { background: #1c212b !important; color: var(--text) !important; }
+.stDataFrame td { color: var(--text) !important; }
+code, pre { background: #10141a !important; color: #cbd5e1 !important; }
+a { color: var(--accent) !important; }

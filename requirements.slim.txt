@@ -1,8 +1,0 @@
-pandas>=1.5
-numpy>=1.23
-streamlit>=1.22
-matplotlib>=3.5
-seaborn>=0.12
-plotly>=5.13
-tqdm>=4.67
-requests>=2.31

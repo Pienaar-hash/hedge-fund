@@ -1,0 +1,16 @@
+# Streamlit UI tuneables (read-only dashboard)
+tail_lines: 10          # screener tail
+signals_rows: 5         # latest signals
+trades_rows: 5          # latest trade log entries
+kpi_thresholds:
+  drawdown_warn_pct: 8
+  drawdown_crit_pct: 12
+  pnl_24h_warn_pct: -1.0
+  pnl_24h_crit_pct: -3.0
+nav:
+  prefer_firestore: true
+  fallback_peak_state: true
+positions:
+  compact: true
+reserve:
+  btc: 0.013

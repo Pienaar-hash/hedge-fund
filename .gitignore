@@ -1,43 +1,23 @@
-# === Git Ignore for Hedge Fund Project ===
-
-# Ignore virtual environments
-venv/
-.env
-
-# Ignore system files
-.DS_Store
-__pycache__/
-*.pyc
-
-# Allow all logs to support dashboard
-!logs/
-!logs/**
-
-# Ignore raw exports (optional)
-*.log
-*.tmp
-*.bak
-
-# Ignore datasets not needed in repo
-data/raw/
-data/unprocessed/
-
-__pycache__
-*.log
-firebase_creds.json
-config/testnet_keys.py
-config/testnet_keys.json
 # secrets
 .env
 config/firebase_creds.json
 
-# runtime
-logs/
-__pycache__/
-*.pyc
-.streamlit/
-
-# Runtime state files
-nav_log.json
+# runtime/local
 peak_state.json
 synced_state.json
+trade_log.json
+
+# python noise
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# logs
+*.log
+/var/log/
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/
