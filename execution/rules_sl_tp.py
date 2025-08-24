@@ -1,74 +1,91 @@
 """
-Pure SL/TP rules — no I/O. Import and call from screener/executor.
-All prices are floats; 'side' is 'LONG' or 'SHORT'.
-"""
+fixed_tp_pct: Optional[float] = None,
+trail: Optional[float] = None, # trail distance (abs price) or None
+) -> SLTP:
+side = side.upper()
+if side not in ("LONG", "SHORT"):
+raise ValueError("side must be LONG or SHORT")
 
-from __future__ import annotations
-from typing import Optional, Dict, Sequence, Tuple
 
-def compute_sl_tp(
-    entry_px: float,
-    side: str,
-    atr: Optional[float] = None,
-    atr_mult_sl: Optional[float] = None,
-    atr_mult_tp: Optional[float] = None,
-    fixed_sl_pct: Optional[float] = None,
-    fixed_tp_pct: Optional[float] = None,
-) -> Dict[str, float]:
-    """
-    Returns {'sl_px': float, 'tp_px': float}. If ATR info missing, falls back to fixed pct.
-    For LONG: SL below entry, TP above. For SHORT: inverse.
-    """
-    side = side.upper()
-    assert side in ("LONG", "SHORT")
-    def _pct(px, pct, up):
-        return px * (1 + pct) if up else px * (1 - pct)
+# Base deltas
+sl_delta = None
+tp_delta = None
 
-    use_atr = (atr is not None) and (atr > 0) and atr_mult_sl and atr_mult_tp
-    if use_atr:
-        sl_off = atr * float(atr_mult_sl)
-        tp_off = atr * float(atr_mult_tp)
-        if side == "LONG":
-            return {"sl_px": entry_px - sl_off, "tp_px": entry_px + tp_off}
-        else:
-            return {"sl_px": entry_px + sl_off, "tp_px": entry_px - tp_off}
-    else:
-        # fallback to fixed pct
-        sl_pct = abs(float(fixed_sl_pct or 0.01))
-        tp_pct = abs(float(fixed_tp_pct or 0.015))
-        if side == "LONG":
-            return {"sl_px": _pct(entry_px, sl_pct, up=False), "tp_px": _pct(entry_px, tp_pct, up=True)}
-        else:
-            return {"sl_px": _pct(entry_px, sl_pct, up=True),  "tp_px": _pct(entry_px, tp_pct, up=False)}
+
+if atr and atr_mult:
+sl_delta = atr * atr_mult
+tp_delta = atr * atr_mult
+if fixed_sl_pct:
+sl_delta = max(sl_delta or 0, entry_px * (fixed_sl_pct / 100.0))
+if fixed_tp_pct:
+tp_delta = max(tp_delta or 0, entry_px * (fixed_tp_pct / 100.0))
+
+
+if sl_delta is None or tp_delta is None:
+raise ValueError("Provide atr×mult and/or fixed %s for both SL and TP")
+
+
+if side == "LONG":
+sl_px = entry_px - sl_delta
+tp_px = entry_px + tp_delta
+else: # SHORT
+sl_px = entry_px + sl_delta
+tp_px = entry_px - tp_delta
+
+
+trail_px = None
+if trail and trail > 0:
+trail_px = trail
+
+
+return SLTP(sl_px=round(sl_px, 8), tp_px=round(tp_px, 8), trail_px=trail_px)
+
+
+
 
 def should_exit(
-    closes: Sequence[float],
-    entry_px: float,
-    side: str,
-    sl_px: float,
-    tp_px: float,
-    max_bars: Optional[int] = None
+prices: Sequence[float],
+entry_px: float,
+side: str,
+sl_px: float,
+tp_px: float,
+max_bars: int = 0,
+trail_px: Optional[float] = None,
 ) -> Tuple[bool, str]:
-    """
-    Simple bar-close exit logic:
-    - Exit if last close breaches SL/TP for the given side.
-    - Exit on time stop if max_bars exceeded.
-    Returns (exit_bool, reason_str).
-    """
-    if not closes:
-        return (False, "no_data")
-    last = float(closes[-1])
-    side = side.upper()
-    if side == "LONG":
-        if last <= sl_px:
-            return (True, "hit_sl")
-        if last >= tp_px:
-            return (True, "hit_tp")
-    else:
-        if last >= sl_px:
-            return (True, "hit_sl")
-        if last <= tp_px:
-            return (True, "hit_tp")
-    if max_bars and len(closes) >= int(max_bars):
-        return (True, "time_stop")
-    return (False, "hold")
+"""Return (exit?, reason) given the latest price path.
+
+
+Reasons: "hit_sl", "hit_tp", "time_stop", "trail_stop", "hold".
+"""
+side = side.upper()
+if not prices:
+return False, "hold"
+last = prices[-1]
+
+
+if side == "LONG":
+if last <= sl_px:
+return True, "hit_sl"
+if last >= tp_px:
+return True, "hit_tp"
+if trail_px:
+# trailing from highest close since entry
+peak = max(prices)
+if last <= peak - trail_px:
+return True, "trail_stop"
+else: # SHORT
+if last >= sl_px:
+return True, "hit_sl"
+if last <= tp_px:
+return True, "hit_tp"
+if trail_px:
+trough = min(prices)
+if last >= trough + trail_px:
+return True, "trail_stop"
+
+
+if max_bars and len(prices) >= max_bars:
+return True, "time_stop"
+
+
+return False, "hold"

@@ -1,64 +1,26 @@
 {
-  "version": 1,
-  "timeframes": ["15m"],
   "strategies": {
-    "btc_breakout_15m": {
-      "enabled": true,
+    "btc_momo": {
       "symbol": "BTCUSDT",
       "timeframe": "15m",
-      "capital_per_trade": 75,
-      "leverage": 3,
+      "capital_per_trade": 120.0,
+      "leverage": 1,
+      "min_notional": 100.0,
       "entry": {
-        "rsi_band": [15, 85],
-        "zscore_min": 0.45,
-        "atr_min": 0.0,
-        "require_cross": true,
-        "cross_key": "cross_up"       // screener sets cross_up/cross_down
+        "mode": "momentum",
+        "zscore_min": 0.0,
+        "rsi_band": [
+          0,
+          100
+        ],
+        "atr_min": 0.0
       },
       "exit": {
-        "sl": { "type": "atr", "atr_mult": 2.5, "fallback_pct": 0.012 },
-        "tp": { "type": "atr", "atr_mult": 3.5, "fallback_pct": 0.018 },
-        "max_bars": 96                 // time stop ~1 day on 15m
-      }
-    },
-
-    "eth_momentum_15m": {
-      "enabled": true,
-      "symbol": "ETHUSDT",
-      "timeframe": "15m",
-      "capital_per_trade": 60,
-      "leverage": 3,
-      "entry": {
-        "rsi_band": [20, 80],
-        "zscore_min": 0.35,
-        "atr_min": 0.0,
-        "require_cross": true,
-        "cross_key": "cross_up"
-      },
-      "exit": {
-        "sl": { "type": "atr", "atr_mult": 2.0, "fallback_pct": 0.010 },
-        "tp": { "type": "atr", "atr_mult": 3.0, "fallback_pct": 0.016 },
-        "max_bars": 96
-      }
-    },
-
-    "sol_fast_lane_15m": {
-      "enabled": true,
-      "symbol": "SOLUSDT",
-      "timeframe": "15m",
-      "capital_per_trade": 45,
-      "leverage": 3,
-      "entry": {
-        "rsi_band": [15, 85],
-        "zscore_min": 0.20,
-        "atr_min": 0.0,
-        "require_cross": true,
-        "cross_key": "either"          // allow up or down cross to emit
-      },
-      "exit": {
-        "sl": { "type": "atr", "atr_mult": 2.8, "fallback_pct": 0.012 },
-        "tp": { "type": "atr", "atr_mult": 3.8, "fallback_pct": 0.020 },
-        "max_bars": 96
+        "tp_pct": 0.002,
+        "max_bars": 8,
+        "atr_multiple": 1.5,
+        "rsi_period": 14,
+        "atr_period": 14
       }
     }
   }

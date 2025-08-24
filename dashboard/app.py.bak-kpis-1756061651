@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-"""Streamlit dashboard (single "Overview" tab), read-only.
-Firestore-first; falls back to local files for NAV.
-Shows: KPIs, NAV chart, Positions, Signals (5), Trade log (5), Screener tail (10), BTC reserve.
-"""
 # Streamlit dashboard (single "Overview" tab), read-only.
 # Firestore-first; falls back to local files for NAV.
+# KPIs
+pos_now = load_positions()
+open_cnt = sum(1 for p in pos_now if abs(p.get('qty',0))>0)
+, NAV chart, Positions, Signals (5), Trade log (5), Screener tail (10), BTC reserve.
 
 # ---- tolerant dotenv ----
 try:
@@ -223,14 +223,11 @@ st.title("Hedge — Overview")
 st.caption(f"ENV: {ENV} · Read-only dashboard")
 
 # KPIs
-
+pos_now = load_positions()
+open_cnt = sum(1 for p in pos_now if abs(p.get('qty',0))>0)
 
 series = load_nav_series()
 k = compute_nav_kpis(series)
-# KPI helpers derived from positions (defined after functions above)
-pos_now = load_positions()
-open_cnt = sum(1 for p in pos_now if abs(p.get('qty') or 0) > 0)
-
 c1,c2,c3,c4 = st.columns(4)
 c1.metric("NAV (USDT)", f"{k['nav']:,.2f}" if k['nav'] is not None else "—", f"{k['delta']:,.2f} / {k['delta_pct']:+.2f}%")
 c2.metric("Drawdown", f"{k['dd']:.2f}%" if k['dd'] is not None else "—")

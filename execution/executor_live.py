@@ -1,145 +1,104 @@
+#!/usr/bin/env python3
 from __future__ import annotations
-import os, time, json, math, hmac, hashlib, requests, traceback
-from typing import Dict, Any, Optional
-from execution.signal_screener import generate_signals_from_config
+import os, json, time, logging
+from typing import Any, Dict, List
 
-# ===== ENV / BASES =====
-BINANCE_TESTNET = str(os.getenv("BINANCE_TESTNET","1")).strip().lower() in ("1","true","yes","on")
-API_KEY  = os.environ["BINANCE_API_KEY"]
-API_SEC  = os.environ["BINANCE_API_SECRET"]
-BASE_FUT = "https://testnet.binancefuture.com" if BINANCE_TESTNET else "https://fapi.binance.com"
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
-HEARTBEAT_SECS = float(os.getenv("HEARTBEAT_SECS","30"))
-SLEEP_SECS     = float(os.getenv("EXECUTOR_LOOP_SLEEP","5"))
+from execution.exchange_utils import is_testnet, get_balances, get_positions, _is_dual_side, place_market_order_sized, get_order
+try:
+    from execution.state_publish import StatePublisher, normalize_positions, publish_nav_value, compute_nav
+    _PUB = StatePublisher(interval_s=int(os.getenv('FS_PUB_INTERVAL','60')))
+except Exception:
+    _PUB = None
 
-# ===== HTTP helpers =====
-def _sig(q: str) -> str:
-    return hmac.new(API_SEC.encode(), q.encode(), hashlib.sha256).hexdigest()
+# Screener (optional; if absent, we just idle)
+try:
+    from execution.signal_screener import generate_signals_from_config
+except Exception:
+    generate_signals_from_config = None
 
-def _get(path: str, params: Dict[str, Any] | None = None, signed: bool = False) -> Any:
-    params = dict(params or {})
-    if signed:
-        params["timestamp"] = int(time.time()*1000)
-        q = "&".join(f"{k}={v}" for k,v in params.items())
-        params["signature"] = _sig(q)
-    r = requests.get(BASE_FUT + path, params=params, headers={"X-MBX-APIKEY": API_KEY}, timeout=10)
-    r.raise_for_status()
-    return r.json()
+LOG = logging.getLogger("executor")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-def _post(path: str, params: Dict[str, Any]) -> Any:
-    params = dict(params)
-    params["timestamp"] = int(time.time()*1000)
-    q = "&".join(f"{k}={v}" for k,v in params.items())
-    url = BASE_FUT + path + "?" + q + "&signature=" + _sig(q)
-    r = requests.post(url, headers={"X-MBX-APIKEY": API_KEY}, timeout=10)
-    print("[executor] ORDER_REQ", path, r.status_code, r.text, flush=True)
-    r.raise_for_status()
-    return r.json()
+DRY_RUN     = os.getenv("DRY_RUN", "0") in ("1","true","True")
+POLL_SEC    = int(os.getenv("POLL_SEC", "60"))
+INTENT_TEST = os.getenv("INTENT_TEST", "0") in ("1","true","True")
+MAX_LOOPS   = int(os.getenv("MAX_LOOPS", "0"))  # 0 = infinite
 
-# ===== Exchange info / filters =====
-_EXINFO: Optional[dict] = None
-_EXINFO_TS = 0.0
-def _exchange_info(ttl: float = 300.0) -> dict:
-    global _EXINFO,_EXINFO_TS
-    now = time.time()
-    if _EXINFO is None or (now - _EXINFO_TS) > ttl:
-        _EXINFO = _get("/fapi/v1/exchangeInfo")
-        _EXINFO_TS = now
-    return _EXINFO
-
-def _filters_for(symbol: str) -> dict:
-    d = next(s for s in _exchange_info()["symbols"] if s["symbol"] == symbol)
-    return {f["filterType"]: f for f in d["filters"]}
-
-def _ticker_price(symbol: str) -> float:
-    return float(_get("/fapi/v1/ticker/price", {"symbol": symbol})["price"])
-
-# ===== Mode detection =====
-def _is_dual_side() -> bool:
+def _account_banner():
     try:
-        j = _get("/fapi/v1/positionSide/dual", signed=True)
-        return bool(j.get("dualSidePosition"))
+        bals = get_balances(); assets = sorted({b.get("asset") for b in bals})
     except Exception:
-        return False
-
-# ===== Sizing & rounding =====
-def _round_step(q: float, step: float) -> float:
-    return math.floor(q / step) * step
-
-def _ensure_filters(symbol: str, qty: float, px: float) -> float:
-    f = _filters_for(symbol)
-    step = float(f["LOT_SIZE"]["stepSize"])
-    min_q = float(f["LOT_SIZE"]["minQty"])
-    min_notional = float(f.get("MIN_NOTIONAL", {}).get("notional", 0.0))
-    qty = _round_step(qty, step)
-    if qty < min_q:
-        qty = min_q
-    if min_notional > 0 and qty * px < min_notional:
-        need = min_notional / max(px, 1e-12)
-        qty = math.ceil(need / step) * step
-    return _round_step(qty, step)
-
-def _map_intent_to_order(intent: dict, dual: bool) -> dict:
-    sym   = intent["symbol"]
-    side  = "BUY" if intent["signal"] == "BUY" else "SELL"
-    red   = bool(intent.get("reduceOnly", False))
-    cap   = float(intent.get("capital_per_trade", 0.0))
-    lev   = float(intent.get("leverage", 1.0))
-    px    = _ticker_price(sym)
-    notional = max(1.0, cap * lev)
-    qty   = _ensure_filters(sym, notional / px, px)
-
-    params = {"symbol": sym, "side": side, "type": "MARKET", "quantity": qty}
-    if dual:
-        # OPEN: BUY->LONG, SELL->SHORT; CLOSE: SELL closes LONG, BUY closes SHORT
-        if red:
-            params["positionSide"] = "LONG" if side == "SELL" else "SHORT"
-            params["reduceOnly"]   = "true"
-        else:
-            params["positionSide"] = "LONG" if side == "BUY" else "SHORT"
-    else:
-        if red:
-            params["reduceOnly"] = "true"
-
-    print("[executor] SEND_ORDER", {"symbol": sym, "side": side, "qty": qty, "px": px,
-                                   "dual": dual, "reduceOnly": red, "params": params}, flush=True)
-    return params
-
-# ===== Account heartbeat =====
-_last_hb = 0.0
-def _heartbeat():
-    global _last_hb
-    now = time.time()
-    if now - _last_hb < HEARTBEAT_SECS:
-        return
+        assets = []
     try:
-        bals = _get("/fapi/v2/balance", signed=True)
-        syms = sorted([b["asset"] for b in bals if float(b.get("balance",0)) or float(b.get("crossWalletBalance",0))])
-        poss = _get("/fapi/v2/positionRisk", signed=True)
-        has  = [p for p in poss if abs(float(p.get("positionAmt", "0"))) > 0]
-        print(f"[executor] account OK — futures=True testnet={BINANCE_TESTNET} dry_run=False balances: {syms} positions: {len(has)}", flush=True)
-    except Exception as e:
-        print("[executor] heartbeat error", str(e), flush=True)
-    _last_hb = now
+        pos = get_positions(); open_cnt = sum(1 for p in pos if abs(float(p.get("qty", p.get("positionAmt",0)) or 0))>0)
+    except Exception:
+        open_cnt = 0
+    LOG.info("[executor] account OK — futures=%s testnet=%s dry_run=%s balances: %s positions: %s",
+             True, is_testnet(), DRY_RUN, assets or [], open_cnt)
 
-# ===== Main loop =====
-def main():
-    print("[executor] launch dualSide=", _is_dual_side(), "testnet=", BINANCE_TESTNET, flush=True)
-    while True:
+def _send_intent(intent: Dict[str, Any]) -> None:
+    sym = intent["symbol"]
+    side = str(intent.get("signal","BUY")).upper()
+    ps   = intent.get("positionSide") or ("LONG" if side=="BUY" else "SHORT")
+    usd  = float(intent.get("capital_per_trade", 100.0))
+    lev  = float(intent.get("leverage", 1))
+    reduce = bool(intent.get("reduceOnly", False))
+    LOG.info("[executor] INTENT symbol=%s side=%s ps=%s cap=%.4f lev=%.2f reduceOnly=%s", sym, side, ps, usd, lev, reduce)
+    if DRY_RUN:
+        LOG.info("[executor] DRY_RUN — skipping SEND_ORDER")
+        return
+    LOG.info("[executor] SEND_ORDER %s %s", sym, side)
+    try:
+        resp = place_market_order_sized(symbol=sym, side=side, usd_capital=usd, leverage=lev, position_side=ps, reduce_only=reduce)
+        LOG.info("[executor] ORDER_REQ 200 id=%s avgPrice=%s qty=%s", resp.get("orderId"), resp.get("avgPrice"), resp.get("executedQty"))
         try:
-            _heartbeat()
-            for intent in (generate_signals_from_config() or []):
-                print("[executor] INTENT " + json.dumps(intent, sort_keys=True), flush=True)
-                try:
-                    dual = _is_dual_side()  # re-check each send (safe on testnet)
-                    params = _map_intent_to_order(intent, dual)
-                    _post("/fapi/v1/order", params)
-                except Exception as e:
-                    print("[executor] ORDER_ERR", str(e), "trace:", traceback.format_exc().splitlines()[-1], flush=True)
-            time.sleep(SLEEP_SECS)
-        except Exception as loop_err:
-            print("[executor] LOOP_ERR", str(loop_err), flush=True)
-            time.sleep(2)
+            oid = resp.get("orderId"); sym = resp.get("symbol") or sym
+            for _ in range(2):
+                time.sleep(0.6)
+                st = get_order(sym, oid)
+                if float(st.get("executedQty", "0") or 0) > 0:
+                    LOG.info("[executor] ORDER_FILL id=%s status=%s avgPrice=%s qty=%s", st.get("orderId"), st.get("status"), st.get("avgPrice"), st.get("executedQty"))
+                    break
+        except Exception as e:
+            LOG.info("[executor] ORDER_FETCH_WARN %s", e)
+    except Exception as e:
+        LOG.exception("[executor] ORDER_ERR %s", e)
+
+def main():
+    if not _is_dual_side():
+        LOG.warning("[executor] WARNING: dualSide is False; enable Hedge Mode before live trading.")
+    _account_banner()
+
+    loops=0; sent_test=False
+    while True:
+        signals: List[Dict[str, Any]] = []
+        if generate_signals_from_config:
+            try:
+                for s in generate_signals_from_config() or []:
+                    signals.append(s)
+            except Exception as e:
+                LOG.exception("[screener] error: %s", e)
+
+        if not signals and INTENT_TEST and not sent_test:
+            ti = {"symbol":"BTCUSDT","signal":"BUY","capital_per_trade":120.0,"leverage":1,"positionSide":"LONG"}
+            LOG.info("[screener->executor] %s", ti)
+            _send_intent(ti); sent_test=True
+
+        for intent in signals:
+            LOG.info("[screener->executor] %s", intent)
+            _send_intent(intent)
+
+        loops += 1
+        if MAX_LOOPS and loops >= MAX_LOOPS:
+            LOG.info("[executor] MAX_LOOPS reached — exiting.")
+            break
+        time.sleep(POLL_SEC)
 
 if __name__ == "__main__":
     main()
