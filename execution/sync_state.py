@@ -1,3 +1,4 @@
+from __future__ import annotations
 
 # execution/sync_state.py — Phase‑4.1 “Stability & Signals” (hardened sync)
 #
@@ -18,7 +19,6 @@
 #  NAV_CUTOFF_SECAGO=86400                       # or relative cutoff in seconds
 #  SYNC_INTERVAL_SEC=20
 #
-from __future__ import annotations
 
 import os
 import json

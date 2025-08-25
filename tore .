@@ -1,0 +1,58 @@
+[33md241c4a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;33mtag: [m[1;33mv0.1.0-testnet[m[33m, [m[1;31morigin/main[m[33m)[m feat: testnet-proven hedge bot (screener→executor→Binance, dashboard, panic-close, telemetry).
+[33mdeb678b[m[33m ([m[1;33mtag: [m[1;33mv4.2.0-prod[m[33m, [m[1;31morigin/release/v4.1-stability-signals[m[33m)[m phase-4.2: tailsafe (DD/daily-loss) + per-position soft SL; 30m config; trimmed whitelist; entry/exit guards
+[33m3cd9fca[m[33m ([m[1;33mtag: [m[1;33mv4.1.0-prod-30m[m[33m)[m phase-4.1 prod patch: 30m, trimmed whitelist, tp sizing, long/short, px>0 guard, order logs
+[33m1429512[m[33m ([m[1;33mtag: [m[1;33mv4.1-stability-signals[m[33m)[m v4.1 Stability & Signals: nav tail KPIs, exposure KPIs, hedge orders, screener fallback, sync hardening
+[33md6e1bc9[m[33m ([m[1;32mphase4-operational-readiness[m[33m)[m snapshot: supervisor hedge.conf (20250817-090147)
+[33m7938fe1[m Phase‑4: fix dashboard import shadowing (rename dashboard/utils.py); pin venv in Supervisor; executor+sync Firestore-safe NAV; logs unbuffered
+[33me47142c[m Fix sync_daemon: remove stray shell text; clean Python loop
+[33mc165cb8[m sync_daemon: build (db,data,env) and call sync_* with correct signature; safe defaults
+[33m60ee611[m Add sync_daemon loop around one-shot sync_state for Supervisor
+[33m9082b7b[m Add requirements.lock for Phase 4 baseline
+[33ma6c61da[m Ops snapshots: Supervisor + logrotate captured for Phase 4
+[33m818d196[m Phase 4: From here → live sprint baseline (executor refactor, Firestore sync, dashboard wiring, ops)
+[33md9c80ea[m[33m ([m[1;33mtag: [m[1;33mv4.0-live-sprint[m[33m)[m Phase 4: From here to live sprint start – refactored executor, Supervisor config, Firestore sync
+[33m5ed5509[m[33m ([m[1;31morigin/sprint-phase2[m[33m, [m[1;32msprint-phase2[m[33m)[m Stop tracking runtime state files
+[33m4a48d8d[m Add runtime state files to .gitignore
+[33me863841[m Phase 3 complete: persistent hedge-sync, Firestore leaderboard & NAV sync, Telegram cooldown; ready for Phase 4 refactor + dashboard finalisation
+[33m204d767[m Fix Firebase init and sync_state structure
+[33m993dd2c[m Fix Firebase init and sync_state structure
+[33mc22070c[m feat(dashboard): rolling 7-day performance page (return + max DD + chart)
+[33mbe3757c[m chore(executor): enrich trade_log.json with NAV/DD for all trades (including BUY)
+[33m64b5ac6[m fix(alerts): rebuild telegram utils with safe line-by-line formatting + executor label
+[33m8a39960[m chore: tidy positions with prune_empty_positions; keep trade logs enriched; retain Phase-2 features
+[33mc2653c1[m fix(binance): strict step-size formatting; BUY via quoteOrderQty; SELL honors min notional & step
+[33m991bd3f[m feat(trading): add sell_close_pct and min_notional_usdt; executor + exchange honor knobs
+[33m4b16fe1[m fix(execution): use quoteOrderQty for BUY; SELL qty rounded to LOT_SIZE with MIN_NOTIONAL checks
+[33m60daed5[m Phase2: per-strategy peak/DD tracking + alerts; include strategy DD in trade alerts
+[33m7944efb[m Phase2: per-asset peak/DD alerts, SELL realized PnL accounting, config-driven Telegram toggle
+[33m29c0fe7[m Phase2: cast numpy scalars to python float for JSON/alerts safety
+[33m5453676[m Phase2: whitelist assets for NAV, SELL guard on spot, UTC timestamps
+[33m897b41f[m chore: add runtime deps (python-binance, pandas, numpy, requests, firebase-admin, streamlit)
+[33mc465cfb[m Phase2: config capital, peak/DD logging, Telegram toggle, continuous executor loop
+[33mfc03e39[m[33m ([m[1;33mtag: [m[1;33mpre-phase2-20250812-1109[m[33m, [m[1;31morigin/checkpoint-pre-phase2-20250812-1109[m[33m, [m[1;32mcheckpoint-pre-phase2-20250812-1109[m[33m)[m Checkpoint: pre-Phase2 (executor one-shot, no capital wiring, no drawdown alerts)
+[33m3a307bf[m[33m ([m[1;32msprint-phase-2[m[33m)[m Final executor refactor + dashboard sync
+[33mc9724eb[m 🐛 Fix trade execution interface and align signal structure
+[33m0bae88c[m 🧠 Live-ready executor + NAV tracking + Telegram drawdown alerts
+[33m4fc101b[m Ignore testnet_keys.py in config and remove from tracking
+[33m32f0538[m Ignore testnet keys
+[33mc0f495f[m ✅ Stable checkpoint before Supervisor refresh and next sprint
+[33m9e7039d[m Merge branch 'main' of https://github.com/Pienaar-hash/hedge-fund
+[33mc7fb344[m Merge branch 'main' of https://github.com/Pienaar-hash/hedge-fund
+[33m940dcbf[m 🔥 Final patch from remote: signal_generator, Telegram integration, Firebase logs
+[33m1960959[m Add executor, signal_generator, and sync_state with Supervisor integration
+[33mdb16016[m WIP: local updates before server sync
+[33mf3de372[m Clear cache and recommit clean version
+[33mc0a6157[m Clear cache + recommit final version
+[33mda8f88a[m 🔁 Final dashboard polish: investor bundle, strategy views, logic docs
+[33mf511282[m ✅ Finalize strategy logic, portfolio simulator, and diagnostic outputs
+[33m07f3807[m Re-add logs now allowed by .gitignore
+[33m5d5c9fe[m Re-add logs now allowed by .gitignore
+[33m742d1af[m Use production-ready requirements for Streamlit
+[33m302916d[m Refactor dashboard, add Streamlit deployment files
+[33mf5d7849[m 🧠 Finalized multi-strategy dashboard with clean equity curve merge, trade logs, and factor metrics
+[33m162983f[m Finalized simulation engine + factor blended backtests
+[33mae29583[m Rename to README.md for GitHub display
+[33m78ece12[m Initial commit of core hedge fund system
+[33m368e335[m Cleaned up tracked files using .gitignore
+[33m10be316[m Initial scaffold for hedge fund system
+[33mf075e22[m Initial commit
