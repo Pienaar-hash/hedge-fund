@@ -162,28 +162,3 @@ if __name__ == "__main__":
         print(f"published positions: {len(rows)}, nav: {nav}")
     except Exception as e:
         print("nav_publish_warn:", e)
-
-# ----- Exit plan publish/fetch -----
-def publish_exit_plan(symbol: str, position_side: str, plan: dict) -> None:
-    cli = _fs_client()
-    now = time.time()
-    body = dict(plan)
-    body["updated"] = now
-    cli.document(f"{FS_ROOT}/exits_{symbol}_{position_side}").set(body, merge=True)
-
-def get_exit_plan(symbol: str, position_side: str) -> dict | None:
-    cli = _fs_client()
-    snap = cli.document(f"{FS_ROOT}/exits_{symbol}_{position_side}").get()
-    return snap.to_dict() if getattr(snap, "exists", False) else None
-
-def publish_exit_event(symbol: str, position_side: str, event: dict) -> None:
-    cli = _fs_client()
-    now = time.time()
-    doc = cli.document(f"{FS_ROOT}/exit_event_{symbol}_{position_side}")
-    snap = doc.get()
-    data = snap.to_dict() if getattr(snap, "exists", False) else {}
-    hist = list(data.get("history", []))
-    event = dict(event)
-    event.setdefault("t", now)
-    hist.append(event)
-    doc.set({"last": event, "history": hist[-200:], "updated": now}, merge=True)

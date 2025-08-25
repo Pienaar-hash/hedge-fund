@@ -1,27 +1,94 @@
 {
-  "strategies": {
-    "btc_momo": {
+  "strategies": [
+    {
+      "name": "btc_rsi15",
+      "enabled": true,
       "symbol": "BTCUSDT",
       "timeframe": "15m",
       "capital_per_trade": 120.0,
       "leverage": 1,
-      "min_notional": 100.0,
-      "entry": {
-        "mode": "momentum",
-        "zscore_min": 0.0,
-        "rsi_band": [
-          0,
-          100
-        ],
-        "atr_min": 0.0
+      "risk": {
+        "fixed_sl_pct": 0.6,
+        "fixed_tp_pct": 1.0,
+        "atr_period": 14,
+        "atr_mult": 0.0,
+        "max_bars": 60
       },
-      "exit": {
-        "tp_pct": 0.002,
-        "max_bars": 8,
-        "atr_multiple": 1.5,
-        "rsi_period": 14,
-        "atr_period": 14
+      "entry": {
+        "type": "screener",
+        "rules": {
+          "rsi_band": [
+            30.0,
+            70.0
+          ],
+          "zmin": 0.8
+        }
+      },
+      "execution": {
+        "allow_pyramiding": false,
+        "max_adds": 0,
+        "min_spacing_pct": 0.35
+      }
+    },
+    {
+      "name": "eth_rsi15",
+      "enabled": true,
+      "symbol": "ETHUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 80.0,
+      "leverage": 1,
+      "risk": {
+        "fixed_sl_pct": 0.6,
+        "fixed_tp_pct": 1.0,
+        "atr_period": 14,
+        "atr_mult": 0.0,
+        "max_bars": 60
+      },
+      "entry": {
+        "type": "screener",
+        "rules": {
+          "rsi_band": [
+            30.0,
+            70.0
+          ],
+          "zmin": 0.8
+        }
+      },
+      "execution": {
+        "allow_pyramiding": false,
+        "max_adds": 0,
+        "min_spacing_pct": 0.35
+      }
+    },
+    {
+      "name": "sol_rsi15",
+      "enabled": true,
+      "symbol": "SOLUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 50.0,
+      "leverage": 5,
+      "risk": {
+        "fixed_sl_pct": 0.7,
+        "fixed_tp_pct": 1.2,
+        "atr_period": 14,
+        "atr_mult": 0.0,
+        "max_bars": 60
+      },
+      "entry": {
+        "type": "screener",
+        "rules": {
+          "rsi_band": [
+            30.0,
+            70.0
+          ],
+          "zmin": 0.9
+        }
+      },
+      "execution": {
+        "allow_pyramiding": false,
+        "max_adds": 0,
+        "min_spacing_pct": 0.4
       }
     }
-  }
+  ]
 }

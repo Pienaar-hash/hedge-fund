@@ -285,6 +285,16 @@ st.dataframe(load_signals_table(5), use_container_width=True, height=210)
 st.subheader("Trade Log (latest 5)")
 st.dataframe(load_trade_log(5), use_container_width=True, height=210)
 
+st.subheader("Exit plans (open)")
+dfep = load_exit_plans()
+if not dfep.empty:
+    dfep = dfep.sort_values(by=["symbol","side"]) 
+    st.dataframe(dfep, use_container_width=True, height=220)
+else:
+    st.write("No open exit plans.")
+
+st.dataframe(load_trade_log(5), use_container_width=True, height=210)
+
 # Screener tail (last 10 lines) — literal tags, no regex
 st.subheader("Screener Tail (last 10)")
 tail = []
@@ -292,3 +302,95 @@ for tag in ("[screener]", "[decision]", "[screener->executor]"):
     tail.extend(_literal_tail(tag, TAIL_LINES))
 tail = tail[-TAIL_LINES:]
 st.code("\n".join(tail) if tail else "(empty)")
+
+def load_exit_plans():
+    """Fetch open exit plans from Firestore. Fallback to exit_plans.json if present."""
+    import time, pandas as pd
+    rows = []
+    cli = _fs_client()
+    now = time.time()
+    if cli:
+        try:
+            col = cli.collection(f"hedge/{ENV}/state")
+            for ref in col.list_documents():
+                doc_id = getattr(ref, "id", "")
+                if not str(doc_id).startswith("exits_"):
+                    continue
+                d = (ref.get().to_dict() or {})
+                if not d or d.get("closed_ts"):
+                    continue
+                rows.append({
+                    "symbol": d.get("symbol"),
+                    "side": d.get("positionSide") or d.get("side"),
+                    "entry_px": float(d.get("entry_px") or 0.0),
+                    "sl_px": float(d.get("sl_px") or 0.0),
+                    "tp_px": float(d.get("tp_px") or 0.0),
+                    "age_min": round(max(0.0, (now - float(d.get("entry_ts") or now)) / 60.0), 1),
+                })
+        except Exception:
+            pass
+    if not rows:
+        # local fallback
+        loc = _load_json("exit_plans.json", [])
+        if isinstance(loc, list):
+            for d in loc:
+                try:
+                    rows.append({
+                        "symbol": d.get("symbol"),
+                        "side": d.get("positionSide") or d.get("side"),
+                        "entry_px": float(d.get("entry_px") or 0.0),
+                        "sl_px": float(d.get("sl_px") or 0.0),
+                        "tp_px": float(d.get("tp_px") or 0.0),
+                        "age_min": float(d.get("age_min") or 0.0),
+                    })
+                except Exception:
+                    continue
+    import pandas as pd
+    return pd.DataFrame(rows)
+
+# --- Exit plans loader (Firestore-first; local fallback) ---
+def load_exit_plans() -> pd.DataFrame:
+    plans = _fs_get_state("exit_plans")
+    rows = []
+    if isinstance(plans, dict) and "rows" in plans:
+        rows = plans["rows"]
+    elif isinstance(plans, list):
+        rows = plans
+    if not rows:
+        local = _load_json("exit_plans.json", [])
+        rows = (local.get("rows") if isinstance(local, dict) else local) or []
+
+    out = []
+    now = time.time()
+    for r in rows:
+        try:
+            ts = r.get("created_ts") or r.get("ts") or r.get("time")
+            if isinstance(ts,(int,float)):
+                t_epoch = float(ts)
+            else:
+                try:
+                    t_epoch = pd.to_datetime(ts, utc=True).timestamp()
+                except Exception:
+                    t_epoch = 0.0
+            out.append({
+                "symbol": r.get("symbol"),
+                "side": r.get("side") or r.get("positionSide"),
+                "entry_px": float(r.get("entry_px") or r.get("entryPrice") or 0),
+                "sl_px": float(r.get("sl_px") or 0),
+                "tp_px": float(r.get("tp_px") or 0),
+                "age_min": round((now - t_epoch)/60.0, 1) if t_epoch else None
+            })
+        except Exception:
+            continue
+    return pd.DataFrame(out)
+
+# --- UI block (fail-soft) ---
+st.subheader("Exit plans (open)")
+try:
+    dfep = load_exit_plans()
+    if not dfep.empty:
+        st.dataframe(dfep, use_container_width=True, height=210)
+    else:
+        st.write("No exit plans recorded yet.")
+except Exception as e:
+    st.write(f"Exit plans unavailable: {e}")
