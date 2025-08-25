@@ -1,65 +1,94 @@
 {
-  "version": 1,
-  "timeframes": ["15m"],
-  "strategies": {
-    "btc_breakout_15m": {
+  "strategies": [
+    {
+      "name": "btc_rsi15",
       "enabled": true,
       "symbol": "BTCUSDT",
       "timeframe": "15m",
-      "capital_per_trade": 75,
-      "leverage": 3,
-      "entry": {
-        "rsi_band": [15, 85],
-        "zscore_min": 0.45,
-        "atr_min": 0.0,
-        "require_cross": true,
-        "cross_key": "cross_up"       // screener sets cross_up/cross_down
+      "capital_per_trade": 120.0,
+      "leverage": 1,
+      "risk": {
+        "fixed_sl_pct": 0.6,
+        "fixed_tp_pct": 1.0,
+        "atr_period": 14,
+        "atr_mult": 0.0,
+        "max_bars": 60
       },
-      "exit": {
-        "sl": { "type": "atr", "atr_mult": 2.5, "fallback_pct": 0.012 },
-        "tp": { "type": "atr", "atr_mult": 3.5, "fallback_pct": 0.018 },
-        "max_bars": 96                 // time stop ~1 day on 15m
+      "entry": {
+        "type": "screener",
+        "rules": {
+          "rsi_band": [
+            30.0,
+            70.0
+          ],
+          "zmin": 0.8
+        }
+      },
+      "execution": {
+        "allow_pyramiding": false,
+        "max_adds": 0,
+        "min_spacing_pct": 0.35
       }
     },
-
-    "eth_momentum_15m": {
+    {
+      "name": "eth_rsi15",
       "enabled": true,
       "symbol": "ETHUSDT",
       "timeframe": "15m",
-      "capital_per_trade": 60,
-      "leverage": 3,
-      "entry": {
-        "rsi_band": [20, 80],
-        "zscore_min": 0.35,
-        "atr_min": 0.0,
-        "require_cross": true,
-        "cross_key": "cross_up"
+      "capital_per_trade": 80.0,
+      "leverage": 1,
+      "risk": {
+        "fixed_sl_pct": 0.6,
+        "fixed_tp_pct": 1.0,
+        "atr_period": 14,
+        "atr_mult": 0.0,
+        "max_bars": 60
       },
-      "exit": {
-        "sl": { "type": "atr", "atr_mult": 2.0, "fallback_pct": 0.010 },
-        "tp": { "type": "atr", "atr_mult": 3.0, "fallback_pct": 0.016 },
-        "max_bars": 96
+      "entry": {
+        "type": "screener",
+        "rules": {
+          "rsi_band": [
+            30.0,
+            70.0
+          ],
+          "zmin": 0.8
+        }
+      },
+      "execution": {
+        "allow_pyramiding": false,
+        "max_adds": 0,
+        "min_spacing_pct": 0.35
       }
     },
-
-    "sol_fast_lane_15m": {
+    {
+      "name": "sol_rsi15",
       "enabled": true,
       "symbol": "SOLUSDT",
       "timeframe": "15m",
-      "capital_per_trade": 45,
-      "leverage": 3,
-      "entry": {
-        "rsi_band": [15, 85],
-        "zscore_min": 0.20,
-        "atr_min": 0.0,
-        "require_cross": true,
-        "cross_key": "either"          // allow up or down cross to emit
+      "capital_per_trade": 50.0,
+      "leverage": 5,
+      "risk": {
+        "fixed_sl_pct": 0.7,
+        "fixed_tp_pct": 1.2,
+        "atr_period": 14,
+        "atr_mult": 0.0,
+        "max_bars": 60
       },
-      "exit": {
-        "sl": { "type": "atr", "atr_mult": 2.8, "fallback_pct": 0.012 },
-        "tp": { "type": "atr", "atr_mult": 3.8, "fallback_pct": 0.020 },
-        "max_bars": 96
+      "entry": {
+        "type": "screener",
+        "rules": {
+          "rsi_band": [
+            30.0,
+            70.0
+          ],
+          "zmin": 0.9
+        }
+      },
+      "execution": {
+        "allow_pyramiding": false,
+        "max_adds": 0,
+        "min_spacing_pct": 0.4
       }
     }
-  }
+  ]
 }

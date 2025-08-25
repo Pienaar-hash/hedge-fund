@@ -1,5 +1,5 @@
-# execution/telegram_utils.py — Phase 4.1
 from __future__ import annotations
+# execution/telegram_utils.py — Phase 4.1
 
 import os, time
 from datetime import datetime, timezone
