@@ -137,6 +137,12 @@ def _send_order(intent: Dict[str, Any]) -> None:
     nav = _compute_nav()
     current_gross, sym_open_qty = _gross_and_open_qty(symbol, pos_side, positions)
 
+    # Note attempt for burst limiting
+    try:
+        _RISK_STATE.note_attempt(time.time())
+    except Exception:
+        pass
+
     ok, details = check_order(
         symbol=symbol,
         side=side,
@@ -148,12 +154,26 @@ def _send_order(intent: Dict[str, Any]) -> None:
         cfg=_RISK_CFG,
         state=_RISK_STATE,
         current_gross_notional=current_gross,
+        lev=lev,
     )
     reasons = details.get("reasons", []) if isinstance(details, dict) else []
     if not ok:
         reason = reasons[0] if reasons else "blocked"
-        LOG.warning("[risk] block symbol=%s side=%s reason=%s notional=%.4f nav=%.2f open_qty=%.6f gross=%.2f",
-                    symbol, side, reason, notional, nav, sym_open_qty, current_gross)
+        price = float(intent.get("price", 0.0) or 0.0)
+        block_info = {
+            "symbol": symbol,
+            "side": side,
+            "reason": reason,
+            "notional": notional,
+            "price": price,
+        }
+        LOG.warning("[risk] block %s", block_info)
+        # Best-effort Telegram alert
+        try:
+            from execution.telegram_utils import send_telegram
+            send_telegram(f"Risk‑block {symbol} {side}: {reason}\nnotional={notional:.2f} price={price:.2f}", silent=True)
+        except Exception:
+            pass
         try:
             audit = {
                 "phase": "blocked",

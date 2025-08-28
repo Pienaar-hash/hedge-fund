@@ -13,13 +13,28 @@ except Exception:
 LOG_TAG = "[screener]"
 
 def _load_strategy_list() -> List[Dict[str, Any]]:
-    cfg = json.load(open("config/strategy_config.json"))
-    raw = cfg.get("strategies", cfg)
+    scfg = json.load(open("config/strategy_config.json"))
+    raw = scfg.get("strategies", scfg)
     lst = raw if isinstance(raw, list) else (list(raw.values()) if isinstance(raw, dict) else [])
+
+    # Authoritative whitelist from risk_limits.json (fallback to strategy_config.json if needed)
+    wl: List[str] = []
+    try:
+        rlc = json.load(open("config/risk_limits.json"))
+        wl = (rlc.get("global") or {}).get("whitelist") or []
+    except Exception:
+        pass
+    if not wl:
+        wl = (scfg.get("whitelist") or []) if isinstance(scfg, dict) else []
+    if isinstance(wl, list) and wl:
+        wl_set = {str(x).upper() for x in wl}
+        lst = [s for s in lst if isinstance(s, dict) and str(s.get("symbol", "")).upper() in wl_set]
+    # Optional universe from pairs_universe.json (secondary filter if present)
     try:
         uni = json.load(open("config/pairs_universe.json")).get("symbols", [])
         if isinstance(uni, list) and uni:
-            lst = [s for s in lst if isinstance(s, dict) and s.get("symbol") in uni]
+            uni_set = {str(x).upper() for x in uni}
+            lst = [s for s in lst if isinstance(s, dict) and str(s.get("symbol", "")).upper() in uni_set]
     except Exception:
         pass
     return [s for s in lst if isinstance(s, dict) and s.get("enabled")]
@@ -57,12 +72,22 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         try:
             kl = get_klines(sym, tf, limit=150); closes = [c for _,c in kl]
             price = get_price(sym); rsi = _rsi(closes, 14); z = _zscore(closes, 20)
-            min_notional = float(get_symbol_filters(sym).get("MIN_NOTIONAL", {}).get("notional", 0) or 0)
+            exch_min_notional = float(get_symbol_filters(sym).get("MIN_NOTIONAL", {}).get("notional", 0) or 0)
             lot = get_symbol_filters(sym).get('MARKET_LOT_SIZE') or get_symbol_filters(sym).get('LOT_SIZE', {})
             step = float(lot.get('stepSize', 1.0)); min_qty = float(lot.get('minQty', 1.0))
             min_qty_notional = (price * max(min_qty, step)) / max(lev, 1e-9)
         except Exception as e:
             print(f"{LOG_TAG} {sym} {tf} error: {e}"); continue
+        # Use global min_notional_usdt from risk_limits.json (fallback to strategy_config.json if present there)
+        try:
+            rlc = json.load(open("config/risk_limits.json"))
+            cfg_min_notional = float((rlc.get("global") or {}).get("min_notional_usdt", 0) or 0)
+        except Exception:
+            try:
+                cfg_min_notional = float((json.load(open("config/strategy_config.json"))).get("min_notional_usdt", 0) or 0)
+            except Exception:
+                cfg_min_notional = 0.0
+        min_notional = max(exch_min_notional, cfg_min_notional)
         if (cap < min_notional or cap < min_qty_notional) and not entry_forced:
             print(f"[decision] {{\"symbol\":\"{sym}\",\"tf\":\"{tf}\",\"notional\":{cap},\"min_notional\":{min_notional},\"veto\":[\"min_notional\"]}}")
             continue

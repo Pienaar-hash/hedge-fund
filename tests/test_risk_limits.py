@@ -1,4 +1,4 @@
-from execution.risk_limits import RiskConfig, RiskState, can_open_position, should_reduce_positions, clamp_order_size
+from execution.risk_limits import RiskConfig, RiskState, can_open_position, should_reduce_positions, clamp_order_size, check_order
 
 def test_can_open_position_happy_path():
     cfg = RiskConfig(200.0, 1000.0, 5, 5.0, -10.0, 10.0)
@@ -35,3 +35,63 @@ def test_clamp_order_size():
     assert clamp_order_size(0.12349, 0.0001) == 0.1234
     assert clamp_order_size(5.0, 0.01) == 5.0
     assert clamp_order_size(0.009, 0.01) == 0.0
+
+
+# ---- New guardrail tests ----
+
+def _base_cfg():
+    return {
+        "global": {
+            "whitelist": ["BTCUSDT"],
+            "min_notional_usdt": 25.0,
+            "daily_loss_limit_pct": 3.0,
+            "max_trade_nav_pct": 10.0,
+        },
+        "per_symbol": {
+            "BTCUSDT": {"min_notional": 25.0, "max_order_notional": 50.0},
+            "ETHUSDT": {"min_notional": 5.0, "max_order_notional": 20.0},
+        },
+    }
+
+
+def test_guardrail_not_whitelisted_blocks():
+    st = RiskState()
+    ok, details = check_order(
+        symbol="ETHUSDT", side="BUY", requested_notional=50.0, price=0.0,
+        nav=1000.0, open_qty=0.0, now=0.0, cfg=_base_cfg(), state=st, current_gross_notional=0.0
+    )
+    assert not ok
+    assert "not_whitelisted" in details.get("reasons", [])
+
+
+def test_guardrail_below_min_notional_blocks():
+    st = RiskState()
+    ok, details = check_order(
+        symbol="BTCUSDT", side="BUY", requested_notional=10.0, price=0.0,
+        nav=1000.0, open_qty=0.0, now=0.0, cfg=_base_cfg(), state=st, current_gross_notional=0.0
+    )
+    assert not ok
+    assert "below_min_notional" in details.get("reasons", [])
+
+
+def test_guardrail_symbol_cap_blocks():
+    st = RiskState()
+    cfg = _base_cfg()
+    cfg["per_symbol"]["BTCUSDT"]["max_order_notional"] = 20.0
+    ok, details = check_order(
+        symbol="BTCUSDT", side="BUY", requested_notional=50.0, price=0.0,
+        nav=1000.0, open_qty=0.0, now=0.0, cfg=cfg, state=st, current_gross_notional=0.0
+    )
+    assert not ok
+    assert "symbol_cap" in details.get("reasons", [])
+
+
+def test_guardrail_day_loss_limit_blocks():
+    st = RiskState()
+    st.daily_pnl_pct = -3.5
+    ok, details = check_order(
+        symbol="BTCUSDT", side="BUY", requested_notional=25.0, price=0.0,
+        nav=1000.0, open_qty=0.0, now=0.0, cfg=_base_cfg(), state=st, current_gross_notional=0.0
+    )
+    assert not ok
+    assert "day_loss_limit" in details.get("reasons", [])

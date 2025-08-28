@@ -24,6 +24,10 @@ class RiskState:
         # New fields for cooldown/circuit breaker support
         self._last_fill_by_symbol: Dict[str, float] = {}
         self._error_timestamps: List[float] = []
+        # Attempt timestamps for burst control
+        self._order_attempt_ts: List[float] = []
+        # Optional daily PnL percent (negative means loss)
+        self.daily_pnl_pct: float = 0.0
 
     # --- Optional helpers used by check_order ---
     def note_fill(self, symbol: str, ts: float) -> None:
@@ -39,6 +43,15 @@ class RiskState:
         cutoff = float(now) - max(float(window_sec or 0), 0.0)
         kept = [t for t in self._error_timestamps if t >= cutoff]
         self._error_timestamps = kept
+        return len(kept)
+
+    def note_attempt(self, ts: float) -> None:
+        self._order_attempt_ts.append(float(ts))
+
+    def attempts_in(self, window_sec: int, now: float) -> int:
+        cutoff = float(now) - max(float(window_sec or 0), 0.0)
+        kept = [t for t in self._order_attempt_ts if t >= cutoff]
+        self._order_attempt_ts = kept
         return len(kept)
 
 def _can_open_position_legacy(symbol: str, notional: float, lev: float,
@@ -146,6 +159,7 @@ def check_order(
     cfg: dict,
     state: RiskState,
     current_gross_notional: float = 0.0,
+    lev: float = 1.0,
 ) -> Tuple[bool, dict]:
     """Apply per-symbol and global risk checks.
 
@@ -158,16 +172,36 @@ def check_order(
     s_cfg = _cfg_get(cfg, ["per_symbol", sym], {}) or {}
     g_cfg = _cfg_get(cfg, ["global"], {}) or {}
 
+    # Whitelist guardrail (if provided)
+    wl = g_cfg.get("whitelist") or []
+    if isinstance(wl, list) and len(wl) > 0:
+        wl_set = {str(x).upper() for x in wl}
+        if sym.upper() not in wl_set:
+            reasons.append("not_whitelisted")
+
+    # Daily loss limit (portfolio). Expect state.daily_pnl_pct to be set by caller.
+    try:
+        day_lim = float(g_cfg.get("daily_loss_limit_pct", 0.0) or 0.0)
+    except Exception:
+        day_lim = 0.0
+    if day_lim > 0.0:
+        try:
+            if float(getattr(state, "daily_pnl_pct", 0.0)) <= -day_lim:
+                reasons.append("day_loss_limit")
+        except Exception:
+            pass
+
     # Per-order notional constraints
-    min_notional = float(s_cfg.get("min_notional", 0.0) or 0.0)
+    g_min = float(g_cfg.get("min_notional_usdt", 0.0) or 0.0)
+    min_notional = max(float(s_cfg.get("min_notional", 0.0) or 0.0), g_min)
     max_order_notional = float(s_cfg.get("max_order_notional", 0.0) or 0.0)
     req_notional = float(requested_notional)
 
     if min_notional > 0.0 and req_notional < min_notional:
-        reasons.append("min_notional")
+        reasons.append("below_min_notional")
 
     if max_order_notional > 0.0 and req_notional > max_order_notional:
-        reasons.append("max_order_notional")
+        reasons.append("symbol_cap")
 
     # Open quantity cap (applies to increasing long exposure)
     max_open_qty = s_cfg.get("max_open_qty", None)
@@ -178,7 +212,23 @@ def check_order(
             max_open_qty_f = None
         if max_open_qty_f is not None:
             if str(side).upper() in ("BUY", "LONG") and float(open_qty) >= max_open_qty_f:
-                reasons.append("max_open_qty")
+                reasons.append("symbol_cap")
+
+    # Side block (optional)
+    try:
+        blocked_sides = {str(x).upper() for x in (s_cfg.get("block_sides") or [])}
+        if blocked_sides and str(side).upper() in blocked_sides:
+            reasons.append("side_blocked")
+    except Exception:
+        pass
+
+    # Leverage cap (per-symbol or global)
+    try:
+        lev_cap = float(s_cfg.get("max_leverage", g_cfg.get("max_leverage", 0.0)) or 0.0)
+    except Exception:
+        lev_cap = 0.0
+    if lev_cap > 0.0 and float(lev or 0.0) > lev_cap:
+        reasons.append("leverage_exceeded")
 
     # Per-symbol cooldown after last fill
     cooldown_sec = int(float(s_cfg.get("cooldown_sec", 0) or 0))
@@ -198,6 +248,27 @@ def check_order(
         errors_in = getattr(state, "errors_in", lambda _w, _n: 0)
         if errors_in(window_sec, float(now)) >= max_errors:
             reasons.append("circuit_breaker")
+
+    # Burst limit on order attempts (global)
+    burst_cfg = g_cfg.get("burst_limit", {}) or {}
+    try:
+        burst_max = int(float(burst_cfg.get("max_orders", 0) or 0))
+        burst_win = int(float(burst_cfg.get("window_sec", 0) or 0))
+    except Exception:
+        burst_max = 0; burst_win = 0
+    if burst_max > 0 and burst_win > 0:
+        attempts_in = getattr(state, "attempts_in", lambda _w, _n: 0)
+        if attempts_in(burst_win, float(now)) >= burst_max:
+            reasons.append("burst_limit")
+
+    # Per-trade NAV cap
+    try:
+        max_trade_pct = float(g_cfg.get("max_trade_nav_pct", 10.0) or 0.0)
+    except Exception:
+        max_trade_pct = 0.0
+    if max_trade_pct > 0.0 and float(nav) > 0.0:
+        if req_notional > float(nav) * (max_trade_pct/100.0):
+            reasons.append("trade_gt_10pct_equity")
 
     # Gross exposure cap (global)
     max_gross_nav_pct = float(g_cfg.get("max_gross_nav_pct", 0.0) or 0.0)
