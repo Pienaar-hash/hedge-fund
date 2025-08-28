@@ -1,94 +1,16 @@
 {
   "strategies": [
-    {
-      "name": "btc_rsi15",
-      "enabled": true,
-      "symbol": "BTCUSDT",
-      "timeframe": "15m",
-      "capital_per_trade": 120.0,
-      "leverage": 1,
-      "risk": {
-        "fixed_sl_pct": 0.6,
-        "fixed_tp_pct": 1.0,
-        "atr_period": 14,
-        "atr_mult": 0.0,
-        "max_bars": 60
-      },
-      "entry": {
-        "type": "screener",
-        "rules": {
-          "rsi_band": [
-            30.0,
-            70.0
-          ],
-          "zmin": 0.8
-        }
-      },
-      "execution": {
-        "allow_pyramiding": false,
-        "max_adds": 0,
-        "min_spacing_pct": 0.35
-      }
+    {"name":"btc_probe","enabled":true,"symbol":"BTCUSDT","timeframe":"15m","capital_per_trade":120.0,"leverage":1,
+     "risk":{"fixed_sl_pct":0.6,"fixed_tp_pct":1.0,"atr_period":14,"atr_mult":1.5,"max_bars":60},
+     "entry":{"type":"rsi_band","band":[30,70],"zmin":0.8}
     },
-    {
-      "name": "eth_rsi15",
-      "enabled": true,
-      "symbol": "ETHUSDT",
-      "timeframe": "15m",
-      "capital_per_trade": 80.0,
-      "leverage": 1,
-      "risk": {
-        "fixed_sl_pct": 0.6,
-        "fixed_tp_pct": 1.0,
-        "atr_period": 14,
-        "atr_mult": 0.0,
-        "max_bars": 60
-      },
-      "entry": {
-        "type": "screener",
-        "rules": {
-          "rsi_band": [
-            30.0,
-            70.0
-          ],
-          "zmin": 0.8
-        }
-      },
-      "execution": {
-        "allow_pyramiding": false,
-        "max_adds": 0,
-        "min_spacing_pct": 0.35
-      }
+    {"name":"eth_probe","enabled":true,"symbol":"ETHUSDT","timeframe":"15m","capital_per_trade":80.0,"leverage":1,
+     "risk":{"fixed_sl_pct":0.6,"fixed_tp_pct":1.0,"atr_period":14,"atr_mult":1.5,"max_bars":60},
+     "entry":{"type":"rsi_band","band":[30,70],"zmin":0.8}
     },
-    {
-      "name": "sol_rsi15",
-      "enabled": true,
-      "symbol": "SOLUSDT",
-      "timeframe": "15m",
-      "capital_per_trade": 50.0,
-      "leverage": 5,
-      "risk": {
-        "fixed_sl_pct": 0.7,
-        "fixed_tp_pct": 1.2,
-        "atr_period": 14,
-        "atr_mult": 0.0,
-        "max_bars": 60
-      },
-      "entry": {
-        "type": "screener",
-        "rules": {
-          "rsi_band": [
-            30.0,
-            70.0
-          ],
-          "zmin": 0.9
-        }
-      },
-      "execution": {
-        "allow_pyramiding": false,
-        "max_adds": 0,
-        "min_spacing_pct": 0.4
-      }
+    {"name":"sol_probe","enabled":true,"symbol":"SOLUSDT","timeframe":"15m","capital_per_trade":50.0,"leverage":5,
+     "risk":{"fixed_sl_pct":0.8,"fixed_tp_pct":1.2,"atr_period":14,"atr_mult":1.8,"max_bars":60},
+     "entry":{"type":"rsi_band","band":[30,70],"zmin":1.0}
     }
   ]
 }

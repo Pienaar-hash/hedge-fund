@@ -1,0 +1,6 @@
+streamlit
+pandas
+google-cloud-firestore
+google-auth
+altair
+plotly

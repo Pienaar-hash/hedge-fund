@@ -1,6 +1,5 @@
 # === strategies/relative_value.py ===
 import os
-import numpy as np
 import pandas as pd
 from core.strategy_base import Strategy
 from statsmodels.regression.rolling import RollingOLS

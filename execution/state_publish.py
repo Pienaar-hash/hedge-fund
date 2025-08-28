@@ -6,13 +6,17 @@ from __future__ import annotations
 # - Filters positions to non-zero qty and to symbols in pairs_universe.json (if present).
 # - Debounces writes (executor can call this every loop safely).
 
-import os, time, json, hashlib, pathlib
+import os
+import time
+import json
+import hashlib
+import pathlib
 from typing import List, Dict, Any, Optional
 
 # ----- robust .env load -----
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 try:
-    from dotenv import load_dotenv  # type: ignore
+    from dotenv import load_dotenv
     load_dotenv(ROOT_DIR / ".env", override=True)
 except Exception:
     pass
@@ -39,9 +43,9 @@ _ensure_keys()
 
 # ----- Firestore client -----
 def _fs_client():
-    from google.cloud import firestore  # type: ignore
+    from google.cloud import firestore
     if os.path.exists(CREDS_PATH):
-        from google.oauth2 import service_account  # type: ignore
+        from google.oauth2 import service_account
         info = json.load(open(CREDS_PATH))
         creds = service_account.Credentials.from_service_account_file(CREDS_PATH)
         return firestore.Client(project=info.get("project_id"), credentials=creds)
@@ -142,6 +146,52 @@ class StatePublisher:
             publish_positions(rows)
             self._h = h
             self._t = now
+
+# ----- Audit/event helpers -----
+def _fs_client_safe():
+    try:
+        return _fs_client()
+    except Exception:
+        return None
+
+def _audit_append(doc_name: str, event: dict, max_len: int = 500) -> None:
+    cli = _fs_client_safe()
+    if not cli:
+        return
+    now = time.time()
+    doc = cli.document(f"{FS_ROOT}/{doc_name}")
+    try:
+        snap = doc.get()
+        data = snap.to_dict() if getattr(snap, "exists", False) else {}
+    except Exception:
+        data = {}
+    hist = list(data.get("history", []))
+    ev = dict(event)
+    ev.setdefault("t", now)
+    hist.append(ev)
+    hist = hist[-max_len:]
+    try:
+        doc.set({"last": ev, "history": hist, "updated": now}, merge=True)
+    except Exception:
+        pass
+
+def publish_intent_audit(intent: dict) -> None:
+    ev = dict(intent)
+    ev.setdefault("type", "intent")
+    _audit_append("audit_intents", ev)
+
+def publish_order_audit(symbol: str, event: dict) -> None:
+    ev = dict(event)
+    ev.setdefault("symbol", symbol)
+    ev.setdefault("type", "order")
+    _audit_append(f"audit_orders_{symbol}", ev)
+
+def publish_close_audit(symbol: str, position_side: str, event: dict) -> None:
+    ev = dict(event)
+    ev.setdefault("symbol", symbol)
+    ev.setdefault("positionSide", position_side)
+    ev.setdefault("type", "close")
+    _audit_append(f"audit_closes_{symbol}_{position_side}", ev)
 
 if __name__ == "__main__":
     # Preflight: ensure keys & perms visible to THIS process

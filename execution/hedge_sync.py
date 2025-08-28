@@ -1,4 +1,5 @@
-import os, time
+import os
+import time
 from utils.firestore_client import get_db
 from execution.sync_state import sync_positions, sync_nav
 
