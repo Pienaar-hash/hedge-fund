@@ -154,6 +154,23 @@ def _send_order(intent: Dict[str, Any]) -> None:
         reason = reasons[0] if reasons else "blocked"
         LOG.warning("[risk] block symbol=%s side=%s reason=%s notional=%.4f nav=%.2f open_qty=%.6f gross=%.2f",
                     symbol, side, reason, notional, nav, sym_open_qty, current_gross)
+        try:
+            audit = {
+                "phase": "blocked",
+                "side": side,
+                "positionSide": pos_side,
+                "reason": reason,
+                "reasons": reasons,
+                "notional": notional,
+                "nav": nav,
+                "open_qty": sym_open_qty,
+                "gross": current_gross,
+            }
+            if isinstance(details, dict) and "cooldown_until" in details:
+                audit["cooldown_until"] = details.get("cooldown_until")
+            publish_order_audit(symbol, audit)
+        except Exception:
+            pass
         return
 
     # Audit intent snapshot
