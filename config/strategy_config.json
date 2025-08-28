@@ -1,16 +1,29 @@
 {
   "strategies": [
-    {"name":"btc_probe","enabled":true,"symbol":"BTCUSDT","timeframe":"15m","capital_per_trade":120.0,"leverage":1,
-     "risk":{"fixed_sl_pct":0.6,"fixed_tp_pct":1.0,"atr_period":14,"atr_mult":1.5,"max_bars":60},
-     "entry":{"type":"rsi_band","band":[30,70],"zmin":0.8}
+    {
+      "name": "btc_probe",
+      "enabled": true,
+      "symbol": "BTCUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 25.0,
+      "leverage": 1,
+      "risk": {
+        "fixed_sl_pct": 0.4,
+        "fixed_tp_pct": 0.8,
+        "atr_period": 14,
+        "atr_mult": 1.0,
+        "max_bars": 60,
+        "trail": {"width_pct": 0.004}
+      },
+      "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 0.8}
     },
-    {"name":"eth_probe","enabled":true,"symbol":"ETHUSDT","timeframe":"15m","capital_per_trade":80.0,"leverage":1,
-     "risk":{"fixed_sl_pct":0.6,"fixed_tp_pct":1.0,"atr_period":14,"atr_mult":1.5,"max_bars":60},
-     "entry":{"type":"rsi_band","band":[30,70],"zmin":0.8}
+    {"name": "eth_probe", "enabled": false, "symbol": "ETHUSDT", "timeframe": "15m", "capital_per_trade": 25.0, "leverage": 1,
+      "risk": {"fixed_sl_pct": 0.4, "fixed_tp_pct": 0.8, "atr_period": 14, "atr_mult": 1.0, "max_bars": 60, "trail": {"width_pct": 0.004}},
+      "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 0.8}
     },
-    {"name":"sol_probe","enabled":true,"symbol":"SOLUSDT","timeframe":"15m","capital_per_trade":50.0,"leverage":5,
-     "risk":{"fixed_sl_pct":0.8,"fixed_tp_pct":1.2,"atr_period":14,"atr_mult":1.8,"max_bars":60},
-     "entry":{"type":"rsi_band","band":[30,70],"zmin":1.0}
+    {"name": "sol_probe", "enabled": false, "symbol": "SOLUSDT", "timeframe": "15m", "capital_per_trade": 25.0, "leverage": 1,
+      "risk": {"fixed_sl_pct": 0.5, "fixed_tp_pct": 1.0, "atr_period": 14, "atr_mult": 1.2, "max_bars": 60, "trail": {"width_pct": 0.005}},
+      "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 1.0}
     }
   ]
 }
