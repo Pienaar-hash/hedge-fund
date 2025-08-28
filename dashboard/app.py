@@ -189,6 +189,51 @@ def load_trade_log(n: int = 5) -> pd.DataFrame:
         rows.append({"time":"-", "symbol":"-", "side":"-", "qty":"-", "price":"-", "pnl":"-", "raw": ln})
     return pd.DataFrame(rows)
 
+def load_blocked_orders(n: int = 10) -> pd.DataFrame:
+    """Collect recent risk-blocked intents from Firestore audit docs."""
+    cli = _fs_client()
+    rows = []
+    if cli:
+        try:
+            col = cli.collection(f"hedge/{ENV}/state")
+            for ref in col.list_documents():
+                doc_id = getattr(ref, "id", "")
+                if not str(doc_id).startswith("audit_orders_"):
+                    continue
+                d = (ref.get().to_dict() or {})
+                hist = d.get("history") or []
+                for ev in hist:
+                    try:
+                        if (ev or {}).get("phase") != "blocked":
+                            continue
+                        rows.append({
+                            "time": ev.get("t") or ev.get("time"),
+                            "symbol": ev.get("symbol") or str(doc_id).removeprefix("audit_orders_"),
+                            "side": ev.get("side"),
+                            "reason": ev.get("reason"),
+                            "notional": ev.get("notional"),
+                            "open_qty": ev.get("open_qty"),
+                            "gross": ev.get("gross"),
+                            "nav": ev.get("nav"),
+                        })
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+    # Order by time desc; take latest n
+    def _key(x):
+        t = x.get("time")
+        try:
+            return float(t)
+        except Exception:
+            try:
+                return pd.to_datetime(t, utc=True).timestamp()
+            except Exception:
+                return 0.0
+    rows.sort(key=_key, reverse=True)
+    rows = rows[:n]
+    return pd.DataFrame(rows)
+
 # ---------- KPIs ----------
 def compute_nav_kpis(series: List[Dict[str,Any]]) -> Dict[str,Any]:
     if not series:
@@ -313,6 +358,10 @@ st.dataframe(load_signals_table(5), use_container_width=True, height=210)
 # Trade log
 st.subheader("Trade Log (latest 5)")
 st.dataframe(load_trade_log(5), use_container_width=True, height=210)
+
+# Risk blocks
+st.subheader("Risk Blocks (latest 10)")
+st.dataframe(load_blocked_orders(10), use_container_width=True, height=210)
 
 # Screener tail (last 10 lines) — literal tags, no regex
 st.subheader("Screener Tail (last 10)")
