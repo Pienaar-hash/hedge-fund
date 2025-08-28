@@ -2,13 +2,17 @@
   "global": {
     "max_gross_nav_pct": 25.0,
     "daily_loss_limit_pct": 3.0,
-    "error_circuit": { "max_errors": 3, "window_sec": 120, "cooldown_sec": 600 }
+    "error_circuit": { "max_errors": 3, "window_sec": 120, "cooldown_sec": 600 },
+    "whitelist": ["BTCUSDT"],
+    "min_notional_usdt": 25.0,
+    "max_trade_nav_pct": 10.0,
+    "burst_limit": { "max_orders": 3, "window_sec": 60 }
   },
   "per_symbol": {
     "BTCUSDT": {
-      "max_order_notional": 150.0,
-      "max_open_qty": 0.005,
-      "min_notional": 100.0,
+      "max_order_notional": 50.0,
+      "max_open_qty": 0.002,
+      "min_notional": 25.0,
       "cooldown_sec": 60
     },
     "ETHUSDT": {
