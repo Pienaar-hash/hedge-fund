@@ -1,4 +1,3 @@
-import math
 from execution.risk_limits import RiskConfig, RiskState, can_open_position, should_reduce_positions, clamp_order_size
 
 def test_can_open_position_happy_path():

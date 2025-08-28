@@ -1,8 +1,9 @@
 # execution/leaderboard_sync.py
-import json, os, time
+import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Any
 
 from firebase_admin import credentials, firestore, initialize_app
 from execution.config_loader import get, load

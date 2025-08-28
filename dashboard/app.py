@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 from __future__ import annotations
 """Streamlit dashboard (single "Overview" tab), read-only.
 Firestore-first; falls back to local files for NAV.
@@ -9,20 +10,24 @@ Shows: KPIs, NAV chart, Positions, Signals (5), Trade log (5), Screener tail (10
 
 # ---- tolerant dotenv ----
 try:
-    from dotenv import load_dotenv  # type: ignore
+    from dotenv import load_dotenv
     load_dotenv()
 except Exception:
     pass
 
-import os, json, time, pathlib
+import os
+import json
+import time
 from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
+from pathlib import Path
 
 ENV = os.getenv("ENV","prod")
 RESERVE_BTC = float(os.getenv("RESERVE_BTC", "0.025"))
 LOG_PATH = os.getenv("EXECUTOR_LOG", "/var/log/hedge-executor.out.log")
 TAIL_LINES = 10
+RISK_CFG_PATH = os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
 
 # ---------- helpers ----------
 def btc_24h_change() -> float | None:
@@ -51,19 +56,26 @@ def _load_json(path: str, default=None):
 # Firestore (best effort)
 def _fs_client():
     try:
-        from google.cloud import firestore  # type: ignore
+        from google.cloud import firestore
         return firestore.Client()
     except Exception:
         return None
 
 def _fs_get_state(doc: str):
     cli = _fs_client()
-    if not cli: return None
+    if not cli:
+        return None
     try:
         snap = cli.document(f"hedge/{ENV}/state/{doc}").get()
         return snap.to_dict() if getattr(snap, "exists", False) else None
     except Exception:
         return None
+
+def _load_risk_cfg():
+    try:
+        return json.loads(Path(RISK_CFG_PATH).read_text())
+    except Exception:
+        return {}
 
 # ---------- sources ----------
 def load_nav_series() -> List[Dict[str,Any]]:
@@ -198,8 +210,10 @@ def compute_nav_kpis(series: List[Dict[str,Any]]) -> Dict[str,Any]:
     def _val(v):
         for k in ("nav","value","equity","v"):
             if k in v:
-                try: return float(v[k])
-                except Exception: pass
+                try:
+                    return float(v[k])
+                except Exception:
+                    pass
         return None
 
     rows = [( _ts(x), _val(x)) for x in series if isinstance(x, dict)]
@@ -237,6 +251,21 @@ c2.metric("Drawdown", f"{k['dd']:.2f}%" if k['dd'] is not None else "—")
 btc_delta = btc_24h_change()
 c3.metric("Reserve (BTC)", f"{RESERVE_BTC}", (f"{btc_delta:+.2f}% (24h)" if btc_delta is not None else None))
 c4.metric("Open positions", str(open_cnt))
+
+# Risk Status KPI (open gross vs cap)
+risk_cfg = _load_risk_cfg()
+max_gross_pct = float(((risk_cfg.get("global") or {}).get("max_gross_nav_pct") or 0.0))
+open_gross = 0.0
+for p in pos_now:
+    try:
+        open_gross += abs(float(p.get("qty") or 0.0)) * abs(float(p.get("entryPrice") or 0.0))
+    except Exception:
+        pass
+nav_now = k.get('nav') or 0.0
+cap = (float(nav_now) * (max_gross_pct/100.0)) if (nav_now and max_gross_pct>0) else 0.0
+used_pct = (open_gross / cap * 100.0) if cap else 0.0
+c5, = st.columns(1)
+c5.metric("Risk Status", f"{open_gross:,.0f} / {cap:,.0f}", f"{used_pct:.1f}% used")
 
 # NAV chart
 if series:
@@ -285,16 +314,6 @@ st.dataframe(load_signals_table(5), use_container_width=True, height=210)
 st.subheader("Trade Log (latest 5)")
 st.dataframe(load_trade_log(5), use_container_width=True, height=210)
 
-st.subheader("Exit plans (open)")
-dfep = load_exit_plans()
-if not dfep.empty:
-    dfep = dfep.sort_values(by=["symbol","side"]) 
-    st.dataframe(dfep, use_container_width=True, height=220)
-else:
-    st.write("No open exit plans.")
-
-st.dataframe(load_trade_log(5), use_container_width=True, height=210)
-
 # Screener tail (last 10 lines) — literal tags, no regex
 st.subheader("Screener Tail (last 10)")
 tail = []
@@ -302,51 +321,6 @@ for tag in ("[screener]", "[decision]", "[screener->executor]"):
     tail.extend(_literal_tail(tag, TAIL_LINES))
 tail = tail[-TAIL_LINES:]
 st.code("\n".join(tail) if tail else "(empty)")
-
-def load_exit_plans():
-    """Fetch open exit plans from Firestore. Fallback to exit_plans.json if present."""
-    import time, pandas as pd
-    rows = []
-    cli = _fs_client()
-    now = time.time()
-    if cli:
-        try:
-            col = cli.collection(f"hedge/{ENV}/state")
-            for ref in col.list_documents():
-                doc_id = getattr(ref, "id", "")
-                if not str(doc_id).startswith("exits_"):
-                    continue
-                d = (ref.get().to_dict() or {})
-                if not d or d.get("closed_ts"):
-                    continue
-                rows.append({
-                    "symbol": d.get("symbol"),
-                    "side": d.get("positionSide") or d.get("side"),
-                    "entry_px": float(d.get("entry_px") or 0.0),
-                    "sl_px": float(d.get("sl_px") or 0.0),
-                    "tp_px": float(d.get("tp_px") or 0.0),
-                    "age_min": round(max(0.0, (now - float(d.get("entry_ts") or now)) / 60.0), 1),
-                })
-        except Exception:
-            pass
-    if not rows:
-        # local fallback
-        loc = _load_json("exit_plans.json", [])
-        if isinstance(loc, list):
-            for d in loc:
-                try:
-                    rows.append({
-                        "symbol": d.get("symbol"),
-                        "side": d.get("positionSide") or d.get("side"),
-                        "entry_px": float(d.get("entry_px") or 0.0),
-                        "sl_px": float(d.get("sl_px") or 0.0),
-                        "tp_px": float(d.get("tp_px") or 0.0),
-                        "age_min": float(d.get("age_min") or 0.0),
-                    })
-                except Exception:
-                    continue
-    import pandas as pd
-    return pd.DataFrame(rows)
 
 # --- Exit plans loader (Firestore-first; local fallback) ---
 def load_exit_plans() -> pd.DataFrame:

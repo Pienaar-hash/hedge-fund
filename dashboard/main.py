@@ -3,7 +3,7 @@ import sys
 import json
 import time
 import subprocess
-from typing import Any, Dict, List, Tuple
+from typing import List
 
 import pandas as pd
 import streamlit as st
@@ -19,15 +19,11 @@ from dashboard.dashboard_utils import (
     fetch_state_document,
     parse_nav_to_df_and_kpis,
     positions_sorted,
-    read_trade_log_tail,
-    fmt_ccy,
-    fmt_pct,
     fetch_mark_price_usdt,
     get_env_float,
 )
 
 # Read-only exchange helpers
-from execution.exchange_utils import get_account_overview
 
 # Doctor helper
 # removed: doctor runs via subprocess now

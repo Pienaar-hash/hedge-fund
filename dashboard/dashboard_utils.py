@@ -1,7 +1,6 @@
 import os
 import json
-import time
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 
@@ -189,7 +188,8 @@ def fmt_pct(x: Any) -> str:
         return str(x)
 
 # --- Price helpers (read-only) ------------------------------------------------
-import math, requests
+import math
+import requests
 
 def get_env_float(name: str, default: float) -> float:
     try:

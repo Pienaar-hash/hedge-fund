@@ -1,6 +1,27 @@
 {
-"KILL_DD_PCT": 15.0,
-"KILL_DAILY_LOSS_PCT": 7.0,
-"MAX_POSITIONS": 6,
-"MAX_LEVERAGE": 5
+  "global": {
+    "max_gross_nav_pct": 25.0,
+    "daily_loss_limit_pct": 3.0,
+    "error_circuit": { "max_errors": 3, "window_sec": 120, "cooldown_sec": 600 }
+  },
+  "per_symbol": {
+    "BTCUSDT": {
+      "max_order_notional": 150.0,
+      "max_open_qty": 0.005,
+      "min_notional": 100.0,
+      "cooldown_sec": 60
+    },
+    "ETHUSDT": {
+      "max_order_notional": 100.0,
+      "max_open_qty": 0.05,
+      "min_notional": 20.0,
+      "cooldown_sec": 60
+    },
+    "SOLUSDT": {
+      "max_order_notional": 50.0,
+      "max_open_qty": 5,
+      "min_notional": 5.0,
+      "cooldown_sec": 60
+    }
+  }
 }

@@ -3,7 +3,12 @@
 Set USD-M futures marginType=CROSSED once per symbol (idempotent).
 Skips with code -4046 "No need to change margin type."
 """
-import os, time, hmac, hashlib, requests, argparse
+import os
+import time
+import hmac
+import hashlib
+import requests
+import argparse
 
 B = "https://testnet.binancefuture.com" if str(os.getenv("BINANCE_TESTNET","1")).lower() in ("1","true","yes","on") else "https://fapi.binance.com"
 AK = os.environ["BINANCE_API_KEY"]; SK = os.environ["BINANCE_API_SECRET"]

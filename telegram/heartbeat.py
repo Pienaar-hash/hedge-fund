@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import os, time, math, json, requests
+import os
+import requests
 try:
     from dotenv import load_dotenv
     load_dotenv()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import json, time, math
+import json
+import time
 from typing import Any, Dict, Iterable, List
 
 from .exchange_utils import get_klines, get_price

@@ -6,8 +6,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: .pytest_tmp
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p .pytest_tmp
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: python -m pip install -U pip wheel
@@ -18,3 +21,4 @@ jobs:
       - run: ruff check .
       - run: mypy .
       - run: pytest -q
+
