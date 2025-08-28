@@ -1,0 +1,29 @@
+hedge-fund/
+├── docs/
+│   ├── Runbook.md
+│   ├── Investors_Access.md
+│   ├── Mainnet_Cutover_Checklist.md
+│   ├── Telemetry_Format.md
+│   └── QuantWizardPrompt.md
+├── config/
+│   ├── strategy_config.json
+│   ├── pairs_universe.json
+│   ├── risk_limits.json
+│   ├── dashboard.yml
+│   ├── firebase_creds.json.example   # placeholder only
+│   └── ...
+├── execution/
+│   ├── executor_live.py
+│   ├── risk_limits.py
+│   └── ...
+├── dashboard/
+│   └── ...
+├── telegram/
+│   └── ...
+├── scripts/
+├── tests/
+│   └── test_risk_limits.py
+├── ops/
+│   └── hedge.conf
+└── .github/
+    └── workflows/ci.yml
