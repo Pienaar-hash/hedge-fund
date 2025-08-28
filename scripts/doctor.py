@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-import os, json, time, hmac, hashlib
+import os
+import json
+import time
+import hmac
+import hashlib
 from typing import Any, Dict
 import requests
 

@@ -5,7 +5,9 @@ Read exchangeInfo and propose additions to config/pairs_universe.json.
 Default is read-only: prints symbols (USD-M, quote=USDT, status=TRADING).
 Use --write to merge them into the JSON.
 """
-import os, json, requests
+import os
+import json
+import requests
 
 B = "https://testnet.binancefuture.com" if str(os.getenv("BINANCE_TESTNET","1")).lower() in ("1","true","yes","on") else "https://fapi.binance.com"
 ROOT = "/root/hedge-fund"
