@@ -1,7 +1,3 @@
-Here you go — four drop-in docs, ready to save under `docs/` exactly as requested.
-
----
-
 # docs/Runbook.md
 
 ## Hedge Fund Bot — Runbook (Quick-start & Routine Ops)
@@ -10,7 +6,7 @@ Here you go — four drop-in docs, ready to save under `docs/` exactly as reques
 
 A lightweight, read-only **Streamlit** dashboard fronted by **NGINX** with Basic Auth, and a single **executor** that turns screener signals into hedge-mode USD-M futures orders on **Binance**. State lives in **Firestore** (`hedge/prod/state/{nav,positions,...}`), with local fallbacks.
 
-* Server: Ubuntu @ `167.235.205.126`
+* Server: Ubuntu @ `{{DASHBOARD_HOST}}`
 * Reverse proxy: NGINX → Streamlit on `127.0.0.1:8501` (Basic Auth)
 * Supervisor programs: `hedge-executor`, `hedge-dashboard` (no extras)
 * Firestore pathing: `hedge/prod/state/*` (docs: `nav`, `positions`, `leaderboard` if present)
@@ -41,8 +37,8 @@ supervisorctl status
 # Supervisor health
 supervisorctl status
 
-# Dashboard reachability (Basic Auth prompt expected; replace USER:PASS)
-curl -I -u USER:PASS http://167.235.205.126/
+# Dashboard reachability (Basic Auth prompt expected; replace USER:PASS and host)
+curl -I -u USER:PASS http://{{DASHBOARD_HOST}}/
 
 # Executor environment (Firestore / Google paths)
 pid=$(supervisorctl pid hedge-executor); tr '\0' '\n' < /proc/$pid/environ | egrep 'GOOGLE|FIREBASE|BINANCE_|USE_FUTURES|ENV='

@@ -1,42 +1,42 @@
-Title: Integrate risk checks, Firestore audits (incl. blocked), and Risk Status KPI
+Title: AI micro-notional futures: 20× risk guardrails, signal doctor, FS health, dash tweaks, NGINX, TG mini-report
 
 Summary
-- Gate all orders through execution.risk_limits.check_order (or wrapper) before placement.
-- Publish Firestore audits for intents, order request/response/errors, close events, and risk blocks.
-- Add “Risk Status” KPI to the Streamlit overview (open gross vs NAV cap usage).
-- Keep tests green; add light lint/type fixes to touched files.
+- Micro-notional stack: targets $10–$20 gross notional per order with up to 20× leverage (tiny margin). Deterministic logic; AI used only for brief market notes.
+- Signal diagnostics: `execution/signal_doctor.py` prints sizing, exchange min, leverage, and veto stack per whitelisted symbol.
+- Risk updates: global leverage cap 20×; min_notional_usdt=10; tighter trade/portfolio caps with burst/day-loss brakes; per-symbol tiny caps.
+- Orderbook gate: lightweight REST depth snapshot → imbalance veto/boost (rate-limited) behind feature flag.
+- Firestore health: `scripts/fs_doctor.py` checks counts and env/testnet mixing; dashboard shows FS OK/Mixed marker.
+- Telegram mini-report: tiny 7d NAV PNG + 80–120 word AI market note; dry-run friendly.
+- Dashboard: reads only `hedge/{ENV}/state/*`, `trades`, `risk`; shows open positions and 24h tables; compact recency banner with FS status.
+- NGINX: ready server block to reverse proxy Streamlit on 8501 with Basic Auth + TLS notes.
 
 Changes
-- execution/risk_limits.py
-  - Add check_order, will_violate_exposure, and extend RiskState with cooldown/error tracking (note_fill, last_fill_ts, note_error, errors_in).
-  - Backward-compatible can_open_position wrapper; legacy RiskConfig path unchanged.
-  - Deduplicate clamp_order_size and tidy imports.
+- New: `execution/signal_doctor.py`, `execution/orderbook_features.py`, `execution/telegram_report.py`.
+- New: `strategies/momentum_vol.py`, `strategies/market_maker.py` (MM OFF by default).
+- New: `scripts/fs_doctor.py`.
+- New: `deploy/nginx/hedge-dashboard.conf`.
+- Tweaks: `execution/executor_live.py` (DRY_RUN default=1; interpret capital_per_trade as GROSS; correct order sizing margin=gross/lev).
+- Tweaks: `execution/signal_screener.py` (DEBUG_SIGNALS; orderbook gate; correct min-notional checks).
+- Tweaks: `execution/risk_limits.py` (accept `max_portfolio_gross_nav_pct`).
+- Config: `config/risk_limits.json` (20× caps; min_notional_usdt=10; whitelist & tiny caps); `config/strategy_config.json` (per-symbol capital_per_trade=10.0; lev=20; features).
+- Dashboard: `dashboard/app.py` FS status marker.
+- Docs: `docs/CloudEnvironment.md` NGINX + TLS + Basic Auth; sizing math; DRY_RUN flip instructions.
 
-- execution/executor_live.py
-  - Load risk limits config, compute nav/current gross/symbol open_qty, and call check_order before placing.
-  - On block, log and publish order audit with phase="blocked" (reason, details).
-  - Publish intent/request/response/error/close audits.
-  - Note fills and errors in RiskState.
-  - Minor lint/type cleanups, robust optional imports.
+Validation (local)
+- pytest -q: [paste output]
+- ruff check .: [paste output]
+- mypy .: [paste output]
+- Signals doctor: `python -m execution.signal_doctor --env prod --symbols BTCUSDT,ETHUSDT,SOLUSDT,LTCUSDT,LINKUSDT --once`
+  - Shows at least one `would_emit` at $10 notional with lev=20; clear veto reasons for others.
+- FS doctor: `python -m scripts.fs_doctor --env prod` → OK, no mixing; prints counts for nav/positions/trades/risk.
+- Telegram report: `python -m execution.telegram_report --dry-run` → writes `/tmp/nav.png` and logs composed AI note (no advice).
+- Dashboard: Firestore source, open positions only; trades/risk tables limited to last 24h; FS status marker.
+- NGINX: conf present; no installation performed.
 
-- execution/state_publish.py
-  - Add audit append helpers: publish_intent_audit, publish_order_audit, publish_close_audit.
-
-- dashboard/app.py
-  - Add Risk Status KPI (open gross vs cap with % used) sourced from config and Firestore positions.
-  - Add Risk Blocks table: reads hedge/{ENV}/state/audit_orders_* and shows latest blocked intents.
-  - Clean up small lint/style issues and remove duplicate exit plans block.
-
-Validation
-- pytest: 13 passed.
-- ruff: clean for modified files.
-- mypy: clean for modified files (local config added for scope).
-
-Notes
-- Risk config loaded from RISK_LIMITS_CONFIG or config/risk_limits.json.
-- Dashboard and executor fail-soft if Firestore or creds are unavailable.
-- Non-touched modules still have lint issues; scope limited to files changed in this PR.
+Notes & toggles
+- DRY_RUN default is 1. Supervisor flip later (see docs).
+- Feature flags: `DEBUG_SIGNALS=1` for compact per-candidate logs; `MARKET_MAKER_ENABLED=1` (default OFF); orderbook gate via strategy config features.
+- Example risk-block JSON (executor log): `{ "phase":"blocked", "symbol":"BTCUSDT", "side":"BUY", "reason":"below_min_notional", "notional":9.0, "nav":1000.0, ... }`
 
 Reviewers
-- @codex — please review risk checks, audit coverage, and dashboard additions.
-
+- @codex — please review risk guardrails, FS paths, and dashboard status markers.
