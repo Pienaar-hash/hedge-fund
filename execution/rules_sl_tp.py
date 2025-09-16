@@ -15,7 +15,8 @@ Conventions:
     *  > 0.05  -> treated as percent and divided by 100
 """
 
-from typing import Iterable, Optional, Tuple, Dict
+from typing import Dict, Iterable, Optional, Tuple
+
 
 def _normalize_pct(x: float) -> float:
     """
@@ -26,8 +27,9 @@ def _normalize_pct(x: float) -> float:
     if x <= 0.0:
         return 0.0
     if x <= 0.05:
-        return x          # already a fraction (e.g., 0.006 => 0.6%)
-    return x / 100.0       # percent (e.g., 0.6 => 0.006)
+        return x  # already a fraction (e.g., 0.006 => 0.6%)
+    return x / 100.0  # percent (e.g., 0.6 => 0.006)
+
 
 def compute_sl_tp(
     entry_px: float,
@@ -46,7 +48,7 @@ def compute_sl_tp(
     sl_pct = _normalize_pct(fixed_sl_pct)
     tp_pct = _normalize_pct(fixed_tp_pct)
 
-    atr = float(atr or 0.0)       # ATR already a fraction
+    atr = float(atr or 0.0)  # ATR already a fraction
     atr_mult = float(atr_mult or 0.0)
     if atr > 0.0 and atr_mult > 0.0:
         atr_component = atr * atr_mult
@@ -62,6 +64,7 @@ def compute_sl_tp(
     else:
         raise ValueError("side must be 'LONG' or 'SHORT'")
     return float(sl_px), float(tp_px)
+
 
 def should_exit(
     prices: Iterable[float],
@@ -84,11 +87,15 @@ def should_exit(
 
     # Hard TP/SL
     if side == "LONG":
-        if last >= tp_px: return True   # take profit
-        if last <= sl_px: return True   # stop loss
+        if last >= tp_px:
+            return True  # take profit
+        if last <= sl_px:
+            return True  # stop loss
     elif side == "SHORT":
-        if last <= tp_px: return True
-        if last >= sl_px: return True
+        if last <= tp_px:
+            return True
+        if last >= sl_px:
+            return True
     else:
         raise ValueError("side must be 'LONG' or 'SHORT'")
 
@@ -98,11 +105,13 @@ def should_exit(
         if side == "LONG":
             peak = max(it)
             trail_px = peak * (1.0 - w)
-            if last <= trail_px: return True
+            if last <= trail_px:
+                return True
         else:  # SHORT
             trough = min(it)
             trail_px = trough * (1.0 + w)
-            if last >= trail_px: return True
+            if last >= trail_px:
+                return True
 
     # Time stop
     if max_bars and len(it) >= int(max_bars):

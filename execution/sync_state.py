@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 # execution/sync_state.py — Phase‑4.1 “Stability & Signals” (hardened sync)
 #
 # What this does
@@ -19,12 +21,10 @@ from __future__ import annotations
 #  NAV_CUTOFF_SECAGO=86400                       # or relative cutoff in seconds
 #  SYNC_INTERVAL_SEC=20
 #
-
 import os
-import json
 import time
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------- Firestore import (supports multiple layouts) ---------------
 try:
@@ -48,6 +48,7 @@ MAX_POINTS: int = 500  # dashboard series cap
 
 
 # ------------------------------- Utilities ----------------------------------
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -82,6 +83,7 @@ def _cutoff_dt() -> Optional[datetime]:
 
 
 # ----------------------------- File readers ---------------------------------
+
 
 def _read_nav_rows(path: str) -> List[Dict[str, Any]]:
     """Read nav_log.json list and normalize timestamps to key 't'."""
@@ -135,7 +137,12 @@ def _read_positions_snapshot(path: str) -> Dict[str, Any]:
 # --- KPI tail reader for nav card metrics
 def _read_nav_tail_metrics(path: str) -> Dict[str, float]:
     """Return last point's metrics for nav KPIs (safe defaults)."""
-    out = {"total_equity": 0.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0, "drawdown": 0.0}
+    out = {
+        "total_equity": 0.0,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "drawdown": 0.0,
+    }
     if not os.path.exists(path):
         return out
     try:
@@ -143,16 +150,17 @@ def _read_nav_tail_metrics(path: str) -> Dict[str, float]:
             data = json.load(f)
         if isinstance(data, list) and data:
             last = data[-1]
-            out["total_equity"]   = float(last.get("equity", 0.0))
-            out["realized_pnl"]   = float(last.get("realized", 0.0))
+            out["total_equity"] = float(last.get("equity", 0.0))
+            out["realized_pnl"] = float(last.get("realized", 0.0))
             out["unrealized_pnl"] = float(last.get("unrealized", 0.0))
-            out["drawdown"]       = float(last.get("drawdown_pct", 0.0))
+            out["drawdown"] = float(last.get("drawdown_pct", 0.0))
     except Exception:
         pass
     return out
 
 
 # --------------------------- Filtering / metrics -----------------------------
+
 
 def _is_good_nav_row(p: Dict[str, Any]) -> bool:
     try:
@@ -173,27 +181,32 @@ def _compute_peak_from_rows(rows: List[Dict[str, Any]]) -> float:
 
 # --------------------------- Position normalization -------------------------
 
+
 def _normalize_positions_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     now = _now_iso()
-    for it in (items or []):
+    for it in items or []:
         try:
             qty = float(it.get("qty", 0.0))
             entry = float(it.get("entry", it.get("entry_price", 0.0)))
-            mark  = float(it.get("mark_price", it.get("mark", it.get("latest_price", 0.0))))
-            pnl   = (mark - entry) * qty  # recompute; don't trust inbound 'pnl'
-            side  = it.get("side") or ("LONG" if qty >= 0 else "SHORT")
-            out.append({
-                "symbol": it.get("symbol"),
-                "side": side,
-                "qty": qty,
-                "entry_price": entry,
-                "mark_price": mark,
-                "pnl": pnl,
-                "leverage": int(float(it.get("leverage", 1))),
-                "notional": abs(qty) * mark,
-                "ts": it.get("updated_at", now),
-            })
+            mark = float(
+                it.get("mark_price", it.get("mark", it.get("latest_price", 0.0)))
+            )
+            pnl = (mark - entry) * qty  # recompute; don't trust inbound 'pnl'
+            side = it.get("side") or ("LONG" if qty >= 0 else "SHORT")
+            out.append(
+                {
+                    "symbol": it.get("symbol"),
+                    "side": side,
+                    "qty": qty,
+                    "entry_price": entry,
+                    "mark_price": mark,
+                    "pnl": pnl,
+                    "leverage": int(float(it.get("leverage", 1))),
+                    "notional": abs(qty) * mark,
+                    "ts": it.get("updated_at", now),
+                }
+            )
         except Exception:
             continue
     return out
@@ -201,13 +214,16 @@ def _normalize_positions_items(items: List[Dict[str, Any]]) -> List[Dict[str, An
 
 # ------------------------------ Exposure KPIs --------------------------------
 
+
 def _exposure_from_positions(items: List[Dict[str, Any]]) -> Dict[str, float]:
     gross = net = 0.0
     largest = 0.0
-    for it in (items or []):
+    for it in items or []:
         try:
             qty = float(it.get("qty", 0.0))
-            price = float(it.get("mark_price", it.get("mark", it.get("latest_price", 0.0))))
+            price = float(
+                it.get("mark_price", it.get("mark", it.get("latest_price", 0.0)))
+            )
             pv = abs(qty) * price
             gross += pv
             net += qty * price
@@ -223,17 +239,34 @@ def _exposure_from_positions(items: List[Dict[str, Any]]) -> Dict[str, float]:
 
 # ----------------------------- Firestore helpers ----------------------------
 
+
 def _get_env() -> str:
     return os.getenv("ENV", "dev")
 
+
 def _nav_doc_ref(db):
-    return db.collection("hedge").document(_get_env()).collection("state").document("nav")
+    return (
+        db.collection("hedge").document(_get_env()).collection("state").document("nav")
+    )
+
 
 def _pos_doc_ref(db):
-    return db.collection("hedge").document(_get_env()).collection("state").document("positions")
+    return (
+        db.collection("hedge")
+        .document(_get_env())
+        .collection("state")
+        .document("positions")
+    )
+
 
 def _lb_doc_ref(db):
-    return db.collection("hedge").document(_get_env()).collection("state").document("leaderboard")
+    return (
+        db.collection("hedge")
+        .document(_get_env())
+        .collection("state")
+        .document("leaderboard")
+    )
+
 
 def _maybe_fetch_nav_doc(db) -> Dict[str, Any]:
     try:
@@ -244,28 +277,36 @@ def _maybe_fetch_nav_doc(db) -> Dict[str, Any]:
         pass
     return {}
 
+
 def _commit_nav(db, rows: List[Dict[str, Any]], peak: float) -> Dict[str, Any]:
     tail = _read_nav_tail_metrics(NAV_LOG)  # include KPIs for dashboard cards
     if not rows:
-        payload = {"series": [], "peak_equity": float(peak), "updated_at": _now_iso(), **tail}
+        payload = {
+            "series": [],
+            "peak_equity": float(peak),
+            "updated_at": _now_iso(),
+            **tail,
+        }
     else:
         slim = rows[-MAX_POINTS:]
         payload = {
             "series": slim,
             "peak_equity": float(peak),
             "updated_at": slim[-1].get("t", _now_iso()),
-            **tail
+            **tail,
         }
     _nav_doc_ref(db).set(payload, merge=True)
     return payload
 
+
 def _commit_positions(db, positions: Dict[str, Any]) -> Dict[str, Any]:
     items = positions.get("items") or []
     norm = _normalize_positions_items(items)  # normalize to dashboard schema
-    exp  = _exposure_from_positions(norm)
+    exp = _exposure_from_positions(norm)
     payload = {"items": norm, "updated_at": _now_iso(), **exp}
     _pos_doc_ref(db).set(payload, merge=True)
     return payload
+
 
 def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
     """Minimal leaderboard: aggregate notional and pnl by symbol."""
@@ -280,8 +321,12 @@ def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
     leaderboard = sorted(
-        [{"symbol": k, "notional": v["notional"], "pnl": v["pnl"]} for k, v in agg.items()],
-        key=lambda r: r["notional"], reverse=True,
+        [
+            {"symbol": k, "notional": v["notional"], "pnl": v["pnl"]}
+            for k, v in agg.items()
+        ],
+        key=lambda r: r["notional"],
+        reverse=True,
     )
     payload = {"items": leaderboard, "updated_at": _now_iso()}
     _lb_doc_ref(db).set(payload, merge=True)
@@ -289,6 +334,7 @@ def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ------------------------------ Public API ----------------------------------
+
 
 def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """
@@ -329,7 +375,11 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     # If we're filtering history (cutoff active), prefer rows-based peak (local regime)
     cutoff_active = bool(os.getenv("NAV_CUTOFF_ISO") or os.getenv("NAV_CUTOFF_SECAGO"))
     if cutoff_active:
-        peak = max(peak_rows, peak_doc, peak_file) if peak_rows > 0 else max(peak_doc, peak_file)
+        peak = (
+            max(peak_rows, peak_doc, peak_file)
+            if peak_rows > 0
+            else max(peak_doc, peak_file)
+        )
     else:
         peak = max(peak_doc, peak_file, peak_rows)
 
@@ -346,13 +396,16 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
         _nav_doc_ref(db).set(exposure, merge=True)
 
     pos_payload = _commit_positions(db, pos_snap)
-    lb_payload  = _commit_leaderboard(db, pos_snap)
+    lb_payload = _commit_leaderboard(db, pos_snap)
 
     # Console log
     try:
         updated_at = nav_payload.get("updated_at")
-        print(f"[sync] upsert ok: points={len(nav_payload.get('series') or [])} "
-              f"peak={nav_payload.get('peak_equity')} at={updated_at}", flush=True)
+        print(
+            f"[sync] upsert ok: points={len(nav_payload.get('series') or [])} "
+            f"peak={nav_payload.get('peak_equity')} at={updated_at}",
+            flush=True,
+        )
     except Exception:
         pass
 
@@ -360,6 +413,7 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
 
 
 # --------------------------------- Runner -----------------------------------
+
 
 def _interval_seconds() -> int:
     try:
@@ -370,8 +424,11 @@ def _interval_seconds() -> int:
 
 def main_loop() -> None:
     env = os.getenv("ENV", "dev")
-    print("[sync] starting: ENV=%s interval=%ss files=(%s, %s, %s)" %
-          (env, _interval_seconds(), NAV_LOG, PEAK_STATE, SYNCED_STATE), flush=True)
+    print(
+        "[sync] starting: ENV=%s interval=%ss files=(%s, %s, %s)"
+        % (env, _interval_seconds(), NAV_LOG, PEAK_STATE, SYNCED_STATE),
+        flush=True,
+    )
     while True:
         try:
             sync_once()

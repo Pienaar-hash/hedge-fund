@@ -1,0 +1,7 @@
+requests==2.32.4
+python-dotenv>=1.0
+google-cloud-firestore>=2.16
+google-auth>=2.30
+# Optional (used by some research/tools; HTTP adapters in repo do not require it)
+# python-binance==1.0.29
+
