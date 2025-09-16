@@ -1,29 +1,154 @@
 {
   "strategies": [
     {
-      "name": "btc_probe",
+      "name": "btc_micro",
       "enabled": true,
       "symbol": "BTCUSDT",
       "timeframe": "15m",
-      "capital_per_trade": 25.0,
-      "leverage": 1,
+      "capital_per_trade": 10.0,
+      "leverage": 20,
       "risk": {
         "fixed_sl_pct": 0.4,
         "fixed_tp_pct": 0.8,
         "atr_period": 14,
         "atr_mult": 1.0,
         "max_bars": 60,
-        "trail": {"width_pct": 0.004}
+        "trail": {
+          "width_pct": 0.004
+        }
       },
-      "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 0.8}
+      "entry": {
+        "type": "rsi_band",
+        "band": [
+          30,
+          70
+        ],
+        "zmin": 0.8
+      },
+      "features": {
+        "orderbook_gate": true,
+        "orderbook_boost": true
+      }
     },
-    {"name": "eth_probe", "enabled": false, "symbol": "ETHUSDT", "timeframe": "15m", "capital_per_trade": 25.0, "leverage": 1,
-      "risk": {"fixed_sl_pct": 0.4, "fixed_tp_pct": 0.8, "atr_period": 14, "atr_mult": 1.0, "max_bars": 60, "trail": {"width_pct": 0.004}},
-      "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 0.8}
+    {
+      "name": "eth_micro",
+      "enabled": true,
+      "symbol": "ETHUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 10.0,
+      "leverage": 20,
+      "risk": {
+        "fixed_sl_pct": 0.4,
+        "fixed_tp_pct": 0.8,
+        "atr_period": 14,
+        "atr_mult": 1.0,
+        "max_bars": 60,
+        "trail": {
+          "width_pct": 0.004
+        }
+      },
+      "entry": {
+        "type": "rsi_band",
+        "band": [
+          30,
+          70
+        ],
+        "zmin": 0.8
+      }
     },
-    {"name": "sol_probe", "enabled": false, "symbol": "SOLUSDT", "timeframe": "15m", "capital_per_trade": 25.0, "leverage": 1,
-      "risk": {"fixed_sl_pct": 0.5, "fixed_tp_pct": 1.0, "atr_period": 14, "atr_mult": 1.2, "max_bars": 60, "trail": {"width_pct": 0.005}},
+    {
+      "name": "sol_micro",
+      "enabled": true,
+      "symbol": "SOLUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 10.0,
+      "leverage": 20,
+      "risk": {
+        "fixed_sl_pct": 0.5,
+        "fixed_tp_pct": 1.0,
+        "atr_period": 14,
+        "atr_mult": 1.2,
+        "max_bars": 60,
+        "trail": {
+          "width_pct": 0.005
+        }
+      },
+      "entry": {
+        "type": "rsi_band",
+        "band": [
+          30,
+          70
+        ],
+        "zmin": 1.0
+      }
+    },
+    {
+      "name": "link_micro",
+      "enabled": true,
+      "symbol": "LINKUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 10.0,
+      "leverage": 20,
+      "risk": {
+        "fixed_sl_pct": 0.5,
+        "fixed_tp_pct": 1.0,
+        "atr_period": 14,
+        "atr_mult": 1.0,
+        "max_bars": 60,
+        "trail": {"width_pct": 0.005}
+      },
+      "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 0.9}
+    },
+    {
+      "name": "ltc_micro",
+      "enabled": true,
+      "symbol": "LTCUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 10.0,
+      "leverage": 20,
+      "risk": {
+        "fixed_sl_pct": 0.6,
+        "fixed_tp_pct": 1.2,
+        "atr_period": 14,
+        "atr_mult": 1.1,
+        "max_bars": 60,
+        "trail": {"width_pct": 0.006}
+      },
       "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 1.0}
+    },
+    {
+      "name": "sui_micro",
+      "enabled": true,
+      "symbol": "SUIUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 10.0,
+      "leverage": 20,
+      "risk": {
+        "fixed_sl_pct": 0.7,
+        "fixed_tp_pct": 1.4,
+        "atr_period": 14,
+        "atr_mult": 1.2,
+        "max_bars": 60,
+        "trail": {"width_pct": 0.007}
+      },
+      "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 1.1}
+    },
+    {
+      "name": "wif_micro",
+      "enabled": true,
+      "symbol": "WIFUSDT",
+      "timeframe": "15m",
+      "capital_per_trade": 10.0,
+      "leverage": 20,
+      "risk": {
+        "fixed_sl_pct": 0.9,
+        "fixed_tp_pct": 1.8,
+        "atr_period": 14,
+        "atr_mult": 1.2,
+        "max_bars": 60,
+        "trail": {"width_pct": 0.010}
+      },
+      "entry": {"type": "rsi_band", "band": [30, 70], "zmin": 1.2}
     }
   ]
 }

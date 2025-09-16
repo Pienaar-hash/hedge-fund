@@ -1,0 +1,15 @@
+exclude = [
+  "dashboard/",
+  "strategies/",
+  "scripts/",
+  "telegram/",
+  "research/",
+  "ops/",
+  "infrastructure/",
+  "deploy/",
+  "execution/flatten_all.py",
+  "execution/*bak*",
+]
+
+# Keep defaults otherwise; this config narrows scope to stable, lintable code.
+

@@ -175,7 +175,7 @@ with tab_leader:
 with tab_signals:
     st.subheader("Signals Tail (last N)")
     N = int(os.environ.get("DASHBOARD_SIGNAL_LINES", "150"))
-    log_path = "/var/log/hedge-executor.out.log"
+    log_path = "/var/log/hedge/hedge-executor.out.log"
     patterns = ("[screener]", "[screener->executor]", "[decision]")
     lines = []
 

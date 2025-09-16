@@ -1,9 +1,11 @@
 # execution/firestore_utils.py
 import os
+
 import firebase_admin
 from firebase_admin import credentials, firestore
 
 _firestore_client = None
+
 
 def get_firestore():
     global _firestore_client
@@ -16,8 +18,14 @@ def get_firestore():
         _firestore_client = firestore.client()
     return _firestore_client
 
+
 def fetch_leaderboard(limit=10):
     """Fetch leaderboard from Firestore."""
     db = get_firestore()
-    docs = db.collection("leaderboard").order_by("pnl", direction=firestore.Query.DESCENDING).limit(limit).stream()
+    docs = (
+        db.collection("leaderboard")
+        .order_by("pnl", direction=firestore.Query.DESCENDING)
+        .limit(limit)
+        .stream()
+    )
     return [doc.to_dict() for doc in docs]
