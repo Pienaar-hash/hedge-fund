@@ -23,9 +23,24 @@ import pandas as pd
 import streamlit as st
 from pathlib import Path
 
-ENV = os.getenv("ENV","prod")
+# Diagnostics container populated during data loads
+_DIAG: Dict[str, Any] = {
+    "source": None,
+    "fs_project": None,
+    "col_nav": None,
+    "col_positions": None,
+    "col_trades": None,
+    "col_risk": None,
+}
+
+# ---- single env context ----
+ENV = os.getenv("ENV", "prod")
+TESTNET = os.getenv("BINANCE_TESTNET", "0") == "1"
+ENV_KEY = f"{ENV}{'-testnet' if TESTNET else ''}"
+
 RESERVE_BTC = float(os.getenv("RESERVE_BTC", "0.025"))
-LOG_PATH = os.getenv("EXECUTOR_LOG", "/var/log/hedge-executor.out.log")
+# Local-only log files when Firestore is not selected
+LOG_PATH = os.getenv("EXECUTOR_LOG", f"logs/{ENV_KEY}/screener_tail.log")
 TAIL_LINES = 10
 RISK_CFG_PATH = os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
 
@@ -55,19 +70,78 @@ def _load_json(path: str, default=None):
 
 # Firestore (best effort)
 def _fs_client():
+    """Return Firestore client if libs + credentials are available.
+    Firestore is authoritative only if:
+    - google.cloud.firestore imports OK
+    - And credentials file path is present: FIREBASE_CREDS_PATH or GOOGLE_APPLICATION_CREDENTIALS
+    """
     try:
-        from google.cloud import firestore
-        return firestore.Client()
+        from google.cloud import firestore  # type: ignore
     except Exception:
         return None
 
+    creds_path = os.getenv("FIREBASE_CREDS_PATH") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if creds_path and Path(creds_path).exists():
+        try:
+            return firestore.Client()
+        except Exception:
+            return None
+    return None
+
 def _fs_get_state(doc: str):
+    """Back-compat read for single-doc state if present under old path.
+    This is best-effort and namespacing by ENV only. Prefer collection helpers below.
+    """
     cli = _fs_client()
     if not cli:
         return None
     try:
         snap = cli.document(f"hedge/{ENV}/state/{doc}").get()
         return snap.to_dict() if getattr(snap, "exists", False) else None
+    except Exception:
+        return None
+
+# ---- Firestore helpers (authoritative when selected) ----
+def _fs_pick_collection(cli, candidates: List[str]) -> Optional[str]:
+    """Pick the first collection that appears to have docs. Returns name or None.
+    Document choice in Doctor panel later.
+    """
+    for name in candidates:
+        try:
+            it = cli.collection(name).limit(1).stream()
+            for _ in it:
+                return name
+        except Exception:
+            continue
+    return None
+
+def _filter_env_fields(doc: Dict[str, Any]) -> bool:
+    """Client-side filter: if env/testnet fields exist, they must match.
+    Always applied for generic collections.
+    """
+    d_env = doc.get("env")
+    d_tn = doc.get("testnet")
+    if d_env is not None and str(d_env) != ENV:
+        return False
+    if d_tn is not None and bool(d_tn) != TESTNET:
+        return False
+    return True
+
+def _is_mixed_namespaces(docs: List[Dict[str, Any]]) -> bool:
+    env_vals = set()
+    tn_vals = set()
+    for d in docs:
+        if "env" in d:
+            env_vals.add(str(d.get("env")))
+        if "testnet" in d:
+            tn_vals.add(bool(d.get("testnet")))
+    return (len(env_vals) > 1) or (len(tn_vals) > 1)
+
+def _get_firestore_project_id() -> Optional[str]:
+    try:
+        from google.auth import default  # type: ignore
+        creds, proj = default()
+        return proj
     except Exception:
         return None
 
@@ -78,71 +152,153 @@ def _load_risk_cfg():
         return {}
 
 # ---------- sources ----------
+def _select_data_source() -> Dict[str, Any]:
+    """Pick single data source for this render and cache useful paths.
+    - If Firestore client available AND creds path present -> use Firestore exclusively.
+    - Else use local namespaced files under state/{ENV_KEY} and logs/{ENV_KEY}.
+    """
+    cli = _fs_client()
+    source = "firestore" if cli else "local"
+    local_paths = {
+        "nav": f"state/{ENV_KEY}/nav_log.json",
+        "risk": f"logs/{ENV_KEY}/risk.log",
+        "screener": f"logs/{ENV_KEY}/screener_tail.log",
+    }
+    _DIAG["source"] = source
+    if source == "firestore":
+        _DIAG["fs_project"] = _get_firestore_project_id()
+    return {"source": source, "cli": cli, "local": local_paths}
+
+_DS = _select_data_source()
+
 def load_nav_series() -> List[Dict[str,Any]]:
-    # Firestore first
-    nav = _fs_get_state("nav")
-    if isinstance(nav, dict):
-        for k in ("series","nav_series","nav"):
-            if isinstance(nav.get(k), list):
-                return nav[k]
-    if isinstance(nav, list):
-        return nav
-    # Local fallback
-    peak = _load_json("peak_state.json", {})
-    if isinstance(peak, dict):
-        for k in ("nav_series","nav"):
-            if isinstance(peak.get(k), list):
-                return peak[k]
-    return []
+    # Authoritative selection: Firestore OR Local, not both
+    if _DS["source"] == "firestore" and _DS.get("cli"):
+        cli = _DS["cli"]
+        # Try namespaced collection first, then generic
+        cand = [f"{ENV_KEY}_nav", f"{ENV}_nav", "nav", "nav_log"]
+        colname = _fs_pick_collection(cli, cand)
+        series: List[Dict[str, Any]] = []
+        picked: List[Dict[str, Any]] = []
+        if colname:
+            try:
+                # Pull a reasonable window (last 2000 entries if available)
+                docs = list(cli.collection(colname).order_by("ts", direction="DESCENDING").limit(2000).stream())
+                for d in docs:
+                    data = d.to_dict() or {}
+                    picked.append(data)
+                _DIAG["col_nav"] = colname
+            # Detect mixed namespaces and filter
+                if _is_mixed_namespaces(picked):
+                    st.warning(f"Detected mixed namespaces; showing {ENV_KEY} only")
+                for x in picked:
+                    if not _filter_env_fields(x):
+                        continue
+                    series.append(x)
+            except Exception:
+                pass
+        if not series:
+            # Back-compat single doc under state/nav
+            nav = _fs_get_state("nav")
+            if isinstance(nav, dict):
+                for k in ("series","nav_series","nav"):
+                    if isinstance(nav.get(k), list):
+                        return nav[k]
+            if isinstance(nav, list):
+                return nav
+        return series
+    # Local fallback (single file)
+    p = _DS["local"]["nav"]
+    js = _load_json(p, [])
+    if isinstance(js, dict):
+        return js.get("rows") or js.get("series") or js.get("nav") or []
+    return js if isinstance(js, list) else []
 
 def load_positions() -> List[Dict[str,Any]]:
-    pos = _fs_get_state("positions")
-    rows: List[Dict[str,Any]] = []
-    if isinstance(pos, dict) and isinstance(pos.get("rows"), list):
-        rows = pos["rows"]
-    elif isinstance(pos, list):
-        rows = pos
-    out = []
+    """Return ONLY open futures positions (non-zero qty). Columns:
+    symbol, side, qty, entryPrice, markPrice, unrealizedPnl, leverage, updatedAt
+    """
+    rows: List[Dict[str, Any]] = []
+    if _DS["source"] == "firestore" and _DS.get("cli"):
+        cli = _DS["cli"]
+        colname = _fs_pick_collection(cli, [f"{ENV_KEY}_positions", f"{ENV}_positions", "positions"]) or "positions"
+        try:
+            docs = list(cli.collection(colname).limit(1000).stream())
+            for d in docs:
+                data = d.to_dict() or {}
+                if not _filter_env_fields(data):
+                    continue
+                # Accept rows either inline or as a single doc row
+                if all(k in data for k in ("symbol",)):
+                    rows.append(data)
+                inner = data.get("rows")
+                if isinstance(inner, list):
+                    rows.extend([x for x in inner if isinstance(x, dict)])
+            _DIAG["col_positions"] = colname
+        except Exception:
+            rows = []
+    else:
+        # Local positions not specified; treat as empty (do not mix balances)
+        rows = []
+
+    out: List[Dict[str, Any]] = []
     for r in rows:
         try:
+            qty = float(r.get("positionAmt") if r.get("positionAmt") is not None else r.get("qty") or 0)
+            if abs(qty) <= 0:
+                continue
+            entry = float(r.get("entryPrice") or r.get("avgEntryPrice") or 0)
+            mark = float(r.get("markPrice") or r.get("mark") or r.get("lastPrice") or 0)
+            upnl = float(r.get("unrealizedPnl") or r.get("uPnl") or r.get("unrealized") or 0)
+            lev = float(r.get("leverage") or 0)
+            ts = r.get("updatedAt") or r.get("ts") or r.get("time")
+            side = "LONG" if qty > 0 else "SHORT"
             out.append({
                 "symbol": r.get("symbol"),
-                "side": r.get("positionSide") or r.get("side") or "BOTH",
-                "qty": float(r.get("qty") or r.get("positionAmt") or 0),
-                "entryPrice": float(r.get("entryPrice") or 0),
-                "unrealized": float(r.get("unrealized") or r.get("uPnl") or 0),
-                "leverage": float(r.get("leverage") or 0),
+                "side": side,
+                "qty": qty,
+                "entryPrice": entry,
+                "markPrice": mark,
+                "unrealizedPnl": upnl,
+                "leverage": lev,
+                "updatedAt": ts,
             })
         except Exception:
             continue
     return out
 
 def _literal_tail(tag: str, n: int) -> List[str]:
-    """Return last n lines in LOG_PATH containing the literal tag (no regex)."""
+    """Return last n lines from local screener log containing the literal tag.
+    Only used when local files are the selected source.
+    """
+    if _DS["source"] != "local":
+        return []
     try:
-        with open(LOG_PATH, "r", errors="ignore") as f:
-            lines = f.readlines()[-4000:]
+        with open(_DS["local"]["screener"], "r", errors="ignore") as f:
+            lines = f.readlines()[-10000:]
     except Exception:
         return []
     hits = [ln.rstrip("\n") for ln in lines if tag in ln]
     return hits[-n:]
 
-def load_signals_table(n: int = 5) -> pd.DataFrame:
-    """Parse `[screener->executor] {dict or json}` lines without regex."""
+def load_signals_table(limit: int = 100) -> pd.DataFrame:
+    """Signals from local screener tail only (when local source).
+    Parse `[screener->executor] {...}` and keep last 24h sorted desc.
+    """
     import ast
+    rows: List[Dict[str, Any]] = []
+    if _DS["source"] != "local":
+        return pd.DataFrame(rows)
     tag = "[screener->executor]"
-    raw = _literal_tail(tag, 80)
-    rows = []
-    for ln in raw[-n:]:
+    raw = _literal_tail(tag, 200)
+    now = time.time()
+    for ln in raw:
         try:
-            if tag not in ln:
-                continue
-            payload = ln.split(tag, 1)[1].strip()
+            payload = ln.split(tag, 1)[1].strip() if tag in ln else None
             if not payload:
                 continue
             obj: Optional[Dict[str,Any]] = None
             if payload.startswith("{"):
-                # Try JSON first (double quotes), then Python-literal (single quotes)
                 try:
                     obj = json.loads(payload)
                 except Exception:
@@ -152,8 +308,12 @@ def load_signals_table(n: int = 5) -> pd.DataFrame:
                         obj = None
             if not isinstance(obj, dict):
                 continue
+            ts = obj.get("timestamp") or obj.get("t") or obj.get("time")
+            t_epoch = _to_epoch_seconds(ts)
+            if not is_recent(t_epoch, 24*3600):
+                continue
             rows.append({
-                "time": obj.get("timestamp") or obj.get("t") or obj.get("time"),
+                "ts": t_epoch,
                 "symbol": obj.get("symbol"),
                 "tf": obj.get("timeframe"),
                 "signal": obj.get("signal"),
@@ -163,76 +323,133 @@ def load_signals_table(n: int = 5) -> pd.DataFrame:
             })
         except Exception:
             continue
-    return pd.DataFrame(rows)
+    rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
+    return pd.DataFrame(rows[:limit])
 
-def load_trade_log(n: int = 5) -> pd.DataFrame:
-    tl = _load_json("trade_log.json", [])
-    rows = []
-    if isinstance(tl, list) and tl:
-        for x in tl[-n:]:
-            try:
+def load_trade_log(limit: int = 100) -> pd.DataFrame:
+    """Trades/Executions: prefer Firestore when available, else local has no trades file.
+    Keep last 24h, sorted desc.
+    """
+    rows: List[Dict[str, Any]] = []
+    if _DS["source"] == "firestore" and _DS.get("cli"):
+        cli = _DS["cli"]
+        colname = _fs_pick_collection(cli, [f"{ENV_KEY}_trades", f"{ENV}_trades", "trades"]) or "trades"
+        try:
+            docs = list(cli.collection(colname).order_by("ts", direction="DESCENDING").limit(1000).stream())
+            for d in docs:
+                x = d.to_dict() or {}
+                if not _filter_env_fields(x):
+                    continue
+                t_epoch = _to_epoch_seconds(x.get("ts") or x.get("time"))
+                if not is_recent(t_epoch, 24*3600):
+                    continue
                 rows.append({
-                    "time": x.get("time") or x.get("ts"),
+                    "ts": t_epoch,
                     "symbol": x.get("symbol"),
                     "side": x.get("side"),
                     "qty": x.get("qty"),
                     "price": x.get("price"),
                     "pnl": x.get("pnl"),
                 })
-            except Exception:
-                continue
-        return pd.DataFrame(rows)
-    # Fallback: show ORDER_REQ lines from executor log
-    tag = "[executor] ORDER_REQ"
-    raw = _literal_tail(tag, 40)[-n:]
-    for ln in raw:
-        rows.append({"time":"-", "symbol":"-", "side":"-", "qty":"-", "price":"-", "pnl":"-", "raw": ln})
-    return pd.DataFrame(rows)
+            _DIAG["col_trades"] = colname
+        except Exception:
+            rows = []
+    # Local has no default trades file in this app
+    rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
+    return pd.DataFrame(rows[:limit])
 
-def load_blocked_orders(n: int = 10) -> pd.DataFrame:
-    """Collect recent risk-blocked intents from Firestore audit docs."""
-    cli = _fs_client()
-    rows = []
-    if cli:
+def load_blocked_orders(limit: int = 200) -> pd.DataFrame:
+    """Collect risk-blocked intents (last 24h) from Firestore OR local log."""
+    rows: List[Dict[str, Any]] = []
+    if _DS["source"] == "firestore" and _DS.get("cli"):
+        cli = _DS["cli"]
+        colname = _fs_pick_collection(cli, [f"{ENV_KEY}_risk", f"{ENV}_risk", "risk"]) or "risk"
         try:
-            col = cli.collection(f"hedge/{ENV}/state")
-            for ref in col.list_documents():
-                doc_id = getattr(ref, "id", "")
-                if not str(doc_id).startswith("audit_orders_"):
+            docs = list(cli.collection(colname).order_by("ts", direction="DESCENDING").limit(2000).stream())
+            for d in docs:
+                x = d.to_dict() or {}
+                if not _filter_env_fields(x):
                     continue
-                d = (ref.get().to_dict() or {})
-                hist = d.get("history") or []
-                for ev in hist:
-                    try:
-                        if (ev or {}).get("phase") != "blocked":
-                            continue
-                        rows.append({
-                            "time": ev.get("t") or ev.get("time"),
-                            "symbol": ev.get("symbol") or str(doc_id).removeprefix("audit_orders_"),
-                            "side": ev.get("side"),
-                            "reason": ev.get("reason"),
-                            "notional": ev.get("notional"),
-                            "open_qty": ev.get("open_qty"),
-                            "gross": ev.get("gross"),
-                            "nav": ev.get("nav"),
-                        })
-                    except Exception:
+                if str(x.get("phase")) != "blocked":
+                    # Some schemas may store only blocked; keep this guard
+                    if "phase" in x:
                         continue
+                t_epoch = _to_epoch_seconds(x.get("t") or x.get("ts") or x.get("time"))
+                if not is_recent(t_epoch, 24*3600):
+                    continue
+                rows.append({
+                    "ts": t_epoch,
+                    "symbol": x.get("symbol"),
+                    "side": x.get("side"),
+                    "reason": x.get("reason"),
+                    "notional": x.get("notional"),
+                    "open_qty": x.get("open_qty"),
+                    "gross": x.get("gross"),
+                    "nav": x.get("nav"),
+                })
+            _DIAG["col_risk"] = colname
         except Exception:
-            pass
-    # Order by time desc; take latest n
-    def _key(x):
-        t = x.get("time")
+            rows = []
+    else:
+        # Local: parse risk log if present; expect JSON per line best-effort
         try:
-            return float(t)
+            with open(_DS["local"]["risk"], "r", errors="ignore") as f:
+                lines = f.readlines()[-5000:]
+            for ln in lines:
+                try:
+                    x = json.loads(ln.strip())
+                except Exception:
+                    continue
+                if (x.get("phase") or "") != "blocked":
+                    continue
+                t_epoch = _to_epoch_seconds(x.get("t") or x.get("ts") or x.get("time"))
+                if not is_recent(t_epoch, 24*3600):
+                    continue
+                rows.append({
+                    "ts": t_epoch,
+                    "symbol": x.get("symbol"),
+                    "side": x.get("side"),
+                    "reason": x.get("reason"),
+                    "notional": x.get("notional"),
+                    "open_qty": x.get("open_qty"),
+                    "gross": x.get("gross"),
+                    "nav": x.get("nav"),
+                })
         except Exception:
-            try:
-                return pd.to_datetime(t, utc=True).timestamp()
-            except Exception:
-                return 0.0
-    rows.sort(key=_key, reverse=True)
-    rows = rows[:n]
-    return pd.DataFrame(rows)
+            rows = []
+    rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
+    return pd.DataFrame(rows[:limit])
+
+# ---- time helpers / recency ----
+NOW = time.time()
+
+def _to_epoch_seconds(ts: Any) -> float:
+    if ts is None:
+        return 0.0
+    if isinstance(ts, (int, float)):
+        x = float(ts)
+        return x / 1000.0 if x > 1e12 else x
+    try:
+        return pd.to_datetime(str(ts), utc=True).timestamp()
+    except Exception:
+        return 0.0
+
+def is_recent(ts: float, window_sec: int) -> bool:
+    if not ts:
+        return False
+    return (NOW - float(ts)) <= float(window_sec)
+
+def humanize_ago(ts: Optional[float]) -> str:
+    if not ts:
+        return "(no recent data)"
+    delta = max(0.0, NOW - ts)
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta//60)}m ago"
+    if delta < 86400:
+        return f"{int(delta//3600)}h ago"
+    return f"{int(delta//86400)}d ago"
 
 # ---------- KPIs ----------
 def compute_nav_kpis(series: List[Dict[str,Any]]) -> Dict[str,Any]:
@@ -279,7 +496,11 @@ def compute_nav_kpis(series: List[Dict[str,Any]]) -> Dict[str,Any]:
 # ---------- UI ----------
 st.set_page_config(page_title="Hedge — Overview", layout="wide")
 st.title("Hedge — Overview")
-st.caption(f"ENV: {ENV} · Read-only dashboard")
+
+# Source banner with namespace and dynamic last update times
+source_label = "Firestore" if _DS["source"] == "firestore" else "Local files"
+_top_banner = st.empty()
+_top_banner.caption(f"Data source: {source_label} · Namespace: {ENV_KEY}")
 
 # KPIs
 
@@ -349,27 +570,132 @@ if pos:
     dfp = pd.DataFrame(pos).sort_values(by=["symbol","side"])
     st.dataframe(dfp, use_container_width=True, height=260)
 else:
-    st.write("No positions available in Firestore.")
+    st.write("No open positions")
 
 # Signals
-st.subheader("Signals (latest 5)")
-st.dataframe(load_signals_table(5), use_container_width=True, height=210)
+st.subheader("Signals (last 24h)")
+df_sig = load_signals_table(100)
+if not df_sig.empty:
+    newest_sig = float(df_sig["ts"].max()) if "ts" in df_sig else None
+    st.caption(f"Last updated: {humanize_ago(newest_sig)}")
+    if newest_sig and not is_recent(newest_sig, 1800):
+        st.warning("Signals data may be stale (>30m)")
+    st.dataframe(df_sig, use_container_width=True, height=210)
+else:
+    st.write("No recent signals")
 
 # Trade log
-st.subheader("Trade Log (latest 5)")
-st.dataframe(load_trade_log(5), use_container_width=True, height=210)
+st.subheader("Trade Log (last 24h)")
+df_tr = load_trade_log(100)
+if not df_tr.empty:
+    newest_tr = float(df_tr["ts"].max()) if "ts" in df_tr else None
+    st.caption(f"Last updated: {humanize_ago(newest_tr)}")
+    if newest_tr and not is_recent(newest_tr, 1800):
+        st.warning("Trades data may be stale (>30m)")
+    st.dataframe(df_tr, use_container_width=True, height=210)
+else:
+    st.write("No recent trades")
 
 # Risk blocks
-st.subheader("Risk Blocks (latest 10)")
-st.dataframe(load_blocked_orders(10), use_container_width=True, height=210)
+st.subheader("Risk Blocks (last 24h)")
+df_rb = load_blocked_orders(200)
+if not df_rb.empty:
+    newest_rb = float(df_rb["ts"].max()) if "ts" in df_rb else None
+    st.caption(f"Last updated: {humanize_ago(newest_rb)}")
+    if newest_rb and not is_recent(newest_rb, 1800):
+        st.warning("Risk blocks may be stale (>30m)")
+    st.dataframe(df_rb, use_container_width=True, height=210)
+else:
+    st.write("No recent risk blocks")
 
 # Screener tail (last 10 lines) — literal tags, no regex
-st.subheader("Screener Tail (last 10)")
+st.subheader("Screener Tail (recent)")
 tail = []
-for tag in ("[screener]", "[decision]", "[screener->executor]"):
-    tail.extend(_literal_tail(tag, TAIL_LINES))
-tail = tail[-TAIL_LINES:]
+if _DS["source"] == "local":
+    # cap at 200 lines
+    for tag in ("[screener]", "[decision]", "[screener->executor]"):
+        tail.extend(_literal_tail(tag, 200))
+    tail = tail[-200:]
+    # Best-effort freshness from any timestamp-like token
+    newest_ts: Optional[float] = None
+    for ln in reversed(tail):
+        # try to find a timestamp in json-ish payload
+        try:
+            if "{" in ln and "}" in ln:
+                payload = ln.split("{",1)[1]
+                payload = "{" + payload.split("}",1)[0] + "}"
+                obj = json.loads(payload)
+                cand = _to_epoch_seconds(obj.get("timestamp") or obj.get("t") or obj.get("time"))
+                if cand:
+                    newest_ts = cand
+                    break
+        except Exception:
+            continue
+    st.caption(f"Last updated: {humanize_ago(newest_ts)}")
+    if newest_ts and not is_recent(newest_ts, 1800):
+        st.warning("Screener tail may be stale (>30m)")
 st.code("\n".join(tail) if tail else "(empty)")
+
+# Update top banner with recency info (NAV/Trades/Risk/Signals)
+try:
+    nav_latest_ts = None
+    if series:
+        try:
+            nav_latest_ts = max(_to_epoch_seconds(x.get("t") or x.get("ts") or x.get("time")) for x in series if isinstance(x, dict))
+        except Exception:
+            nav_latest_ts = None
+    tr_latest_ts = float(df_tr["ts"].max()) if not df_tr.empty and "ts" in df_tr else None
+    rb_latest_ts = float(df_rb["ts"].max()) if not df_rb.empty and "ts" in df_rb else None
+    sg_latest_ts = float(df_sig["ts"].max()) if not df_sig.empty and "ts" in df_sig else None
+    _top_banner.caption(
+        "Data source: " + source_label +
+        f" · Namespace: {ENV_KEY}" +
+        " · NAV: " + humanize_ago(nav_latest_ts) +
+        " · Trades: " + humanize_ago(tr_latest_ts) +
+        " · Risk: " + humanize_ago(rb_latest_ts) +
+        " · Signals: " + humanize_ago(sg_latest_ts)
+    )
+except Exception:
+    pass
+
+# ---- Doctor panel ----
+with st.expander("Doctor", expanded=False):
+    try:
+        st.write(
+            "Source:", "Firestore" if _DS["source"] == "firestore" else "Local files",
+            "· ENV_KEY:", ENV_KEY,
+        )
+        pos_cnt = len(pos)
+        tr_cnt = int(len(df_tr)) if isinstance(df_tr, pd.DataFrame) else 0
+        rb_cnt = int(len(df_rb)) if isinstance(df_rb, pd.DataFrame) else 0
+        nav_latest_ts = None
+        if series:
+            try:
+                nav_latest_ts = max(_to_epoch_seconds(x.get("t") or x.get("ts") or x.get("time")) for x in series if isinstance(x, dict))
+            except Exception:
+                nav_latest_ts = None
+        tr_latest_ts = float(df_tr["ts"].max()) if not df_tr.empty and "ts" in df_tr else None
+        rb_latest_ts = float(df_rb["ts"].max()) if not df_rb.empty and "ts" in df_rb else None
+        st.write(
+            f"Counts — positions: {pos_cnt}, trades(24h): {tr_cnt}, risk blocks(24h): {rb_cnt}"
+        )
+        st.write(
+            "Newest — NAV:", humanize_ago(nav_latest_ts),
+            "· Trade:", humanize_ago(tr_latest_ts),
+            "· Risk:", humanize_ago(rb_latest_ts),
+        )
+        if _DS["source"] == "firestore":
+            st.write(
+                "Firestore project:", _DIAG.get("fs_project") or "(unknown)",
+            )
+            st.write(
+                "Collections — nav:", _DIAG.get("col_nav") or "(n/a)",
+                "· positions:", _DIAG.get("col_positions") or "(n/a)",
+                "· trades:", _DIAG.get("col_trades") or "(n/a)",
+                "· risk:", _DIAG.get("col_risk") or "(n/a)",
+            )
+    except Exception:
+        st.write("(doctor diagnostics unavailable)")
 
 # --- Exit plans loader (Firestore-first; local fallback) ---
 def load_exit_plans() -> pd.DataFrame:
