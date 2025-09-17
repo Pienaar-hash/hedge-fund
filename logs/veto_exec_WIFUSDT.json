@@ -1,7 +1,7 @@
 {
   "symbol": "WIFUSDT",
   "veto": "trade_rate_limit",
-  "gross_usd": 110.0,
-  "price": 0.942,
-  "ts": 1758139163.0712204
+  "gross_usd": 10.0,
+  "price": 0.9358,
+  "ts": 1758142145.4595842
 }

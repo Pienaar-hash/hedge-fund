@@ -4,6 +4,7 @@ Offline evaluation of signal generation comparing ML probability gate vs rule-ba
 Outputs models/signal_eval.json summarising per-symbol metrics and aggregate averages.
 """
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -121,8 +122,6 @@ def main() -> None:
 
     import os
     if os.environ.get("ML_SIMULATOR", "0") == "1":
-        import numpy as np
-        import pandas as pd
         from execution.ml import data as data_mod
 
         def _fake_klines(symbol, interval, limit):
@@ -173,7 +172,7 @@ def main() -> None:
             "n_symbols_err": len(errors),
         },
         "errors": errors,
-        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     Path("models").mkdir(exist_ok=True)
     with open("models/signal_eval.json", "w", encoding="utf-8") as handle:
