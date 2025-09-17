@@ -725,6 +725,34 @@ with st.expander("Doctor", expanded=False):
                 st.write(f"Trades collection: {_DIAG.get('col_trades')}")
             if _DIAG.get("col_risk"):
                 st.write(f"Risk collection: {_DIAG.get('col_risk')}")
+        # Tier badges/counts
+        try:
+            tiers = _load_json("config/symbol_tiers.json", {}) or {}
+            tier_counts = {k: (len(v) if isinstance(v, list) else 0) for k, v in tiers.items()}
+            # Open positions by tier: map symbol->tier
+            sym2tier = {}
+            for t, arr in tiers.items():
+                if isinstance(arr, list):
+                    for s in arr:
+                        sym2tier[str(s).upper()] = t
+            pos_by_tier = {}
+            for r in pos:
+                try:
+                    t = sym2tier.get(str(r.get("symbol")).upper(), "OTHER")
+                    pos_by_tier[t] = pos_by_tier.get(t, 0) + 1
+                except Exception:
+                    continue
+            st.write(
+                "Tiers: "
+                + ", ".join(f"{k}:{tier_counts.get(k,0)}" for k in ("CORE","SATELLITE","TACTICAL","ALT-EXT") if k in tier_counts)
+            )
+            if pos_by_tier:
+                st.write(
+                    "Open positions by tier: "
+                    + ", ".join(f"{k}:{v}" for k, v in pos_by_tier.items())
+                )
+        except Exception:
+            pass
     except Exception:
         st.write("(doctor diagnostics unavailable)")
 

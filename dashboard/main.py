@@ -125,8 +125,8 @@ btc_mark = fetch_mark_price_usdt("BTCUSDT")
 reserve_usdt = RESERVE_BTC * btc_mark if btc_mark > 0 else 0.0
 
 # ---- Tabs layout --------------------------------------------------------------
-tab_overview, tab_positions, tab_leader, tab_signals, tab_doctor = st.tabs(
-    ["Overview", "Positions", "Leaderboard", "Signals", "Doctor"]
+tab_overview, tab_positions, tab_leader, tab_signals, tab_ml, tab_doctor = st.tabs(
+    ["Overview", "Positions", "Leaderboard", "Signals", "ML", "Doctor"]
 )
 
 # --------------------------- Overview Tab ------------------------------------
@@ -200,6 +200,60 @@ with tab_signals:
     except Exception as e:
         st.warning(f"Could not read signals log: {e}")
 
+# --------------------------- ML Tab -----------------------------------------
+with tab_ml:
+    st.header("ML — Models & Evaluation")
+    try:
+        reg_path = "models/registry.json"
+        if os.path.exists(reg_path):
+            registry = json.load(open(reg_path, "r"))
+            if registry:
+                st.subheader("Registry")
+                st.dataframe(pd.DataFrame(registry).T)
+            else:
+                st.info("Registry is empty. Run ML retrain to populate.")
+        else:
+            st.info("No registry yet. Run ML retrain to populate.")
+
+        rpt_path = "models/last_train_report.json"
+        if os.path.exists(rpt_path):
+            st.subheader("Last Retrain Report")
+            st.json(json.load(open(rpt_path, "r")))
+
+        eval_path = "models/signal_eval.json"
+        if os.path.exists(eval_path):
+            st.subheader("Signal Evaluation (ML vs RULE)")
+            report = json.load(open(eval_path, "r"))
+            st.json(report.get("aggregate", {}))
+
+            symbols = report.get("symbols") or []
+            rows = []
+            for entry in symbols:
+                if "error" in entry:
+                    continue
+                rows.append(
+                    {
+                        "symbol": entry.get("symbol"),
+                        "ml_f1": entry.get("ml", {}).get("f1"),
+                        "ml_cov": entry.get("ml", {}).get("coverage"),
+                        "ml_hit": entry.get("ml", {}).get("hit_rate"),
+                        "rule_f1": entry.get("rule", {}).get("f1"),
+                        "rule_cov": entry.get("rule", {}).get("coverage"),
+                        "rule_hit": entry.get("rule", {}).get("hit_rate"),
+                        "n": entry.get("n"),
+                    }
+                )
+            if rows:
+                st.dataframe(pd.DataFrame(rows))
+
+            errors = report.get("errors") or []
+            if errors:
+                st.warning(f"Evaluation skipped for {len(errors)} symbol(s):")
+                for entry in errors[:20]:
+                    st.write(f"- {entry.get('symbol')}: {entry.get('error')}")
+    except Exception as exc:
+        st.error(f"ML tab error: {exc}")
+
 # --------------------------- Doctor Tab --------------------------------------
 with tab_doctor:
     st.subheader("Doctor Snapshot")
@@ -239,6 +293,131 @@ with tab_doctor:
     if doctor_data:
         with st.expander("Raw doctor output", expanded=False):
             st.json(doctor_data, expanded=False)
+
+    # Tier diagnostics and veto stats
+    with st.expander("Doctor — Universe & Risk", expanded=False):
+        tpath = "logs/nav_trading.json"
+        rpath = "logs/nav_reporting.json"
+        zpath = "logs/nav_treasury.json"
+        spath = "logs/nav_snapshot.json"
+        if any(os.path.exists(p) for p in (tpath, rpath, zpath, spath)):
+            try:
+                if os.path.exists(tpath):
+                    tnav = json.load(open(tpath, "r"))
+                    tval = float(tnav.get("nav_usdt", 0.0) or 0.0)
+                    st.markdown(f"**Trading NAV (USDT, used for risk):** {tval:.2f}")
+                    tbr = tnav.get("breakdown", {})
+                    tfw = tbr.get("futures_wallet_usdt")
+                    if tfw is not None:
+                        st.caption(f"Futures wallet: {float(tfw):.2f} USDT")
+                    else:
+                        st.caption("Futures wallet: n/a")
+                if os.path.exists(rpath):
+                    rnav = json.load(open(rpath, "r"))
+                    rval = float(rnav.get("nav_usdt", 0.0) or 0.0)
+                    st.markdown(f"**Reporting NAV (USDT):** {rval:.2f}")
+                if os.path.exists(zpath):
+                    znav = json.load(open(zpath, "r"))
+                    zval = float(znav.get("treasury_usdt", 0.0) or 0.0)
+                    st.markdown(
+                        "**Treasury (off-exchange, excluded from NAV):** "
+                        f"{zval:.2f} USDT"
+                    )
+                    zbr = znav.get("breakdown", {})
+                    tre = zbr.get("treasury", {})
+                    miss = zbr.get("missing_prices", {})
+                    if tre:
+                        st.write("Holdings (manual-seeded):")
+                        for asset, data in tre.items():
+                            qty = data.get("qty")
+                            px = data.get("px")
+                            val = data.get("val_usdt")
+                            line = f"- {asset}: qty {qty}"
+                            if px is not None:
+                                line += f" × {px}"
+                            if val is not None:
+                                line += f" = {val:.2f} USDT"
+                            st.write(line)
+                    if miss:
+                        st.warning(
+                            "Missing prices for treasury symbols (skipped): "
+                            + ", ".join(sorted(miss.keys()))
+                        )
+                if (not os.path.exists(tpath)) and (not os.path.exists(rpath)) and os.path.exists(spath):
+                    nav = json.load(open(spath, "r"))
+                    sval = float(nav.get("nav_usdt", 0.0) or 0.0)
+                    st.markdown(f"**NAV (legacy single):** {sval:.2f}")
+            except Exception as exc:
+                st.caption(f"nav snapshot unavailable: {exc}")
+        # Tier counts from config/symbol_tiers.json
+        tier_counts = {}
+        try:
+            tiers_cfg = load_json(os.getenv("SYMBOL_TIERS_CONFIG", "config/symbol_tiers.json"), {})
+            for t, arr in (tiers_cfg.items() if isinstance(tiers_cfg, dict) else []):
+                if isinstance(arr, list):
+                    tier_counts[str(t)] = len(arr)
+        except Exception:
+            tier_counts = {}
+        if tier_counts:
+            st.write({"tier_counts": tier_counts})
+
+        # Open positions by tier
+        by_tier = {}
+        try:
+            # Build tier map
+            tmap = {s: t for t, arr in (tiers_cfg.items() if isinstance(tiers_cfg, dict) else []) for s in (arr or [])}
+        except Exception:
+            tmap = {}
+        try:
+            # positions_fs already parsed above
+            for r in positions_fs:
+                sym = str(r.get("symbol") or "").upper()
+                t = tmap.get(sym, "?")
+                by_tier[t] = by_tier.get(t, 0) + 1
+        except Exception:
+            by_tier = {}
+        if by_tier:
+            st.write({"open_positions_by_tier": by_tier})
+
+        # Veto reasons dominated in last 24h (from risk collection)
+        veto_counts = {}
+        try:
+            from dashboard.dashboard_utils import get_firestore_connection
+
+            db = get_firestore_connection()
+            docs = list(
+                db.collection("hedge")
+                .document(ENV)
+                .collection("risk")
+                .order_by("ts", direction="DESCENDING")
+                .limit(1000)
+                .stream()
+            )
+            import time as _t
+
+            now = _t.time()
+            for d in docs:
+                x = d.to_dict() or {}
+                if x.get("env") is not None and str(x.get("env")) != ENV:
+                    continue
+                ts = x.get("ts") or x.get("time")
+                tnum = float(ts) if isinstance(ts, (int, float)) else 0.0
+                if tnum > 1e12:
+                    tnum /= 1000.0
+                if (now - tnum) > 24 * 3600:
+                    continue
+                # reason (single) or reasons (list)
+                if isinstance(x.get("reasons"), list):
+                    for r in x.get("reasons"):
+                        veto_counts[str(r)] = veto_counts.get(str(r), 0) + 1
+                elif x.get("reason") is not None:
+                    veto_counts[str(x.get("reason"))] = veto_counts.get(str(x.get("reason")), 0) + 1
+        except Exception:
+            veto_counts = {}
+        if veto_counts:
+            # Show top reasons
+            top = sorted(veto_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+            st.write({"veto_top_24h": dict(top)})
 
 
 st.caption(

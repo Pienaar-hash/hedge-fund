@@ -16,6 +16,101 @@ A lightweight, read-only **Streamlit** dashboard fronted by **NGINX** with Basic
 
 ---
 
+## Quickstart — Go-Live (Mainnet)
+1. **Load credentials (safe):**
+   ```bash
+   # safest (no echo in history)
+   read -s -p "Binance API key: " BINANCE_API_KEY; echo
+   read -s -p "Binance API secret: " BINANCE_API_SECRET; echo
+   BINANCE_API_KEY="$BINANCE_API_KEY" BINANCE_API_SECRET="$BINANCE_API_SECRET" bash scripts/write_keys_env.sh
+   set -a; source ./.env; set +a
+   ```
+   The helper writes `.env` with `chmod 600` and prints **lengths only** (no secrets).
+
+2. **Preflight (status-only):**
+   ```bash
+   ENV=prod PYTHONPATH=. ./venv/bin/python scripts/binance_auth_doctor.py
+   ```
+   Expect **200** on `/fapi/v2/account` and `/fapi/v2/positionRisk`. Fix 401/-2015 via key, futures permission, or IP whitelist.
+
+3. **Warmup & gates (45s, safe to rerun):**
+   ```bash
+   EXECUTOR_MAX_SEC=45 bash scripts/exec_once_timeout.sh || true
+   bash scripts/grep_order_req.sh || true
+   ```
+   If you see `min_qty_notional`, lift floors (see **Sizing & Floors** below).
+
+4. **Go live (event-guarded):**
+   ```bash
+   bash scripts/go_live_now.sh
+   # Watch fills/veto reasons:
+   bash scripts/quick_watch.sh
+   ```
+   `go_live_now.sh` enables `EVENT_GUARD=1` and **disables Firestore** until ADC is configured.
+
+5. **Post-event revert (optional):**
+   Restore day-1 caps & ML threshold in `config/strategy_config.json` and relaunch with `EVENT_GUARD=0`.
+
+---
+
+## Sizing & Floors
+**Global floor:** `sizing.min_gross_usd_per_order` (default `110`) ensures orders clear exchange **min notional**.
+
+**Per-symbol floors:** `sizing.per_symbol_min_gross_usd` overrides the global floor for specific symbols (e.g., BTC needs higher notional to pass **lot size/minQty** after precision). Example:
+```json
+"sizing": {
+  "min_gross_usd_per_order": 110,
+  "per_symbol_min_gross_usd": { "BTCUSDT": 150 }
+}
+```
+The **RiskGate** and order sizing honor both global and per-symbol floors before approving/placing orders.
+
+**Event Guard:** `EVENT_GUARD=1` scales down portfolio/symbol caps at runtime (e.g., ×0.8) in addition to any temporary config tightening.
+
+---
+
+## ML Lookback Cap (Binance USD-M)
+`ml.lookback_bars` is capped at **1500** to avoid Binance error **`-1130`** (invalid parameter). For deeper history, implement pagination in `execution/ml/data.py` (noted in the file).
+
+---
+
+## Firestore (Opt-In)
+Publishing is disabled by default in live runs:
+- Set `FIRESTORE_ENABLED=0` to **silence warnings** when ADC is not configured (current default in `go_live_now.sh`).
+- To enable:
+  1) Provide ADC credentials (e.g., `export GOOGLE_APPLICATION_CREDENTIALS=/path/key.json`),  
+  2) Set `FIRESTORE_ENABLED=1`,  
+  3) Restart the executor.
+
+---
+
+## Troubleshooting (common)
+**401 / -2015** — Invalid API key/IP or missing **Futures** permission. Check whitelist and toggle “Enable Futures” on the key.
+
+**NameResolutionError** — Host DNS/egress blocked; verify `curl https://fapi.binance.com/fapi/v1/ping`.
+
+**`-1130` on klines** — Lookback > 1500. Lower `ml.lookback_bars` (1500) or paginate.
+
+**`min_qty_notional` veto** — Raise `sizing.min_gross_usd_per_order` or add a `per_symbol_min_gross_usd` override (e.g., BTCUSDT: 150).
+
+**Firestore publish error** — Leave `FIRESTORE_ENABLED=0` until ADC is wired.
+
+---
+
+## Nightly ML retrain (cron-first)
+See `docs/ML_Retrain.md`. Install:
+```bash
+crontab -e
+10 2 * * * cd /ABS/PATH/TO/hedge-fund && /bin/bash scripts/ml_retrain_cron.sh >> models/cron.log 2>&1
+```
+Manual run:
+```bash
+/bin/bash scripts/ml_retrain_now.sh
+/bin/bash scripts/ml_health.sh
+```
+
+---
+
 ## 1) Quick start
 
 ### 1.1 First-time / after reboot
