@@ -280,7 +280,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             continue
         try:
             kl = get_klines(sym, tf, limit=150)
-            closes = [c for _, c in kl]
+            closes = [row[4] for row in kl]
             price = get_price(sym)
             rsi = _rsi(closes, 14)
             z = _zscore(closes, 20)

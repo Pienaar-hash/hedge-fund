@@ -33,7 +33,7 @@
     "per_symbol_min_gross_usd": {
       "BTCUSDT": 150
     },
-    "max_trade_nav_pct": 25
+    "max_trade_nav_pct": 0.5
   },
   "risk": {
     "daily_loss_limit_pct": 2,
@@ -277,5 +277,6 @@
         "zmin": 1.2
       }
     }
-  ]
+  ],
+  "max_trade_nav_pct": 0.5
 }
