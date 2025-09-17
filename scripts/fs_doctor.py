@@ -100,7 +100,21 @@ def run(env: str) -> Tuple[bool, Dict[str, Any]]:
     # Mixing detection
     mixed = (len(env_vals) > 1) or (len(tn_vals) > 1)
     out["mixed"] = bool(mixed)
-    return (not mixed), out
+
+    # If Telegram enabled, require collections exist and have at least one 24h doc
+    tel_enabled = str(os.getenv("TELEGRAM_ENABLED", "0")).lower() in ("1", "true", "yes")
+    collections_ok = True
+    if tel_enabled:
+        try:
+            _ = list(p["trades"].limit(1).stream())
+            _ = list(p["risk"].limit(1).stream())
+        except Exception:
+            collections_ok = False
+        if out["trades_24h"] == 0 or out["risk_24h"] == 0:
+            collections_ok = False
+    out["collections_ok"] = collections_ok
+
+    return (not mixed) and collections_ok, out
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -109,7 +123,7 @@ def main(argv: List[str] | None = None) -> int:
     args = ap.parse_args(argv)
     ok, info = run(args.env)
     print({"ok": ok, **info})
-    # Exit non-zero if mixing detected and ENV=prod
+    # Exit non-zero if mixing detected or collections missing when TELEGRAM enabled (prod only)
     if not ok and str(args.env) == "prod":
         return 2
     return 0
@@ -117,4 +131,3 @@ def main(argv: List[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

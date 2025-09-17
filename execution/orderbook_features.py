@@ -35,7 +35,7 @@ def get_depth_snapshot(symbol: str, limit: int = 20) -> Optional[Dict[str, Any]]
     return data
 
 
-def topn_imbalance(symbol: str, limit: int = 10) -> float:
+def topn_imbalance(symbol: str, limit: int = 20) -> float:
     """Return simple buy-sell imbalance in top N levels: (bid_volume - ask_volume)/(sum).
     Positive => bid pressure; Negative => ask pressure. 0.0 on error.
     """
@@ -59,7 +59,7 @@ def evaluate_entry_gate(symbol: str, side: str, enabled: bool = True) -> Tuple[b
     info: Dict[str, Any] = {"metric": 0.0, "boost": 0.0}
     if not enabled:
         return False, info
-    m = topn_imbalance(symbol, limit=10)
+    m = topn_imbalance(symbol, limit=20)
     info["metric"] = m
     # thresholds tuned for micro-notional; keep conservative
     veto = False
@@ -77,4 +77,3 @@ def evaluate_entry_gate(symbol: str, side: str, enabled: bool = True) -> Tuple[b
             boost = min(0.05, -m)
     info["boost"] = float(boost)
     return bool(veto), info
-
