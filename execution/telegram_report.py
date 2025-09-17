@@ -108,6 +108,54 @@ def _save_nav_png(series: List[Dict[str, Any]], path: str = "/tmp/nav.png") -> s
             raise RuntimeError(f"png write error: {e}")
 
 
+def _counts_24h(env: str) -> Tuple[int, str]:
+    """Return (trades_24h, top_veto_reason) from Firestore, best-effort."""
+    trades_24h = 0
+    top_reason = ""
+    try:
+        from utils.firestore_client import get_db
+
+        db = get_db()
+        root = db.collection("hedge").document(env)
+        now = time.time()
+
+        # Trades
+        docs_t = list(
+            root.collection("trades").order_by("ts", direction="DESCENDING").limit(1000).stream()
+        )
+        ts_ok = 0
+        for d in docs_t:
+            x = d.to_dict() or {}
+            t = _to_epoch(x.get("ts") or x.get("time"))
+            if (now - t) <= 24 * 3600:
+                ts_ok += 1
+        trades_24h = ts_ok
+
+        # Risk veto top
+        docs_r = list(
+            root.collection("risk").order_by("ts", direction="DESCENDING").limit(1000).stream()
+        )
+        counts: Dict[str, int] = {}
+        for d in docs_r:
+            x = d.to_dict() or {}
+            t = _to_epoch(x.get("ts") or x.get("time"))
+            if (now - t) > 24 * 3600:
+                continue
+            reasons_val = x.get("reasons")
+            if isinstance(reasons_val, list):
+                for r in reasons_val:
+                    key = str(r)
+                    counts[key] = counts.get(key, 0) + 1
+            elif x.get("reason") is not None:
+                key = str(x.get("reason"))
+                counts[key] = counts.get(key, 0) + 1
+        if counts:
+            top_reason = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[0][0]
+    except Exception:
+        pass
+    return trades_24h, top_reason
+
+
 def run(env: str, dry_run: bool = True) -> Tuple[bool, Dict[str, Any]]:
     series = _load_nav_series(env)
     now = time.time()
@@ -116,7 +164,8 @@ def run(env: str, dry_run: bool = True) -> Tuple[bool, Dict[str, Any]]:
     png_path = _save_nav_png(series7)
     note = _compose_ai_note()
 
-    payload = {"png": png_path, "note": note}
+    trades_24h, top_veto = _counts_24h(env)
+    payload = {"png": png_path, "note": note, "trades_24h": trades_24h, "top_veto": top_veto}
     if dry_run:
         print({"dry_run": True, **payload})
         return True, payload
@@ -129,7 +178,11 @@ def run(env: str, dry_run: bool = True) -> Tuple[bool, Dict[str, Any]]:
 
     sent = False
     if send_telegram is not None:
-        sent = bool(send_telegram(note, silent=True))
+        header = (
+            f"Daily mini‑report\n"
+            f"Trades (24h): {trades_24h} | Top veto: {top_veto or '—'}\n\n{note}"
+        )
+        sent = bool(send_telegram(header, silent=True))
     return sent, payload
 
 

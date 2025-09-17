@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, List
 
 from .risk_limits import RiskState, check_order
+from .universe_resolver import symbol_tier, is_listed_on_futures
 
 try:
     from .exchange_utils import get_price, get_symbol_filters
@@ -25,10 +26,22 @@ WL_DEFAULT = [
     "BTCUSDT",
     "ETHUSDT",
     "SOLUSDT",
+    "LINKUSDT",
+    "BNBUSDT",
     "SUIUSDT",
     "LTCUSDT",
     "WIFUSDT",
-    "LINKUSDT",
+    "DOGEUSDT",
+    "ARBUSDT",
+    "OPUSDT",
+    "AVAXUSDT",
+    "APTUSDT",
+    "INJUSDT",
+    "RNDRUSDT",
+    "SEIUSDT",
+    "TONUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
 ]
 
 
@@ -77,15 +90,16 @@ def diagnose_symbols(env: str, testnet: bool, symbols: List[str]) -> int:
         # Defaults
         exch_min_notional = 0.0
         price = 0.0
-        listed = True
-        try:
-            price = float(get_price(s))
-            f = get_symbol_filters(s)
-            exch_min_notional = float(
-                (f.get("MIN_NOTIONAL", {}) or {}).get("notional", 0) or 0.0
-            )
-        except Exception:
-            listed = False
+        listed = is_listed_on_futures(s)
+        if listed:
+            try:
+                price = float(get_price(s))
+                f = get_symbol_filters(s)
+                exch_min_notional = float(
+                    (f.get("MIN_NOTIONAL", {}) or {}).get("notional", 0) or 0.0
+                )
+            except Exception:
+                listed = False
 
         # Strategy leverage and capital from strategy_config.json (fallbacks)
         cap = 10.0
@@ -106,6 +120,8 @@ def diagnose_symbols(env: str, testnet: bool, symbols: List[str]) -> int:
             vetoes.append("not_listed")
 
         # Risk check (gross notional = cap)
+        # compute current gross for portfolio/tier (doctor is stateless; pass 0)
+        tier = symbol_tier(s) or "UNKNOWN"
         ok, details = check_order(
             symbol=s,
             side="BUY",
@@ -118,16 +134,25 @@ def diagnose_symbols(env: str, testnet: bool, symbols: List[str]) -> int:
             state=st,
             current_gross_notional=0.0,
             lev=lev,
+            open_positions_count=0,
+            tier_name=tier,
+            current_tier_gross_notional=0.0,
         )
         reasons = list(details.get("reasons", [])) if isinstance(details, dict) else []
         vetoes.extend([r for r in reasons if r not in vetoes])
-        would_emit = listed and ok and (cap >= max(exch_min_notional, float(g.get("min_notional_usdt", 0) or 0)))
+        would_emit = listed and ok and (
+            cap >= max(exch_min_notional, float(g.get("min_notional_usdt", 0) or 0))
+        )
+        # Include budget info for readout
+        tcfg = (g.get("tiers") or {}).get(tier, {}) if isinstance(g, dict) else {}
         out = {
             "symbol": s,
             "price": price,
             "cap": cap,
             "exch_min_notional": exch_min_notional,
             "lev": lev,
+            "tier": tier,
+            "tier_budget_pct": float(tcfg.get("per_symbol_nav_pct", 0.0) or 0.0),
             "veto": vetoes,
             "would_emit": bool(would_emit),
             "would_block": not bool(would_emit),

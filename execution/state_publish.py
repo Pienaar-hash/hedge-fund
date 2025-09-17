@@ -27,6 +27,7 @@ FS_ROOT = f"hedge/{ENV}/state"
 CREDS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or str(
     ROOT_DIR / "config/firebase_creds.json"
 )
+LOG_DIR = ROOT_DIR / "logs"
 
 
 def _ensure_keys() -> None:
@@ -47,8 +48,14 @@ def _ensure_keys() -> None:
 _ensure_keys()
 
 
+def _firestore_enabled() -> bool:
+    return os.environ.get("FIRESTORE_ENABLED", "1") != "0"
+
+
 # ----- Firestore client -----
 def _fs_client():
+    if not _firestore_enabled():
+        raise RuntimeError("firestore_disabled")
     from google.cloud import firestore
 
     if os.path.exists(CREDS_PATH):
@@ -113,14 +120,12 @@ def normalize_positions(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def publish_positions(rows: List[Dict[str, Any]]) -> None:
+    payload = {"rows": rows, "updated": time.time()}
+    if not _firestore_enabled():
+        _append_local_jsonl("positions", payload)
+        return
     cli = _fs_client()
-    cli.document(f"{FS_ROOT}/positions").set(
-        {
-            "rows": rows,
-            "updated": time.time(),
-        },
-        merge=True,
-    )
+    cli.document(f"{FS_ROOT}/positions").set(payload, merge=True)
 
 
 def compute_nav() -> float:
@@ -137,12 +142,15 @@ def compute_nav() -> float:
 def publish_nav_value(
     nav: float, min_interval_s: int = 60, max_points: int = 20000
 ) -> None:
+    now = time.time()
+    if not _firestore_enabled():
+        _append_local_jsonl("nav", {"t": now, "nav": float(nav)})
+        return
     cli = _fs_client()
     doc = cli.document(f"{FS_ROOT}/nav")
     snap = doc.get()
     data = snap.to_dict() if getattr(snap, "exists", False) else {}
     series = data.get("series") or []
-    now = time.time()
     # Debounce
     if series:
         last = series[-1]
@@ -184,11 +192,24 @@ def _fs_client_safe():
         return None
 
 
+def _append_local_jsonl(name: str, event: dict) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    path = LOG_DIR / f"{name}.jsonl"
+    with path.open('a', encoding='utf-8') as fh:
+        fh.write(json.dumps(event) + '\n')
+
+
 def _audit_append(doc_name: str, event: dict, max_len: int = 500) -> None:
+    now = time.time()
+    ev = dict(event)
+    ev.setdefault("t", now)
+    if not _firestore_enabled():
+        _append_local_jsonl(doc_name, ev)
+        return
     cli = _fs_client_safe()
     if not cli:
+        _append_local_jsonl(doc_name, ev)
         return
-    now = time.time()
     doc = cli.document(f"{FS_ROOT}/{doc_name}")
     try:
         snap = doc.get()
@@ -196,8 +217,6 @@ def _audit_append(doc_name: str, event: dict, max_len: int = 500) -> None:
     except Exception:
         data = {}
     hist = list(data.get("history", []))
-    ev = dict(event)
-    ev.setdefault("t", now)
     hist.append(ev)
     hist = hist[-max_len:]
     try:
@@ -251,27 +270,35 @@ if __name__ == "__main__":
 
 # ----- Exit plan publish/fetch -----
 def publish_exit_plan(symbol: str, position_side: str, plan: dict) -> None:
-    cli = _fs_client()
     now = time.time()
     body = dict(plan)
     body["updated"] = now
+    if not _firestore_enabled():
+        _append_local_jsonl(f"exits_{symbol}_{position_side}", body)
+        return
+    cli = _fs_client()
     cli.document(f"{FS_ROOT}/exits_{symbol}_{position_side}").set(body, merge=True)
 
 
 def get_exit_plan(symbol: str, position_side: str) -> dict | None:
+    if not _firestore_enabled():
+        return None
     cli = _fs_client()
     snap = cli.document(f"{FS_ROOT}/exits_{symbol}_{position_side}").get()
     return snap.to_dict() if getattr(snap, "exists", False) else None
 
 
 def publish_exit_event(symbol: str, position_side: str, event: dict) -> None:
-    cli = _fs_client()
     now = time.time()
+    ev = dict(event)
+    ev.setdefault("t", now)
+    if not _firestore_enabled():
+        _append_local_jsonl(f"exit_event_{symbol}_{position_side}", ev)
+        return
+    cli = _fs_client()
     doc = cli.document(f"{FS_ROOT}/exit_event_{symbol}_{position_side}")
     snap = doc.get()
     data = snap.to_dict() if getattr(snap, "exists", False) else {}
     hist = list(data.get("history", []))
-    event = dict(event)
-    event.setdefault("t", now)
-    hist.append(event)
-    doc.set({"last": event, "history": hist[-200:], "updated": now}, merge=True)
+    hist.append(ev)
+    doc.set({"last": ev, "history": hist[-200:], "updated": now}, merge=True)

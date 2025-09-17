@@ -15,6 +15,8 @@
 - One-shot signal+sync: `ENV=prod PYTHONPATH=. ONE_SHOT=1 python -m execution.executor_live`
 - Long-run executor: `ENV=prod PYTHONPATH=. python -m execution.executor_live`
 - Dashboard: `streamlit run dashboard/app.py --server.port=8501`
+- Screener probe: `ENV=prod PYTHONPATH=. python scripts/screener_probe.py --notional 10 --lev 20 BTCUSDT ETHUSDT`
+- Telegram mini-report (dry-run): `ENV=prod PYTHONPATH=. python -m execution.telegram_report --dry-run`
 
 ## Guardrails
 - Never commit secrets; read `config/firebase_creds.json` if present.

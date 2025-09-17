@@ -8,6 +8,14 @@ from typing import Any, Dict, Iterable, List
 import os
 from .exchange_utils import get_klines, get_price
 from .orderbook_features import evaluate_entry_gate
+from .universe_resolver import resolve_allowed_symbols, symbol_tier, is_listed_on_futures
+from .risk_limits import check_order
+from .nav import PortfolioSnapshot
+
+try:
+    from .ml.predict import score_symbol as _score_symbol
+except Exception:  # pragma: no cover - optional dependency
+    _score_symbol = None
 
 try:
     from .exchange_utils import get_symbol_filters  # prefers public alias
@@ -15,6 +23,10 @@ except Exception:
     from .exchange_utils import _symbol_filters as get_symbol_filters  # fallback
 
 LOG_TAG = "[screener]"
+
+
+def _risk_cfg_path() -> str:
+    return os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
 
 
 def _load_strategy_list() -> List[Dict[str, Any]]:
@@ -25,36 +37,109 @@ def _load_strategy_list() -> List[Dict[str, Any]]:
         if isinstance(raw, list)
         else (list(raw.values()) if isinstance(raw, dict) else [])
     )
-
-    # Authoritative whitelist from risk_limits.json (fallback to strategy_config.json if needed)
-    wl: List[str] = []
+    # Prefer universe_resolver for allowed symbols (handles listing + throttles)
     try:
-        rlc = json.load(open("config/risk_limits.json"))
-        wl = (rlc.get("global") or {}).get("whitelist") or []
-    except Exception:
-        pass
-    if not wl:
-        wl = (scfg.get("whitelist") or []) if isinstance(scfg, dict) else []
-    if isinstance(wl, list) and wl:
-        wl_set = {str(x).upper() for x in wl}
-        lst = [
-            s
-            for s in lst
-            if isinstance(s, dict) and str(s.get("symbol", "")).upper() in wl_set
-        ]
-    # Optional universe from pairs_universe.json (secondary filter if present)
-    try:
-        uni = json.load(open("config/pairs_universe.json")).get("symbols", [])
-        if isinstance(uni, list) and uni:
-            uni_set = {str(x).upper() for x in uni}
+        allowed, _ = resolve_allowed_symbols()
+        allow_set = {s.upper() for s in (allowed or [])}
+        if allow_set:
             lst = [
                 s
                 for s in lst
-                if isinstance(s, dict) and str(s.get("symbol", "")).upper() in uni_set
+                if isinstance(s, dict)
+                and str(s.get("symbol", "")).upper() in allow_set
             ]
     except Exception:
+        # If resolver fails (offline), fall through; we'll veto not_listed later
         pass
     return [s for s in lst if isinstance(s, dict) and s.get("enabled")]
+
+
+def _load_risk_cfg() -> Dict[str, Any]:
+    try:
+        return json.load(open(_risk_cfg_path()))
+    except Exception:
+        return {}
+
+
+def would_emit(
+    symbol: str,
+    side: str,
+    *,
+    notional: float = 10.0,
+    lev: float = 20.0,
+    nav: float = 1000.0,
+    open_positions_count: int = 0,
+    current_gross_notional: float = 0.0,
+    current_tier_gross_notional: float = 0.0,
+    orderbook_gate: bool = True,
+) -> tuple[bool, List[str], Dict[str, Any]]:
+    """Return (would_emit, reasons, extra_info) for a hypothetical entry now.
+
+    - Applies: listing check, orderbook gate, and risk caps (portfolio, tier, concurrent).
+    - Uses gross notional = notional * lev for caps.
+    """
+    sym = str(symbol).upper()
+    extra: Dict[str, Any] = {}
+
+    if not is_listed_on_futures(sym):
+        return False, ["not_listed"], extra
+
+    veto, info = evaluate_entry_gate(sym, side, enabled=orderbook_gate)
+    if veto:
+        return False, ["ob_adverse"], {"metric": float(info.get("metric", 0.0) or 0.0)}
+    else:
+        m = float(info.get("metric", 0.0) or 0.0)
+        if (side.upper() in ("BUY", "LONG") and m > 0.20) or (
+            side.upper() in ("SELL", "SHORT") and m < -0.20
+        ):
+            extra["flag"] = "ob_aligned"
+            extra["metric"] = m
+
+    ml_cfg = {}
+    base_cfg = {}
+    try:
+        base_cfg = json.load(open("config/strategy_config.json"))
+        ml_cfg = base_cfg.get("ml", {}) or {}
+    except Exception:
+        ml_cfg = {}
+
+    if ml_cfg.get("enabled") and _score_symbol is not None:
+        try:
+            ml_symbol = sym if sym.endswith("USDT") else f"{sym}USDT"
+            ml_result = _score_symbol(base_cfg, ml_symbol)
+            extra["ml"] = ml_result
+            prob = ml_result.get("p")
+            threshold = float(ml_cfg.get("prob_threshold", 0.0) or 0.0)
+            if prob is not None:
+                prob = float(prob)
+                extra["ml_p"] = prob
+                if prob < threshold:
+                    return False, [f"ml_p<{threshold:.2f}"] , extra
+        except Exception as exc:  # pragma: no cover - ML optional
+            extra["ml_error"] = str(exc)
+
+    cfg = _load_risk_cfg()
+    tname = symbol_tier(sym)
+    ok, details = check_order(
+        symbol=sym,
+        side=side,
+        requested_notional=float(notional) * float(lev),
+        price=0.0,
+        nav=float(nav),
+        open_qty=0.0,
+        now=time.time(),
+        cfg=cfg,
+        state=None,  # type: ignore[arg-type]
+        current_gross_notional=float(current_gross_notional),
+        lev=float(lev),
+        open_positions_count=int(open_positions_count),
+        tier_name=tname,
+        current_tier_gross_notional=float(current_tier_gross_notional),
+    )
+    rs = [str(r) for r in (details.get("reasons") or [])]
+    if not ok:
+        return False, rs, extra
+    return True, rs, extra
 
 
 def _rsi(closes: List[float], period: int = 14) -> float:
@@ -89,16 +174,110 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     except Exception as e:
         print(f"{LOG_TAG} error loading config: {e}")
         return []
+    try:
+        base_cfg = json.load(open("config/strategy_config.json"))
+    except Exception:
+        base_cfg = {}
+    sizing_cfg = (base_cfg.get("sizing") or {})
+    try:
+        min_gross_floor = float((sizing_cfg.get("min_gross_usd_per_order", 0.0)) or 0.0)
+    except Exception:
+        min_gross_floor = 0.0
+    per_symbol_gross_floor: Dict[str, float] = {}
+    per_symbol_cfg = sizing_cfg.get("per_symbol_min_gross_usd") or {}
+    if isinstance(per_symbol_cfg, dict):
+        for key, value in per_symbol_cfg.items():
+            try:
+                per_symbol_gross_floor[str(key).upper()] = float(value)
+            except Exception:
+                continue
+    ml_cfg = (base_cfg.get("ml") or {})
+    ml_enabled = bool(ml_cfg.get("enabled")) and _score_symbol is not None
     out = []
     attempted = 0
     dbg = os.getenv("DEBUG_SIGNALS", "0").lower() in ("1","true","yes")
+    # Prepare allowed set and tier map (best effort)
+    try:
+        allowed_syms, tier_by = resolve_allowed_symbols()
+        allowed_set = {s.upper() for s in (allowed_syms or [])}
+    except Exception:
+        allowed_set = set()
+        tier_by = {}
+    # Risk cfg + portfolio snapshot (best effort)
+    rlc = _load_risk_cfg()
+    kill_switch = os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on")
+    snapshot = PortfolioSnapshot(base_cfg)
+    try:
+        nav_override = float(os.getenv("SCREENER_NAV", "0") or 0.0)
+    except Exception:
+        nav_override = 0.0
+    if nav_override > 0:
+        nav = nav_override
+    else:
+        nav = float(snapshot.current_nav_usd())
+        if nav <= 0:
+            nav = 1000.0
+    current_portfolio_gross = float(snapshot.current_gross_usd())
+    open_positions_count = 0
+    tier_gross: Dict[str, float] = {}
+    try:
+        from .exchange_utils import get_positions
+
+        pos = list(get_positions() or [])
+        gross_from_positions = 0.0
+        for p in pos:
+            qty = float(p.get("qty", p.get("positionAmt", 0.0)) or 0.0)
+            if abs(qty) <= 0:
+                continue
+            mark = float(p.get("markPrice") or p.get("entryPrice") or 0.0)
+            if mark <= 0:
+                mark = abs(float(p.get("entryPrice") or 0.0))
+            g = abs(qty) * abs(mark)
+            gross_from_positions += g
+            open_positions_count += 1
+            symp = str(p.get("symbol", "")).upper()
+            t = tier_by.get(symp) or symbol_tier(symp) or "?"
+            tier_gross[t] = tier_gross.get(t, 0.0) + g
+        if gross_from_positions > 0:
+            current_portfolio_gross = gross_from_positions
+    except Exception:
+        pass
+    cap_pct = float(sizing_cfg.get("max_gross_exposure_pct", 0.0) or 0.0)
+    if os.environ.get("EVENT_GUARD", "0") == "1":
+        cap_pct *= 0.8
+    cap_usd = nav * (cap_pct / 100.0) if nav > 0 and cap_pct > 0 else 0.0
+    ml_threshold = float(ml_cfg.get("prob_threshold", 0.0) or 0.0)
     for scfg in strategies:
         attempted += 1
         sym = scfg.get("symbol")
+        sym_key = str(sym).upper()
         tf = scfg.get("timeframe", "15m")
-        cap = float(scfg.get("capital_per_trade", 0) or 0)
-        lev = float(scfg.get("leverage", 1) or 1)
+        cap = float(scfg.get("capital_per_trade", 0) or 0) or 10.0
+        lev = float(scfg.get("leverage", 1) or 1) or 20.0
+        gross_cap = cap * lev
+        sym_floor = per_symbol_gross_floor.get(sym_key, 0.0)
+        effective_notional = max(gross_cap, min_gross_floor, sym_floor)
         entry_forced = (scfg.get("entry", {}) or {}).get("type") == "always_on"
+        if kill_switch:
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["kill_switch_on"]}}'
+            )
+            continue
+        if cap_usd > 0:
+            if current_portfolio_gross >= cap_usd:
+                print(
+                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"]}}'
+                )
+                continue
+            if current_portfolio_gross + effective_notional > cap_usd:
+                remaining = max(cap_usd - current_portfolio_gross, 0.0)
+                print(
+                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"],"remaining":{round(remaining,4)}}}'
+                )
+                continue
+        if allowed_set and sym_key not in allowed_set:
+            print(f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["not_listed"]}}')
+            continue
         try:
             kl = get_klines(sym, tf, limit=150)
             closes = [c for _, c in kl]
@@ -135,17 +314,17 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 cfg_min_notional = 0.0
         min_notional = max(exch_min_notional, cfg_min_notional)
         vetoes = []
-        if cap < min_notional:
+        if effective_notional < min_notional:
             vetoes.append("min_notional")
-        if cap < min_qty_notional:
+        if effective_notional < min_qty_notional:
             vetoes.append("min_qty_notional")
         if vetoes and not entry_forced:
             if dbg:
                 print(
-                    f'[sigdbg] {sym} tf={tf} px={round(price,4)} cap={cap} lev={lev} min_notional={min_notional} min_qty_notional={round(min_qty_notional,4)} veto={vetoes}'
+                    f'[sigdbg] {sym} tf={tf} px={round(price,4)} cap={cap} lev={lev} gross={round(effective_notional,4)} min_notional={min_notional} min_qty_notional={round(min_qty_notional,4)} veto={vetoes}'
                 )
             print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","notional":{cap},"min_notional":{min_notional},"veto":{vetoes}}}'
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","gross":{effective_notional},"min_notional":{min_notional},"veto":{vetoes}}}'
             )
             continue
         signal = (
@@ -166,8 +345,58 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             if dbg:
                 print(f"[sigdbg] {sym} tf={tf} ob_imbalance={float(info.get('metric',0.0)):.3f} veto")
             print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["ob_imbalance"],"metric":{round(float(info.get("metric",0.0)),3)}}}'
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["ob_adverse"],"metric":{round(float(info.get("metric",0.0)),3)}}}'
             )
+            continue
+        else:
+            m = float(info.get("metric", 0.0) or 0.0)
+            if (signal == "BUY" and m > 0.20) or (signal == "SELL" and m < -0.20):
+                print(
+                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","flag":"ob_aligned","metric":{round(m,3)}}}'
+                )
+
+        ml_prob = None
+        if ml_enabled:
+            try:
+                ml_sym = sym if sym.endswith("USDT") else f"{sym}USDT"
+                ml_result = _score_symbol(base_cfg, ml_sym)
+                ml_prob = ml_result.get("p")
+                if ml_prob is not None:
+                    ml_prob = float(ml_prob)
+                    if ml_prob < ml_threshold:
+                        print(
+                            f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["ml_prob"],"p":{round(ml_prob,4)}}}'
+                        )
+                        continue
+                if ml_result.get("error") and dbg:
+                    print(f"{LOG_TAG} ml error {sym}: {ml_result['error']}")
+            except Exception as exc:
+                if dbg:
+                    print(f"{LOG_TAG} ml exception {sym}: {exc}")
+                ml_prob = None
+
+        # Risk pre-check
+        tname = symbol_tier(sym)
+        tcur = tier_gross.get(tname or "?", 0.0)
+        ok, details = check_order(
+            symbol=sym,
+            side=signal,
+            requested_notional=max(effective_notional, cap * lev),
+            price=price,
+            nav=nav,
+            open_qty=0.0,
+            now=time.time(),
+            cfg=rlc,
+            state=None,  # type: ignore[arg-type]
+            current_gross_notional=current_portfolio_gross,
+            lev=lev,
+            open_positions_count=open_positions_count,
+            tier_name=tname,
+            current_tier_gross_notional=tcur,
+        )
+        if not ok:
+            rs = details.get("reasons", []) if isinstance(details, dict) else []
+            print(f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":{json.dumps(rs)}}}')
             continue
         intent = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
@@ -178,8 +407,12 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "price": price,
             "capital_per_trade": cap,
             "leverage": lev,
+            "cap_usd": cap,
+            "gross_usd": cap * lev,
             "min_notional": min_notional,
         }
+        if ml_prob is not None:
+            intent["ml_prob"] = ml_prob
         if dbg:
             print(
                 f"[sigdbg] {sym} tf={tf} z={round(z,3)} rsi={round(rsi,1)} cap={cap} lev={lev} ok"
@@ -189,5 +422,6 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             f'[decision] {{"symbol":"{sym}","tf":"{tf}","z":{round(z, 4)},"rsi":{round(rsi, 1)},"cap":{cap},"lev":{lev}}}'
         )
         out.append(intent)
+        current_portfolio_gross += effective_notional
     print(f"{LOG_TAG} attempted={attempted} emitted={len(out)}")
     return out
