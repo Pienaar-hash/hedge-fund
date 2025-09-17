@@ -1,9 +1,9 @@
 {
-  "nav_usdt": 1636.46379391,
+  "nav_usdt": 1649.35539872,
   "breakdown": {
     "source": "exchange",
-    "futures_wallet_usdt": 1643.79361791,
-    "unrealized_pnl": -7.329824
+    "futures_wallet_usdt": 1643.49342092,
+    "unrealized_pnl": 5.8619778
   },
-  "ts": "2025-09-17T20:24:14.788606+00:00"
+  "ts": "2025-09-17T20:54:56.897047+00:00"
 }

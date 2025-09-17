@@ -1,7 +1,7 @@
 {
   "symbol": "ETHUSDT",
   "veto": "trade_rate_limit",
-  "gross_usd": 20.0,
-  "price": 4524.99,
-  "ts": 1758140641.28804
+  "gross_usd": 110.0,
+  "price": 4520.14,
+  "ts": 1758145230.5896819
 }

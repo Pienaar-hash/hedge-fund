@@ -165,16 +165,35 @@ def debug_key_head() -> Tuple[str, int, bool]:
 
 
 # --- market data ---
-def get_klines(symbol: str, interval: str, limit: int = 150) -> List[Tuple[int, float]]:
+def get_klines(symbol: str, interval: str, limit: int = 150) -> List[List[float]]:
+    """Fetch OHLCV rows for USD-M klines; clamp limit to Binance's max of 1500."""
+    try:
+        max_limit = 1500
+        limit = 150 if limit is None else int(limit)
+        if limit > max_limit:
+            limit = max_limit
+    except Exception:
+        limit = 150
+
     r = _req(
         "GET",
         "/fapi/v1/klines",
         params={"symbol": symbol, "interval": interval, "limit": limit},
     )
-    out = []
+    out: List[List[float]] = []
     for row in r.json():
-        # [ openTime, open, high, low, close, volume, closeTime, ...]
-        out.append((int(row[0]), float(row[4])))
+        try:
+            open_time = int(row[0])
+            open_p, high_p, low_p, close_p, volume = (
+                float(row[1]),
+                float(row[2]),
+                float(row[3]),
+                float(row[4]),
+                float(row[5]),
+            )
+        except (IndexError, TypeError, ValueError):
+            continue
+        out.append([open_time, open_p, high_p, low_p, close_p, volume])
     return out
 
 

@@ -20,7 +20,8 @@ FIT_OUT="$('./venv/bin/python' scripts/ml_fit.py 2>&1)" || FIT_RC=$?
 EVAL_OUT="$('./venv/bin/python' scripts/signal_eval.py 2>&1)" || EVAL_RC=$?
 
 python3 - "$START_TS" "$FIT_RC" "$EVAL_RC" "$FIT_OUT" "$EVAL_OUT" > models/last_train_report.json <<'PY'
-import json, sys, datetime
+from datetime import datetime, timezone
+import json, sys
 start_ts, fit_rc, eval_rc, fit_out, eval_out = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
 def parse_raw(raw: str):
     try:
@@ -29,7 +30,7 @@ def parse_raw(raw: str):
         return {"stdout_tail": raw[-2000:]}
 report = {
     "started_at_utc": start_ts,
-    "finished_at_utc": datetime.datetime.utcnow().isoformat() + "Z",
+    "finished_at_utc": datetime.now(timezone.utc).isoformat(),
     "fit_rc": fit_rc,
     "fit_result": parse_raw(fit_out),
     "eval_rc": eval_rc,

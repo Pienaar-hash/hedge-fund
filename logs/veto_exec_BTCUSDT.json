@@ -1,7 +1,7 @@
 {
   "symbol": "BTCUSDT",
   "veto": "trade_rate_limit",
-  "gross_usd": 150.0,
-  "price": 115817.1,
-  "ts": 1758140535.2833242
+  "gross_usd": 25.0,
+  "price": 115824.6,
+  "ts": 1758141342.7445714
 }
