@@ -1,7 +1,7 @@
 {
   "symbol": "LTCUSDT",
   "veto": "trade_rate_limit",
-  "gross_usd": 10.0,
-  "price": 114.74,
-  "ts": 1758141670.2324636
+  "gross_usd": 110.0,
+  "price": 115.25,
+  "ts": 1758193150.167245
 }

@@ -6,8 +6,8 @@
     "horizon": 4,
     "target_bps": 20.0,
     "model": "logreg",
-    "auc": 0.5555555555555556,
-    "trained_at": 1758144775,
+    "auc": 0.6048418209876543,
+    "trained_at": 1758161403,
     "model_path": "models/BTCUSDT_logreg.pkl"
   },
   "ETHUSDT": {
@@ -17,8 +17,8 @@
     "horizon": 4,
     "target_bps": 20.0,
     "model": "logreg",
-    "auc": 0.5556581559628792,
-    "trained_at": 1758144775,
+    "auc": 0.5586742857142858,
+    "trained_at": 1758161404,
     "model_path": "models/ETHUSDT_logreg.pkl"
   },
   "SOLUSDT": {
@@ -28,8 +28,8 @@
     "horizon": 4,
     "target_bps": 20.0,
     "model": "logreg",
-    "auc": 0.5427725968436155,
-    "trained_at": 1758144776,
+    "auc": 0.5935267857142857,
+    "trained_at": 1758161404,
     "model_path": "models/SOLUSDT_logreg.pkl"
   },
   "SUIUSDT": {
@@ -39,8 +39,8 @@
     "horizon": 4,
     "target_bps": 20.0,
     "model": "logreg",
-    "auc": 0.5674516287591045,
-    "trained_at": 1758144776,
+    "auc": 0.5738990907470137,
+    "trained_at": 1758161404,
     "model_path": "models/SUIUSDT_logreg.pkl"
   },
   "LTCUSDT": {
@@ -50,8 +50,8 @@
     "horizon": 4,
     "target_bps": 20.0,
     "model": "logreg",
-    "auc": 0.5894547301352786,
-    "trained_at": 1758144776,
+    "auc": 0.5825238269794721,
+    "trained_at": 1758161405,
     "model_path": "models/LTCUSDT_logreg.pkl"
   },
   "WIFUSDT": {
@@ -61,8 +61,8 @@
     "horizon": 4,
     "target_bps": 20.0,
     "model": "logreg",
-    "auc": 0.6032628022759602,
-    "trained_at": 1758144777,
+    "auc": 0.6050491132939242,
+    "trained_at": 1758161405,
     "model_path": "models/WIFUSDT_logreg.pkl"
   },
   "LINKUSDT": {
@@ -72,8 +72,8 @@
     "horizon": 4,
     "target_bps": 20.0,
     "model": "logreg",
-    "auc": 0.4867736728837877,
-    "trained_at": 1758144777,
+    "auc": 0.473122123419277,
+    "trained_at": 1758161405,
     "model_path": "models/LINKUSDT_logreg.pkl"
   }
 }
