@@ -5,6 +5,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -34,6 +35,16 @@ DEFAULT_NAV_HISTORY = PROJECT_ROOT / "logs" / "nav.jsonl"
 DEFAULT_POSITIONS_LOG = PROJECT_ROOT / "logs" / "positions.jsonl"
 DEFAULT_SCREENER_LOG = PROJECT_ROOT / "logs" / "screener_tail.log"
 DEFAULT_VETO_PATTERN = "veto_exec_*.json"
+
+LOCAL_NAV = os.environ.get("LOCAL_NAV_PATH", str(DEFAULT_NAV_HISTORY))
+FIRESTORE_ENABLED = os.environ.get("FIRESTORE_ENABLED", "0") == "1"
+FIRESTORE_COLLECTION = os.environ.get("FIRESTORE_NAV_COL", "nav_snapshots")
+STALE_AFTER_SEC = int(os.environ.get("DASH_STALE_AFTER_SEC", "120"))
+
+try:  # optional Firestore helper import (shared cache in dashboard_utils)
+    from utils.firestore_client import get_db as _get_db
+except Exception:  # pragma: no cover - optional dependency fallback
+    _get_db = None
 
 
 ENV = os.getenv("ENV", "prod")
@@ -692,3 +703,117 @@ def load_dashboard_data() -> DashboardData:
         veto_events=veto_events,
         env_risk_knobs=env_knobs,
     )
+
+
+def _read_local_jsonl_tail(path: str, tail: int = 1) -> List[Dict[str, Any]]:
+    path_obj = _resolve_path(path)
+    if not path_obj.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        with path_obj.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:  # pragma: no cover - defensive I/O handling
+        return []
+    return rows[-tail:]
+
+
+def _firestore_latest() -> Dict[str, Any]:
+    if not (FIRESTORE_ENABLED and _get_db):
+        return {}
+    try:
+        db = _get_db()
+        doc = db.collection(FIRESTORE_COLLECTION).document("latest").get()
+        return doc.to_dict() or {}
+    except Exception:  # pragma: no cover - defensive against Firestore outage
+        return {}
+
+
+def _mark_staleness(snap: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    ts = snap.get("ts") or snap.get("timestamp") or 0
+    try:
+        ts_float = float(ts)
+    except Exception:
+        ts_float = 0.0
+    if ts_float > 10_000_000_000:
+        ts_float /= 1000.0
+    age = time.time() - ts_float if ts_float else float("inf")
+    snap["age_sec"] = max(0.0, age if math.isfinite(age) else float("inf"))
+    is_stale = age > STALE_AFTER_SEC if math.isfinite(age) else True
+    snap["is_stale"] = is_stale
+    return snap, is_stale
+
+
+@lru_cache(maxsize=1)
+def _cached_latest_nav(_nonce: int) -> Dict[str, Any]:
+    firestore_doc = _firestore_latest()
+    if firestore_doc:
+        snap, _ = _mark_staleness(dict(firestore_doc))
+        snap["source"] = "firestore"
+        return snap
+
+    local_tail = _read_local_jsonl_tail(LOCAL_NAV, tail=1)
+    if local_tail:
+        snap, _ = _mark_staleness(dict(local_tail[0]))
+        snap["source"] = "local"
+        return snap
+
+    return {
+        "equity": 0.0,
+        "balance": 0.0,
+        "positions": [],
+        "source": "empty",
+        "ts": 0,
+        "is_stale": True,
+        "age_sec": float("inf"),
+    }
+
+
+def get_latest_nav() -> Dict[str, Any]:
+    nonce = int(time.time() // 30)
+    return _cached_latest_nav(nonce)
+
+
+def _safe_rr(entry: Any, mark: Any) -> float:
+    try:
+        entry_f = float(entry)
+        mark_f = float(mark)
+        if entry_f == 0:
+            return 0.0
+        return (mark_f - entry_f) / entry_f
+    except Exception:
+        return 0.0
+
+
+def per_symbol_kpis(positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    snapshot = []
+    now = time.time()
+    for pos in positions or []:
+        try:
+            last_update = float(pos.get("last_update", 0) or 0)
+        except Exception:
+            last_update = 0.0
+        age = now - last_update if last_update else float("inf")
+        snapshot.append(
+            {
+                "symbol": pos.get("symbol"),
+                "side": pos.get("side"),
+                "size": pos.get("size", pos.get("positionAmt", 0.0)),
+                "entry": pos.get("entry", pos.get("entryPrice")),
+                "mark": pos.get("mark", pos.get("markPrice")),
+                "unrealized": pos.get("unrealized", pos.get("unRealizedProfit", 0.0)),
+                "realized": pos.get("realized", pos.get("realizedPnl", 0.0)),
+                "rr": _safe_rr(pos.get("entry", pos.get("entryPrice")), pos.get("mark", pos.get("markPrice"))),
+                "veto_tail": pos.get("veto_tail", []),
+                "stale": age > STALE_AFTER_SEC if math.isfinite(age) else True,
+                "age_sec": age if math.isfinite(age) else float("inf"),
+            }
+        )
+    return snapshot

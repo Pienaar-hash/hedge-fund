@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import hashlib
 import hmac
 import logging
 import math
-import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +14,8 @@ from decimal import ROUND_DOWN, ROUND_UP, Decimal, getcontext, localcontext
 
 import requests
 from execution.utils import load_json
+
+EXUTIL_DEBUG_AUTH = os.getenv("EXUTIL_DEBUG_AUTH", "0") == "1"
 
 getcontext().prec = 28
 # --- robust .env load (works under supervisor too) ---
@@ -127,6 +129,17 @@ def _req(
             )
 
     headers = {"X-MBX-APIKEY": _KEY}
+
+    if EXUTIL_DEBUG_AUTH:
+        try:
+            key_prefix = headers.get("X-MBX-APIKEY", "")[:8]
+            print(
+                f"[exutil][auth] base={_BASE} signed={signed} path={path} "
+                f"key_prefix={key_prefix} params={params}",
+                flush=True,
+            )
+        except Exception:
+            pass
     if method in ("POST", "PUT"):
         headers["Content-Type"] = "application/x-www-form-urlencoded"
 
