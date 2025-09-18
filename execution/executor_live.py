@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from decimal import Decimal, ROUND_DOWN, ROUND_UP, localcontext
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import requests
@@ -40,6 +41,7 @@ from execution.utils import (
     write_treasury_snapshot,
     save_json,
 )
+from execution.rules_sl_tp import compute_sl_tp
 
 # ---- Screener (best effort) ----
 generate_signals_from_config: Optional[Callable[[], Iterable[Dict[str, Any]]]] = None
@@ -93,15 +95,25 @@ except Exception as e:
 
 _RISK_STATE = RiskState()
 
-# Build a minimal RiskGate config adapter from legacy risk_limits.json
+# Build a minimal RiskGate config adapter from legacy/new risk_limits.json
 def _mk_gate_cfg(raw: Dict[str, Any]) -> Dict[str, Any]:
-    g = (raw.get("global") or {}) if isinstance(raw, dict) else {}
+    g: Dict[str, Any] = {}
+    if isinstance(raw, dict):
+        base = raw.get("global") or {}
+        if isinstance(base, dict):
+            g = dict(base)
+        else:
+            g = {}
+        # Back-compat: allow flat configs without explicit global namespace
+        if not g:
+            g = {k: v for k, v in raw.items() if k not in ("per_symbol", "tiers")}
     sizing = {
         "min_notional_usdt": g.get("min_notional_usdt", 5.0),
         # Accept either key for portfolio gross NAV cap
         "max_gross_exposure_pct": g.get("max_portfolio_gross_nav_pct", g.get("max_gross_nav_pct", 0.0)) or 0.0,
         # Fallback sensible default if not provided
         "max_symbol_exposure_pct": g.get("max_symbol_exposure_pct", 50.0),
+        "max_trade_nav_pct": g.get("max_trade_nav_pct", g.get("max_trade_pct", 0.0)) or 0.0,
     }
     risk = {
         "daily_loss_limit_pct": g.get("daily_loss_limit_pct", 5.0),
@@ -120,6 +132,8 @@ SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", "0") or 0)
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() in ("1", "true", "yes")
 INTENT_TEST = os.getenv("INTENT_TEST", "0").lower() in ("1", "true", "yes")
+COOLDOWN_SECS = int(os.environ.get("COOLDOWN_SECS", "600"))  # 10 min default
+_last_order_ts: Dict[str, float] = {}
 
 # ------------- helpers -------------
 
@@ -196,6 +210,110 @@ def _gross_and_open_qty(
     return gross, open_qty
 
 
+def _format_price_to_tick(tick_size: str | float | None, price: float, round_up: bool) -> float:
+    try:
+        tick = Decimal(str(tick_size or "0.0"))
+        value = Decimal(str(price))
+        if tick <= 0:
+            return float(price)
+        with localcontext() as ctx:
+            ctx.rounding = ROUND_UP if round_up else ROUND_DOWN
+            snapped = (value / tick).to_integral_value(rounding=ctx.rounding) * tick
+        decimals = max(0, -snapped.as_tuple().exponent)
+        return float(round(snapped, decimals))
+    except Exception:
+        return float(price)
+
+
+def _protective_orders(
+    *,
+    symbol: str,
+    side: str,
+    position_side: str,
+    norm_price: float,
+    norm_qty: float,
+    qty_str: str,
+    meta: Dict[str, Any],
+    risk_defaults: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    if norm_qty <= 0:
+        return []
+    risk_defaults = risk_defaults or {}
+    stop_pct = float(risk_defaults.get("default_stop_loss_pct", 0.0) or 0.0)
+    take_pct = float(risk_defaults.get("default_take_profit_pct", 0.0) or 0.0)
+    if stop_pct <= 0 and take_pct <= 0:
+        return []
+    buffer_bps = float(risk_defaults.get("stop_buffer_bps", 0.0) or 0.0)
+    buffer = buffer_bps / 10000.0 if buffer_bps > 0 else 0.0
+
+    trade_side = "LONG" if side.upper() == "BUY" else "SHORT"
+    sl_px, tp_px = compute_sl_tp(
+        norm_price,
+        trade_side,
+        atr=0.0,
+        atr_mult=0.0,
+        fixed_sl_pct=stop_pct,
+        fixed_tp_pct=take_pct,
+    )
+
+    exit_side = "SELL" if side.upper() == "BUY" else "BUY"
+    tick = meta.get("tickSize")
+    orders: List[Dict[str, Any]] = []
+
+    def _snap(px: float, favor: str) -> float:
+        # favor = "stop" or "tp"; adjust rounding direction based on trade orientation
+        round_up = False
+        if trade_side == "LONG":
+            round_up = favor == "tp"
+        else:
+            round_up = favor == "stop"
+        return _format_price_to_tick(tick, px, round_up)
+
+    if stop_pct > 0 and sl_px > 0:
+        if buffer > 0:
+            if trade_side == "LONG":
+                sl_px *= max(1e-9, 1.0 - buffer)
+            else:
+                sl_px *= 1.0 + buffer
+        stop_price = _snap(sl_px, "stop")
+        if stop_price > 0:
+            payload = {
+                "symbol": symbol,
+                "side": exit_side,
+                "type": "STOP_MARKET",
+                "stopPrice": f"{stop_price:.8f}",
+                "quantity": qty_str,
+                "reduceOnly": "true",
+                "workingType": "MARK_PRICE",
+            }
+            if position_side and position_side.upper() != "BOTH":
+                payload["positionSide"] = position_side.upper()
+            orders.append(payload)
+
+    if take_pct > 0 and tp_px > 0:
+        if buffer > 0:
+            if trade_side == "LONG":
+                tp_px *= 1.0 + buffer
+            else:
+                tp_px *= max(1e-9, 1.0 - buffer)
+        tp_price = _snap(tp_px, "tp")
+        if tp_price > 0:
+            payload = {
+                "symbol": symbol,
+                "side": exit_side,
+                "type": "TAKE_PROFIT_MARKET",
+                "stopPrice": f"{tp_price:.8f}",
+                "quantity": qty_str,
+                "reduceOnly": "true",
+                "workingType": "MARK_PRICE",
+            }
+            if position_side and position_side.upper() != "BOTH":
+                payload["positionSide"] = position_side.upper()
+            orders.append(payload)
+
+    return orders
+
+
 def _send_order(intent: Dict[str, Any]) -> None:
     symbol = intent["symbol"]
     sig = str(intent.get("signal", "")).upper()
@@ -206,6 +324,7 @@ def _send_order(intent: Dict[str, Any]) -> None:
     gross_target = float(intent.get("gross_usd") or (cap * lev))
     if lev <= 0:
         lev = 1.0
+    cfg: Dict[str, Any] = {}
     try:
         cfg = load_json("config/strategy_config.json")
         sizing_cfg = (cfg.get("sizing") or {})
@@ -281,6 +400,34 @@ def _send_order(intent: Dict[str, Any]) -> None:
         lev,
         reduce_only,
     )
+
+    now = time.time()
+    t0 = _last_order_ts.get(symbol, 0.0)
+    cooldown_remaining = COOLDOWN_SECS - (now - t0)
+    if cooldown_remaining > 0:
+        reason = f"cooldown_{int(cooldown_remaining)}s"
+        price_hint = float(intent.get("price", 0.0) or 0.0)
+        _persist_veto(reason, price_hint, {"intent": intent})
+        try:
+            publish_order_audit(
+                symbol,
+                {
+                    "phase": "blocked",
+                    "side": side,
+                    "positionSide": pos_side,
+                    "reason": reason,
+                    "notional": gross_target,
+                },
+            )
+        except Exception:
+            pass
+        LOG.info(
+            "[executor] cooldown veto symbol=%s side=%s remaining=%ss",
+            symbol,
+            side,
+            int(cooldown_remaining),
+        )
+        return
 
     # Shared gross-notional gate (canonical taxonomy)
     try:
@@ -405,11 +552,26 @@ def _send_order(intent: Dict[str, Any]) -> None:
 
     norm_price = _meta_float(meta.get("normalized_price"), price_hint)
     norm_qty = _meta_float(meta.get("normalized_qty"), _meta_float(payload.get("quantity"), 0.0))
+
+    slip_bps = 0.0
+    try:
+        slip_bps = float(((cfg.get("sizing") or {}).get("slippage_bps", 0.0)) or 0.0)
+    except Exception:
+        slip_bps = 0.0
+    if slip_bps > 0:
+        slip_frac = slip_bps / 10000.0
+        limit_price = norm_price * (1.0 + slip_frac) if side.upper() == "BUY" else norm_price * (1.0 - slip_frac)
+        limit_price = _format_price_to_tick(meta.get("tickSize"), limit_price, round_up=side.upper() == "SELL")
+        payload["type"] = "LIMIT"
+        payload["price"] = f"{limit_price:.8f}"
+        payload["timeInForce"] = "IOC"
+
     payload_view = {
         k: payload[k]
-        for k in ("type", "quantity", "reduceOnly", "positionSide")
+        for k in ("type", "quantity", "reduceOnly", "positionSide", "price", "timeInForce")
         if k in payload
     }
+    qty_str = str(meta.get("qty_str") or payload.get("quantity") or norm_qty)
 
     try:
         allowed_now, veto_now = _RISK_GATE.allowed_gross_notional(symbol, gross_target)
@@ -441,6 +603,11 @@ def _send_order(intent: Dict[str, Any]) -> None:
         return
 
     normalized_ctx = {"price": norm_price, "qty": norm_qty, **meta}
+    if payload.get("type") == "LIMIT" and payload.get("price") is not None:
+        try:
+            normalized_ctx["limit_price"] = float(payload.get("price"))
+        except Exception:
+            normalized_ctx["limit_price"] = payload.get("price")
 
     try:
         publish_intent_audit(
@@ -584,6 +751,26 @@ def _send_order(intent: Dict[str, Any]) -> None:
         )
     except Exception:
         pass
+
+    if not reduce_only:
+        risk_defaults = (cfg.get("risk") or {}) if isinstance(cfg, dict) else {}
+        for order in _protective_orders(
+            symbol=symbol,
+            side=side,
+            position_side=pos_side,
+            norm_price=norm_price,
+            norm_qty=norm_qty,
+            qty_str=qty_str,
+            meta=meta,
+            risk_defaults=risk_defaults,
+        ):
+            try:
+                send_order(**order)
+                LOG.info("[executor] PROTECTIVE_ORDER %s %s payload=%s", symbol, order.get("type"), order)
+            except Exception as exc:
+                LOG.error("[executor] PROTECTIVE_ORDER_ERR %s %s err=%s", symbol, order.get("type"), exc)
+
+    _last_order_ts[symbol] = time.time()
 
     if st == "FILLED":
         LOG.info(

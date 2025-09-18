@@ -5,6 +5,7 @@ def test_orderbook_adverse_veto(monkeypatch):
     # Force imbalance adverse to BUY
     import execution.orderbook_features as ob
 
+    monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "1")
     monkeypatch.setattr(ob, "topn_imbalance", lambda _s, limit=10: -0.5, raising=True)
     veto, info = evaluate_entry_gate("BTCUSDT", "BUY", enabled=True)
     assert veto is True

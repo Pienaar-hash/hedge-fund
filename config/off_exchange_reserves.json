@@ -1,0 +1,9 @@
+{
+  "reserves": [
+    { "asset": "BTC",  "amount": 0.7500, "valuation": "USDT", "label": "cold_storage_btc" },
+    { "asset": "XAUT", "amount": 12.000, "valuation": "USDT", "label": "custodian_gold" }
+  ],
+  "fee_wallets": [
+    { "asset": "BNB", "amount": 5.000, "valuation": "USDT", "label": "bnb_fees_external" }
+  ]
+}

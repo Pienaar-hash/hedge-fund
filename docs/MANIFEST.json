@@ -1,0 +1,161 @@
+{
+  "commit": "9534799",
+  "python_version": "3.12.3",
+  "entry_points": [
+    "execution/executor_live.py",
+    "execution/sync_daemon.py",
+    "execution/state_publish.py",
+    "execution/telegram_report.py",
+    "dashboard/app.py",
+    "dashboard/main.py",
+    "telegram/heartbeat.py",
+    "scripts/screener_probe.py",
+    "scripts/ml_retrain_daemon.py",
+    "scripts/run_executor_once.sh",
+    "scripts/go_live_now.sh"
+  ],
+  "services": [
+    {
+      "name": "executor",
+      "cmd": "ENV=prod PYTHONPATH=. python -m execution.executor_live",
+      "depends_on": ["binance-api", "firestore-state", "strategy-config"]
+    },
+    {
+      "name": "sync-daemon",
+      "cmd": "ENV=prod PYTHONPATH=. python -m execution.sync_daemon",
+      "depends_on": ["executor", "firestore-state", "logs"]
+    },
+    {
+      "name": "dashboard",
+      "cmd": "ENV=prod PYTHONPATH=. streamlit run dashboard/app.py --server.port=8501",
+      "depends_on": ["firestore-state", "nav-snapshots"]
+    },
+    {
+      "name": "telegram-report",
+      "cmd": "ENV=prod PYTHONPATH=. python -m execution.telegram_report --dry-run",
+      "depends_on": ["firestore-state", "telegram-bot"]
+    },
+    {
+      "name": "ml-retrain",
+      "cmd": "ENV=prod PYTHONPATH=. python scripts/ml_retrain_daemon.py",
+      "depends_on": ["models", "executor"]
+    }
+  ],
+  "packages": [
+    "execution",
+    "dashboard",
+    "utils",
+    "telegram",
+    "strategies"
+  ],
+  "third_party": [
+    "requests",
+    "pandas",
+    "numpy",
+    "streamlit",
+    "google-cloud-firestore",
+    "python-dotenv",
+    "matplotlib",
+    "openai"
+  ],
+  "configs": [
+    "config/strategy_config.json",
+    "config/risk_limits.json",
+    "config/symbol_tiers.json",
+    "config/pairs_universe.json",
+    "config/dashboard.yml",
+    "config/settings.json",
+    "config/off_exchange_reserves.json",
+    "config/treasury.json",
+    "config/firestore_schema.json",
+    "config/firebase_creds.json"
+  ],
+  "env_keys": [
+    "ENV",
+    "PYTHONPATH",
+    "BINANCE_API_KEY",
+    "BINANCE_API_SECRET",
+    "BINANCE_TESTNET",
+    "BINANCE_RECV_WINDOW",
+    "DRY_RUN",
+    "INTENT_TEST",
+    "KILL_SWITCH",
+    "LOOP_SLEEP",
+    "MAX_LOOPS",
+    "COOLDOWN_SECS",
+    "RISK_LIMITS_CONFIG",
+    "FS_PUB_INTERVAL",
+    "FIRESTORE_ENABLED",
+    "FIREBASE_CREDS_PATH",
+    "FIREBASE_CREDS_JSON",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "FIREBASE_PROJECT_ID",
+    "BOT_TOKEN",
+    "CHAT_ID",
+    "TELEGRAM_ENABLED",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "NAV_CUTOFF_ISO",
+    "NAV_CUTOFF_SECAGO",
+    "SYNC_INTERVAL_SEC",
+    "DASHBOARD_REFRESH_SEC",
+    "DASHBOARD_SIGNAL_TAGS",
+    "DASHBOARD_SIGNAL_LINES"
+  ],
+  "runtime_io": {
+    "reads": [
+      ".env",
+      "config/strategy_config.json",
+      "config/risk_limits.json",
+      "config/symbol_tiers.json",
+      "config/pairs_universe.json",
+      "config/treasury.json",
+      "config/dashboard.yml",
+      "logs/nav_log.json",
+      "logs/nav.jsonl",
+      "logs/positions.jsonl",
+      "logs/screener_tail.log",
+      "state/nav_snapshot.json",
+      "data/*",
+      "Firestore hedge/{ENV}/state/*",
+      "Binance futures REST"
+    ],
+    "writes": [
+      "logs/nav_trading.json",
+      "logs/nav_reporting.json",
+      "logs/nav_snapshot.json",
+      "logs/nav_treasury.json",
+      "logs/veto_exec_*.json",
+      "logs/nav.jsonl",
+      "logs/positions.jsonl",
+      "logs/audit_orders_*.jsonl",
+      "logs/audit_intents.jsonl",
+      "hedge/{ENV}/state/nav",
+      "hedge/{ENV}/state/positions",
+      "hedge/{ENV}/state/leaderboard",
+      "Telegram Bot API"
+    ]
+  },
+  "tests": [
+    "tests/test_config_parsing.py",
+    "tests/test_filters_rounding.py",
+    "tests/test_last_train_report_schema.py",
+    "tests/test_ml_features.py",
+    "tests/test_nav.py",
+    "tests/test_nav_modes.py",
+    "tests/test_orderbook_features.py",
+    "tests/test_risk_gross_gate.py",
+    "tests/test_risk_limits.py",
+    "tests/test_rules_sl_tp.py",
+    "tests/test_screener_tier_caps.py",
+    "tests/test_signal_eval_report_shape.py",
+    "tests/test_signal_eval_smoke.py",
+    "tests/test_sizing.py",
+    "tests/test_telegram_report.py",
+    "tests/test_tier_caps.py",
+    "tests/test_treasury_only.py",
+    "tests/test_universe_resolver.py"
+  ]
+}

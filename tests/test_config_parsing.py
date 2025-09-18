@@ -27,6 +27,8 @@ def test_strategy_config_exists_and_parses():
 def test_risk_limits_exists_and_parses():
     assert RISK.exists()
     risk_cfg = _load(RISK)
+    global_cfg = risk_cfg.get("global", {})
+    assert global_cfg, "risk_limits.json missing 'global' block"
     required = [
         "daily_loss_limit_pct",
         "cooldown_minutes_after_stop",
@@ -35,9 +37,10 @@ def test_risk_limits_exists_and_parses():
         "max_gross_exposure_pct",
         "max_symbol_exposure_pct",
         "min_notional_usdt",
+        "max_trade_nav_pct",
     ]
     for key in required:
-        assert key in risk_cfg
+        assert key in global_cfg
 
 
 def test_caps_consistency_between_files():
@@ -45,6 +48,7 @@ def test_caps_consistency_between_files():
     risk_cfg = _load(RISK)
     sizing = cfg.get("sizing", {})
     risk = cfg.get("risk", {})
-    assert risk_cfg["max_gross_exposure_pct"] <= sizing["max_gross_exposure_pct"]
-    assert risk_cfg["max_symbol_exposure_pct"] <= sizing["max_symbol_exposure_pct"]
-    assert risk_cfg["daily_loss_limit_pct"] <= risk["daily_loss_limit_pct"]
+    global_cfg = risk_cfg.get("global", {})
+    assert global_cfg.get("max_gross_exposure_pct") <= sizing["max_gross_exposure_pct"]
+    assert global_cfg.get("max_symbol_exposure_pct") <= sizing["max_symbol_exposure_pct"]
+    assert global_cfg.get("daily_loss_limit_pct") <= risk["daily_loss_limit_pct"]

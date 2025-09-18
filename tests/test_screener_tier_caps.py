@@ -33,6 +33,7 @@ def test_not_listed_veto(monkeypatch, tmp_path):
     # route configs to temp
     monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
+    monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "0")
 
     # Force not listed for FOOUSDT
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: False if s == "FOOUSDT" else True, raising=True)
@@ -45,6 +46,7 @@ def test_portfolio_cap_veto(monkeypatch, tmp_path):
     from execution import signal_screener as sc
     monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
+    monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "0")
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
     # Portfolio cap 15% of 1000 => 150. Current gross=149, request gross=10*20=200 -> block
     ok, reasons, _ = sc.would_emit(
@@ -63,6 +65,7 @@ def test_tier_cap_veto(monkeypatch, tmp_path):
     from execution import signal_screener as sc
     monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
+    monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "0")
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
     # CORE per-symbol cap 8% of 1000 => 80. current tier gross=79, req gross=200 -> block
     ok, reasons, _ = sc.would_emit(
@@ -81,6 +84,7 @@ def test_max_concurrent_positions_veto(monkeypatch, tmp_path):
     from execution import signal_screener as sc
     monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
+    monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "0")
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
     ok, reasons, _ = sc.would_emit(
         "BTCUSDT",
@@ -99,6 +103,7 @@ def test_orderbook_adverse_veto(monkeypatch, tmp_path):
     from execution import orderbook_features as ob
     monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
+    monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "1")
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
     monkeypatch.setattr(ob, "topn_imbalance", lambda _s, limit=20: -0.5, raising=True)
     ok, reasons, _ = sc.would_emit("BTCUSDT", "BUY", notional=10.0, lev=20.0, nav=1000.0)
