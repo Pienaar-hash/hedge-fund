@@ -1,27 +1,39 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
+# Standard libs
+import os
 import time
+import json
 from typing import Any, Dict, Iterable, List
 
-import os
-from .exchange_utils import get_klines, get_price
+# Internal imports (non-optional)
+from .exchange_utils import get_klines, get_positions, get_price
 from .orderbook_features import evaluate_entry_gate
 from .universe_resolver import resolve_allowed_symbols, symbol_tier, is_listed_on_futures
 from .risk_limits import check_order
 from .nav import PortfolioSnapshot
 from .sizing import determine_position_size
 
+# Optional ML scorer
 try:
     from .ml.predict import score_symbol as _score_symbol
 except Exception:  # pragma: no cover - optional dependency
     _score_symbol = None
 
+# Optional symbol filters (prefer public alias; fallback to underscored alias; final noop)
 try:
     from .exchange_utils import get_symbol_filters  # prefers public alias
 except Exception:
-    from .exchange_utils import _symbol_filters as get_symbol_filters  # fallback
+    try:
+        from .exchange_utils import _symbol_filters as get_symbol_filters  # fallback
+    except Exception:
+        def get_symbol_filters(_symbol: str):
+            return {}
+
+LIVE = os.getenv("BINANCE_TESTNET", "0") == "0"
+FORCE_NAV_ZERO = os.getenv("RISK_FORCE_NAV_ZERO", "0") == "1"
+
 
 LOG_TAG = "[screener]"
 
@@ -222,7 +234,6 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     open_positions_count = 0
     tier_gross: Dict[str, float] = {}
     try:
-        from .exchange_utils import get_positions
 
         pos = list(get_positions() or [])
         gross_from_positions = 0.0

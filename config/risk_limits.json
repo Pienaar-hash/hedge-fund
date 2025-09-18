@@ -10,5 +10,12 @@
     "max_trade_nav_pct": 0.5
   },
   "per_symbol": {},
-  "tiers": {}
+  "tiers": {},
+  "max_trade_nav_pct": 0.01,
+  "cooldown_sec": 900,
+  "orderbook_gate": {
+    "enabled": true,
+    "min_depth_notional": 5000,
+    "max_spread_bps": 3
+  }
 }

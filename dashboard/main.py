@@ -6,7 +6,9 @@ from dashboard.dashboard_utils import (
     fetch_mark_price_usdt,
     get_env_float,
 )
+from dashboard.data_sources import get_latest_nav, per_symbol_kpis
 
+import math
 import os
 import sys
 import json
@@ -101,6 +103,52 @@ def rle_compact(lines: List[str], min_run: int = 3) -> List[str]:
     out.append(prev if count < min_run else f"{prev}  × {count}")
     return out
 
+
+def _format_age_label(age: float) -> str:
+    try:
+        age_float = float(age)
+    except (TypeError, ValueError):
+        return "unknown"
+    if not math.isfinite(age_float):
+        return "unknown"
+    if age_float < 1:
+        return "<1s"
+    if age_float < 60:
+        return f"{int(age_float)}s"
+    if age_float < 3600:
+        return f"{int(age_float // 60)}m"
+    if age_float < 86400:
+        return f"{int(age_float // 3600)}h"
+    return f"{int(age_float // 86400)}d"
+
+
+latest_nav_snapshot = get_latest_nav()
+nav_positions_snapshot = per_symbol_kpis(latest_nav_snapshot.get("positions") or [])
+try:
+    nav_age_seconds = float(latest_nav_snapshot.get("age_sec", float("inf")))
+except (TypeError, ValueError):
+    nav_age_seconds = float("inf")
+nav_age_label = _format_age_label(nav_age_seconds)
+nav_is_stale = bool(latest_nav_snapshot.get("is_stale"))
+nav_badge_color = "#dc3545" if nav_is_stale else "#198754"
+nav_badge_text = "STALE" if nav_is_stale else "FRESH"
+nav_source = str(latest_nav_snapshot.get("source") or "unknown")
+
+st.markdown(
+    f"""
+    <div style='display:flex;gap:0.5rem;align-items:center;margin:0.75rem 0;'>
+        <span style='padding:0.15rem 0.7rem;border-radius:999px;font-size:0.75rem;font-weight:600;color:#ffffff;background:{nav_badge_color};'>
+            {nav_badge_text}
+        </span>
+        <span style='padding:0.15rem 0.7rem;border-radius:999px;font-size:0.75rem;font-weight:500;color:#495057;background:#f1f3f5;'>
+            source: {nav_source}
+        </span>
+        <span style='font-size:0.8rem;color:#6c757d;'>age ≈ {nav_age_label}</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --------------------------- Load Firestore ----------------------------------
 status = st.empty()
 status.info("Loading data from Firestore…")
@@ -157,9 +205,87 @@ with tab_overview:
 # --------------------------- Positions Tab -----------------------------------
 with tab_positions:
     st.subheader("Open Positions")
+    if nav_positions_snapshot:
+        st.markdown("**Latest Snapshot (cached feed)**")
+        st.caption(f"source: {nav_source} · age ≈ {nav_age_label} · state: {nav_badge_text}")
+
+        def _fmt_number(value, decimals: int = 2) -> str:
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                return "—"
+            if not math.isfinite(num):
+                return "—"
+            return f"{num:.{decimals}f}"
+
+        table_rows = []
+        for entry in nav_positions_snapshot:
+            symbol = entry.get("symbol") or "—"
+            veto_tail = entry.get("veto_tail") or []
+            veto_html = ""
+            if veto_tail:
+                items = "".join(
+                    f"<li>{line}</li>" for line in veto_tail if isinstance(line, str)
+                )
+                if items:
+                    veto_html = (
+                        "<ul style='margin:0.25rem 0 0 0.9rem;padding:0;"
+                        "list-style:disc;color:#6c757d;font-size:0.72rem;'>"
+                        f"{items}</ul>"
+                    )
+            symbol_cell = f"<div><strong>{symbol}</strong>{veto_html}</div>"
+            rr = entry.get("rr")
+            rr_display = _fmt_number(rr * 100.0 if isinstance(rr, (int, float)) else rr, 2)
+            if rr_display != "—":
+                rr_display = f"{rr_display}%"
+            age_display = _format_age_label(entry.get("age_sec"))
+            stale_display = "❌" if entry.get("stale") else "✅"
+            row_html = (
+                "<tr>"
+                f"<td>{symbol_cell}</td>"
+                f"<td>{entry.get('side') or '—'}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('size'), 4)}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('entry'), 4)}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('mark'), 4)}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('unrealized'), 2)}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('realized'), 2)}</td>"
+                f"<td style='text-align:right;'>{rr_display}</td>"
+                f"<td style='text-align:center;'>{stale_display}</td>"
+                f"<td style='text-align:right;'>{age_display}</td>"
+                "</tr>"
+            )
+            table_rows.append(row_html)
+
+        table_html = (
+            "<div style='overflow-x:auto;'>"
+            "<table style='width:100%;border-collapse:collapse;font-size:0.85rem;'>"
+            "<thead style='background:#f8f9fa;'>"
+            "<tr>"
+            "<th style='text-align:left;padding:0.4rem;'>Symbol</th>"
+            "<th style='text-align:left;padding:0.4rem;'>Side</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Size</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Entry</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Mark</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Unreal.</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Realized</th>"
+            "<th style='text-align:right;padding:0.4rem;'>R/R</th>"
+            "<th style='text-align:center;padding:0.4rem;'>Stale</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Age</th>"
+            "</tr>"
+            "</thead>"
+            "<tbody>"
+            + "".join(table_rows)
+            + "</tbody></table></div>"
+        )
+        st.markdown(table_html, unsafe_allow_html=True)
+    else:
+        st.caption("Latest snapshot has no open positions.")
+
+    st.markdown("---")
+
     positions_df = pd.DataFrame(positions_fs)
     if positions_df is None or positions_df.empty:
-        st.info("No open positions.")
+        st.info("No open positions from Firestore.")
     else:
         st.dataframe(positions_df, use_container_width=True, height=420)
 
