@@ -94,8 +94,8 @@ def main():
             blocked_by.append("rsi_veto")
         if not atr_ok:
             blocked_by.append("atr_floor")
-        if in_trade:   blocked_by.append("already_in_trade")
-
+        if in_trade:
+            blocked_by.append("already_in_trade")
         out["strategies"].append({
             "name": name, "symbol": sym, "tf": tf,
             "series_len": len(pxs),
