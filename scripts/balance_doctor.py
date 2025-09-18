@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-import json, time
-from execution.exchange_utils import _client, _futures_base_url  # adjust if wrapped
+import json
+from execution.exchange_utils import _client  # adjust if wrapped
 from execution.exchange_utils import get_balances  # your high-level
 def main():
     c = _client()

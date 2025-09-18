@@ -1,804 +1,671 @@
 #!/usr/bin/env python3
-# ruff: noqa: E402
-from __future__ import annotations
-"""Streamlit dashboard (single "Overview" tab), read-only.
-Firestore-first; falls back to local files for NAV.
-Shows: KPIs, NAV chart, Positions, Signals (5), Trade log (5), Screener tail (10), BTC reserve.
+"""Hedge Streamlit overview dashboard.
+
+Features
+--------
+- Firestore-first data with automatic local fallbacks.
+- Trading/Portfolio NAV KPI cards with drawdown over selectable window.
+- Reserve quick tiles, risk summary, open positions table.
+- Recent veto reason distribution and tail log.
+- Per-symbol KPIs (hit rate, average size, slippage, last signal/veto).
+- Environment knobs surfaced as read-only controls.
 """
-# Streamlit dashboard (single "Overview" tab), read-only.
-# Firestore-first; falls back to local files for NAV.
 
-# ---- tolerant dotenv ----
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+from __future__ import annotations
 
-import os
 import json
+import math
+import os
 import time
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import pandas as pd
 import streamlit as st
-from pathlib import Path
 
-# Diagnostics container populated during data loads
-_DIAG: Dict[str, Any] = {
-    "source": None,
-    "fs_project": None,
-    "col_nav": None,
-    "col_positions": None,
-    "col_trades": None,
-    "col_risk": None,
+from dashboard.data_sources import DashboardData, load_dashboard_data, read_nav_snapshot
+
+
+try:  # pragma: no cover - optional dependency
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv()
+
+
+WINDOW_OPTIONS = {
+    "24h": 24 * 3600,
+    "7d": 7 * 24 * 3600,
+    "30d": 30 * 24 * 3600,
 }
 
-# ---- single env context ----
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV = os.getenv("ENV", "prod")
 TESTNET = os.getenv("BINANCE_TESTNET", "0") == "1"
 ENV_KEY = f"{ENV}{'-testnet' if TESTNET else ''}"
 
-RESERVE_BTC = float(os.getenv("RESERVE_BTC", "0.025"))
-# Local-only log files when Firestore is not selected
-LOG_PATH = os.getenv("EXECUTOR_LOG", f"logs/{ENV_KEY}/screener_tail.log")
-TAIL_LINES = 10
-RISK_CFG_PATH = os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
 
-# ---------- helpers ----------
-def btc_24h_change() -> float | None:
-    import requests
-    # Use TESTNET flag from ENV wiring; default to mainnet
-    base = "https://testnet.binancefuture.com" if TESTNET else "https://fapi.binance.com"
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
+
+
+def humanize_seconds(delta: Optional[float]) -> str:
+    if delta is None or math.isnan(delta):
+        return "—"
+    delta = max(0.0, float(delta))
+    if delta < 60:
+        return f"{delta:.0f}s ago"
+    if delta < 3600:
+        return f"{delta/60:.1f}m ago"
+    if delta < 86400:
+        return f"{delta/3600:.1f}h ago"
+    return f"{delta/86400:.1f}d ago"
+
+
+def humanize_ts(ts: Optional[float]) -> str:
+    if ts is None:
+        return "—"
+    return humanize_seconds(time.time() - float(ts))
+
+
+def fmt_usd(value: Optional[float], digits: int = 2) -> str:
+    if value is None:
+        return "—"
     try:
-        r = requests.get(base + "/fapi/v1/ticker/24hr", params={"symbol":"BTCUSDT"}, timeout=6)
-        r.raise_for_status()
-        return float(r.json().get("priceChangePercent", 0.0))
+        val = float(value)
     except Exception:
-        try:
-            r = requests.get("https://api.binance.com/api/v3/ticker/24hr", params={"symbol":"BTCUSDT"}, timeout=6)
-            r.raise_for_status()
-            return float(r.json().get("priceChangePercent", 0.0))
-        except Exception:
-            return None
+        return "—"
+    if math.isnan(val):
+        return "—"
+    return f"{val:,.{digits}f}"
 
-def _load_json(path: str, default=None):
+
+def fmt_pct(value: Optional[float], digits: int = 2) -> str:
+    if value is None:
+        return "—"
     try:
-        with open(path, "r") as f:
-            return json.load(f)
+        val = float(value)
     except Exception:
-        return default
+        return "—"
+    if math.isnan(val):
+        return "—"
+    return f"{val:.{digits}f}%"
 
-# Firestore (best effort)
-def _fs_client():
-    """Return Firestore client if libs + credentials are available.
-    Firestore is authoritative only if:
-    - google.cloud.firestore imports OK
-    - And credentials file path is present: FIREBASE_CREDS_PATH or GOOGLE_APPLICATION_CREDENTIALS
-    """
+
+def fmt_usd_delta(value: Optional[float], digits: int = 0) -> Optional[str]:
+    if value is None:
+        return None
     try:
-        from google.cloud import firestore  # type: ignore
+        val = float(value)
     except Exception:
         return None
+    if math.isclose(val, 0.0, abs_tol=10 ** (-digits - 2)):
+        val = 0.0
+    sign = "+" if val > 0 else ""
+    return f"{sign}{val:,.{digits}f}"
 
-    creds_path = os.getenv("FIREBASE_CREDS_PATH") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if creds_path and Path(creds_path).exists():
+
+def _max_drawdown_pct(series: List[Dict[str, float]]) -> Optional[float]:
+    if not series:
+        return None
+    peak = None
+    max_dd = 0.0
+    for point in sorted(series, key=lambda x: x["ts"]):
+        nav = float(point.get("nav", 0.0))
+        if nav <= 0:
+            continue
+        if peak is None or nav > peak:
+            peak = nav
+        if peak and nav < peak:
+            dd = (peak - nav) / peak * 100.0
+            max_dd = max(max_dd, dd)
+    return max_dd if max_dd > 0 else 0.0
+
+
+def compute_nav_metrics(nav_series: List[Dict[str, float]], window_sec: int, snapshot: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    now = time.time()
+    window_series = [row for row in nav_series if row.get("ts") and row["ts"] >= now - window_sec]
+    if len(window_series) < 2:
+        window_series = nav_series[-min(len(nav_series), 200):]
+
+    nav_now = window_series[-1]["nav"] if window_series else snapshot.get("trading_nav_usd")
+    nav_ref = window_series[0]["nav"] if window_series else nav_now
+
+    delta = None
+    delta_pct = None
+    if nav_now is not None and nav_ref:
+        delta = float(nav_now) - float(nav_ref)
+        if nav_ref != 0:
+            delta_pct = (delta / float(nav_ref)) * 100.0
+
+    drawdown_pct = _max_drawdown_pct(window_series)
+    if drawdown_pct is None and snapshot.get("drawdown") is not None:
         try:
-            return firestore.Client()
+            drawdown_pct = float(snapshot.get("drawdown"))
         except Exception:
-            return None
-    return None
+            drawdown_pct = None
 
-# --- Firestore paths helper (correct sibling collections) ---
-def fs_paths(db):
-    ROOT_DOC = db.collection("hedge").document(ENV)
-    STATE_COL = ROOT_DOC.collection("state")
     return {
-        "root_doc": ROOT_DOC,
-        "state_col": STATE_COL,
-        "nav_doc": STATE_COL.document("nav"),
-        "positions_doc": STATE_COL.document("positions"),
-        "trades_col": ROOT_DOC.collection("trades"),
-        "risk_col": ROOT_DOC.collection("risk"),
+        "nav_now": float(nav_now) if nav_now is not None else None,
+        "nav_ref": float(nav_ref) if nav_ref is not None else None,
+        "delta": delta,
+        "delta_pct": delta_pct,
+        "drawdown_pct": drawdown_pct,
     }
 
-def _fs_get_state(doc: str):
-    """Back-compat read for single-doc state if present under old path.
-    This is best-effort and namespacing by ENV only. Prefer collection helpers below.
-    """
-    cli = _fs_client()
-    if not cli:
-        return None
-    try:
-        snap = cli.document(f"hedge/{ENV}/state/{doc}").get()
-        return snap.to_dict() if getattr(snap, "exists", False) else None
-    except Exception:
-        return None
 
-# ---- Firestore helpers (authoritative when selected) ----
-def _fs_pick_collection(cli, candidates: List[str]) -> Optional[str]:
-    """Pick the first collection that appears to have docs. Returns name or None.
-    Document choice in Doctor panel later.
-    """
-    for name in candidates:
-        try:
-            it = cli.collection(name).limit(1).stream()
-            for _ in it:
-                return name
-        except Exception:
+def nav_dataframe(nav_series: List[Dict[str, float]], window_sec: int) -> pd.DataFrame:
+    if not nav_series:
+        return pd.DataFrame(columns=["ts", "nav"])
+    now = time.time()
+    rows = [row for row in nav_series if row.get("ts") and row["ts"] >= now - window_sec]
+    if not rows:
+        rows = nav_series
+    df = pd.DataFrame(rows)
+    df["ts"] = pd.to_datetime(df["ts"], unit="s", utc=True)
+    df = df.set_index("ts").sort_index()
+    return df
+
+
+def build_reserve_map(snapshot: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    reserves = snapshot.get("reserves", []) or []
+    fees = snapshot.get("fee_wallets", []) or []
+    out: Dict[str, Dict[str, Any]] = {}
+    for rec in reserves:
+        if not isinstance(rec, dict):
             continue
-    return None
+        asset = str(rec.get("asset") or rec.get("symbol") or "").upper()
+        if asset:
+            out[asset] = rec
+    for rec in fees:
+        if not isinstance(rec, dict):
+            continue
+        asset = str(rec.get("asset") or rec.get("symbol") or "").upper()
+        if asset:
+            out[f"{asset}_FEE"] = rec
+    return out
 
-def _filter_env_fields(doc: Dict[str, Any]) -> bool:
-    """Client-side filter: if env/testnet fields exist, they must match.
-    Always applied for generic collections.
-    """
-    d_env = doc.get("env")
-    d_tn = doc.get("testnet")
-    if d_env is not None and str(d_env) != ENV:
-        return False
-    if d_tn is not None and bool(d_tn) != TESTNET:
-        return False
-    return True
 
-def _is_mixed_namespaces(docs: List[Dict[str, Any]]) -> bool:
-    env_vals = set()
-    tn_vals = set()
-    for d in docs:
-        if "env" in d:
-            env_vals.add(str(d.get("env")))
-        if "testnet" in d:
-            tn_vals.add(bool(d.get("testnet")))
-    return (len(env_vals) > 1) or (len(tn_vals) > 1)
-
-def _get_firestore_project_id() -> Optional[str]:
+def _float_env(env_value: Optional[str]) -> Optional[float]:
+    if env_value is None:
+        return None
     try:
-        from google.auth import default  # type: ignore
-        creds, proj = default()
-        return proj
+        return float(env_value)
     except Exception:
         return None
 
-def _load_risk_cfg():
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_risk_limits_config() -> Dict[str, Any]:
+    path = PROJECT_ROOT / "config" / "risk_limits.json"
     try:
-        return json.loads(Path(RISK_CFG_PATH).read_text())
+        raw = path.read_text()
+    except Exception:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
-# ---------- sources ----------
-def _select_data_source() -> Dict[str, Any]:
-    """Pick single data source for this render and cache useful paths.
-    - If Firestore client available AND creds path present -> use Firestore exclusively.
-    - Else use local namespaced files under state/{ENV_KEY} and logs/{ENV_KEY}.
-    """
-    cli = _fs_client()
-    source = "firestore" if cli else "local"
-    local_paths = {
-        "nav": f"state/{ENV_KEY}/nav_log.json",
-        "risk": f"logs/{ENV_KEY}/risk.log",
-        "screener": f"logs/{ENV_KEY}/screener_tail.log",
-    }
-    _DIAG["source"] = source
-    if source == "firestore":
-        _DIAG["fs_project"] = _get_firestore_project_id()
-    return {"source": source, "cli": cli, "local": local_paths}
 
-_DS = _select_data_source()
+def compute_risk_summary(
+    positions: List[Dict[str, Any]],
+    snapshot: Dict[str, Any],
+    env_knobs: Dict[str, Any],
+    nav_series: List[Dict[str, float]],
+    risk_events: List[Dict[str, Any]],
+) -> Dict[str, Optional[float | str]]:
+    trading_nav = snapshot.get("trading_nav_usd")
+    if trading_nav is None and nav_series:
+        trading_nav = nav_series[-1].get("nav")
+    trading_nav = float(trading_nav) if trading_nav is not None else None
 
-def load_nav_series() -> List[Dict[str,Any]]:
-    # Authoritative selection: Firestore (nested doc) OR Local, not both
-    if _DS["source"] == "firestore" and _DS.get("cli"):
-        cli = _DS["cli"]
+    gross = 0.0
+    for pos in positions:
         try:
-            p = fs_paths(cli)
-            doc = p["nav_doc"].get()
-            if not getattr(doc, "exists", False):
-                series: List[Dict[str, Any]] = []
-            else:
-                data = doc.to_dict() or {}
-                series = []
-                for _, v in (data.items() if isinstance(data, dict) else []):
-                    if not isinstance(v, dict):
-                        continue
-                    try:
-                        nav = float(v.get("nav", 0.0))
-                    except Exception:
-                        nav = 0.0
-                    t = v.get("t") or v.get("ts") or v.get("time")
-                    if hasattr(t, "timestamp"):
-                        try:
-                            ts = float(t.timestamp())
-                        except Exception:
-                            ts = None
-                    elif isinstance(t, (int, float)):
-                        ts = float(t) / 1000.0 if float(t) > 1e12 else float(t)
-                    else:
-                        ts = None
-                    if ts is None:
-                        continue
-                    series.append({"ts": ts, "nav": nav})
-                series.sort(key=lambda r: r["ts"])  # oldest->newest
-            _DIAG["col_nav"] = f"hedge/{ENV}/state/nav"
-            return series
+            gross += float(pos.get("notional") or 0.0)
         except Exception:
-            return []
-    # Local fallback (single file)
-    p = _DS["local"]["nav"]
-    js = _load_json(p, [])
-    if isinstance(js, dict):
-        return js.get("rows") or js.get("series") or js.get("nav") or []
-    return js if isinstance(js, list) else []
+            continue
 
-def load_positions() -> List[Dict[str,Any]]:
-    """Return ONLY open futures positions (non-zero qty). Columns:
-    symbol, side, qty, entryPrice, markPrice, unrealizedPnl, leverage, updatedAt
-    Read from single document hedge/{ENV}/state/positions. Accept {rows:[..]} or mapping.
-    """
-    rows: List[Dict[str, Any]] = []
-    if _DS["source"] == "firestore" and _DS.get("cli"):
-        cli = _DS["cli"]
-        try:
-            p = fs_paths(cli)
-            snap = p["positions_doc"].get()
-            data = snap.to_dict() if getattr(snap, "exists", False) else None
-            if isinstance(data, dict):
-                if isinstance(data.get("rows"), list):
-                    rows = list(data.get("rows") or [])
-                else:
-                    rows = []
-                    for sym, rec in data.items():
-                        if isinstance(rec, dict):
-                            rec = {**rec}
-                            rec.setdefault("symbol", sym)
-                            rows.append(rec)
-            _DIAG["col_positions"] = f"hedge/{ENV}/state/positions"
-        except Exception:
-            rows = []
+    cap_override = _float_env(env_knobs.get("CAP_OVERRIDE_PCT"))
+    cfg = load_risk_limits_config()
+    global_cfg = cfg.get("global") if isinstance(cfg, dict) else None
+    if not global_cfg and isinstance(cfg, dict):
+        global_cfg = cfg  # backwards compatibility
+    cfg_cap = None
+    try:
+        cfg_cap = float((global_cfg or {}).get("max_gross_exposure_pct", 0.0))
+    except Exception:
+        cfg_cap = None
+    cap_pct = cap_override if cap_override is not None else cfg_cap
+
+    cap_notional = None
+    headroom = None
+    used_pct = None
+    if cap_pct is not None and trading_nav is not None:
+        cap_notional = trading_nav * (cap_pct / 100.0)
+        headroom = cap_notional - gross
+        used_pct = (gross / cap_notional * 100.0) if cap_notional else None
+
+    kill_reasons = {"kill_switch", "kill_switch_triggered", "kill_switch_drawdown"}
+    kill_event = next((evt for evt in risk_events if evt.get("reason") in kill_reasons), None)
+    if kill_event:
+        kill_status = f"Triggered {humanize_ts(kill_event.get('ts'))}"
     else:
-        rows = []
+        kill_status = "Clear"
 
-    out: List[Dict[str, Any]] = []
-    for r in rows:
-        try:
-            qty_val = r.get("positionAmt") if r.get("positionAmt") is not None else r.get("qty")
-            qty = float(qty_val or 0)
-            if abs(qty) <= 0:
-                continue
-            entry = float(r.get("entryPrice") or r.get("avgEntryPrice") or r.get("entry_price") or 0)
-            mark = float(r.get("markPrice") or r.get("mark") or r.get("lastPrice") or r.get("mark_price") or 0)
-            upnl = float(r.get("unrealizedPnl") or r.get("uPnl") or r.get("unrealized") or r.get("u_pnl") or 0)
-            lev = float(r.get("leverage") or r.get("lev") or 0)
-            ts = r.get("updatedAt") or r.get("ts") or r.get("time")
-            side = "LONG" if qty > 0 else "SHORT"
-            out.append({
-                "symbol": r.get("symbol"),
-                "side": side,
-                "qty": abs(qty),
-                "entryPrice": entry,
-                "markPrice": mark,
-                "unrealizedPnl": upnl,
-                "leverage": lev,
-                "updatedAt": ts,
-            })
-        except Exception:
-            continue
-    # sort by updatedAt/ts desc
-    def _sort_key(x: Dict[str, Any]):
-        ts = x.get("updatedAt") or x.get("ts") or x.get("time")
-        return _to_epoch_seconds(ts)
-    out.sort(key=_sort_key, reverse=True)
-    return out
+    return {
+        "trading_nav": trading_nav,
+        "gross": gross,
+        "cap_pct": cap_pct,
+        "cap_notional": cap_notional,
+        "headroom": headroom,
+        "used_pct": used_pct,
+        "kill_status": kill_status,
+    }
 
-def _literal_tail(tag: str, n: int) -> List[str]:
-    """Return last n lines from local screener log containing the literal tag.
-    Only used when local files are the selected source.
-    """
-    if _DS["source"] != "local":
-        return []
-    try:
-        with open(_DS["local"]["screener"], "r", errors="ignore") as f:
-            lines = f.readlines()[-10000:]
-    except Exception:
-        return []
-    hits = [ln.rstrip("\n") for ln in lines if tag in ln]
-    return hits[-n:]
 
-def load_signals_table(limit: int = 100) -> pd.DataFrame:
-    """Signals from local screener tail only (when local source).
-    Parse `[screener->executor] {...}` and keep last 24h sorted desc.
-    """
-    import ast
-    rows: List[Dict[str, Any]] = []
-    if _DS["source"] != "local":
-        return pd.DataFrame(rows)
-    tag = "[screener->executor]"
-    raw = _literal_tail(tag, 200)
+def veto_distribution(risk_events: List[Dict[str, Any]], window_sec: int = 24 * 3600) -> pd.DataFrame:
     now = time.time()
-    for ln in raw:
-        try:
-            payload = ln.split(tag, 1)[1].strip() if tag in ln else None
-            if not payload:
-                continue
-            obj: Optional[Dict[str,Any]] = None
-            if payload.startswith("{"):
-                try:
-                    obj = json.loads(payload)
-                except Exception:
-                    try:
-                        obj = ast.literal_eval(payload)
-                    except Exception:
-                        obj = None
-            if not isinstance(obj, dict):
-                continue
-            ts = obj.get("timestamp") or obj.get("t") or obj.get("time")
-            t_epoch = _to_epoch_seconds(ts)
-            if not is_recent(t_epoch, 24*3600):
-                continue
-            rows.append({
-                "ts": t_epoch,
-                "symbol": obj.get("symbol"),
-                "tf": obj.get("timeframe"),
-                "signal": obj.get("signal"),
-                "price": obj.get("price"),
-                "cap": obj.get("capital_per_trade"),
-                "lev": obj.get("leverage"),
-            })
-        except Exception:
+    records: Dict[str, int] = {}
+    for evt in risk_events:
+        ts = evt.get("ts")
+        if not ts or ts < now - window_sec:
             continue
-    rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
-    return pd.DataFrame(rows[:limit])
+        reason = str(evt.get("reason") or "other").lower()
+        records[reason] = records.get(reason, 0) + 1
+    df = pd.DataFrame({"reason": list(records.keys()), "count": list(records.values())})
+    return df.sort_values("count", ascending=False)
 
-def load_trade_log(limit: int = 100) -> pd.DataFrame:
-    """Trades (last 24h) — Use hedge/{ENV}/trades only. Local returns empty.
-    Apply env/testnet filter if fields exist. Order desc.
-    """
-    rows: List[Dict[str, Any]] = []
-    if _DS["source"] == "firestore" and _DS.get("cli"):
-        cli = _DS["cli"]
-        try:
-            p = fs_paths(cli)
-            col = p["trades_col"]
-            docs = list(col.order_by("ts", direction="DESCENDING").limit(1000).stream())
-            for d in docs:
-                x = d.to_dict() or {}
-                # env/testnet filter if present
-                if (x.get("env") is not None and str(x.get("env")) != ENV) or (
-                    x.get("testnet") is not None and bool(x.get("testnet")) != TESTNET
-                ):
-                    continue
-                ts = _to_epoch_seconds(x.get("ts") or x.get("time"))
-                if not is_recent(ts, 24*3600):
-                    continue
-                rows.append({
-                    "ts": ts,
-                    "symbol": x.get("symbol"),
-                    "side": x.get("side"),
-                    "qty": x.get("qty"),
-                    "price": x.get("price"),
-                    "pnl": x.get("pnl"),
-                })
-            _DIAG["col_trades"] = f"hedge/{ENV}/trades"
-        except Exception:
-            rows = []
-        rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
-        return pd.DataFrame(rows[:limit])
-    # Local (no trades file in this simplified app)
-    return pd.DataFrame(rows[:limit])
 
-def load_blocked_orders(limit: int = 200) -> pd.DataFrame:
-    """Risk blocks (last 24h) — Use hedge/{ENV}/risk only for Firestore.
-    Local: parse risk log if any; else empty.
-    """
-    rows: List[Dict[str, Any]] = []
-    if _DS["source"] == "firestore" and _DS.get("cli"):
-        cli = _DS["cli"]
-        try:
-            p = fs_paths(cli)
-            col = p["risk_col"]
-            docs = list(col.order_by("ts", direction="DESCENDING").limit(2000).stream())
-            for d in docs:
-                x = d.to_dict() or {}
-                # env/testnet filter if present
-                if (x.get("env") is not None and str(x.get("env")) != ENV) or (
-                    x.get("testnet") is not None and bool(x.get("testnet")) != TESTNET
-                ):
-                    continue
-                ts = _to_epoch_seconds(x.get("ts") or x.get("t") or x.get("time"))
-                if not is_recent(ts, 24*3600):
-                    continue
-                # keep only blocked if phase exists; otherwise keep all
-                if "phase" in x and str(x.get("phase")) != "blocked":
-                    continue
-                rows.append({
-                    "ts": ts,
-                    "symbol": x.get("symbol"),
-                    "side": x.get("side"),
-                    "reason": x.get("reason"),
-                    "notional": x.get("notional"),
-                    "open_qty": x.get("open_qty"),
-                    "gross": x.get("gross"),
-                    "nav": x.get("nav"),
-                })
-            _DIAG["col_risk"] = f"hedge/{ENV}/risk"
-        except Exception:
-            rows = []
-        rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
-        return pd.DataFrame(rows[:limit])
-    # Local fallback: parse risk log if configured
-    if _DS["source"] == "local":
-        try:
-            with open(_DS["local"]["risk"], "r", errors="ignore") as f:
-                lines = f.readlines()[-5000:]
-            for ln in lines:
-                try:
-                    x = json.loads(ln.strip())
-                except Exception:
-                    continue
-                if (x.get("phase") or "") != "blocked":
-                    continue
-                t_epoch = _to_epoch_seconds(x.get("t") or x.get("ts") or x.get("time"))
-                if not is_recent(t_epoch, 24*3600):
-                    continue
-                rows.append({
-                    "ts": t_epoch,
-                    "symbol": x.get("symbol"),
-                    "side": x.get("side"),
-                    "reason": x.get("reason"),
-                    "notional": x.get("notional"),
-                    "open_qty": x.get("open_qty"),
-                    "gross": x.get("gross"),
-                    "nav": x.get("nav"),
-                })
-        except Exception:
-            rows = []
-    rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
-    return pd.DataFrame(rows[:limit])
+def veto_tail(risk_events: List[Dict[str, Any]], limit: int = 12) -> pd.DataFrame:
+    if not risk_events:
+        return pd.DataFrame(columns=["time", "symbol", "reason", "notional"])
+    rows = []
+    for evt in risk_events[:limit]:
+        ts = evt.get("ts")
+        when = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if ts else "—"
+        rows.append(
+            {
+                "time": when,
+                "symbol": evt.get("symbol"),
+                "reason": evt.get("reason"),
+                "notional": evt.get("notional") or evt.get("gross"),
+            }
+        )
+    return pd.DataFrame(rows)
 
-# ---- time helpers / recency ----
-NOW = time.time()
 
-def _to_epoch_seconds(ts: Any) -> float:
-    if ts is None:
-        return 0.0
-    if isinstance(ts, (int, float)):
-        x = float(ts)
-        return x / 1000.0 if x > 1e12 else x
-    try:
-        return pd.to_datetime(str(ts), utc=True).timestamp()
-    except Exception:
-        return 0.0
+def compute_symbol_kpis(
+    positions: List[Dict[str, Any]],
+    trades: List[Dict[str, Any]],
+    signals: List[Dict[str, Any]],
+    risk_events: List[Dict[str, Any]],
+) -> pd.DataFrame:
+    now = time.time()
+    sym_set = {str(pos.get("symbol")) for pos in positions if pos.get("symbol")}
+    sym_set.update(str(trade.get("symbol")) for trade in trades if trade.get("symbol"))
+    sym_set.update(str(sig.get("symbol")) for sig in signals if sig.get("symbol"))
+    sym_set.update(str(evt.get("symbol")) for evt in risk_events if evt.get("symbol"))
+    symbols = sorted(s for s in sym_set if s and s != "None")
 
-def is_recent(ts: float, window_sec: int) -> bool:
-    if not ts:
-        return False
-    return (NOW - float(ts)) <= float(window_sec)
+    rows = []
+    for sym in symbols:
+        trades_sym = [t for t in trades if t.get("symbol") == sym]
+        trades_24h = [t for t in trades_sym if t.get("ts") and t["ts"] >= now - 24 * 3600]
+        trades_7d = [t for t in trades_sym if t.get("ts") and t["ts"] >= now - 7 * 24 * 3600]
 
-def humanize_ago(ts: Optional[float]) -> str:
-    if not ts:
-        return "(no recent data)"
-    delta = max(0.0, NOW - ts)
-    if delta < 60:
-        return f"{int(delta)}s ago"
-    if delta < 3600:
-        return f"{int(delta//60)}m ago"
-    if delta < 86400:
-        return f"{int(delta//3600)}h ago"
-    return f"{int(delta//86400)}d ago"
+        def _hit_rate(rows: List[Dict[str, Any]]) -> Optional[float]:
+            wins = 0
+            total = 0
+            for r in rows:
+                pnl = r.get("pnl")
+                if pnl is None:
+                    continue
+                total += 1
+                if float(pnl) > 0:
+                    wins += 1
+            if total == 0:
+                return None
+            return wins / total * 100.0
 
-# ---------- KPIs ----------
-def compute_nav_kpis(series: List[Dict[str,Any]]) -> Dict[str,Any]:
-    if not series:
-        return {"nav": None, "nav_24h": None, "delta": 0.0, "delta_pct": 0.0, "dd": None}
-    def _ts(v):
-        t = v.get("t") or v.get("ts") or v.get("time")
-        # Allow epoch seconds/ms or ISO strings
-        if isinstance(t, (int,float)):
-            x = float(t)
-            if x > 1e12:   # ms
-                return x/1000.0
-            return x       # seconds
-        if isinstance(t, str):
-            try:
-                return pd.to_datetime(t, utc=True).timestamp()
-            except Exception:
-                return 0.0
-        return 0.0
-    def _val(v):
-        for k in ("nav","value","equity","v"):
-            if k in v:
-                try:
-                    return float(v[k])
-                except Exception:
-                    pass
-        return None
+        def _avg_notional(rows: List[Dict[str, Any]]) -> Optional[float]:
+            vals = [abs(float(r.get("notional"))) for r in rows if r.get("notional")]
+            if not vals:
+                return None
+            return sum(vals) / len(vals)
 
-    rows = [( _ts(x), _val(x)) for x in series if isinstance(x, dict)]
-    rows = [(t,v) for (t,v) in rows if t and v is not None]
+        def _avg_slippage(rows: List[Dict[str, Any]]) -> Optional[float]:
+            vals = [float(r.get("slippage_bps")) for r in rows if r.get("slippage_bps")]
+            if not vals:
+                return None
+            return sum(vals) / len(vals)
+
+        last_signal_ts = next((sig.get("ts") for sig in signals if sig.get("symbol") == sym), None)
+        last_veto = next((evt.get("reason") for evt in risk_events if evt.get("symbol") == sym), None)
+        open_position = next((pos for pos in positions if pos.get("symbol") == sym), None)
+        open_notional = open_position.get("notional") if open_position else None
+
+        rows.append(
+            {
+                "symbol": sym,
+                "hit_rate_24h": _hit_rate(trades_24h),
+                "hit_rate_7d": _hit_rate(trades_7d),
+                "avg_trade_size_usd": _avg_notional(trades_7d),
+                "avg_slippage_bps": _avg_slippage(trades_7d),
+                "last_signal": humanize_ts(last_signal_ts),
+                "last_veto_reason": last_veto or "—",
+                "open_notional_usd": open_notional,
+            }
+        )
+
     if not rows:
-        return {"nav": None, "nav_24h": None, "delta": 0.0, "delta_pct": 0.0, "dd": None}
-    rows.sort(key=lambda x: x[0])
-    nav_now = rows[-1][1]
-    cutoff = time.time() - 24*3600
-    past_vals = [v for (t,v) in rows if t <= cutoff]
-    nav_24h = past_vals[-1] if past_vals else nav_now
-    peak = max(v for _,v in rows)
-    dd = 0.0 if not peak else (peak - nav_now) / peak * 100.0
-    delta = nav_now - nav_24h
-    delta_pct = (delta / nav_24h * 100.0) if nav_24h else 0.0
-    return {"nav": nav_now, "nav_24h": nav_24h, "delta": delta, "delta_pct": delta_pct, "dd": dd}
+        return pd.DataFrame(columns=[
+            "symbol",
+            "hit_rate_24h",
+            "hit_rate_7d",
+            "avg_trade_size_usd",
+            "avg_slippage_bps",
+            "last_signal",
+            "last_veto_reason",
+            "open_notional_usd",
+        ])
 
-# ---------- UI ----------
+    df = pd.DataFrame(rows)
+    df = df.sort_values(by="symbol")
+    df["hit_rate_24h"] = df["hit_rate_24h"].apply(lambda x: fmt_pct(x, 1) if x is not None else "—")
+    df["hit_rate_7d"] = df["hit_rate_7d"].apply(lambda x: fmt_pct(x, 1) if x is not None else "—")
+    df["avg_trade_size_usd"] = df["avg_trade_size_usd"].apply(lambda x: fmt_usd(x, 0))
+    df["avg_slippage_bps"] = df["avg_slippage_bps"].apply(lambda x: f"{x:.1f}" if x is not None else "—")
+    df["open_notional_usd"] = df["open_notional_usd"].apply(lambda x: fmt_usd(x, 0))
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_walkforward_metrics() -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    metrics_path = PROJECT_ROOT / "logs" / "walkforward_metrics.csv"
+    summary_path = metrics_path.with_suffix(".json")
+    if not metrics_path.exists():
+        return pd.DataFrame(), {}
+    try:
+        df = pd.read_csv(metrics_path)
+    except Exception:
+        df = pd.DataFrame()
+    summary: Dict[str, Any] = {}
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text())
+        except Exception:
+            summary = {}
+    return df, summary
+
+
+# ---------------------------------------------------------------------------
+# Streamlit page
+# ---------------------------------------------------------------------------
+
+
 st.set_page_config(page_title="Hedge — Overview", layout="wide")
 st.title("Hedge — Overview")
 
-# Source banner with namespace
-source_label = "Firestore" if _DS["source"] == "firestore" else "Local"
-_top_banner = st.empty()
-fs_marker = "N/A"
-try:
-    if _DS["source"] == "firestore":
-        from scripts.fs_doctor import run as fs_check  # type: ignore
+data: DashboardData = load_dashboard_data()
+snapshot = data.nav_snapshot.data or {}
+snapshot_prev = read_nav_snapshot("logs/nav_snapshot.json") or {}
+nav_series = data.nav_series.data or []
+positions = data.positions.data or []
+trades = data.trades.data or []
+risk_events = data.risk_events.data or []
+signals = data.signals.data or []
+screener_tail_lines = data.screener_tail.data or []
+env_knobs = data.env_risk_knobs.data or {}
 
-        ok, _info = fs_check(ENV)
-        fs_marker = "OK" if ok else "Mixed"
-except Exception:
-    fs_marker = "N/A"
+window_label = st.radio("Drawdown window", list(WINDOW_OPTIONS.keys()), index=0, horizontal=True)
+window_sec = WINDOW_OPTIONS[window_label]
 
-_top_banner.caption(f"Source: {source_label} • ENV_KEY: {ENV_KEY} • FS: {fs_marker}")
+include_spot_flag = bool(snapshot.get("include_spot_in_trading_nav", False))
+st.toggle(
+    "Show Spot in Trading NAV",
+    value=include_spot_flag,
+    disabled=True,
+    help="Mirrors INCLUDE_SPOT_IN_TRADING_NAV flag. Toggle is read-only.",
+)
 
-# KPIs
+nav_metrics = compute_nav_metrics(nav_series, window_sec, snapshot)
+
+source_caption = (
+    f"NAV • {data.nav_series.source}"
+    + (f" ({data.nav_series.detail})" if data.nav_series.detail else "")
+    + f" | Positions • {data.positions.source}"
+    + (f" ({data.positions.detail})" if data.positions.detail else "")
+    + f" | Risk • {data.risk_events.source}"
+    + (f" ({data.risk_events.detail})" if data.risk_events.detail else "")
+)
+st.caption(source_caption)
+
+if os.getenv("FIRESTORE_ENABLED", "0") != "1":
+    st.info("Firestore disabled; using local snapshots and logs.")
+
+if data.nav_series.errors:
+    st.warning("NAV series load issues: " + "; ".join(data.nav_series.errors))
+
+top_cols = st.columns(4)
+top_cols[0].metric(
+    "Trading NAV (USDT)",
+    fmt_usd(nav_metrics["nav_now"]),
+    None if nav_metrics["delta"] is None else f"{fmt_usd(nav_metrics['delta'])} / {fmt_pct(nav_metrics['delta_pct'])}",
+    help="Futures NAV plus spot if INCLUDE_SPOT_IN_TRADING_NAV=1.",
+)
+
+portfolio_nav = snapshot.get("portfolio_nav_usd")
+if portfolio_nav is None and nav_metrics["nav_now"] is not None:
+    spot_total = snapshot.get("spot_total_usd") or 0.0
+    reserves_total = snapshot.get("reserves_total_usd") or 0.0
+    fee_total = snapshot.get("fee_wallets_total_usd") or 0.0
+    portfolio_nav = nav_metrics["nav_now"] + float(spot_total) + float(reserves_total) + float(fee_total)
+
+top_cols[1].metric(
+    "Portfolio NAV (USDT)",
+    fmt_usd(portfolio_nav),
+    fmt_usd((portfolio_nav or 0.0) - (nav_metrics["nav_ref"] or 0.0)) if portfolio_nav and nav_metrics["nav_ref"] else None,
+    help="Trading NAV plus spot balances, reserves, and fee wallets.",
+)
+
+top_cols[2].metric(
+    f"Drawdown ({window_label})",
+    fmt_pct(nav_metrics["drawdown_pct"]),
+    help="Peak-to-trough drawdown over the selected window.",
+)
+
+open_positions_cnt = sum(1 for pos in positions if pos.get("qty"))
+top_cols[3].metric(
+    "Open Positions",
+    str(open_positions_cnt),
+    help="Count of non-zero futures positions.",
+)
+
+reserve_map = build_reserve_map(snapshot)
+prev_reserve_map = build_reserve_map(snapshot_prev)
+reserve_cols = st.columns(3)
+btc_tile = reserve_map.get("BTC")
+xaut_tile = reserve_map.get("XAUT")
+bnb_tile = reserve_map.get("BNB_FEE") or reserve_map.get("BNB")
 
 
-series = load_nav_series()
-k = compute_nav_kpis(series)
-# KPI helpers derived from positions (defined after functions above)
-pos_now = load_positions()
-open_cnt = sum(1 for p in pos_now if abs(p.get('qty') or 0) > 0)
-
-c1,c2,c3,c4 = st.columns(4)
-c1.metric("NAV (USDT)", f"{k['nav']:,.2f}" if k['nav'] is not None else "—", f"{k['delta']:,.2f} / {k['delta_pct']:+.2f}%")
-c2.metric("Drawdown", f"{k['dd']:.2f}%" if k['dd'] is not None else "—")
-btc_delta = btc_24h_change()
-c3.metric("Reserve (BTC)", f"{RESERVE_BTC}", (f"{btc_delta:+.2f}% (24h)" if btc_delta is not None else None))
-c4.metric("Open positions", str(open_cnt))
-
-# Risk Status KPI (open gross vs cap)
-risk_cfg = _load_risk_cfg()
-max_gross_pct = float(((risk_cfg.get("global") or {}).get("max_gross_nav_pct") or 0.0))
-open_gross = 0.0
-for p in pos_now:
+def _reserve_delta(curr_key: str, prev_key: Optional[str] = None) -> Optional[float]:
+    curr = reserve_map.get(curr_key)
+    prev = prev_reserve_map.get(prev_key or curr_key)
+    curr_usd = curr.get("usd") if isinstance(curr, dict) else None
+    prev_usd = prev.get("usd") if isinstance(prev, dict) else None
+    if curr_usd is None or prev_usd is None:
+        return None
     try:
-        open_gross += abs(float(p.get("qty") or 0.0)) * abs(float(p.get("entryPrice") or 0.0))
+        return float(curr_usd) - float(prev_usd)
     except Exception:
-        pass
-nav_now = k.get('nav') or 0.0
-cap = (float(nav_now) * (max_gross_pct/100.0)) if (nav_now and max_gross_pct>0) else 0.0
-used_pct = (open_gross / cap * 100.0) if cap else 0.0
-c5, = st.columns(1)
-c5.metric("Risk Status", f"{open_gross:,.0f} / {cap:,.0f}", f"{used_pct:.1f}% used")
+        return None
 
-# NAV chart
-if series:
-    def _parse_ts_val(x):
-        t = x.get("t") or x.get("ts") or x.get("time")
-        v = x.get("nav") or x.get("value") or x.get("equity") or x.get("v")
-        # pandas parse
-        if isinstance(t, (int,float)):
-            tnum=float(t)
-            if tnum>1e12:  # ms
-                ts=pd.to_datetime(tnum, unit="ms", utc=True)
-            else:
-                ts=pd.to_datetime(tnum, unit="s", utc=True)
-        else:
-            ts=pd.to_datetime(str(t), utc=True, errors="coerce")
-        try:
-            val=float(v)
-        except Exception:
-            val=None
-        return ts, val
+reserve_cols[0].metric(
+    "Reserves • BTC",
+    fmt_usd((btc_tile or {}).get("usd")),
+    fmt_usd_delta(_reserve_delta("BTC")),
+    help="Off-exchange BTC reserves valued in USDT.",
+)
+reserve_cols[1].metric(
+    "Reserves • XAUT",
+    fmt_usd((xaut_tile or {}).get("usd")),
+    fmt_usd_delta(_reserve_delta("XAUT")),
+    help="Gold-backed reserves (XAUT) valued in USDT.",
+)
+reserve_cols[2].metric(
+    "Fee Wallet • BNB",
+    fmt_usd((bnb_tile or {}).get("usd")),
+    fmt_usd_delta(_reserve_delta("BNB_FEE", "BNB") or _reserve_delta("BNB")),
+    help="BNB fee wallet valuation in USDT.",
+)
 
-    df = pd.DataFrame([_parse_ts_val(x) for x in series], columns=["ts","nav"]).dropna()
-    if not df.empty:
-        st.line_chart(df.set_index("ts")["nav"])
-    else:
-        st.info("NAV series present but could not parse timestamps/values.")
+st.divider()
+
+nav_df = nav_dataframe(nav_series, window_sec)
+if nav_df.empty:
+    st.info("NAV series unavailable. Ensure Firestore state/nav or local nav.jsonl is populated.")
 else:
-    st.info("No NAV series in Firestore; showing KPIs only (fallback mode).")
+    st.line_chart(nav_df["nav"], use_container_width=True)
+    st.caption(f"NAV updated {humanize_ts(data.nav_series.updated_at)}")
 
-st.markdown("---")
+st.divider()
 
-# Positions
-st.subheader("Positions")
-pos = pos_now
-if pos:
-    dfp = pd.DataFrame(pos).sort_values(by=["symbol","side"])
-    st.dataframe(dfp, use_container_width=True, height=260)
+st.subheader("Walk-forward Performance")
+wf_df, wf_summary = load_walkforward_metrics()
+if wf_df.empty:
+    st.info("Run scripts/walkforward_eval.py to populate walk-forward metrics.")
 else:
-    st.write("No open positions")
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Avg Sharpe", f"{wf_summary.get('avg_sharpe', float(wf_df['sharpe'].mean())):.2f}")
+    metric_cols[1].metric("Avg Calmar", f"{wf_summary.get('avg_calmar', float(wf_df['calmar'].mean())):.2f}")
+    metric_cols[2].metric("Avg PSR", f"{wf_summary.get('avg_psr', float(wf_df['psr'].mean())):.2f}")
+    st.dataframe(wf_df, use_container_width=True, height=260)
+    st.caption(f"Walk-forward windows: {wf_summary.get('windows', len(wf_df))}")
 
-# Signals
-st.subheader("Signals (last 24h)")
-df_sig = load_signals_table(100)
-if not df_sig.empty:
-    newest_sig = float(df_sig["ts"].max()) if "ts" in df_sig else None
-    st.caption(f"Last updated: {humanize_ago(newest_sig)}")
-    if newest_sig and not is_recent(newest_sig, 1800):
-        st.warning("Signals data may be stale (>30m)")
-    st.dataframe(df_sig, use_container_width=True, height=210)
-else:
-    st.write("No recent signals")
+st.divider()
 
-# Trade log
-st.subheader("Trade Log (last 24h)")
-df_tr = load_trade_log(100)
-if not df_tr.empty:
-    newest_tr = float(df_tr["ts"].max()) if "ts" in df_tr else None
-    st.caption(f"Last updated: {humanize_ago(newest_tr)}")
-    if newest_tr and not is_recent(newest_tr, 1800):
-        st.warning("Trades data may be stale (>30m)")
-    st.dataframe(df_tr, use_container_width=True, height=210)
-else:
-    st.write("No recent trades")
-
-# Risk blocks
-st.subheader("Risk Blocks (last 24h)")
-df_rb = load_blocked_orders(200)
-if not df_rb.empty:
-    newest_rb = float(df_rb["ts"].max()) if "ts" in df_rb else None
-    st.caption(f"Last updated: {humanize_ago(newest_rb)}")
-    if newest_rb and not is_recent(newest_rb, 1800):
-        st.warning("Risk blocks may be stale (>30m)")
-    st.dataframe(df_rb, use_container_width=True, height=210)
-else:
-    st.write("No recent risk blocks")
-
-# Screener tail (last 10 lines) — literal tags, no regex
-st.subheader("Screener Tail (recent)")
-tail = []
-if _DS["source"] == "local":
-    # cap at 200 lines
-    for tag in ("[screener]", "[decision]", "[screener->executor]"):
-        tail.extend(_literal_tail(tag, 200))
-    tail = tail[-200:]
-    # Best-effort freshness from any timestamp-like token
-    newest_ts: Optional[float] = None
-    for ln in reversed(tail):
-        # try to find a timestamp in json-ish payload
-        try:
-            if "{" in ln and "}" in ln:
-                payload = ln.split("{",1)[1]
-                payload = "{" + payload.split("}",1)[0] + "}"
-                obj = json.loads(payload)
-                cand = _to_epoch_seconds(obj.get("timestamp") or obj.get("t") or obj.get("time"))
-                if cand:
-                    newest_ts = cand
-                    break
-        except Exception:
-            continue
-    st.caption(f"Last updated: {humanize_ago(newest_ts)}")
-    if newest_ts and not is_recent(newest_ts, 1800):
-        st.warning("Screener tail may be stale (>30m)")
-st.code("\n".join(tail) if tail else "(empty)")
-
-# Compact recency banner (NAV/Trades/Risk)
-try:
-    nav_latest_ts = None
-    if series:
-        try:
-            nav_latest_ts = max(
-                _to_epoch_seconds(x.get("ts") or x.get("t") or x.get("time"))
-                for x in series if isinstance(x, dict)
-            )
-        except Exception:
-            nav_latest_ts = None
-    tr_latest_ts = float(df_tr["ts"].max()) if isinstance(df_tr, pd.DataFrame) and not df_tr.empty and "ts" in df_tr else None
-    rb_latest_ts = float(df_rb["ts"].max()) if isinstance(df_rb, pd.DataFrame) and not df_rb.empty and "ts" in df_rb else None
-    _top_banner.caption(
-        f"Source: {'Firestore' if _DS['source']=='firestore' else 'Local'} • ENV_KEY: {ENV_KEY} "
-        f"• FS: {fs_marker} • NAV: {humanize_ago(nav_latest_ts)} • Trades: {humanize_ago(tr_latest_ts)} • Risk: {humanize_ago(rb_latest_ts)}"
+positions_header = st.container()
+positions_header.subheader("Open Positions")
+if positions:
+    df_positions = pd.DataFrame(positions)
+    df_positions_display = df_positions.rename(
+        columns={
+            "symbol": "Symbol",
+            "side": "Side",
+            "qty": "Qty",
+            "entry_price": "Entry",
+            "mark_price": "Mark",
+            "pnl": "PnL",
+            "leverage": "Lev",
+            "notional": "Notional",
+        }
     )
-except Exception:
-    # Keep original simple banner if anything goes wrong
-    _top_banner.caption(f"Source: {'Firestore' if _DS['source']=='firestore' else 'Local'} • ENV_KEY: {ENV_KEY}")
+    st.dataframe(df_positions_display, use_container_width=True, height=320)
+else:
+    st.info("No open positions.")
+st.caption(f"Positions updated {humanize_ts(data.positions.updated_at)}")
 
-# Keep banner simple per acceptance
+st.divider()
 
-# ---- Doctor panel ----
-with st.expander("Doctor", expanded=False):
-    try:
-        st.write(f"Source: {'Firestore' if _DS['source']=='firestore' else 'Local'} • ENV_KEY: {ENV_KEY}")
-        # Paths
-        st.write(f"Paths: hedge/{ENV}/state/nav, hedge/{ENV}/state/positions, hedge/{ENV}/trades, hedge/{ENV}/risk")
-        pos_cnt = len(pos)
-        tr_cnt = int(len(df_tr)) if isinstance(df_tr, pd.DataFrame) else 0
-        rb_cnt = int(len(df_rb)) if isinstance(df_rb, pd.DataFrame) else 0
-        nav_latest_ts = None
-        if series:
-            try:
-                nav_latest_ts = max(_to_epoch_seconds(x.get('t') or x.get('ts') or x.get('time')) for x in series if isinstance(x, dict))
-            except Exception:
-                nav_latest_ts = None
-        st.write(f"Counts: positions={pos_cnt}, nav={len(series)}, trades(24h)={tr_cnt}, risk(24h)={rb_cnt}")
-        st.write(f"Newest NAV ts: {humanize_ago(nav_latest_ts)}")
-        # Which collections used (if any)
-        if _DS["source"] == "firestore":
-            if _DIAG.get("col_trades"):
-                st.write(f"Trades collection: {_DIAG.get('col_trades')}")
-            if _DIAG.get("col_risk"):
-                st.write(f"Risk collection: {_DIAG.get('col_risk')}")
-        # Tier badges/counts
-        try:
-            tiers = _load_json("config/symbol_tiers.json", {}) or {}
-            tier_counts = {k: (len(v) if isinstance(v, list) else 0) for k, v in tiers.items()}
-            # Open positions by tier: map symbol->tier
-            sym2tier = {}
-            for t, arr in tiers.items():
-                if isinstance(arr, list):
-                    for s in arr:
-                        sym2tier[str(s).upper()] = t
-            pos_by_tier = {}
-            for r in pos:
-                try:
-                    t = sym2tier.get(str(r.get("symbol")).upper(), "OTHER")
-                    pos_by_tier[t] = pos_by_tier.get(t, 0) + 1
-                except Exception:
-                    continue
-            st.write(
-                "Tiers: "
-                + ", ".join(f"{k}:{tier_counts.get(k,0)}" for k in ("CORE","SATELLITE","TACTICAL","ALT-EXT") if k in tier_counts)
-            )
-            if pos_by_tier:
-                st.write(
-                    "Open positions by tier: "
-                    + ", ".join(f"{k}:{v}" for k, v in pos_by_tier.items())
-                )
-        except Exception:
-            pass
-    except Exception:
-        st.write("(doctor diagnostics unavailable)")
+risk_summary = compute_risk_summary(positions, snapshot, env_knobs, nav_series, risk_events)
+risk_cols = st.columns(4)
+risk_cols[0].metric("Open Gross", fmt_usd(risk_summary["gross"], 0))
+risk_cols[1].metric(
+    "Cap (NAV %)",
+    fmt_pct(risk_summary["cap_pct"], 1),
+    fmt_usd(risk_summary.get("cap_notional"), 0) if risk_summary.get("cap_notional") else None,
+)
+risk_cols[2].metric(
+    "Headroom",
+    fmt_usd(risk_summary.get("headroom"), 0),
+    fmt_pct(risk_summary.get("used_pct"), 1) if risk_summary.get("used_pct") is not None else None,
+)
+risk_cols[3].metric("Kill Switch", risk_summary.get("kill_status", "—"))
+st.caption(f"Risk updated {humanize_ts(data.risk_events.updated_at)}")
 
-# --- Exit plans loader (Firestore-first; local fallback) ---
-def load_exit_plans() -> pd.DataFrame:
-    plans = _fs_get_state("exit_plans")
-    rows = []
-    if isinstance(plans, dict) and "rows" in plans:
-        rows = plans["rows"]
-    elif isinstance(plans, list):
-        rows = plans
-    if not rows:
-        local = _load_json("exit_plans.json", [])
-        rows = (local.get("rows") if isinstance(local, dict) else local) or []
+st.divider()
 
-    out = []
-    now = time.time()
-    for r in rows:
-        try:
-            ts = r.get("created_ts") or r.get("ts") or r.get("time")
-            if isinstance(ts,(int,float)):
-                t_epoch = float(ts)
-            else:
-                try:
-                    t_epoch = pd.to_datetime(ts, utc=True).timestamp()
-                except Exception:
-                    t_epoch = 0.0
-            out.append({
-                "symbol": r.get("symbol"),
-                "side": r.get("side") or r.get("positionSide"),
-                "entry_px": float(r.get("entry_px") or r.get("entryPrice") or 0),
-                "sl_px": float(r.get("sl_px") or 0),
-                "tp_px": float(r.get("tp_px") or 0),
-                "age_min": round((now - t_epoch)/60.0, 1) if t_epoch else None
-            })
-        except Exception:
-            continue
-    return pd.DataFrame(out)
+veto_df = veto_distribution(risk_events)
+if veto_df.empty:
+    st.info("No veto reasons recorded in the last 24h.")
+else:
+    chart = pd.DataFrame(veto_df).set_index("reason")
+    st.bar_chart(chart, use_container_width=True)
 
-# --- UI block (fail-soft) ---
-st.subheader("Exit plans (open)")
-try:
-    dfep = load_exit_plans()
-    if not dfep.empty:
-        st.dataframe(dfep, use_container_width=True, height=210)
+st.subheader("Recent veto tail")
+tail_df = veto_tail(risk_events)
+if tail_df.empty:
+    st.info("No recent veto events.")
+else:
+    st.dataframe(tail_df, use_container_width=True, height=240)
+
+st.divider()
+
+st.subheader("Per-symbol KPIs")
+symbol_df = compute_symbol_kpis(positions, trades, signals, risk_events)
+if symbol_df.empty:
+    st.info("Symbol KPIs unavailable. Need recent trades or signals.")
+else:
+    st.dataframe(symbol_df, use_container_width=True, height=360)
+st.caption(
+    "Trades updated "
+    + humanize_ts(data.trades.updated_at)
+    + " • Signals updated "
+    + humanize_ts(data.signals.updated_at)
+)
+
+st.divider()
+
+st.subheader("Screener tail")
+if screener_tail_lines:
+    tail_text = "\n".join(screener_tail_lines[-200:])
+    st.code(tail_text or "(empty)")
+else:
+    st.info("No screener tail logs present.")
+st.caption(f"Screener tail updated {humanize_ts(data.screener_tail.updated_at)}")
+
+st.divider()
+
+with st.expander("Environment & Data Health", expanded=False):
+    st.write(f"ENV: {ENV} • ENV_KEY: {ENV_KEY}")
+    st.write(f"Firestore enabled: {'yes' if os.getenv('FIRESTORE_ENABLED', '0') == '1' else 'no'}")
+    if env_knobs:
+        st.write("Risk knobs:")
+        st.json(env_knobs)
     else:
-        st.write("No exit plans recorded yet.")
-except Exception as e:
-    st.write(f"Exit plans unavailable: {e}")
+        st.write("Risk knobs unavailable.")
+
+    summary_rows = [
+        ("NAV", data.nav_series.source, data.nav_series.detail, humanize_ts(data.nav_series.updated_at)),
+        ("Positions", data.positions.source, data.positions.detail, humanize_ts(data.positions.updated_at)),
+        ("Trades", data.trades.source, data.trades.detail, humanize_ts(data.trades.updated_at)),
+        ("Risk", data.risk_events.source, data.risk_events.detail, humanize_ts(data.risk_events.updated_at)),
+        ("Signals", data.signals.source, data.signals.detail, humanize_ts(data.signals.updated_at)),
+    ]
+    df_summary = pd.DataFrame(summary_rows, columns=["Dataset", "Source", "Detail", "Updated"])
+    st.table(df_summary)
+
+    all_errors: List[str] = []
+    for dataset in (
+        data.nav_series,
+        data.positions,
+        data.trades,
+        data.risk_events,
+        data.signals,
+        data.screener_tail,
+        data.veto_events,
+    ):
+        all_errors.extend(dataset.errors or [])
+    all_errors = [err for err in all_errors if err]
+    if all_errors:
+        st.error("Data load warnings:\n" + "\n".join(all_errors))
+    else:
+        st.success("No data load warnings.")

@@ -358,6 +358,8 @@ class RiskGate:
     may pass a minimal dict; production can adapt existing config to this shape.
     """
 
+    nav_provider: Any = None
+
     def __init__(self, cfg: Dict):
         self.cfg = cfg or {}
         self.sizing = dict(self.cfg.get("sizing", {}) or {})
@@ -498,7 +500,7 @@ class RiskGate:
         guard_multiplier = 0.8 if os.environ.get("EVENT_GUARD", "0") == "1" else 1.0
 
         try:
-            max_trade_pct = float(self.sizing.get("max_trade_nav_pct", 10.0) or 0.0)
+            max_trade_pct = float(self.sizing.get("max_trade_nav_pct", 0.0) or 0.0)
         except Exception:
             max_trade_pct = 0.0
         max_trade_pct *= guard_multiplier
@@ -507,6 +509,13 @@ class RiskGate:
                 return False, "trade_gt_max_trade_nav_pct"
 
         current_gross = float(self._portfolio_gross_usd())
+        if current_gross <= 0.0:
+            try:
+                current_pct = float(self._gross_exposure_pct())
+                if current_pct:
+                    current_gross = (current_pct / 100.0) * nav
+            except Exception:
+                pass
         try:
             max_gross_pct = float(self.sizing.get("max_gross_exposure_pct", 150) or 0)
         except Exception:
