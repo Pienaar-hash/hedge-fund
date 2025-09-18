@@ -1,3 +1,6 @@
+import math
+import requests
+
 import os
 import json
 from typing import Any, Dict, List, Tuple
@@ -188,8 +191,6 @@ def fmt_pct(x: Any) -> str:
         return str(x)
 
 # --- Price helpers (read-only) ------------------------------------------------
-import math
-import requests
 
 def get_env_float(name: str, default: float) -> float:
     try:

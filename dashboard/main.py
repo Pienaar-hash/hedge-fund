@@ -1,3 +1,14 @@
+from dashboard.dashboard_utils import (
+    get_firestore_connection,
+    fetch_state_document,
+    parse_nav_to_df_and_kpis,
+    positions_sorted,
+    fetch_mark_price_usdt,
+    get_env_float,
+)
+from dashboard.data_sources import get_latest_nav, per_symbol_kpis
+
+import math
 import os
 import sys
 import json
@@ -14,14 +25,6 @@ if PROJECT_ROOT not in sys.path and os.path.isdir(PROJECT_ROOT):
     sys.path.insert(0, PROJECT_ROOT)
 
 # Local helpers
-from dashboard.dashboard_utils import (
-    get_firestore_connection,
-    fetch_state_document,
-    parse_nav_to_df_and_kpis,
-    positions_sorted,
-    fetch_mark_price_usdt,
-    get_env_float,
-)
 
 # Read-only exchange helpers
 
@@ -100,6 +103,52 @@ def rle_compact(lines: List[str], min_run: int = 3) -> List[str]:
     out.append(prev if count < min_run else f"{prev}  × {count}")
     return out
 
+
+def _format_age_label(age: float) -> str:
+    try:
+        age_float = float(age)
+    except (TypeError, ValueError):
+        return "unknown"
+    if not math.isfinite(age_float):
+        return "unknown"
+    if age_float < 1:
+        return "<1s"
+    if age_float < 60:
+        return f"{int(age_float)}s"
+    if age_float < 3600:
+        return f"{int(age_float // 60)}m"
+    if age_float < 86400:
+        return f"{int(age_float // 3600)}h"
+    return f"{int(age_float // 86400)}d"
+
+
+latest_nav_snapshot = get_latest_nav()
+nav_positions_snapshot = per_symbol_kpis(latest_nav_snapshot.get("positions") or [])
+try:
+    nav_age_seconds = float(latest_nav_snapshot.get("age_sec", float("inf")))
+except (TypeError, ValueError):
+    nav_age_seconds = float("inf")
+nav_age_label = _format_age_label(nav_age_seconds)
+nav_is_stale = bool(latest_nav_snapshot.get("is_stale"))
+nav_badge_color = "#dc3545" if nav_is_stale else "#198754"
+nav_badge_text = "STALE" if nav_is_stale else "FRESH"
+nav_source = str(latest_nav_snapshot.get("source") or "unknown")
+
+st.markdown(
+    f"""
+    <div style='display:flex;gap:0.5rem;align-items:center;margin:0.75rem 0;'>
+        <span style='padding:0.15rem 0.7rem;border-radius:999px;font-size:0.75rem;font-weight:600;color:#ffffff;background:{nav_badge_color};'>
+            {nav_badge_text}
+        </span>
+        <span style='padding:0.15rem 0.7rem;border-radius:999px;font-size:0.75rem;font-weight:500;color:#495057;background:#f1f3f5;'>
+            source: {nav_source}
+        </span>
+        <span style='font-size:0.8rem;color:#6c757d;'>age ≈ {nav_age_label}</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --------------------------- Load Firestore ----------------------------------
 status = st.empty()
 status.info("Loading data from Firestore…")
@@ -125,8 +174,8 @@ btc_mark = fetch_mark_price_usdt("BTCUSDT")
 reserve_usdt = RESERVE_BTC * btc_mark if btc_mark > 0 else 0.0
 
 # ---- Tabs layout --------------------------------------------------------------
-tab_overview, tab_positions, tab_leader, tab_signals, tab_doctor = st.tabs(
-    ["Overview", "Positions", "Leaderboard", "Signals", "Doctor"]
+tab_overview, tab_positions, tab_leader, tab_signals, tab_ml, tab_doctor = st.tabs(
+    ["Overview", "Positions", "Leaderboard", "Signals", "ML", "Doctor"]
 )
 
 # --------------------------- Overview Tab ------------------------------------
@@ -156,9 +205,87 @@ with tab_overview:
 # --------------------------- Positions Tab -----------------------------------
 with tab_positions:
     st.subheader("Open Positions")
+    if nav_positions_snapshot:
+        st.markdown("**Latest Snapshot (cached feed)**")
+        st.caption(f"source: {nav_source} · age ≈ {nav_age_label} · state: {nav_badge_text}")
+
+        def _fmt_number(value, decimals: int = 2) -> str:
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                return "—"
+            if not math.isfinite(num):
+                return "—"
+            return f"{num:.{decimals}f}"
+
+        table_rows = []
+        for entry in nav_positions_snapshot:
+            symbol = entry.get("symbol") or "—"
+            veto_tail = entry.get("veto_tail") or []
+            veto_html = ""
+            if veto_tail:
+                items = "".join(
+                    f"<li>{line}</li>" for line in veto_tail if isinstance(line, str)
+                )
+                if items:
+                    veto_html = (
+                        "<ul style='margin:0.25rem 0 0 0.9rem;padding:0;"
+                        "list-style:disc;color:#6c757d;font-size:0.72rem;'>"
+                        f"{items}</ul>"
+                    )
+            symbol_cell = f"<div><strong>{symbol}</strong>{veto_html}</div>"
+            rr = entry.get("rr")
+            rr_display = _fmt_number(rr * 100.0 if isinstance(rr, (int, float)) else rr, 2)
+            if rr_display != "—":
+                rr_display = f"{rr_display}%"
+            age_display = _format_age_label(entry.get("age_sec"))
+            stale_display = "❌" if entry.get("stale") else "✅"
+            row_html = (
+                "<tr>"
+                f"<td>{symbol_cell}</td>"
+                f"<td>{entry.get('side') or '—'}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('size'), 4)}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('entry'), 4)}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('mark'), 4)}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('unrealized'), 2)}</td>"
+                f"<td style='text-align:right;'>{_fmt_number(entry.get('realized'), 2)}</td>"
+                f"<td style='text-align:right;'>{rr_display}</td>"
+                f"<td style='text-align:center;'>{stale_display}</td>"
+                f"<td style='text-align:right;'>{age_display}</td>"
+                "</tr>"
+            )
+            table_rows.append(row_html)
+
+        table_html = (
+            "<div style='overflow-x:auto;'>"
+            "<table style='width:100%;border-collapse:collapse;font-size:0.85rem;'>"
+            "<thead style='background:#f8f9fa;'>"
+            "<tr>"
+            "<th style='text-align:left;padding:0.4rem;'>Symbol</th>"
+            "<th style='text-align:left;padding:0.4rem;'>Side</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Size</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Entry</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Mark</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Unreal.</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Realized</th>"
+            "<th style='text-align:right;padding:0.4rem;'>R/R</th>"
+            "<th style='text-align:center;padding:0.4rem;'>Stale</th>"
+            "<th style='text-align:right;padding:0.4rem;'>Age</th>"
+            "</tr>"
+            "</thead>"
+            "<tbody>"
+            + "".join(table_rows)
+            + "</tbody></table></div>"
+        )
+        st.markdown(table_html, unsafe_allow_html=True)
+    else:
+        st.caption("Latest snapshot has no open positions.")
+
+    st.markdown("---")
+
     positions_df = pd.DataFrame(positions_fs)
     if positions_df is None or positions_df.empty:
-        st.info("No open positions.")
+        st.info("No open positions from Firestore.")
     else:
         st.dataframe(positions_df, use_container_width=True, height=420)
 
@@ -175,7 +302,7 @@ with tab_leader:
 with tab_signals:
     st.subheader("Signals Tail (last N)")
     N = int(os.environ.get("DASHBOARD_SIGNAL_LINES", "150"))
-    log_path = "/var/log/hedge-executor.out.log"
+    log_path = "/var/log/hedge/hedge-executor.out.log"
     patterns = ("[screener]", "[screener->executor]", "[decision]")
     lines = []
 
@@ -199,6 +326,60 @@ with tab_signals:
             st.code("\n".join(compact), language="text")
     except Exception as e:
         st.warning(f"Could not read signals log: {e}")
+
+# --------------------------- ML Tab -----------------------------------------
+with tab_ml:
+    st.header("ML — Models & Evaluation")
+    try:
+        reg_path = "models/registry.json"
+        if os.path.exists(reg_path):
+            registry = json.load(open(reg_path, "r"))
+            if registry:
+                st.subheader("Registry")
+                st.dataframe(pd.DataFrame(registry).T)
+            else:
+                st.info("Registry is empty. Run ML retrain to populate.")
+        else:
+            st.info("No registry yet. Run ML retrain to populate.")
+
+        rpt_path = "models/last_train_report.json"
+        if os.path.exists(rpt_path):
+            st.subheader("Last Retrain Report")
+            st.json(json.load(open(rpt_path, "r")))
+
+        eval_path = "models/signal_eval.json"
+        if os.path.exists(eval_path):
+            st.subheader("Signal Evaluation (ML vs RULE)")
+            report = json.load(open(eval_path, "r"))
+            st.json(report.get("aggregate", {}))
+
+            symbols = report.get("symbols") or []
+            rows = []
+            for entry in symbols:
+                if "error" in entry:
+                    continue
+                rows.append(
+                    {
+                        "symbol": entry.get("symbol"),
+                        "ml_f1": entry.get("ml", {}).get("f1"),
+                        "ml_cov": entry.get("ml", {}).get("coverage"),
+                        "ml_hit": entry.get("ml", {}).get("hit_rate"),
+                        "rule_f1": entry.get("rule", {}).get("f1"),
+                        "rule_cov": entry.get("rule", {}).get("coverage"),
+                        "rule_hit": entry.get("rule", {}).get("hit_rate"),
+                        "n": entry.get("n"),
+                    }
+                )
+            if rows:
+                st.dataframe(pd.DataFrame(rows))
+
+            errors = report.get("errors") or []
+            if errors:
+                st.warning(f"Evaluation skipped for {len(errors)} symbol(s):")
+                for entry in errors[:20]:
+                    st.write(f"- {entry.get('symbol')}: {entry.get('error')}")
+    except Exception as exc:
+        st.error(f"ML tab error: {exc}")
 
 # --------------------------- Doctor Tab --------------------------------------
 with tab_doctor:
@@ -239,6 +420,131 @@ with tab_doctor:
     if doctor_data:
         with st.expander("Raw doctor output", expanded=False):
             st.json(doctor_data, expanded=False)
+
+    # Tier diagnostics and veto stats
+    with st.expander("Doctor — Universe & Risk", expanded=False):
+        tpath = "logs/nav_trading.json"
+        rpath = "logs/nav_reporting.json"
+        zpath = "logs/nav_treasury.json"
+        spath = "logs/nav_snapshot.json"
+        if any(os.path.exists(p) for p in (tpath, rpath, zpath, spath)):
+            try:
+                if os.path.exists(tpath):
+                    tnav = json.load(open(tpath, "r"))
+                    tval = float(tnav.get("nav_usdt", 0.0) or 0.0)
+                    st.markdown(f"**Trading NAV (USDT, used for risk):** {tval:.2f}")
+                    tbr = tnav.get("breakdown", {})
+                    tfw = tbr.get("futures_wallet_usdt")
+                    if tfw is not None:
+                        st.caption(f"Futures wallet: {float(tfw):.2f} USDT")
+                    else:
+                        st.caption("Futures wallet: n/a")
+                if os.path.exists(rpath):
+                    rnav = json.load(open(rpath, "r"))
+                    rval = float(rnav.get("nav_usdt", 0.0) or 0.0)
+                    st.markdown(f"**Reporting NAV (USDT):** {rval:.2f}")
+                if os.path.exists(zpath):
+                    znav = json.load(open(zpath, "r"))
+                    zval = float(znav.get("treasury_usdt", 0.0) or 0.0)
+                    st.markdown(
+                        "**Treasury (off-exchange, excluded from NAV):** "
+                        f"{zval:.2f} USDT"
+                    )
+                    zbr = znav.get("breakdown", {})
+                    tre = zbr.get("treasury", {})
+                    miss = zbr.get("missing_prices", {})
+                    if tre:
+                        st.write("Holdings (manual-seeded):")
+                        for asset, data in tre.items():
+                            qty = data.get("qty")
+                            px = data.get("px")
+                            val = data.get("val_usdt")
+                            line = f"- {asset}: qty {qty}"
+                            if px is not None:
+                                line += f" × {px}"
+                            if val is not None:
+                                line += f" = {val:.2f} USDT"
+                            st.write(line)
+                    if miss:
+                        st.warning(
+                            "Missing prices for treasury symbols (skipped): "
+                            + ", ".join(sorted(miss.keys()))
+                        )
+                if (not os.path.exists(tpath)) and (not os.path.exists(rpath)) and os.path.exists(spath):
+                    nav = json.load(open(spath, "r"))
+                    sval = float(nav.get("nav_usdt", 0.0) or 0.0)
+                    st.markdown(f"**NAV (legacy single):** {sval:.2f}")
+            except Exception as exc:
+                st.caption(f"nav snapshot unavailable: {exc}")
+        # Tier counts from config/symbol_tiers.json
+        tier_counts = {}
+        try:
+            tiers_cfg = load_json(os.getenv("SYMBOL_TIERS_CONFIG", "config/symbol_tiers.json"), {})
+            for t, arr in (tiers_cfg.items() if isinstance(tiers_cfg, dict) else []):
+                if isinstance(arr, list):
+                    tier_counts[str(t)] = len(arr)
+        except Exception:
+            tier_counts = {}
+        if tier_counts:
+            st.write({"tier_counts": tier_counts})
+
+        # Open positions by tier
+        by_tier = {}
+        try:
+            # Build tier map
+            tmap = {s: t for t, arr in (tiers_cfg.items() if isinstance(tiers_cfg, dict) else []) for s in (arr or [])}
+        except Exception:
+            tmap = {}
+        try:
+            # positions_fs already parsed above
+            for r in positions_fs:
+                sym = str(r.get("symbol") or "").upper()
+                t = tmap.get(sym, "?")
+                by_tier[t] = by_tier.get(t, 0) + 1
+        except Exception:
+            by_tier = {}
+        if by_tier:
+            st.write({"open_positions_by_tier": by_tier})
+
+        # Veto reasons dominated in last 24h (from risk collection)
+        veto_counts = {}
+        try:
+            from dashboard.dashboard_utils import get_firestore_connection
+
+            db = get_firestore_connection()
+            docs = list(
+                db.collection("hedge")
+                .document(ENV)
+                .collection("risk")
+                .order_by("ts", direction="DESCENDING")
+                .limit(1000)
+                .stream()
+            )
+            import time as _t
+
+            now = _t.time()
+            for d in docs:
+                x = d.to_dict() or {}
+                if x.get("env") is not None and str(x.get("env")) != ENV:
+                    continue
+                ts = x.get("ts") or x.get("time")
+                tnum = float(ts) if isinstance(ts, (int, float)) else 0.0
+                if tnum > 1e12:
+                    tnum /= 1000.0
+                if (now - tnum) > 24 * 3600:
+                    continue
+                # reason (single) or reasons (list)
+                if isinstance(x.get("reasons"), list):
+                    for r in x.get("reasons"):
+                        veto_counts[str(r)] = veto_counts.get(str(r), 0) + 1
+                elif x.get("reason") is not None:
+                    veto_counts[str(x.get("reason"))] = veto_counts.get(str(x.get("reason")), 0) + 1
+        except Exception:
+            veto_counts = {}
+        if veto_counts:
+            # Show top reasons
+            top = sorted(veto_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+            st.write({"veto_top_24h": dict(top)})
 
 
 st.caption(

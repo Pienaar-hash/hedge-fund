@@ -1,22 +1,32 @@
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
-from decimal import Decimal, ROUND_DOWN, getcontext
+from decimal import ROUND_DOWN, Decimal, getcontext
+from typing import Dict, List, Tuple, Optional, Any, Callable
+import os
+import time
+
+from execution.nav import compute_trading_nav, compute_gross_exposure_usd
+from execution.utils import load_json
+from execution.exchange_utils import get_balances
+
 getcontext().prec = 28
+
 
 @dataclass(frozen=True)
 class RiskConfig:
-    max_notional_per_trade: float           # e.g., 200.0 USDT
-    max_open_notional: float                # e.g., 1000.0 USDT
-    max_positions: int                      # e.g., 5
-    max_leverage: float                     # e.g., 5.0
-    kill_switch_drawdown_pct: float         # e.g., -10.0 (portfolio)
-    min_notional: float = 10.0              # exchange min
+    max_notional_per_trade: float  # e.g., 200.0 USDT
+    max_open_notional: float  # e.g., 1000.0 USDT
+    max_positions: int  # e.g., 5
+    max_leverage: float  # e.g., 5.0
+    kill_switch_drawdown_pct: float  # e.g., -10.0 (portfolio)
+    min_notional: float = 10.0  # exchange min
+
 
 class RiskState:
     """Holds rolling state the executor can update each loop.
 
     Extended with lightweight fields/methods to support risk checks in `check_order`.
     """
+
     def __init__(self) -> None:
         self.open_notional: float = 0.0
         self.open_positions: int = 0
@@ -24,6 +34,10 @@ class RiskState:
         # New fields for cooldown/circuit breaker support
         self._last_fill_by_symbol: Dict[str, float] = {}
         self._error_timestamps: List[float] = []
+        # Attempt timestamps for burst control
+        self._order_attempt_ts: List[float] = []
+        # Optional daily PnL percent (negative means loss)
+        self.daily_pnl_pct: float = 0.0
 
     # --- Optional helpers used by check_order ---
     def note_fill(self, symbol: str, ts: float) -> None:
@@ -41,8 +55,19 @@ class RiskState:
         self._error_timestamps = kept
         return len(kept)
 
-def _can_open_position_legacy(symbol: str, notional: float, lev: float,
-                              cfg: RiskConfig, st: RiskState) -> tuple[bool, str]:
+    def note_attempt(self, ts: float) -> None:
+        self._order_attempt_ts.append(float(ts))
+
+    def attempts_in(self, window_sec: int, now: float) -> int:
+        cutoff = float(now) - max(float(window_sec or 0), 0.0)
+        kept = [t for t in self._order_attempt_ts if t >= cutoff]
+        self._order_attempt_ts = kept
+        return len(kept)
+
+
+def _can_open_position_legacy(
+    symbol: str, notional: float, lev: float, cfg: RiskConfig, st: RiskState
+) -> tuple[bool, str]:
     if st.portfolio_drawdown_pct <= cfg.kill_switch_drawdown_pct:
         return False, "kill_switch_triggered"
     if notional < cfg.min_notional:
@@ -56,6 +81,7 @@ def _can_open_position_legacy(symbol: str, notional: float, lev: float,
     if st.open_positions >= cfg.max_positions:
         return False, "too_many_positions"
     return True, "ok"
+
 
 def can_open_position(*args, **kwargs):
     """
@@ -71,15 +97,17 @@ def can_open_position(*args, **kwargs):
         return _can_open_position_legacy(symbol, notional, lev, cfg, st)
 
     # New signature path (allow both positional and keyword usage)
-    symbol = kwargs.get('symbol', args[0] if len(args) > 0 else None)
-    notional = kwargs.get('notional', args[1] if len(args) > 1 else None)
-    lev = kwargs.get('lev', args[2] if len(args) > 2 else None)
-    nav = kwargs.get('nav', args[3] if len(args) > 3 else None)
-    open_qty = kwargs.get('open_qty', args[4] if len(args) > 4 else None)
-    now = kwargs.get('now', args[5] if len(args) > 5 else None)
-    cfg = kwargs.get('cfg', args[6] if len(args) > 6 else None)
-    state = kwargs.get('state', args[7] if len(args) > 7 else None)
-    current_gross_notional = kwargs.get('current_gross_notional', args[8] if len(args) > 8 else 0.0)
+    symbol = kwargs.get("symbol", args[0] if len(args) > 0 else None)
+    notional = kwargs.get("notional", args[1] if len(args) > 1 else None)
+    lev = kwargs.get("lev", args[2] if len(args) > 2 else None)
+    nav = kwargs.get("nav", args[3] if len(args) > 3 else None)
+    open_qty = kwargs.get("open_qty", args[4] if len(args) > 4 else None)
+    now = kwargs.get("now", args[5] if len(args) > 5 else None)
+    cfg = kwargs.get("cfg", args[6] if len(args) > 6 else None)
+    state = kwargs.get("state", args[7] if len(args) > 7 else None)
+    current_gross_notional = kwargs.get(
+        "current_gross_notional", args[8] if len(args) > 8 else 0.0
+    )
 
     ok, details = check_order(
         symbol=symbol,
@@ -95,8 +123,10 @@ def can_open_position(*args, **kwargs):
     )
     return ok, (details.get("reasons") or ["ok"])[0]
 
+
 def should_reduce_positions(st: RiskState, cfg: RiskConfig) -> bool:
     return st.portfolio_drawdown_pct <= cfg.kill_switch_drawdown_pct
+
 
 def explain_limits(cfg: RiskConfig) -> Dict[str, float]:
     return {
@@ -108,6 +138,7 @@ def explain_limits(cfg: RiskConfig) -> Dict[str, float]:
         "min_notional": cfg.min_notional,
     }
 
+
 def clamp_order_size(requested_qty: float, step_size: float) -> float:
     """Round *down* to the exchange step size using Decimal to avoid FP drift."""
     if step_size <= 0:
@@ -117,9 +148,13 @@ def clamp_order_size(requested_qty: float, step_size: float) -> float:
     steps = (q / step).to_integral_value(rounding=ROUND_DOWN)
     return float(steps * step)
 
+
 # ---------------- Additional helpers used by the executor ----------------
 
-def will_violate_exposure(current_gross: float, add_notional: float, nav: float, max_nav_pct: float) -> bool:
+
+def will_violate_exposure(
+    current_gross: float, add_notional: float, nav: float, max_nav_pct: float
+) -> bool:
     cap_frac = float(max_nav_pct) / 100.0
     limit = float(nav) * max(cap_frac, 0.0)
     total = float(current_gross) + float(add_notional)
@@ -146,28 +181,56 @@ def check_order(
     cfg: dict,
     state: RiskState,
     current_gross_notional: float = 0.0,
+    lev: float = 1.0,
+    # New optional parameters for stricter caps
+    open_positions_count: int | None = None,
+    tier_name: Optional[str] = None,
+    current_tier_gross_notional: float = 0.0,
 ) -> Tuple[bool, dict]:
     """Apply per-symbol and global risk checks.
 
     Returns (ok, details) where details has keys: reasons: list[str], notional: float, cooldown_until?: float
     """
     reasons: List[str] = []
-    details: Dict[str, float | List[str]] = {"reasons": reasons, "notional": float(requested_notional)}
+    details: Dict[str, float | List[str]] = {
+        "reasons": reasons,
+        "notional": float(requested_notional),
+    }
 
     sym = str(symbol)
     s_cfg = _cfg_get(cfg, ["per_symbol", sym], {}) or {}
     g_cfg = _cfg_get(cfg, ["global"], {}) or {}
 
+    # Whitelist guardrail (if provided)
+    wl = g_cfg.get("whitelist") or []
+    if isinstance(wl, list) and len(wl) > 0:
+        wl_set = {str(x).upper() for x in wl}
+        if sym.upper() not in wl_set:
+            reasons.append("not_whitelisted")
+
+    # Daily loss limit (portfolio). Expect state.daily_pnl_pct to be set by caller.
+    try:
+        day_lim = float(g_cfg.get("daily_loss_limit_pct", 0.0) or 0.0)
+    except Exception:
+        day_lim = 0.0
+    if day_lim > 0.0:
+        try:
+            if float(getattr(state, "daily_pnl_pct", 0.0)) <= -day_lim:
+                reasons.append("day_loss_limit")
+        except Exception:
+            pass
+
     # Per-order notional constraints
-    min_notional = float(s_cfg.get("min_notional", 0.0) or 0.0)
+    g_min = float(g_cfg.get("min_notional_usdt", 0.0) or 0.0)
+    min_notional = max(float(s_cfg.get("min_notional", 0.0) or 0.0), g_min)
     max_order_notional = float(s_cfg.get("max_order_notional", 0.0) or 0.0)
     req_notional = float(requested_notional)
 
     if min_notional > 0.0 and req_notional < min_notional:
-        reasons.append("min_notional")
+        reasons.append("below_min_notional")
 
     if max_order_notional > 0.0 and req_notional > max_order_notional:
-        reasons.append("max_order_notional")
+        reasons.append("symbol_cap")
 
     # Open quantity cap (applies to increasing long exposure)
     max_open_qty = s_cfg.get("max_open_qty", None)
@@ -177,8 +240,29 @@ def check_order(
         except Exception:
             max_open_qty_f = None
         if max_open_qty_f is not None:
-            if str(side).upper() in ("BUY", "LONG") and float(open_qty) >= max_open_qty_f:
-                reasons.append("max_open_qty")
+            if (
+                str(side).upper() in ("BUY", "LONG")
+                and float(open_qty) >= max_open_qty_f
+            ):
+                reasons.append("symbol_cap")
+
+    # Side block (optional)
+    try:
+        blocked_sides = {str(x).upper() for x in (s_cfg.get("block_sides") or [])}
+        if blocked_sides and str(side).upper() in blocked_sides:
+            reasons.append("side_blocked")
+    except Exception:
+        pass
+
+    # Leverage cap (per-symbol or global)
+    try:
+        lev_cap = float(
+            s_cfg.get("max_leverage", g_cfg.get("max_leverage", 0.0)) or 0.0
+        )
+    except Exception:
+        lev_cap = 0.0
+    if lev_cap > 0.0 and float(lev or 0.0) > lev_cap:
+        reasons.append("leverage_exceeded")
 
     # Per-symbol cooldown after last fill
     cooldown_sec = int(float(s_cfg.get("cooldown_sec", 0) or 0))
@@ -199,11 +283,284 @@ def check_order(
         if errors_in(window_sec, float(now)) >= max_errors:
             reasons.append("circuit_breaker")
 
-    # Gross exposure cap (global)
-    max_gross_nav_pct = float(g_cfg.get("max_gross_nav_pct", 0.0) or 0.0)
+    # Burst limit on order attempts (global)
+    burst_cfg = g_cfg.get("burst_limit", {}) or {}
+    try:
+        burst_max = int(float(burst_cfg.get("max_orders", 0) or 0))
+        burst_win = int(float(burst_cfg.get("window_sec", 0) or 0))
+    except Exception:
+        burst_max = 0
+        burst_win = 0
+    if burst_max > 0 and burst_win > 0:
+        attempts_in = getattr(state, "attempts_in", lambda _w, _n: 0)
+        if attempts_in(burst_win, float(now)) >= burst_max:
+            reasons.append("burst_limit")
+
+    # Per-trade NAV cap
+    try:
+        max_trade_pct = float(g_cfg.get("max_trade_nav_pct", 10.0) or 0.0)
+    except Exception:
+        max_trade_pct = 0.0
+    if max_trade_pct > 0.0 and float(nav) > 0.0:
+        if req_notional > float(nav) * (max_trade_pct / 100.0):
+            reasons.append("trade_gt_max_trade_nav_pct")
+            reasons.append("trade_gt_10pct_equity")
+
+    # Gross exposure cap (global) — accept legacy/new keys
+    max_gross_nav_pct = float(
+        (g_cfg.get("max_portfolio_gross_nav_pct")
+         if (g_cfg.get("max_portfolio_gross_nav_pct") is not None)
+         else g_cfg.get("max_gross_nav_pct", 0.0))
+        or 0.0
+    )
     if max_gross_nav_pct > 0.0:
-        if will_violate_exposure(float(current_gross_notional), req_notional, float(nav), max_gross_nav_pct):
+        if will_violate_exposure(
+            float(current_gross_notional), req_notional, float(nav), max_gross_nav_pct
+        ):
+            # keep legacy reason plus standardized alias
             reasons.append("max_gross_nav_pct")
+            reasons.append("portfolio_cap")
+
+    # Max concurrent positions (global)
+    try:
+        max_conc = int(float(g_cfg.get("max_concurrent_positions", 0) or 0))
+    except Exception:
+        max_conc = 0
+    if max_conc > 0 and open_positions_count is not None:
+        if int(open_positions_count) >= max_conc:
+            reasons.append("max_concurrent")
+
+    # Per-tier soft budget per-symbol (gross as % NAV)
+    if tier_name:
+        try:
+            tiers_cfg = g_cfg.get("tiers") or {}
+            t_cfg = tiers_cfg.get(str(tier_name)) or {}
+            per_sym_pct = float(t_cfg.get("per_symbol_nav_pct", 0.0) or 0.0)
+        except Exception:
+            per_sym_pct = 0.0
+        if per_sym_pct > 0.0 and float(nav) > 0.0:
+            cap_abs = float(nav) * (per_sym_pct / 100.0)
+            # current exposure for this symbol/tier + request
+            cur = float(current_tier_gross_notional)
+            if (cur + req_notional) > cap_abs:
+                reasons.append("tier_cap")
 
     ok = len(reasons) == 0
     return ok, details
+
+
+# ---------------- Canonical gross-notional gate (shared taxonomy) ----------------
+
+class RiskGate:
+    """Canonical gross-notional checks used by executor and screener.
+
+    Expects a cfg that contains keys under `sizing` and `risk` namespaces. Tests
+    may pass a minimal dict; production can adapt existing config to this shape.
+    """
+
+    nav_provider: Any = None
+
+    def __init__(self, cfg: Dict):
+        self.cfg = cfg or {}
+        self.sizing = dict(self.cfg.get("sizing", {}) or {})
+        self.risk = dict(self.cfg.get("risk", {}) or {})
+        try:
+            self.min_notional = float(self.sizing.get("min_notional_usdt", 5.0))
+        except Exception:
+            self.min_notional = 5.0
+        try:
+            self.min_gross_usd_per_order = float(
+                (self.sizing.get("min_gross_usd_per_order", 0.0)) or 0.0
+            )
+        except Exception:
+            self.min_gross_usd_per_order = 0.0
+        per_symbol_floor = self.sizing.get("per_symbol_min_gross_usd") or {}
+        self.per_symbol_min_gross_usd: Dict[str, float] = {}
+        if isinstance(per_symbol_floor, dict):
+            for key, value in per_symbol_floor.items():
+                try:
+                    self.per_symbol_min_gross_usd[str(key).upper()] = float(value)
+                except Exception:
+                    continue
+        self._last_stop_ts = 0.0
+        self._trade_counts: Dict[tuple[str, int], int] = {}
+
+    # --- overridable helpers (tests may subclass) ---
+    def _portfolio_nav(self) -> float:
+        # Best-effort NAV; tests may override
+        if hasattr(self, "nav_provider"):
+            try:
+                return float(self.nav_provider.current_nav_usd())
+            except Exception:
+                pass
+        cfg: Dict[str, Any] = {}
+        try:
+            cfg = load_json("config/strategy_config.json") or {}
+        except Exception:
+            cfg = {}
+        try:
+            nav_val, _ = compute_trading_nav(cfg)
+            if nav_val and nav_val > 0:
+                return float(nav_val)
+        except Exception:
+            pass
+        try:
+            bal = get_balances()
+            if isinstance(bal, dict):
+                return float(bal.get("USDT", bal.get("walletBalance", 0.0)) or 0.0)
+            if isinstance(bal, list):
+                for entry in bal:
+                    try:
+                        if entry.get("asset") == "USDT":
+                            return float(entry.get("balance") or entry.get("walletBalance") or 0.0)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return float(cfg.get("capital_base_usdt", 0.0) or 0.0)
+
+    def _gross_exposure_pct(self) -> float:
+        nav = float(self._portfolio_nav())
+        if nav <= 0:
+            return 0.0
+        gross = float(self._portfolio_gross_usd())
+        return (gross / nav) * 100.0
+
+    def _symbol_exposure_pct(self, symbol: str) -> float:
+        return 0.0
+
+    def _portfolio_gross_usd(self) -> float:
+        if hasattr(self, "nav_provider"):
+            try:
+                return float(self.nav_provider.current_gross_usd())
+            except Exception:
+                pass
+        try:
+            return float(compute_gross_exposure_usd())
+        except Exception:
+            return 0.0
+
+    def _now_hour_key(self) -> int:
+        return int(time.time() // 3600)
+
+    def _daily_loss_pct(self) -> float:
+        # Compute daily loss % from peak_state.json if present: (peak - curr)/peak
+        try:
+            _load_json: Callable[[Any], Any]
+            try:
+                from execution.utils import load_json as _load_json
+            except Exception:
+                def _load_json(_path: Any) -> Any:
+                    return {}
+            s = _load_json("peak_state.json") or {}
+            peak = float(s.get("peak_equity", 0.0))
+            curr = float(self._portfolio_nav())
+            if peak <= 0:
+                return 0.0
+            return 100.0 * max(0.0, (peak - curr) / peak)
+        except Exception:
+            return 0.0
+
+    # NEW: canonical gross-notional checker used by both screener & executor
+    def allowed_gross_notional(
+        self, symbol: str, gross_usd: float, now_ts: float | None = None
+    ) -> tuple[bool, str]:
+        """
+        Decide if a NEW order with the given gross USD notional may be opened.
+        Returns (allowed: bool, veto_reason: str) where veto_reason == "" if allowed.
+        Veto reasons (taxonomy): cooldown, daily_loss_limit, portfolio_cap, symbol_cap,
+        below_min_notional, trade_rate_limit
+        """
+        now_ts = float(now_ts or time.time())
+
+        # cooldown after stop
+        try:
+            cd_min = float(self.risk.get("cooldown_minutes_after_stop", 60) or 0)
+        except Exception:
+            cd_min = 60.0
+        if cd_min > 0 and (now_ts - float(self._last_stop_ts)) < (60.0 * cd_min):
+            return False, "cooldown"
+
+        # daily loss stop
+        try:
+            day_lim = float(self.risk.get("daily_loss_limit_pct", 5) or 0)
+        except Exception:
+            day_lim = 5.0
+        if day_lim > 0 and (self._daily_loss_pct() >= day_lim):
+            self._last_stop_ts = now_ts
+            return False, "daily_loss_limit"
+
+        if hasattr(self, "nav_provider"):
+            try:
+                self.nav_provider.refresh()
+            except Exception:
+                pass
+        nav = max(float(self._portfolio_nav()), 1.0)
+
+        guard_multiplier = 0.8 if os.environ.get("EVENT_GUARD", "0") == "1" else 1.0
+
+        try:
+            max_trade_pct = float(self.sizing.get("max_trade_nav_pct", 0.0) or 0.0)
+        except Exception:
+            max_trade_pct = 0.0
+        max_trade_pct *= guard_multiplier
+        if max_trade_pct > 0.0 and nav > 0.0:
+            if float(gross_usd) > nav * (max_trade_pct / 100.0):
+                return False, "trade_gt_max_trade_nav_pct"
+
+        current_gross = float(self._portfolio_gross_usd())
+        if current_gross <= 0.0:
+            try:
+                current_pct = float(self._gross_exposure_pct())
+                if current_pct:
+                    current_gross = (current_pct / 100.0) * nav
+            except Exception:
+                pass
+        try:
+            max_gross_pct = float(self.sizing.get("max_gross_exposure_pct", 150) or 0)
+        except Exception:
+            max_gross_pct = 150.0
+        max_gross_pct *= guard_multiplier
+        if nav > 0 and max_gross_pct > 0:
+            cap_usd = nav * (max_gross_pct / 100.0)
+            if current_gross >= cap_usd:
+                return False, "portfolio_cap_reached"
+
+        sym_key = str(symbol).upper()
+        floor = float(self.min_gross_usd_per_order or 0.0)
+        floor = max(floor, float(self.per_symbol_min_gross_usd.get(sym_key, 0.0)))
+        if floor > 0.0 and float(gross_usd) + 1e-9 < floor:
+            return False, "below_min_notional"
+
+        # portfolio gross exposure cap after this trade
+        future_exposure_pct = 0.0
+        if nav > 0:
+            future_exposure_pct = ((current_gross + float(gross_usd)) / nav) * 100.0
+        if max_gross_pct > 0 and future_exposure_pct >= max_gross_pct:
+            return False, "portfolio_cap"
+
+        # per-symbol cap after this trade
+        try:
+            max_sym_pct = float(self.sizing.get("max_symbol_exposure_pct", 50) or 0)
+        except Exception:
+            max_sym_pct = 50.0
+        max_sym_pct *= guard_multiplier
+        future_symbol_pct = float(self._symbol_exposure_pct(symbol)) + (100.0 * (float(gross_usd) / nav))
+        if max_sym_pct > 0 and future_symbol_pct >= max_sym_pct:
+            return False, "symbol_cap"
+
+        # notional sanity
+        if float(gross_usd) < float(self.min_notional):
+            return False, "below_min_notional"
+
+        # rate limit per symbol/hour
+        key = (str(symbol), int(self._now_hour_key()))
+        self._trade_counts[key] = int(self._trade_counts.get(key, 0)) + 1
+        try:
+            max_trades = int(float(self.risk.get("max_trades_per_symbol_per_hour", 6) or 0))
+        except Exception:
+            max_trades = 6
+        if max_trades > 0 and self._trade_counts[key] > max_trades:
+            return False, "trade_rate_limit"
+
+        return True, ""

@@ -1,0 +1,35 @@
+name: reviewdog
+
+on:
+  pull_request:
+
+jobs:
+  ruff_review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff reviewdog
+      - name: ruff on PR
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ruff check . --format=github | \
+          reviewdog -f=github-check -name="ruff" -reporter=github-pr-review -level=warning
+
+  mypy_review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install mypy reviewdog types-requests || true
+      - name: mypy on PR
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mypy execution --ignore-missing-imports --show-column-numbers | \
+          reviewdog -efm="%f:%l:%c: %m" -name="mypy" -reporter=github-pr-review -level=warning

@@ -42,7 +42,7 @@ tail -f /var/log/hedge/hedge-dashboard.err.log
 
 sudo supervisorctl status
 
-http://167.235.205.126:8501
+http://{{DASHBOARD_HOST}}:8501
 
 cd /root/hedge-fund
 git fetch --all
