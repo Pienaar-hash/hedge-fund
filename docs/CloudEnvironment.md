@@ -73,6 +73,14 @@ streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0
 ```
 Supervisor command is configured in `deploy/supervisor/hedge-dashboard.conf`.
 
+### Data sources & fallbacks
+- Firestore is authoritative when `FIRESTORE_ENABLED=1`; credentials flow from `FIREBASE_CREDS_PATH` / Application Default Credentials.
+- NAV series: `hedge/{ENV}/state/nav` (Firestore) → fallback to `logs/nav.jsonl` and the snapshot emitted by `scripts/nav_probe.py` at `state/nav_snapshot.json`.
+- Positions, trades, risk and veto reasons: `hedge/{ENV}/(positions|trades|risk)` with env/testnet checks; fallback to `logs/positions.jsonl` and veto snapshots `logs/veto_exec_*.json`.
+- Signals & screener tail: `hedge/{ENV}/(signals|screener_tail)` else `logs/screener_tail.log`.
+- Reserves/fee wallets: `state/nav_snapshot.json`; 24h deltas reuse the previous snapshot under `logs/nav_snapshot.json` when available.
+- Each panel shows its source + staleness; reads are cached via `st.cache_data(ttl=15)` to avoid hammering Firestore.
+
 ### Expose dashboard with NGINX (TLS + Basic Auth)
 
 - Copy the provided conf and enable the site:

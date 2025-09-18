@@ -1,3 +1,12 @@
+from dashboard.dashboard_utils import (
+    get_firestore_connection,
+    fetch_state_document,
+    parse_nav_to_df_and_kpis,
+    positions_sorted,
+    fetch_mark_price_usdt,
+    get_env_float,
+)
+
 import os
 import sys
 import json
@@ -14,14 +23,6 @@ if PROJECT_ROOT not in sys.path and os.path.isdir(PROJECT_ROOT):
     sys.path.insert(0, PROJECT_ROOT)
 
 # Local helpers
-from dashboard.dashboard_utils import (
-    get_firestore_connection,
-    fetch_state_document,
-    parse_nav_to_df_and_kpis,
-    positions_sorted,
-    fetch_mark_price_usdt,
-    get_env_float,
-)
 
 # Read-only exchange helpers
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -11,6 +12,7 @@ except Exception:  # pragma: no cover - offline
 
 _OB_CACHE: Dict[str, Tuple[float, Any]] = {}
 _OB_TTL = 2.5  # seconds, rate-limit REST depth snapshots
+_GATE_ENABLED = os.getenv("ORDERBOOK_GATE_ENABLED", "1").lower() not in {"0", "false", "no"}
 
 
 def _fetch_depth(symbol: str, limit: int = 20) -> Optional[Dict[str, Any]]:
@@ -57,7 +59,12 @@ def evaluate_entry_gate(symbol: str, side: str, enabled: bool = True) -> Tuple[b
     info = {"metric": float, "boost": float}
     """
     info: Dict[str, Any] = {"metric": 0.0, "boost": 0.0}
-    if not enabled:
+    effective = (
+        enabled
+        and _GATE_ENABLED
+        and os.getenv("ORDERBOOK_GATE_DISABLED", "0").lower() not in {"1", "true", "yes"}
+    )
+    if not effective:
         return False, info
     m = topn_imbalance(symbol, limit=20)
     info["metric"] = m
@@ -65,15 +72,17 @@ def evaluate_entry_gate(symbol: str, side: str, enabled: bool = True) -> Tuple[b
     veto = False
     boost = 0.0
     side = str(side).upper()
-    if side in ("BUY", "LONG") and m < -0.10:  # adverse ask pressure
+    adverse_threshold = 0.30
+    align_threshold = 0.40
+    if side in ("BUY", "LONG") and m < -adverse_threshold:  # adverse ask pressure
         veto = True
-    elif side in ("SELL", "SHORT") and m > 0.10:  # adverse bid pressure
+    elif side in ("SELL", "SHORT") and m > adverse_threshold:  # adverse bid pressure
         veto = True
     else:
         # aligned slight boost (<= +5%)
-        if side in ("BUY", "LONG") and m > 0.20:
+        if side in ("BUY", "LONG") and m > align_threshold:
             boost = min(0.05, m)
-        if side in ("SELL", "SHORT") and m < -0.20:
+        if side in ("SELL", "SHORT") and m < -align_threshold:
             boost = min(0.05, -m)
     info["boost"] = float(boost)
     return bool(veto), info

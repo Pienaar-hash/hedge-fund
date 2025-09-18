@@ -11,6 +11,7 @@ from .orderbook_features import evaluate_entry_gate
 from .universe_resolver import resolve_allowed_symbols, symbol_tier, is_listed_on_futures
 from .risk_limits import check_order
 from .nav import PortfolioSnapshot
+from .sizing import determine_position_size
 
 try:
     from .ml.predict import score_symbol as _score_symbol
@@ -252,29 +253,19 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         sym = scfg.get("symbol")
         sym_key = str(sym).upper()
         tf = scfg.get("timeframe", "15m")
-        cap = float(scfg.get("capital_per_trade", 0) or 0) or 10.0
         lev = float(scfg.get("leverage", 1) or 1) or 20.0
-        gross_cap = cap * lev
         sym_floor = per_symbol_gross_floor.get(sym_key, 0.0)
-        effective_notional = max(gross_cap, min_gross_floor, sym_floor)
         entry_forced = (scfg.get("entry", {}) or {}).get("type") == "always_on"
         if kill_switch:
             print(
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["kill_switch_on"]}}'
             )
             continue
-        if cap_usd > 0:
-            if current_portfolio_gross >= cap_usd:
-                print(
-                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"]}}'
-                )
-                continue
-            if current_portfolio_gross + effective_notional > cap_usd:
-                remaining = max(cap_usd - current_portfolio_gross, 0.0)
-                print(
-                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"],"remaining":{round(remaining,4)}}}'
-                )
-                continue
+        if cap_usd > 0 and current_portfolio_gross >= cap_usd:
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"]}}'
+            )
+            continue
         if allowed_set and sym_key not in allowed_set:
             print(f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["not_listed"]}}')
             continue
@@ -313,18 +304,51 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             except Exception:
                 cfg_min_notional = 0.0
         min_notional = max(exch_min_notional, cfg_min_notional)
-        vetoes = []
-        if effective_notional < min_notional:
-            vetoes.append("min_notional")
-        if effective_notional < min_qty_notional:
-            vetoes.append("min_qty_notional")
-        if vetoes and not entry_forced:
-            if dbg:
-                print(
-                    f'[sigdbg] {sym} tf={tf} px={round(price,4)} cap={cap} lev={lev} gross={round(effective_notional,4)} min_notional={min_notional} min_qty_notional={round(min_qty_notional,4)} veto={vetoes}'
-                )
+        sizing_result = determine_position_size(
+            symbol=sym_key,
+            strategy_cfg=scfg,
+            sizing_cfg=sizing_cfg,
+            risk_global_cfg=(rlc.get("global") or {}),
+            nav=nav,
+            timeframe=tf,
+            closes=closes,
+            price=price,
+            exchange_min_notional=min_notional,
+            min_qty_notional=min_qty_notional,
+            size_floor_usd=max(min_gross_floor, sym_floor),
+        )
+
+        if not sizing_result.ok and not entry_forced:
+            payload = {
+                "symbol": sym,
+                "tf": tf,
+                "veto": sizing_result.reasons or ["sizing_blocked"],
+            }
+            try:
+                meta = sizing_result.meta
+                if meta:
+                    payload["sizing"] = {
+                        "recommended": round(float(meta.get("recommended_gross", 0.0)), 4),
+                        "floor": round(float(meta.get("size_floor_usd", 0.0)), 4),
+                        "nav_cap": round(float(meta.get("nav_cap_usd", 0.0)), 4)
+                        if meta.get("nav_cap_usd") not in (None, float("inf"))
+                        else None,
+                        "vol_cap": round(float(meta.get("vol_cap_usd", 0.0)), 4)
+                        if meta.get("vol_cap_usd") not in (None, float("inf"))
+                        else None,
+                        "vol": round(float(meta.get("vol_estimate", 0.0)), 4),
+                    }
+            except Exception:
+                pass
+            print(f"[decision] {json.dumps(payload)}")
+            continue
+
+        effective_notional = sizing_result.gross if sizing_result.ok else max(min_gross_floor, sym_floor)
+        cap = effective_notional / max(lev, 1.0)
+        if cap_usd > 0 and (current_portfolio_gross + effective_notional) > cap_usd:
+            remaining = max(cap_usd - current_portfolio_gross, 0.0)
             print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","gross":{effective_notional},"min_notional":{min_notional},"veto":{vetoes}}}'
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"],"remaining":{round(remaining,4)}}}'
             )
             continue
         signal = (
