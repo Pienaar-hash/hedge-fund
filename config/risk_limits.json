@@ -1,27 +1,21 @@
 {
   "global": {
-    "max_gross_nav_pct": 25.0,
-    "daily_loss_limit_pct": 3.0,
-    "error_circuit": { "max_errors": 3, "window_sec": 120, "cooldown_sec": 600 }
+    "daily_loss_limit_pct": 2,
+    "cooldown_minutes_after_stop": 60,
+    "max_trades_per_symbol_per_hour": 6,
+    "drawdown_alert_pct": 10,
+    "max_gross_exposure_pct": 40,
+    "max_symbol_exposure_pct": 20,
+    "min_notional_usdt": 5.5,
+    "max_trade_nav_pct": 0.5
   },
-  "per_symbol": {
-    "BTCUSDT": {
-      "max_order_notional": 150.0,
-      "max_open_qty": 0.005,
-      "min_notional": 100.0,
-      "cooldown_sec": 60
-    },
-    "ETHUSDT": {
-      "max_order_notional": 100.0,
-      "max_open_qty": 0.05,
-      "min_notional": 20.0,
-      "cooldown_sec": 60
-    },
-    "SOLUSDT": {
-      "max_order_notional": 50.0,
-      "max_open_qty": 5,
-      "min_notional": 5.0,
-      "cooldown_sec": 60
-    }
+  "per_symbol": {},
+  "tiers": {},
+  "max_trade_nav_pct": 0.01,
+  "cooldown_sec": 900,
+  "orderbook_gate": {
+    "enabled": true,
+    "min_depth_notional": 5000,
+    "max_spread_bps": 3
   }
 }

@@ -1,0 +1,66 @@
+execution/
+- executor_live.py: Main trading loop orchestrating signal intake, sizing, risk gates, order placement, audit writes, and Firestore publishing.
+- exchange_utils.py: Low-level Binance USD-M REST client, order payload builder, filter cache, and price/balance helpers.
+- signal_screener.py: Loads enabled strategies, applies orderbook + ML gates, and produces intents consumed by the executor.
+- risk_limits.py: RiskGate and RiskState implementations enforcing gross exposure, cooldowns, tier caps, and veto reasons.
+- nav.py: NAV calculators combining exchange balances with treasury files and exposing PortfolioSnapshot.
+- state_publish.py: Debounced Firestore publisher with local JSONL fallback for NAV, positions, and audit trails.
+- sync_daemon.py: Polls local log snapshots and upserts them into Firestore when the executor cannot publish directly.
+- hedge_sync.py: Minimal loop wiring sync_state helpers for deployments that only need NAV/position hydration.
+- telegram_report.py: Generates daily NAV PNG + AI market note and optionally pushes to Telegram.
+- telegram_utils.py: Shared Telegram senders for trade alerts, heartbeats, and drawdown notifications.
+- universe_resolver.py: Reads tier/universe config to decide tradable symbols and throttles per group.
+- sizing.py: Normalizes desired gross exposure into exchange-compliant order quantities.
+- orderbook_features.py: Computes imbalance metrics used by the screener entry gate.
+- sync_state.py: File-to-Firestore sync functions with cutoff filtering, KPI derivation, and exposure metrics.
+- utils.py: JSON helpers, NAV snapshot writers, and local state persistence.
+Imports: executor_live → exchange_utils, nav, risk_limits, signal_screener, state_publish, telegram_utils; state_publish → google.cloud.firestore (optional), exchange_utils; signal_screener ↔ universe_resolver, sizing, risk_limits; sync_daemon/hedge_sync → utils.firestore_client.
+
+dashboard/
+- app.py: Primary Streamlit dashboard wiring Firestore data to KPI cards, charts, and log tails.
+- main.py: Legacy/alternate dashboard entry with more manual Firestore + log integration.
+- data_sources.py: Cached loaders that fetch Firestore docs with local JSONL fallbacks and normalization helpers.
+- dashboard_utils.py: Firestore connectors, NAV parsing helpers, mark-price utilities, and env readers for the dashboard.
+- firestore_helpers.py: Thin wrappers for Firestore document fetch/update used in historical versions.
+- theme.css: Custom styling applied by Streamlit.
+Imports: app.py → data_sources; main.py → dashboard_utils, Streamlit; data_sources.py → google.cloud.firestore (optional), project logs.
+
+utils/
+- firestore_client.py: Credential loader with env/base64 fallbacks returning a Firestore client or no-op stub.
+- perf_metrics.py: Performance metric utilities consumed by research/tests.
+- __init__.py: exposes helper exports.
+Imports: execution.sync_state, execution.sync_daemon, execution.telegram_report, dashboard.data_sources depend on firestore_client.
+
+config/
+- strategy_config.json: Enabled strategies, sizing defaults, ML toggles, treasury settings.
+- risk_limits.json: Global/tier/symbol risk caps loaded by executor and screener.
+- symbol_tiers.json: Tier mapping for symbols informing concentration limits.
+- pairs_universe.json: Allowed trading pairs list for screener + publisher filter.
+- treasury.json: Off-exchange holdings valued in NAV computations.
+- dashboard.yml: Dashboard widget and KPI configuration.
+- firestore_schema.json: Reference schema for Firestore collections/documents.
+- settings.json: Miscellaneous default settings consumed by scripts/tests.
+- firebase_creds.json: Local service-account credentials (guarded; not committed upstream).
+- off_exchange_reserves.json: Reserve wallets used in dashboard KPIs.
+Imports: execution modules read strategy_config/risk_limits/tiers; dashboard and sync utilities read dashboard.yml, treasury.json.
+
+scripts/
+- screener_probe.py: Command-line probe for would_emit decisions under specific notional/leverage/nav assumptions.
+- run_executor_once.sh: Shell wrapper to run the executor loop for a single cycle with sensible env defaults.
+- go_live_now.sh: Convenience script exporting env vars then launching executor + sync processes.
+- ml_retrain_daemon.py: Background loop that retrains ML models and updates artifacts under models/.
+- ml_fit.py / ml_score.py: Offline training and scoring utilities for the ML subsystem.
+- fetch_synced_state.py: Grabs Firestore state and persists it locally.
+- nav_probe.py / portfolio_probe.py: Inspection helpers focused on NAV snapshots and portfolio state.
+- ai_discovery.py: Uses OpenAI to explore trade ideas (optional tooling).
+- doctor.py / quick_checks.sh: Health checks for configs, env, and connectivity.
+Imports: scripts frequently import execution.signal_screener, execution.universe_resolver, utils.firestore_client to reuse core logic.
+
+deploy/
+- supervisor/hedge-executor.conf: Supervisor program definition running `python -m execution.executor_live` with prod env vars.
+- supervisor/hedge-dashboard.conf: Supervisor entry running Streamlit dashboard on port 8501.
+- supervisor/ml-retrain-nightly.conf: Nightly retrain job executing `scripts/ml_retrain_daemon.py` with .env.
+- supervisor/logs/: Default log locations for Supervisor-managed processes.
+- nginx/: Reverse-proxy configs for serving the dashboard.
+- run_dashboard.sh / run_dashboard_min.sh: Shell launchers for dashboard variants.
+Imports: Supervisor-managed services rely on PYTHONPATH including repo root; nginx proxies the dashboard service defined above.
