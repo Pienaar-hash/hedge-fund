@@ -24,7 +24,7 @@ class FakeRisk(RiskGate):
     def _gross_exposure_pct(self) -> float:
         return 0.0
 
-    def _symbol_exposure_pct(self, symbol: str) -> float:
+    def _symbol_exposure_pct(self, symbol: str, portfolio=None) -> float:
         return 0.0
 
     def _daily_loss_pct(self) -> float:
@@ -40,7 +40,7 @@ def test_allows_basic_trade_under_caps():
 
 def test_blocks_symbol_cap_when_future_pct_exceeds():
     class R(FakeRisk):
-        def _symbol_exposure_pct(self, symbol: str) -> float:
+        def _symbol_exposure_pct(self, symbol: str, portfolio=None) -> float:
             return 34.9
 
     r = R(CFG)

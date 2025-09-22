@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 import json
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 # Internal imports (non-optional)
 from .exchange_utils import get_klines, get_positions, get_price
@@ -80,7 +80,7 @@ def would_emit(
     *,
     notional: float = 10.0,
     lev: float = 20.0,
-    nav: float = 1000.0,
+    nav: Optional[float] = None,
     open_positions_count: int = 0,
     current_gross_notional: float = 0.0,
     current_tier_gross_notional: float = 0.0,
@@ -138,7 +138,7 @@ def would_emit(
         side=side,
         requested_notional=float(notional) * float(lev),
         price=0.0,
-        nav=float(nav),
+        nav=nav,
         open_qty=0.0,
         now=time.time(),
         cfg=cfg,
@@ -227,9 +227,12 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     if nav_override > 0:
         nav = nav_override
     else:
-        nav = float(snapshot.current_nav_usd())
-        if nav <= 0:
-            nav = 1000.0
+        try:
+            nav = float(snapshot.current_nav_usd())
+        except Exception:
+            nav = float("nan")
+    if FORCE_NAV_ZERO:
+        nav = 0.0
     current_portfolio_gross = float(snapshot.current_gross_usd())
     open_positions_count = 0
     tier_gross: Dict[str, float] = {}

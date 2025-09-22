@@ -1,12 +1,13 @@
+import math
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Dict, List, Tuple, Optional, Any, Callable
+from typing import Dict, List, Tuple, Optional, Any, Callable, Iterable
 import os
 import time
 
 from execution.nav import compute_trading_nav, compute_gross_exposure_usd
 from execution.utils import load_json
-from execution.exchange_utils import get_balances
+from execution.exchange_utils import get_balances, get_positions
 
 getcontext().prec = 28
 
@@ -37,7 +38,7 @@ class RiskState:
         # Attempt timestamps for burst control
         self._order_attempt_ts: List[float] = []
         # Optional daily PnL percent (negative means loss)
-        self.daily_pnl_pct: float = 0.0
+        self.daily_pnl_pct: float | None = None
 
     # --- Optional helpers used by check_order ---
     def note_fill(self, symbol: str, ts: float) -> None:
@@ -170,6 +171,115 @@ def _cfg_get(cfg: dict, path: List[str], default):
     return cur
 
 
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _portfolio_equity(portfolio: Any) -> float:
+    if portfolio is None:
+        return float("nan")
+    eq: Any = None
+    if hasattr(portfolio, "equity"):
+        eq = getattr(portfolio, "equity")
+    elif hasattr(portfolio, "nav"):
+        eq = getattr(portfolio, "nav")
+    if eq is None and isinstance(portfolio, dict):
+        for key in ("equity", "nav", "total_equity"):
+            if key in portfolio and portfolio[key] is not None:
+                eq = portfolio[key]
+                break
+    return _safe_float(eq)
+
+
+def _portfolio_positions(portfolio: Any) -> List[Dict[str, Any]]:
+    if portfolio is None:
+        return []
+    positions: Any = None
+    if hasattr(portfolio, "positions"):
+        positions = getattr(portfolio, "positions")
+    elif isinstance(portfolio, dict):
+        positions = portfolio.get("positions")
+    if positions is None:
+        return []
+    try:
+        if isinstance(positions, list):
+            return [p for p in positions if p is not None]
+        return [p for p in list(positions) if p is not None]
+    except Exception:
+        return []
+
+
+def _position_gross_notional(position: Dict[str, Any]) -> float:
+    if not isinstance(position, dict):
+        return 0.0
+    for key in (
+        "notional",
+        "notionalUsd",
+        "notional_usd",
+        "positionValue",
+        "position_value",
+    ):
+        if key in position and position[key] is not None:
+            try:
+                return abs(float(position[key]))
+            except (TypeError, ValueError):
+                continue
+    qty_val: Optional[float] = None
+    for key in ("qty", "positionAmt", "size", "quantity"):
+        if key in position and position[key] is not None:
+            try:
+                qty_val = float(position[key])
+                break
+            except (TypeError, ValueError):
+                continue
+    if qty_val is None or qty_val == 0.0:
+        return 0.0
+    price_val: Optional[float] = None
+    for key in (
+        "markPrice",
+        "mark_price",
+        "entryPrice",
+        "avgEntryPrice",
+        "price",
+        "avgPrice",
+    ):
+        if key in position and position[key] is not None:
+            try:
+                candidate = abs(float(position[key]))
+                if candidate > 0.0:
+                    price_val = candidate
+                    break
+            except (TypeError, ValueError):
+                continue
+    if price_val is None or price_val <= 0.0:
+        return 0.0
+    return abs(qty_val) * price_val
+
+
+def _compute_symbol_exposure_pct(
+    symbol: str, positions: Iterable[Dict[str, Any]], equity: float
+) -> float:
+    sym = str(symbol or "").upper()
+    if not sym:
+        return 0.0
+    if not math.isfinite(equity) or equity <= 0.0:
+        return float("inf")
+    gross = 0.0
+    for pos in positions or []:
+        if not isinstance(pos, dict):
+            continue
+        pos_sym = str(pos.get("symbol") or "").upper()
+        if pos_sym != sym:
+            continue
+        gross += _position_gross_notional(pos)
+    if gross <= 0.0:
+        return 0.0
+    return (gross / equity) * 100.0
+
+
 def check_order(
     symbol: str,
     side: str,
@@ -186,13 +296,14 @@ def check_order(
     open_positions_count: int | None = None,
     tier_name: Optional[str] = None,
     current_tier_gross_notional: float = 0.0,
+    portfolio: Optional[Any] = None,
 ) -> Tuple[bool, dict]:
     """Apply per-symbol and global risk checks.
 
     Returns (ok, details) where details has keys: reasons: list[str], notional: float, cooldown_until?: float
     """
     reasons: List[str] = []
-    details: Dict[str, float | List[str]] = {
+    details: Dict[str, Any] = {
         "reasons": reasons,
         "notional": float(requested_notional),
     }
@@ -200,6 +311,13 @@ def check_order(
     sym = str(symbol)
     s_cfg = _cfg_get(cfg, ["per_symbol", sym], {}) or {}
     g_cfg = _cfg_get(cfg, ["global"], {}) or {}
+
+    nav_f = _safe_float(nav)
+    nav_is_finite = math.isfinite(nav_f)
+    if (not nav_is_finite) or nav_f <= 0.0:
+        details["nav_value"] = nav_f if nav_is_finite else (nav if nav is not None else None)
+        reasons.append("nav_non_positive")
+        return False, details
 
     # Whitelist guardrail (if provided)
     wl = g_cfg.get("whitelist") or []
@@ -213,12 +331,14 @@ def check_order(
         day_lim = float(g_cfg.get("daily_loss_limit_pct", 0.0) or 0.0)
     except Exception:
         day_lim = 0.0
-    if day_lim > 0.0:
-        try:
-            if float(getattr(state, "daily_pnl_pct", 0.0)) <= -day_lim:
-                reasons.append("day_loss_limit")
-        except Exception:
-            pass
+    daily_pnl_val = float("nan")
+    if state is not None:
+        daily_pnl_val = _safe_float(getattr(state, "daily_pnl_pct", None))
+    if day_lim > 0.0 and math.isfinite(daily_pnl_val):
+        if daily_pnl_val <= -day_lim:
+            reasons.append("day_loss_limit")
+            details["daily_pnl_pct"] = daily_pnl_val
+            details["limit_pct"] = float(day_lim)
 
     # Per-order notional constraints
     g_min = float(g_cfg.get("min_notional_usdt", 0.0) or 0.0)
@@ -301,8 +421,8 @@ def check_order(
         max_trade_pct = float(g_cfg.get("max_trade_nav_pct", 10.0) or 0.0)
     except Exception:
         max_trade_pct = 0.0
-    if max_trade_pct > 0.0 and float(nav) > 0.0:
-        if req_notional > float(nav) * (max_trade_pct / 100.0):
+    if max_trade_pct > 0.0 and nav_f > 0.0:
+        if req_notional > nav_f * (max_trade_pct / 100.0):
             reasons.append("trade_gt_max_trade_nav_pct")
             reasons.append("trade_gt_10pct_equity")
 
@@ -315,7 +435,7 @@ def check_order(
     )
     if max_gross_nav_pct > 0.0:
         if will_violate_exposure(
-            float(current_gross_notional), req_notional, float(nav), max_gross_nav_pct
+            float(current_gross_notional), req_notional, nav_f, max_gross_nav_pct
         ):
             # keep legacy reason plus standardized alias
             reasons.append("max_gross_nav_pct")
@@ -338,12 +458,47 @@ def check_order(
             per_sym_pct = float(t_cfg.get("per_symbol_nav_pct", 0.0) or 0.0)
         except Exception:
             per_sym_pct = 0.0
-        if per_sym_pct > 0.0 and float(nav) > 0.0:
-            cap_abs = float(nav) * (per_sym_pct / 100.0)
+        if per_sym_pct > 0.0 and nav_f > 0.0:
+            cap_abs = nav_f * (per_sym_pct / 100.0)
             # current exposure for this symbol/tier + request
             cur = float(current_tier_gross_notional)
             if (cur + req_notional) > cap_abs:
                 reasons.append("tier_cap")
+
+    sym_cap_val = s_cfg.get("max_symbol_exposure_pct")
+    if sym_cap_val in (None, 0, 0.0):
+        sym_cap_val = g_cfg.get("max_symbol_exposure_pct", 0.0)
+    try:
+        sym_cap_pct = float(sym_cap_val or 0.0)
+    except Exception:
+        sym_cap_pct = 0.0
+    if sym_cap_pct > 0.0:
+        if portfolio is None:
+            try:
+                live_positions = get_positions() or []
+            except Exception:
+                live_positions = []
+            equity_val = nav_f
+        else:
+            live_positions = _portfolio_positions(portfolio)
+            equity_val = _portfolio_equity(portfolio)
+
+        current_pct = _compute_symbol_exposure_pct(sym, live_positions, equity_val)
+        additional_pct = float("inf")
+        if math.isfinite(equity_val) and equity_val > 0.0:
+            additional_pct = (abs(req_notional) / equity_val) * 100.0
+        if math.isfinite(current_pct) and math.isfinite(additional_pct):
+            projected_pct = current_pct + additional_pct
+        else:
+            projected_pct = float("inf")
+        details["symbol_exposure"] = {
+            "symbol": sym,
+            "current_pct": float(current_pct),
+            "projected_pct": float(projected_pct),
+            "cap_pct": float(sym_cap_pct),
+        }
+        if (not math.isfinite(projected_pct)) or (projected_pct - sym_cap_pct > 1e-9):
+            reasons.append("symbol_exposure_cap")
 
     ok = len(reasons) == 0
     return ok, details
@@ -384,6 +539,7 @@ class RiskGate:
                     continue
         self._last_stop_ts = 0.0
         self._trade_counts: Dict[tuple[str, int], int] = {}
+        self.last_nav_value: float | None = None
 
     # --- overridable helpers (tests may subclass) ---
     def _portfolio_nav(self) -> float:
@@ -426,8 +582,24 @@ class RiskGate:
         gross = float(self._portfolio_gross_usd())
         return (gross / nav) * 100.0
 
-    def _symbol_exposure_pct(self, symbol: str) -> float:
-        return 0.0
+    def _symbol_exposure_pct(
+        self, symbol: str, portfolio: Optional[Any] = None
+    ) -> float:
+        if portfolio is None:
+            try:
+                equity_val = float(self._portfolio_nav())
+            except Exception:
+                equity_val = 0.0
+            try:
+                live_positions = get_positions() or []
+            except Exception:
+                live_positions = []
+        else:
+            live_positions = _portfolio_positions(portfolio)
+            equity_val = _portfolio_equity(portfolio)
+        if math.isnan(equity_val):
+            equity_val = 0.0
+        return _compute_symbol_exposure_pct(symbol, live_positions, equity_val)
 
     def _portfolio_gross_usd(self) -> float:
         if hasattr(self, "nav_provider"):
@@ -495,7 +667,13 @@ class RiskGate:
                 self.nav_provider.refresh()
             except Exception:
                 pass
-        nav = max(float(self._portfolio_nav()), 1.0)
+        try:
+            nav = float(self._portfolio_nav())
+        except Exception:
+            nav = float("nan")
+        self.last_nav_value = nav
+        if not math.isfinite(nav) or nav <= 0.0:
+            return False, "nav_non_positive"
 
         guard_multiplier = 0.8 if os.environ.get("EVENT_GUARD", "0") == "1" else 1.0
 
