@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, localcontext
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -127,6 +129,9 @@ _RISK_GATE = RiskGate(_mk_gate_cfg(_RISK_CFG))
 _PORTFOLIO_SNAPSHOT = PortfolioSnapshot(load_json("config/strategy_config.json"))
 _RISK_GATE.nav_provider = _PORTFOLIO_SNAPSHOT
 
+NAV_LOG_PATH = os.getenv("NAV_LOG_PATH", "nav_log.json")
+_DAILY_OPEN_NAV_CACHE: Dict[str, Optional[float]] = {}
+
 # ---- knobs ----
 SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", "0") or 0)
@@ -191,6 +196,106 @@ def _compute_nav() -> float:
     return float(nav_val or 0.0)
 
 
+def _parse_nav_timestamp(ts: Any) -> Optional[datetime]:
+    if ts in (None, ""):
+        return None
+    if isinstance(ts, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        except Exception:
+            return None
+    if isinstance(ts, str):
+        try:
+            value = ts
+            if value.endswith("Z"):
+                value = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt
+        except Exception:
+            return None
+    return None
+
+
+def _nav_entry_value(entry: Dict[str, Any]) -> Optional[float]:
+    for key in (
+        "nav",
+        "equity",
+        "value",
+        "total_equity",
+        "walletBalance",
+        "wallet_balance",
+    ):
+        if key in entry and entry[key] not in (None, ""):
+            try:
+                val = float(entry[key])
+                if math.isfinite(val):
+                    return val
+            except Exception:
+                continue
+    return None
+
+
+def _load_today_open_nav(nav_path: Optional[str] = None) -> Optional[float]:
+    path = nav_path or NAV_LOG_PATH
+    today_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if today_key in _DAILY_OPEN_NAV_CACHE:
+        return _DAILY_OPEN_NAV_CACHE[today_key]
+
+    entries: Iterable[Dict[str, Any]] = []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        data = None
+
+    if isinstance(data, list):
+        entries = data
+    elif isinstance(data, dict):
+        for key in ("series", "rows", "data"):
+            maybe = data.get(key)
+            if isinstance(maybe, list):
+                entries = maybe
+                break
+
+    open_nav = None
+    open_ts: Optional[datetime] = None
+    for item in entries or []:
+        if not isinstance(item, dict):
+            continue
+        ts_val = item.get("timestamp") or item.get("t")
+        dt = _parse_nav_timestamp(ts_val)
+        if dt is None or dt.strftime("%Y-%m-%d") != today_key:
+            continue
+        nav_val = _nav_entry_value(item)
+        if nav_val is None or nav_val <= 0.0:
+            continue
+        if open_ts is None or dt < open_ts:
+            open_ts = dt
+            open_nav = nav_val
+
+    if open_nav is not None:
+        _DAILY_OPEN_NAV_CACHE.clear()
+        _DAILY_OPEN_NAV_CACHE[today_key] = open_nav
+    return open_nav
+
+
+def _compute_daily_pnl_pct(current_nav: float) -> Optional[float]:
+    try:
+        nav_val = float(current_nav)
+    except Exception:
+        return None
+    if not math.isfinite(nav_val) or nav_val <= 0.0:
+        return None
+    open_nav = _load_today_open_nav()
+    if open_nav is None or open_nav <= 0.0:
+        return None
+    return ((nav_val - open_nav) / open_nav) * 100.0
+
+
 def _gross_and_open_qty(
     symbol: str, pos_side: str, positions: Iterable[Dict[str, Any]]
 ) -> tuple[float, float]:
@@ -219,7 +324,8 @@ def _format_price_to_tick(tick_size: str | float | None, price: float, round_up:
         with localcontext() as ctx:
             ctx.rounding = ROUND_UP if round_up else ROUND_DOWN
             snapped = (value / tick).to_integral_value(rounding=ctx.rounding) * tick
-        decimals = max(0, -snapped.as_tuple().exponent)
+        exponent = snapped.as_tuple().exponent
+        decimals = max(0, -int(str(exponent)))
         return float(round(snapped, decimals))
     except Exception:
         return float(price)
@@ -436,7 +542,10 @@ def _send_order(intent: Dict[str, Any]) -> None:
         allowed, veto = True, ""
     if not allowed:
         price_hint = float(intent.get("price", 0.0) or 0.0)
-        _persist_veto(veto or "blocked", price_hint, {"intent": intent})
+        extra: Dict[str, Any] = {"intent": intent}
+        if (veto or "") == "nav_non_positive":
+            extra["nav_value"] = getattr(_RISK_GATE, "last_nav_value", None)
+        _persist_veto(veto or "blocked", price_hint, extra)
         return
 
     try:
@@ -444,6 +553,11 @@ def _send_order(intent: Dict[str, Any]) -> None:
     except Exception:
         positions = []
     nav = _compute_nav()
+    daily_pnl_pct = _compute_daily_pnl_pct(nav)
+    try:
+        _RISK_STATE.daily_pnl_pct = daily_pnl_pct
+    except Exception:
+        _RISK_STATE.daily_pnl_pct = None
     current_gross, sym_open_qty = _gross_and_open_qty(symbol, pos_side, positions)
 
     try:
@@ -475,6 +589,8 @@ def _send_order(intent: Dict[str, Any]) -> None:
             "notional": gross_target,
             "price": price_hint,
         }
+        if isinstance(details, dict) and "nav_value" in details:
+            block_info["nav_value"] = details.get("nav_value")
         LOG.warning("[risk] block %s", block_info)
         try:
             from execution.telegram_utils import send_telegram
@@ -497,12 +613,18 @@ def _send_order(intent: Dict[str, Any]) -> None:
                 "open_qty": sym_open_qty,
                 "gross": current_gross,
             }
-            if isinstance(details, dict) and "cooldown_until" in details:
-                audit["cooldown_until"] = details.get("cooldown_until")
+            if isinstance(details, dict):
+                if "cooldown_until" in details:
+                    audit["cooldown_until"] = details.get("cooldown_until")
+                if "nav_value" in details:
+                    audit["nav_value"] = details.get("nav_value")
             publish_order_audit(symbol, audit)
         except Exception:
             pass
-        _persist_veto(reason, price_hint, {"reasons": reasons, "intent": intent})
+        extra_payload: Dict[str, Any] = {"reasons": reasons, "intent": intent}
+        if isinstance(details, dict) and "nav_value" in details:
+            extra_payload["nav_value"] = details.get("nav_value")
+        _persist_veto(reason, price_hint, extra_payload)
         return
 
     price_hint = float(intent.get("price", 0.0) or 0.0)

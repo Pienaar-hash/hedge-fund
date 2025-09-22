@@ -48,6 +48,7 @@ def test_portfolio_cap_veto(monkeypatch, tmp_path):
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
     monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "0")
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
+    monkeypatch.setattr(sc, "_score_symbol", lambda *a, **k: {"p": 1.0}, raising=True)
     # Portfolio cap 15% of 1000 => 150. Current gross=149, request gross=10*20=200 -> block
     ok, reasons, _ = sc.would_emit(
         "BTCUSDT",
@@ -67,6 +68,7 @@ def test_tier_cap_veto(monkeypatch, tmp_path):
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
     monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "0")
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
+    monkeypatch.setattr(sc, "_score_symbol", lambda *a, **k: {"p": 1.0}, raising=True)
     # CORE per-symbol cap 8% of 1000 => 80. current tier gross=79, req gross=200 -> block
     ok, reasons, _ = sc.would_emit(
         "BTCUSDT",
@@ -86,6 +88,7 @@ def test_max_concurrent_positions_veto(monkeypatch, tmp_path):
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
     monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "0")
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
+    monkeypatch.setattr(sc, "_score_symbol", lambda *a, **k: {"p": 1.0}, raising=True)
     ok, reasons, _ = sc.would_emit(
         "BTCUSDT",
         "BUY",
@@ -109,3 +112,32 @@ def test_orderbook_adverse_veto(monkeypatch, tmp_path):
     ok, reasons, _ = sc.would_emit("BTCUSDT", "BUY", notional=10.0, lev=20.0, nav=1000.0)
     assert ok is False
     assert "ob_adverse" in reasons
+
+
+def test_would_emit_nav_non_positive(monkeypatch, tmp_path):
+    from execution import signal_screener as sc
+    monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
+    monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
+    monkeypatch.setenv("ORDERBOOK_GATE_ENABLED", "0")
+    monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
+    monkeypatch.setattr(sc, "_score_symbol", lambda *a, **k: {"p": 1.0}, raising=True)
+
+    ok_zero, reasons_zero, _ = sc.would_emit(
+        "BTCUSDT",
+        "BUY",
+        notional=10.0,
+        lev=20.0,
+        nav=0.0,
+    )
+    assert not ok_zero
+    assert reasons_zero == ["nav_non_positive"]
+
+    ok_none, reasons_none, _ = sc.would_emit(
+        "BTCUSDT",
+        "BUY",
+        notional=10.0,
+        lev=20.0,
+        nav=None,
+    )
+    assert not ok_none
+    assert reasons_none == ["nav_non_positive"]
