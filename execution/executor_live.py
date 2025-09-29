@@ -196,6 +196,51 @@ def _gross_and_open_qty(
     return gross, open_qty
 
 
+def _opposite_position(
+    symbol: str, desired_side: str, positions: Iterable[Dict[str, Any]]
+) -> tuple[str | None, float, float]:
+    sym = str(symbol).upper()
+    desired = str(desired_side).upper()
+    opposite = "SHORT" if desired == "LONG" else "LONG"
+    for p in positions or []:
+        try:
+            if str(p.get("symbol", "")).upper() != sym:
+                continue
+            ps = str(p.get("positionSide", "BOTH")).upper()
+            if ps != opposite:
+                continue
+            qty = float(p.get("qty", p.get("positionAmt", 0.0)) or 0.0)
+            if qty == 0.0:
+                continue
+            mark = float(p.get("markPrice") or p.get("entryPrice") or 0.0)
+            return opposite, abs(qty), abs(mark)
+        except Exception:
+            continue
+    return None, 0.0, 0.0
+
+
+def _update_risk_state_counters(
+    positions: Iterable[Dict[str, Any]],
+    portfolio_gross: float,
+) -> None:
+    open_positions = 0
+    for p in positions or []:
+        try:
+            qty = float(p.get("qty", p.get("positionAmt", 0.0)) or 0.0)
+        except Exception:
+            qty = 0.0
+        if qty != 0.0:
+            open_positions += 1
+
+    _RISK_STATE.open_notional = float(portfolio_gross)
+    _RISK_STATE.open_positions = int(open_positions)
+    try:
+        loss_pct = float(_RISK_GATE._daily_loss_pct())
+    except Exception:
+        loss_pct = 0.0
+    _RISK_STATE.daily_pnl_pct = -loss_pct
+
+
 def _send_order(intent: Dict[str, Any]) -> None:
     symbol = intent["symbol"]
     sig = str(intent.get("signal", "")).upper()
@@ -282,41 +327,82 @@ def _send_order(intent: Dict[str, Any]) -> None:
         reduce_only,
     )
 
-    # Shared gross-notional gate (canonical taxonomy)
-    try:
-        allowed, veto = _RISK_GATE.allowed_gross_notional(symbol, gross_target)
-    except Exception:
-        allowed, veto = True, ""
-    if not allowed:
-        price_hint = float(intent.get("price", 0.0) or 0.0)
-        _persist_veto(veto or "blocked", price_hint, {"intent": intent})
-        return
+    if not reduce_only:
+        # Shared gross-notional gate (canonical taxonomy)
+        try:
+            allowed, veto = _RISK_GATE.allowed_gross_notional(symbol, gross_target)
+        except Exception:
+            allowed, veto = True, ""
+        if not allowed:
+            price_hint = float(intent.get("price", 0.0) or 0.0)
+            _persist_veto(veto or "blocked", price_hint, {"intent": intent})
+            return
 
     try:
         positions = list(get_positions() or [])
     except Exception:
         positions = []
+
+    if not reduce_only and not intent.get("_skip_flip"):
+        opp_side, opp_qty, opp_mark = _opposite_position(symbol, pos_side, positions)
+        if opp_side and opp_qty > 0:
+            reduce_price = opp_mark if opp_mark > 0 else float(intent.get("price", 0.0) or 0.0)
+            if reduce_price <= 0:
+                try:
+                    reduce_price = float(get_price(symbol))
+                except Exception:
+                    reduce_price = 0.0
+            if reduce_price <= 0:
+                LOG.warning("Invalid reduce_price, skipping reduce-only intent")
+            else:
+                reduce_notional = abs(opp_qty) * reduce_price
+                reduce_intent = {
+                    "symbol": symbol,
+                    "signal": "BUY" if opp_side == "SHORT" else "SELL",
+                    "positionSide": opp_side,
+                    "reduceOnly": True,
+                    "price": reduce_price,
+                    "capital_per_trade": reduce_notional,
+                    "gross_usd": reduce_notional,
+                    "leverage": 1.0,
+                    "_skip_flip": True,
+                }
+                LOG.info(
+                    "[executor] flip flatten symbol=%s side=%s notional=%.4f",
+                    symbol,
+                    opp_side,
+                    reduce_notional,
+                )
+                _send_order(reduce_intent)
+                try:
+                    positions = list(get_positions() or [])
+                except Exception:
+                    positions = []
     nav = _compute_nav()
     current_gross, sym_open_qty = _gross_and_open_qty(symbol, pos_side, positions)
+    _update_risk_state_counters(positions, current_gross)
 
     try:
         _RISK_STATE.note_attempt(time.time())
     except Exception:
         pass
 
-    ok, details = check_order(
-        symbol=symbol,
-        side=side,
-        requested_notional=gross_target,
-        price=0.0,
-        nav=nav,
-        open_qty=sym_open_qty,
-        now=time.time(),
-        cfg=_RISK_CFG,
-        state=_RISK_STATE,
-        current_gross_notional=current_gross,
-        lev=lev,
-    )
+    if reduce_only:
+        ok, details = True, {"reasons": []}
+    else:
+        ok, details = check_order(
+            symbol=symbol,
+            side=side,
+            requested_notional=gross_target,
+            price=0.0,
+            nav=nav,
+            open_qty=sym_open_qty,
+            now=time.time(),
+            cfg=_RISK_CFG,
+            state=_RISK_STATE,
+            current_gross_notional=current_gross,
+            lev=lev,
+        )
     reasons = details.get("reasons", []) if isinstance(details, dict) else []
     if not ok:
         reason = reasons[0] if reasons else "blocked"
@@ -411,34 +497,35 @@ def _send_order(intent: Dict[str, Any]) -> None:
         if k in payload
     }
 
-    try:
-        allowed_now, veto_now = _RISK_GATE.allowed_gross_notional(symbol, gross_target)
-    except Exception:
-        allowed_now, veto_now = True, ""
-    if not allowed_now:
-        LOG.warning(
-            "[risk] final gate veto %s %s reason=%s", symbol, side, veto_now or "blocked"
-        )
-        _persist_veto(veto_now or "blocked", norm_price, {
-            "intent": intent,
-            "normalized_qty": norm_qty,
-            "payload": payload_view,
-            "meta": meta,
-        })
+    if not reduce_only:
         try:
-            publish_order_audit(
-                symbol,
-                {
-                    "phase": "blocked",
-                    "side": side,
-                    "positionSide": pos_side,
-                    "reason": veto_now or "blocked",
-                    "notional": gross_target,
-                },
-            )
+            allowed_now, veto_now = _RISK_GATE.allowed_gross_notional(symbol, gross_target)
         except Exception:
-            pass
-        return
+            allowed_now, veto_now = True, ""
+        if not allowed_now:
+            LOG.warning(
+                "[risk] final gate veto %s %s reason=%s", symbol, side, veto_now or "blocked"
+            )
+            _persist_veto(veto_now or "blocked", norm_price, {
+                "intent": intent,
+                "normalized_qty": norm_qty,
+                "payload": payload_view,
+                "meta": meta,
+            })
+            try:
+                publish_order_audit(
+                    symbol,
+                    {
+                        "phase": "blocked",
+                        "side": side,
+                        "positionSide": pos_side,
+                        "reason": veto_now or "blocked",
+                        "notional": gross_target,
+                    },
+                )
+            except Exception:
+                pass
+            return
 
     normalized_ctx = {"price": norm_price, "qty": norm_qty, **meta}
 
@@ -714,6 +801,13 @@ def _pub_tick() -> None:
 
 def _loop_once(i: int) -> None:
     _account_snapshot()
+
+    try:
+        baseline_positions = list(get_positions() or [])
+    except Exception:
+        baseline_positions = []
+    gross_total, _ = _gross_and_open_qty("", "", baseline_positions)
+    _update_risk_state_counters(baseline_positions, gross_total)
 
     if INTENT_TEST:
         intent = {
