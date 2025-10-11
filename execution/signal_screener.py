@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 import os
-from .exchange_utils import get_klines, get_price
+from .exchange_utils import get_klines, get_price, get_symbol_filters
 from .orderbook_features import evaluate_entry_gate
 from .universe_resolver import resolve_allowed_symbols, symbol_tier, is_listed_on_futures
-from .risk_limits import check_order
+from .risk_limits import check_order, RiskState, RiskGate
 from .nav import PortfolioSnapshot
 
 try:
@@ -17,12 +17,90 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     _score_symbol = None
 
-try:
-    from .exchange_utils import get_symbol_filters  # prefers public alias
-except Exception:
-    from .exchange_utils import _symbol_filters as get_symbol_filters  # fallback
-
 LOG_TAG = "[screener]"
+
+
+def _positions_by_side(
+    positions: Iterable[Dict[str, Any]]
+) -> Dict[str, Dict[str, Dict[str, float]]]:
+    out: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for raw in positions or []:
+        try:
+            sym = str(raw.get("symbol", "")).upper()
+            if not sym:
+                continue
+            side = str(raw.get("positionSide", "BOTH")).upper()
+            if side not in ("LONG", "SHORT"):
+                continue
+            qty = float(raw.get("qty", raw.get("positionAmt", 0.0)) or 0.0)
+            if qty == 0.0:
+                continue
+            abs_qty = abs(qty)
+            mark = float(raw.get("markPrice") or raw.get("entryPrice") or 0.0)
+            notional = abs_qty * abs(mark)
+            out.setdefault(sym, {})[side] = {
+                "qty": abs_qty,
+                "mark": abs(mark),
+                "notional": notional,
+            }
+        except Exception:
+            continue
+    return out
+
+
+def _reduce_plan(
+    symbol: str,
+    signal: str,
+    timeframe: str,
+    positions: Dict[str, Dict[str, float]],
+    fallback_price: float,
+) -> Tuple[List[Dict[str, Any]], float]:
+    """Return (reduce_intents, notional_delta)."""
+    desired_side = "LONG" if signal == "BUY" else "SHORT"
+    opposite_side = "SHORT" if desired_side == "LONG" else "LONG"
+    opp = positions.get(opposite_side, {}) if positions else {}
+    qty = float(opp.get("qty", 0.0) or 0.0)
+    if qty <= 0.0:
+        return [], 0.0
+    mark = float(opp.get("mark", 0.0) or 0.0)
+    mark = mark if mark > 0 else float(fallback_price)
+    if mark <= 0:
+        return [], 0.0
+    notional = float(opp.get("notional", qty * mark) or (qty * mark))
+    reduce_signal = "BUY" if opposite_side == "SHORT" else "SELL"
+    intent = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "signal": reduce_signal,
+        "reduceOnly": True,
+        "positionSide": opposite_side,
+        "price": mark,
+        "capital_per_trade": notional,
+        "leverage": 1.0,
+        "gross_usd": notional,
+        "source": "auto_reduce",
+    }
+    return [intent], notional
+
+
+_SCREENER_RISK_STATE = RiskState()
+_SCREENER_GATE = RiskGate({"sizing": {}, "risk": {}})
+
+
+def _update_screener_risk_state(
+    snapshot: PortfolioSnapshot,
+    open_notional: float,
+    open_positions: int,
+) -> None:
+    _SCREENER_GATE.nav_provider = snapshot
+    try:
+        loss_pct = float(_SCREENER_GATE._daily_loss_pct())
+    except Exception:
+        loss_pct = 0.0
+    _SCREENER_RISK_STATE.daily_pnl_pct = -loss_pct
+    _SCREENER_RISK_STATE.open_notional = float(open_notional)
+    _SCREENER_RISK_STATE.open_positions = int(open_positions)
 
 
 def _risk_cfg_path() -> str:
@@ -80,20 +158,22 @@ def would_emit(
     """
     sym = str(symbol).upper()
     extra: Dict[str, Any] = {}
+    reasons: List[str] = []
 
     if not is_listed_on_futures(sym):
         return False, ["not_listed"], extra
 
     veto, info = evaluate_entry_gate(sym, side, enabled=orderbook_gate)
+    metric = float(info.get("metric", 0.0) or 0.0)
     if veto:
-        return False, ["ob_adverse"], {"metric": float(info.get("metric", 0.0) or 0.0)}
+        reasons.append("ob_adverse")
+        extra["metric"] = metric
     else:
-        m = float(info.get("metric", 0.0) or 0.0)
-        if (side.upper() in ("BUY", "LONG") and m > 0.20) or (
-            side.upper() in ("SELL", "SHORT") and m < -0.20
+        if (side.upper() in ("BUY", "LONG") and metric > 0.20) or (
+            side.upper() in ("SELL", "SHORT") and metric < -0.20
         ):
             extra["flag"] = "ob_aligned"
-            extra["metric"] = m
+            extra["metric"] = metric
 
     ml_cfg = {}
     base_cfg = {}
@@ -114,12 +194,16 @@ def would_emit(
                 prob = float(prob)
                 extra["ml_p"] = prob
                 if prob < threshold:
-                    return False, [f"ml_p<{threshold:.2f}"] , extra
+                    reasons.append(f"ml_p<{threshold:.2f}")
         except Exception as exc:  # pragma: no cover - ML optional
             extra["ml_error"] = str(exc)
 
     cfg = _load_risk_cfg()
     tname = symbol_tier(sym)
+    temp_state = RiskState()
+    temp_state.daily_pnl_pct = _SCREENER_RISK_STATE.daily_pnl_pct
+    temp_state.open_notional = float(current_gross_notional)
+    temp_state.open_positions = int(open_positions_count)
     ok, details = check_order(
         symbol=sym,
         side=side,
@@ -129,7 +213,7 @@ def would_emit(
         open_qty=0.0,
         now=time.time(),
         cfg=cfg,
-        state=None,  # type: ignore[arg-type]
+        state=temp_state,
         current_gross_notional=float(current_gross_notional),
         lev=float(lev),
         open_positions_count=int(open_positions_count),
@@ -137,9 +221,11 @@ def would_emit(
         current_tier_gross_notional=float(current_tier_gross_notional),
     )
     rs = [str(r) for r in (details.get("reasons") or [])]
-    if not ok:
-        return False, rs, extra
-    return True, rs, extra
+    for reason in rs:
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    overall_ok = (len(reasons) == 0) and ok
+    return overall_ok, reasons, extra
 
 
 def _rsi(closes: List[float], period: int = 14) -> float:
@@ -220,10 +306,12 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     current_portfolio_gross = float(snapshot.current_gross_usd())
     open_positions_count = 0
     tier_gross: Dict[str, float] = {}
+    positions_by_symbol: Dict[str, Dict[str, Dict[str, float]]] = {}
     try:
         from .exchange_utils import get_positions
 
         pos = list(get_positions() or [])
+        positions_by_symbol = _positions_by_side(pos)
         gross_from_positions = 0.0
         for p in pos:
             qty = float(p.get("qty", p.get("positionAmt", 0.0)) or 0.0)
@@ -242,6 +330,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             current_portfolio_gross = gross_from_positions
     except Exception:
         pass
+    _update_screener_risk_state(snapshot, current_portfolio_gross, open_positions_count)
     cap_pct = float(sizing_cfg.get("max_gross_exposure_pct", 0.0) or 0.0)
     if os.environ.get("EVENT_GUARD", "0") == "1":
         cap_pct *= 0.8
@@ -252,29 +341,19 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         sym = scfg.get("symbol")
         sym_key = str(sym).upper()
         tf = scfg.get("timeframe", "15m")
-        cap = float(scfg.get("capital_per_trade", 0) or 0) or 10.0
+        cap_cfg = float(scfg.get("capital_per_trade", 0) or 0) or 10.0
         lev = float(scfg.get("leverage", 1) or 1) or 20.0
-        gross_cap = cap * lev
+        if lev <= 0:
+            lev = 1.0
+        gross_cap = cap_cfg * lev
         sym_floor = per_symbol_gross_floor.get(sym_key, 0.0)
-        effective_notional = max(gross_cap, min_gross_floor, sym_floor)
+        config_floor = max(gross_cap, min_gross_floor, sym_floor)
         entry_forced = (scfg.get("entry", {}) or {}).get("type") == "always_on"
         if kill_switch:
             print(
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["kill_switch_on"]}}'
             )
             continue
-        if cap_usd > 0:
-            if current_portfolio_gross >= cap_usd:
-                print(
-                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"]}}'
-                )
-                continue
-            if current_portfolio_gross + effective_notional > cap_usd:
-                remaining = max(cap_usd - current_portfolio_gross, 0.0)
-                print(
-                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"],"remaining":{round(remaining,4)}}}'
-                )
-                continue
         if allowed_set and sym_key not in allowed_set:
             print(f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["not_listed"]}}')
             continue
@@ -285,33 +364,45 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             rsi = _rsi(closes, 14)
             z = _zscore(closes, 20)
             filters = get_symbol_filters(sym)
-            exch_min_notional = float(
-                (filters.get("MIN_NOTIONAL", {}) or {}).get("notional", 0) or 0.0
+            notional_filter = (
+                filters.get("MIN_NOTIONAL")
+                or filters.get("NOTIONAL")
+                or {}
             )
-            lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE", {})
-            step = float(lot.get("stepSize", 1.0))
-            min_qty = float(lot.get("minQty", 1.0))
-            # Exchange min qty notional is price*minQty; compare against gross cap (no leverage division)
-            min_qty_notional = price * max(min_qty, step)
+            exch_min_notional = float(
+                (notional_filter.get("minNotional")
+                or notional_filter.get("notional")
+                or 0.0)
+            )
+            lot = filters.get("LOT_SIZE") or filters.get("MARKET_LOT_SIZE") or {}
+            step = float(lot.get("stepSize", 0.0) or 0.0)
+            min_qty = float(lot.get("minQty", 0.0) or 0.0)
+            qty_floor = max(min_qty, step)
+            min_qty_notional = price * qty_floor if price > 0 else 0.0
         except Exception as e:
             print(f"{LOG_TAG} {sym} {tf} error: {e}")
             continue
-        # Use global min_notional_usdt from risk_limits.json (fallback to strategy_config.json if present there)
-        try:
-            rlc = json.load(open("config/risk_limits.json"))
-            cfg_min_notional = float(
-                (rlc.get("global") or {}).get("min_notional_usdt", 0) or 0
-            )
-        except Exception:
-            try:
-                cfg_min_notional = float(
-                    (json.load(open("config/strategy_config.json"))).get(
-                        "min_notional_usdt", 0
-                    )
-                    or 0
+        cfg_min_notional = float(
+            (rlc.get("global") or {}).get("min_notional_usdt", 0.0) or 0.0
+        )
+        if cfg_min_notional <= 0:
+            cfg_min_notional = float(base_cfg.get("min_notional_usdt", 0.0) or 0.0)
+        floor_notional = max(config_floor, cfg_min_notional, exch_min_notional, min_qty_notional)
+        requested_notional = floor_notional
+        cap = requested_notional / lev
+        if cap_usd > 0:
+            if current_portfolio_gross >= cap_usd:
+                print(
+                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"]}}'
                 )
-            except Exception:
-                cfg_min_notional = 0.0
+                continue
+            if current_portfolio_gross + requested_notional > cap_usd:
+                remaining = max(cap_usd - current_portfolio_gross, 0.0)
+                print(
+                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"],"remaining":{round(remaining,4)}}}'
+                )
+                continue
+        effective_notional = requested_notional
         min_notional = max(exch_min_notional, cfg_min_notional)
         vetoes = []
         if effective_notional < min_notional:
@@ -377,27 +468,70 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
 
         # Risk pre-check
         tname = symbol_tier(sym)
-        tcur = tier_gross.get(tname or "?", 0.0)
+        tier_key = tname or "?"
+        tcur = tier_gross.get(tier_key, 0.0)
+
+        reduce_intents, reduce_notional = _reduce_plan(
+            sym,
+            signal,
+            tf,
+            positions_by_symbol.get(sym_key, {}),
+            price,
+        )
+        adj_portfolio_gross = max(current_portfolio_gross - reduce_notional, 0.0)
+        adj_tier_gross = max(tcur - reduce_notional, 0.0)
+        adj_open_positions = open_positions_count
+        if reduce_notional > 0.0 and adj_open_positions > 0:
+            adj_open_positions -= 1
+
         ok, details = check_order(
             symbol=sym,
             side=signal,
-            requested_notional=max(effective_notional, cap * lev),
+            requested_notional=requested_notional,
             price=price,
             nav=nav,
             open_qty=0.0,
             now=time.time(),
             cfg=rlc,
             state=None,  # type: ignore[arg-type]
-            current_gross_notional=current_portfolio_gross,
+            current_gross_notional=adj_portfolio_gross,
             lev=lev,
-            open_positions_count=open_positions_count,
+            open_positions_count=adj_open_positions,
             tier_name=tname,
-            current_tier_gross_notional=tcur,
+            current_tier_gross_notional=adj_tier_gross,
         )
         if not ok:
             rs = details.get("reasons", []) if isinstance(details, dict) else []
+            if reduce_intents:
+                for ri in reduce_intents:
+                    out.append(ri)
+                    pos_side = ri.get("positionSide")
+                    if pos_side:
+                        positions_by_symbol.setdefault(sym_key, {}).pop(pos_side, None)
+                current_portfolio_gross = adj_portfolio_gross
+                tier_gross[tier_key] = adj_tier_gross
+                open_positions_count = adj_open_positions
+                _update_screener_risk_state(
+                    snapshot,
+                    current_portfolio_gross,
+                    open_positions_count,
+                )
             print(f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":{json.dumps(rs)}}}')
             continue
+        if reduce_intents:
+            for ri in reduce_intents:
+                out.append(ri)
+                pos_side = ri.get("positionSide")
+                if pos_side:
+                    positions_by_symbol.setdefault(sym_key, {}).pop(pos_side, None)
+            current_portfolio_gross = adj_portfolio_gross
+            tier_gross[tier_key] = adj_tier_gross
+            open_positions_count = adj_open_positions
+            _update_screener_risk_state(
+                snapshot,
+                current_portfolio_gross,
+                open_positions_count,
+            )
         intent = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
             "symbol": sym,
@@ -408,7 +542,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "capital_per_trade": cap,
             "leverage": lev,
             "cap_usd": cap,
-            "gross_usd": cap * lev,
+            "gross_usd": requested_notional,
             "min_notional": min_notional,
         }
         if ml_prob is not None:
@@ -423,5 +557,20 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         )
         out.append(intent)
         current_portfolio_gross += effective_notional
+        tier_gross[tier_key] = adj_tier_gross + effective_notional
+        open_positions_count += 1
+        qty_est = requested_notional / price if price > 0 else 0.0
+        positions_by_symbol.setdefault(sym_key, {})[
+            "LONG" if signal == "BUY" else "SHORT"
+        ] = {
+            "qty": abs(qty_est),
+            "mark": price,
+            "notional": requested_notional,
+        }
+        _update_screener_risk_state(
+            snapshot,
+            current_portfolio_gross,
+            open_positions_count,
+        )
     print(f"{LOG_TAG} attempted={attempted} emitted={len(out)}")
     return out
