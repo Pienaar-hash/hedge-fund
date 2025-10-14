@@ -1,3 +1,6 @@
+# Keep defaults otherwise; this config narrows scope to stable, lintable code.
+
+[lint]
 exclude = [
   "dashboard/",
   "strategies/",
@@ -11,5 +14,6 @@ exclude = [
   "execution/*bak*",
 ]
 
-# Keep defaults otherwise; this config narrows scope to stable, lintable code.
-
+[lint.per-file-ignores]
+"dashboard/dashboard_utils.py" = ["E402"]
+"dashboard/main.py" = ["E402"]

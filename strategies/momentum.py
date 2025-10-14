@@ -51,12 +51,6 @@ class StrategyImpl(Strategy):
             if not top_symbols:
                 continue
 
-            # Capital allocation scaling based on zscore
-            total_weight = sum(abs(z) for _, z in top_symbols)
-            capital_alloc = {
-                symbol: (abs(z) / total_weight) * self.starting_equity for symbol, z in top_symbols
-            }
-
             for symbol, _ in top_symbols:
                 df = price_data[symbol]
                 i = df.index.get_loc(rebalance_time)
@@ -90,9 +84,7 @@ class StrategyImpl(Strategy):
                     exit_time = df.index[i + self.hold_period]
                     exit_price = df.iloc[i + self.hold_period]['close']
 
-                capital = capital_alloc[symbol]
                 log_ret = np.log(exit_price / entry_price) if is_long else np.log(entry_price / exit_price)
-                pnl = capital * log_ret
                 all_trades.append({
                     "symbol": symbol,
                     "entry_time": entry_time,

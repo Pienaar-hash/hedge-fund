@@ -39,7 +39,8 @@ def fmt_arrow(delta):
 
 def main():
     if not BOT or not CHAT:
-        print("heartbeat_error: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID"); return
+        print("heartbeat_error: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+        return
     nav, top = nav_and_top_positions()
     delta24 = 0.0  # placeholder unless you persist NAV history
     arrow = fmt_arrow(delta24)

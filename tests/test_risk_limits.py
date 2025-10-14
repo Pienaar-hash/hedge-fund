@@ -1,6 +1,7 @@
 from execution.risk_limits import (
     RiskConfig,
     RiskState,
+    RiskGate,
     can_open_position,
     check_order,
     clamp_order_size,
@@ -190,6 +191,65 @@ def test_guardrail_error_circuit_breaker_blocks():
     )
     assert not ok
     assert "circuit_breaker" in details.get("reasons", [])
+
+
+def test_risk_gate_symbol_cap_blocks_when_limit_exceeded():
+    gate = RiskGate({
+        "sizing": {"max_symbol_exposure_pct": 20.0},
+        "risk": {},
+    })
+
+    class DummySnapshot:
+        def __init__(self):
+            self.nav = 1000.0
+            self.gross_map = {"BTCUSDT": 190.0}
+
+        def refresh(self) -> None:
+            return None
+
+        def current_nav_usd(self) -> float:
+            return self.nav
+
+        def current_gross_usd(self) -> float:
+            return sum(self.gross_map.values())
+
+        def symbol_gross_usd(self):
+            return dict(self.gross_map)
+
+    gate.nav_provider = DummySnapshot()
+
+    allowed, reason = gate.allowed_gross_notional("BTCUSDT", 50.0)
+    assert not allowed
+    assert reason == "symbol_cap"
+
+
+def test_risk_gate_symbol_cap_allows_within_limit():
+    gate = RiskGate({
+        "sizing": {"max_symbol_exposure_pct": 25.0},
+        "risk": {},
+    })
+
+    class DummySnapshot:
+        def __init__(self):
+            self.nav = 1000.0
+            self.gross_map = {"ETHUSDT": 100.0}
+
+        def refresh(self) -> None:
+            return None
+
+        def current_nav_usd(self) -> float:
+            return self.nav
+
+        def current_gross_usd(self) -> float:
+            return sum(self.gross_map.values())
+
+        def symbol_gross_usd(self):
+            return dict(self.gross_map)
+
+    gate.nav_provider = DummySnapshot()
+    allowed, reason = gate.allowed_gross_notional("ETHUSDT", 120.0)
+    assert allowed
+    assert reason == ""
 
 
 def test_micro_notional_lev_included_allows_10_blocks_9():

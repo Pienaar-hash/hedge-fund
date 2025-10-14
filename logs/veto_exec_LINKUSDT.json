@@ -1,7 +1,22 @@
 {
   "symbol": "LINKUSDT",
-  "veto": "trade_rate_limit",
-  "gross_usd": 110.0,
-  "price": 23.605,
-  "ts": 1758145232.497476
+  "side": "BUY",
+  "positionSide": "LONG",
+  "reason": "trade_gt_max_trade_nav_pct",
+  "gross_usd": 20.0,
+  "price": 18.866,
+  "ts": 1760474324.0327919,
+  "intent": {
+    "timestamp": "2025-10-14T20:38:41+00:00",
+    "symbol": "LINKUSDT",
+    "timeframe": "15m",
+    "signal": "BUY",
+    "reduceOnly": false,
+    "price": 18.866,
+    "capital_per_trade": 6.666666666666667,
+    "leverage": 3.0,
+    "cap_usd": 6.666666666666667,
+    "gross_usd": 20.0,
+    "min_notional": 20.0
+  }
 }

@@ -1,9 +1,19 @@
 {
-  "daily_loss_limit_pct": 2,
-  "cooldown_minutes_after_stop": 60,
-  "max_trades_per_symbol_per_hour": 6,
-  "drawdown_alert_pct": 10,
-  "max_gross_exposure_pct": 40,
-  "max_symbol_exposure_pct": 20,
-  "min_notional_usdt": 5.5
+  "global": {
+    "daily_loss_limit_pct": 2,
+    "cooldown_minutes_after_stop": 60,
+    "max_trades_per_symbol_per_hour": 6,
+    "drawdown_alert_pct": 10,
+    "max_gross_exposure_pct": 40,
+    "max_symbol_exposure_pct": 20,
+    "max_trade_nav_pct": 5
+  },
+  "per_symbol": {
+    "BTCUSDT": {
+      "max_trade_nav_pct": 0.5
+    },
+    "ETHUSDT": {
+      "max_trade_nav_pct": 0.5
+    }
+  }
 }

@@ -4,11 +4,10 @@
   "universe": [
     "BTC"
   ],
-  "capital_base_usdt": 2328.85,
   "nav": {
     "trading_source": "exchange",
     "reporting_source": "exchange",
-    "include_spot_treasury": false,
+    "include_spot_treasury": true,
     "manual_nav_usdt": null
   },
   "sizing": {
@@ -26,14 +25,15 @@
     "max_open_positions": 1,
     "max_gross_exposure_pct": 40,
     "max_symbol_exposure_pct": 20,
-    "min_notional_usdt": 5.5,
-    "min_gross_usd_per_order": 110,
+    "min_gross_usd_per_order": 10,
+    "target_gross_usd_per_order": 18,
+    "min_gross_nav_pct": 0.5,
     "slippage_bps": 3,
     "taker_fee_bps": 5,
     "per_symbol_min_gross_usd": {
-      "BTCUSDT": 150
+      "BTCUSDT": 15
     },
-    "max_trade_nav_pct": 0.5
+    "max_trade_nav_pct": 5
   },
   "risk": {
     "daily_loss_limit_pct": 2,

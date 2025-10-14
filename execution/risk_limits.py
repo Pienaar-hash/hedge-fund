@@ -8,6 +8,47 @@ from execution.nav import compute_trading_nav, compute_gross_exposure_usd
 from execution.utils import load_json
 from execution.exchange_utils import get_balances
 
+
+_GLOBAL_KEYS = {
+    "daily_loss_limit_pct",
+    "cooldown_minutes_after_stop",
+    "max_trades_per_symbol_per_hour",
+    "drawdown_alert_pct",
+    "max_gross_exposure_pct",
+    "max_portfolio_gross_nav_pct",
+    "max_symbol_exposure_pct",
+    "min_notional_usdt",
+    "max_trade_nav_pct",
+    "max_concurrent_positions",
+    "burst_limit",
+    "error_circuit",
+    "whitelist",
+}
+
+
+def _normalize_risk_cfg(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Ensure risk config exposes `global` and `per_symbol` sections."""
+    if not isinstance(cfg, dict):
+        return {"global": {}, "per_symbol": {}}
+
+    out = dict(cfg)
+
+    g = out.get("global")
+    if not isinstance(g, dict):
+        g = {}
+    # hoist known globals if they were at top-level legacy locations
+    for key in _GLOBAL_KEYS:
+        if key in out and key not in g:
+            g[key] = out[key]
+    out["global"] = g
+
+    per_symbol = out.get("per_symbol")
+    if not isinstance(per_symbol, dict):
+        per_symbol = {}
+    out["per_symbol"] = per_symbol
+
+    return out
+
 getcontext().prec = 28
 
 
@@ -191,6 +232,8 @@ def check_order(
 
     Returns (ok, details) where details has keys: reasons: list[str], notional: float, cooldown_until?: float
     """
+    cfg = _normalize_risk_cfg(cfg)
+
     reasons: List[str] = []
     details: Dict[str, float | List[str]] = {
         "reasons": reasons,
@@ -362,6 +405,7 @@ class RiskGate:
         self.cfg = cfg or {}
         self.sizing = dict(self.cfg.get("sizing", {}) or {})
         self.risk = dict(self.cfg.get("risk", {}) or {})
+        self.nav_provider: Optional[Any] = None
         try:
             self.min_notional = float(self.sizing.get("min_notional_usdt", 5.0))
         except Exception:
@@ -386,9 +430,10 @@ class RiskGate:
     # --- overridable helpers (tests may subclass) ---
     def _portfolio_nav(self) -> float:
         # Best-effort NAV; tests may override
-        if hasattr(self, "nav_provider"):
+        provider = self.nav_provider
+        if provider is not None:
             try:
-                return float(self.nav_provider.current_nav_usd())
+                return float(provider.current_nav_usd())
             except Exception:
                 pass
         cfg: Dict[str, Any] = {}
@@ -425,12 +470,36 @@ class RiskGate:
         return (gross / nav) * 100.0
 
     def _symbol_exposure_pct(self, symbol: str) -> float:
-        return 0.0
+        nav = float(self._portfolio_nav())
+        if nav <= 0:
+            return 0.0
+        sym = str(symbol).upper()
+        gross_map: Dict[str, float] = {}
+        provider = self.nav_provider
+        if provider is not None:
+            try:
+                getter = getattr(provider, "symbol_gross_usd", None)
+                if callable(getter):
+                    gross_map = getter()
+            except Exception:
+                gross_map = {}
+        if not gross_map:
+            try:
+                from execution.nav import compute_symbol_gross_usd
+
+                gross_map = compute_symbol_gross_usd()
+            except Exception:
+                gross_map = {}
+        sym_gross = float(gross_map.get(sym, 0.0) or 0.0)
+        if sym_gross <= 0:
+            return 0.0
+        return (sym_gross / nav) * 100.0
 
     def _portfolio_gross_usd(self) -> float:
-        if hasattr(self, "nav_provider"):
+        provider = self.nav_provider
+        if provider is not None:
             try:
-                return float(self.nav_provider.current_gross_usd())
+                return float(provider.current_gross_usd())
             except Exception:
                 pass
         try:
@@ -488,9 +557,10 @@ class RiskGate:
             self._last_stop_ts = now_ts
             return False, "daily_loss_limit"
 
-        if hasattr(self, "nav_provider"):
+        provider = self.nav_provider
+        if provider is not None:
             try:
-                self.nav_provider.refresh()
+                provider.refresh()
             except Exception:
                 pass
         nav = max(float(self._portfolio_nav()), 1.0)
@@ -498,7 +568,7 @@ class RiskGate:
         guard_multiplier = 0.8 if os.environ.get("EVENT_GUARD", "0") == "1" else 1.0
 
         try:
-            max_trade_pct = float(self.sizing.get("max_trade_nav_pct", 10.0) or 0.0)
+            max_trade_pct = float(self.sizing.get("max_trade_nav_pct", 0.0) or 0.0)
         except Exception:
             max_trade_pct = 0.0
         max_trade_pct *= guard_multiplier
@@ -507,6 +577,11 @@ class RiskGate:
                 return False, "trade_gt_max_trade_nav_pct"
 
         current_gross = float(self._portfolio_gross_usd())
+        if current_gross <= 0.0 and nav > 0.0:
+            try:
+                current_gross = max(0.0, float(self._gross_exposure_pct())) * nav / 100.0
+            except Exception:
+                current_gross = 0.0
         try:
             max_gross_pct = float(self.sizing.get("max_gross_exposure_pct", 150) or 0)
         except Exception:

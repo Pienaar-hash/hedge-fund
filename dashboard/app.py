@@ -23,6 +23,13 @@ import pandas as pd
 import streamlit as st
 from pathlib import Path
 
+from execution import nav as navmod
+from dashboard.nav_helpers import (
+    format_treasury_table,
+    signal_attempts_summary,
+    treasury_table_from_summary,
+)
+
 # Diagnostics container populated during data loads
 _DIAG: Dict[str, Any] = {
     "source": None,
@@ -312,7 +319,6 @@ def load_signals_table(limit: int = 100) -> pd.DataFrame:
         return pd.DataFrame(rows)
     tag = "[screener->executor]"
     raw = _literal_tail(tag, 200)
-    now = time.time()
     for ln in raw:
         try:
             payload = ln.split(tag, 1)[1].strip() if tag in ln else None
@@ -550,16 +556,47 @@ _top_banner.caption(f"Source: {source_label} • ENV_KEY: {ENV_KEY} • FS: {fs_
 
 series = load_nav_series()
 k = compute_nav_kpis(series)
+try:
+    nav_summary = navmod.compute_nav_summary()
+except Exception as exc:  # pragma: no cover - display best effort
+    nav_summary = {
+        "futures_nav": None,
+        "treasury_nav": None,
+        "total_nav": None,
+        "details": {"error": str(exc)},
+    }
+futures_nav = nav_summary.get("futures_nav")
+treasury_nav = nav_summary.get("treasury_nav")
+total_nav = nav_summary.get("total_nav")
+
 # KPI helpers derived from positions (defined after functions above)
 pos_now = load_positions()
 open_cnt = sum(1 for p in pos_now if abs(p.get('qty') or 0) > 0)
 
-c1,c2,c3,c4 = st.columns(4)
-c1.metric("NAV (USDT)", f"{k['nav']:,.2f}" if k['nav'] is not None else "—", f"{k['delta']:,.2f} / {k['delta_pct']:+.2f}%")
-c2.metric("Drawdown", f"{k['dd']:.2f}%" if k['dd'] is not None else "—")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Futures NAV", f"{futures_nav:,.2f}" if futures_nav is not None else "—")
+c2.metric("Treasury NAV", f"{treasury_nav:,.2f}" if treasury_nav is not None else "—")
+delta_text = (
+    f"{k['delta']:,.2f} / {k['delta_pct']:+.2f}%"
+    if k.get('nav') is not None
+    else ""
+)
+c3.metric("Total NAV", f"{total_nav:,.2f}" if total_nav is not None else "—", delta_text)
+c4.metric("Drawdown", f"{k['dd']:.2f}%" if k['dd'] is not None else "—")
+
 btc_delta = btc_24h_change()
-c3.metric("Reserve (BTC)", f"{RESERVE_BTC}", (f"{btc_delta:+.2f}% (24h)" if btc_delta is not None else None))
-c4.metric("Open positions", str(open_cnt))
+c5, c6 = st.columns(2)
+c5.metric(
+    "Reserve (BTC)",
+    f"{RESERVE_BTC}",
+    f"{btc_delta:+.2f}% (24h)" if btc_delta is not None else "",
+)
+c6.metric("Open positions", str(open_cnt))
+
+treasury_df = treasury_table_from_summary(nav_summary)
+if not treasury_df.empty:
+    st.caption("Treasury Breakdown")
+    st.table(format_treasury_table(treasury_df))
 
 # Risk Status KPI (open gross vs cap)
 risk_cfg = _load_risk_cfg()
@@ -677,6 +714,7 @@ if _DS["source"] == "local":
     st.caption(f"Last updated: {humanize_ago(newest_ts)}")
     if newest_ts and not is_recent(newest_ts, 1800):
         st.warning("Screener tail may be stale (>30m)")
+st.caption(signal_attempts_summary(tail))
 st.code("\n".join(tail) if tail else "(empty)")
 
 # Compact recency banner (NAV/Trades/Risk)

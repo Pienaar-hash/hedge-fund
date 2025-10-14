@@ -1,0 +1,18 @@
+Pre-live Trading System Audit
+Component | Pass/Fail | Comments | Severity
+execution/executor_live.py | Fail | DRY_RUN default only updates the local flag; without exporting DRY_RUN before import, `_exchange_utils._DRY_RUN` stays false so `_loop_once` still calls signed endpoints even in dry mode (execution/executor_live.py:136, execution/exchange_utils.py:70, execution/exchange_utils.py:437). | Medium
+execution/exchange_utils.py | Fail | Dry-run guard is frozen at import time and never refreshed when the executor toggles live trading; signed calls will continue unless the process is restarted with DRY_RUN=1 (execution/exchange_utils.py:70, execution/exchange_utils.py:437-455). | Medium
+execution/order_router.py | Fail | Required router module is absent from the repo, so reduceOnly/dry_run flow cannot be verified or used (missing order_router.py referenced in audit scope). | High
+execution/risk_limits.py | Pass | `check_order` enforces daily loss, max gross, tier caps, burst limits, and max concurrent counts as expected (execution/risk_limits.py:228-326). | Low
+execution/signal_screener.py | Pass | Generates intents with portfolio/tier vetoes, applies reduce-only flip plans, and reuses `check_order` for caps; lacks duplicate suppression if config repeats symbols (execution/signal_screener.py:238-336, execution/signal_screener.py:360-447). | Low
+strategies/* | Fail | Strategies import `core.strategy_base`, but the `core/` package is missing so they cannot run or be tested (strategies/momentum.py:5, strategies/relative_value.py:5). | High
+execution/signal_generator.py | Fail | Project docs expect this module, but it is missing; executor therefore depends solely on the screener and cannot honour any standalone signal generator (strategies/hedge_fund_structure.py:6). | High
+execution/sync_state.py & utils/firestore_client.py | Pass | Sync loop tolerates connection failures by catching exceptions and using a no-op client, but there is no retry/backoff or health alerting when Firestore degrades (execution/sync_state.py:286-323, utils/firestore_client.py:113-148). | Low
+
+Go-Live Confidence: Low — critical routing and strategy dependencies are missing, and dry-run gating does not reliably prevent signed exchange calls.
+
+Recommendations:
+1. Restore or implement `execution/order_router.py`, `execution/signal_generator.py`, and the `core.strategy_base` dependency so live flow and strategy modules can load.
+2. Unify dry-run handling by propagating DRY_RUN into the process environment before imports or by adding a setter that updates `_exchange_utils._DRY_RUN` dynamically.
+3. Add intent deduplication safeguards (per symbol/timeframe) in `execution.signal_screener` and expand tests covering tier caps and reduce-only flips.
+4. Enhance Firestore resiliency with retry/backoff logging so connection loss is observable instead of silently falling back to no-op writes.

@@ -29,7 +29,8 @@ def _price(sym:str):
         from execution.exchange_utils import get_price
         p = get_price(sym)
         return None if (p is None or (isinstance(p,(int,float)) and p<=0)) else float(p)
-    except Exception: return None
+    except Exception:
+        return None
 
 def _series(st:dict, sym:str, tf:str):
     arr = sc._series_for(st, sym, tf)
@@ -85,11 +86,16 @@ def main():
             cross_reason = "cross ok" if (cross_up or cross_down) else "no cross"
 
         blocked_by = []
-        if px_live is None: blocked_by.append("price_unavailable")
-        if not (cross_up or cross_down): blocked_by.append("no_cross")
-        if not rsi_ok: blocked_by.append("rsi_veto")
-        if not atr_ok: blocked_by.append("atr_floor")
-        if in_trade:   blocked_by.append("already_in_trade")
+        if px_live is None:
+            blocked_by.append("price_unavailable")
+        if not (cross_up or cross_down):
+            blocked_by.append("no_cross")
+        if not rsi_ok:
+            blocked_by.append("rsi_veto")
+        if not atr_ok:
+            blocked_by.append("atr_floor")
+        if in_trade:
+            blocked_by.append("already_in_trade")
 
         out["strategies"].append({
             "name": name, "symbol": sym, "tf": tf,

@@ -96,17 +96,35 @@ _RISK_STATE = RiskState()
 # Build a minimal RiskGate config adapter from legacy risk_limits.json
 def _mk_gate_cfg(raw: Dict[str, Any]) -> Dict[str, Any]:
     g = (raw.get("global") or {}) if isinstance(raw, dict) else {}
+    # Legacy configs kept caps at top-level; prefer `global` section when present
+    if not g and isinstance(raw, dict):
+        for key in ("daily_loss_limit_pct", "max_gross_exposure_pct"):
+            if key in raw:
+                g[key] = raw[key]
     sizing = {
         "min_notional_usdt": g.get("min_notional_usdt", 5.0),
         # Accept either key for portfolio gross NAV cap
-        "max_gross_exposure_pct": g.get("max_portfolio_gross_nav_pct", g.get("max_gross_nav_pct", 0.0)) or 0.0,
+        "max_gross_exposure_pct": (
+            g.get("max_gross_exposure_pct")
+            or g.get("max_portfolio_gross_nav_pct")
+            or g.get("max_gross_nav_pct")
+            or 0.0
+        ),
         # Fallback sensible default if not provided
         "max_symbol_exposure_pct": g.get("max_symbol_exposure_pct", 50.0),
+        "max_trade_nav_pct": g.get("max_trade_nav_pct", 0.0),
     }
     risk = {
         "daily_loss_limit_pct": g.get("daily_loss_limit_pct", 5.0),
         # Derive cooldown (minutes) from error circuit cooldown (seconds) if present
-        "cooldown_minutes_after_stop": max(0.0, float(((g.get("error_circuit") or {}).get("cooldown_sec") or 0)) / 60.0),
+        "cooldown_minutes_after_stop": (
+            g.get("cooldown_minutes_after_stop")
+            or max(
+                0.0,
+                float(((g.get("error_circuit") or {}).get("cooldown_sec") or 0))
+                / 60.0,
+            )
+        ),
         "max_trades_per_symbol_per_hour": g.get("max_trades_per_symbol_per_hour", 6),
     }
     return {"sizing": sizing, "risk": risk}
@@ -360,7 +378,7 @@ def _send_order(intent: Dict[str, Any]) -> None:
                     "symbol": symbol,
                     "signal": "BUY" if opp_side == "SHORT" else "SELL",
                     "positionSide": opp_side,
-                    "reduceOnly": True,
+                    "reduceOnly": "true",
                     "price": reduce_price,
                     "capital_per_trade": reduce_notional,
                     "gross_usd": reduce_notional,
@@ -373,7 +391,12 @@ def _send_order(intent: Dict[str, Any]) -> None:
                     opp_side,
                     reduce_notional,
                 )
-                _send_order(reduce_intent)
+                try:
+                    send_order(**reduce_intent)
+                except Exception as exc:
+                    LOG.error(
+                        "[executor] reduce_only_send_failed %s %s", symbol, exc
+                    )
                 try:
                     positions = list(get_positions() or [])
                 except Exception:
@@ -388,7 +411,8 @@ def _send_order(intent: Dict[str, Any]) -> None:
         pass
 
     if reduce_only:
-        ok, details = True, {"reasons": []}
+        ok = True
+        details: Dict[str, Any] = {"reasons": []}
     else:
         ok, details = check_order(
             symbol=symbol,

@@ -72,7 +72,7 @@ _DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 
 
 def is_testnet() -> bool:
-    v = os.getenv("BINANCE_TESTNET", "1")
+    v = os.getenv("BINANCE_TESTNET", "0")
     return str(v).lower() in ("1", "true", "yes", "y")
 
 
@@ -202,23 +202,46 @@ def get_price(symbol: str) -> float:
     return float(r.json()["price"])
 
 
-_SYMBOL_FILTERS_CACHE: Dict[str, Dict[str, Any]] = {}
+_EXCHANGE_FILTERS_CACHE: Dict[str, Dict[str, Any]] | None = None
+_EXCHANGE_FILTERS_KEY: str | None = None
+
+
+def _load_exchange_filters() -> Dict[str, Dict[str, Any]]:
+    global _EXCHANGE_FILTERS_CACHE, _EXCHANGE_FILTERS_KEY
+    base = _base_url()
+    if _EXCHANGE_FILTERS_CACHE is not None and _EXCHANGE_FILTERS_KEY == base:
+        return _EXCHANGE_FILTERS_CACHE
+
+    resp = _req("GET", "/fapi/v1/exchangeInfo")
+    payload = resp.json()
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for entry in payload.get("symbols", []) or []:
+        sym_name = str(entry.get("symbol", "")).upper()
+        if not sym_name:
+            continue
+        filters = {}
+        for f in entry.get("filters", []) or []:
+            ftype = str(f.get("filterType", ""))
+            if not ftype:
+                continue
+            filters[ftype] = f
+        mapping[sym_name] = filters
+
+    if not mapping:
+        raise RuntimeError("exchange_info_empty")
+
+    _EXCHANGE_FILTERS_CACHE = mapping
+    _EXCHANGE_FILTERS_KEY = base
+    return mapping
 
 
 def get_symbol_filters(symbol: str) -> Dict[str, Any]:
     sym = str(symbol).upper()
-    cached = _SYMBOL_FILTERS_CACHE.get(sym)
-    if cached:
-        return cached
-    resp = _req("GET", "/fapi/v1/exchangeInfo", params={"symbol": sym})
-    info = resp.json()
+    filters = _load_exchange_filters()
     try:
-        sym_info = info["symbols"][0]
-    except (KeyError, IndexError):
-        raise RuntimeError(f"filters_not_found:{sym}")
-    filters = {f["filterType"]: f for f in sym_info.get("filters", [])}
-    _SYMBOL_FILTERS_CACHE[sym] = filters
-    return filters
+        return filters[sym]
+    except KeyError as exc:  # pragma: no cover - safety for unexpected symbols
+        raise RuntimeError(f"filters_not_found:{sym}") from exc
 
 
 def _dec(val: Any) -> Decimal:

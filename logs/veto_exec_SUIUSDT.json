@@ -1,7 +1,22 @@
 {
   "symbol": "SUIUSDT",
-  "veto": "trade_rate_limit",
-  "gross_usd": 110.0,
-  "price": 3.65,
-  "ts": 1758142751.9530318
+  "side": "BUY",
+  "positionSide": "LONG",
+  "reason": "trade_gt_max_trade_nav_pct",
+  "gross_usd": 10.0,
+  "price": 2.8044,
+  "ts": 1760474324.0348907,
+  "intent": {
+    "timestamp": "2025-10-14T20:38:43+00:00",
+    "symbol": "SUIUSDT",
+    "timeframe": "15m",
+    "signal": "BUY",
+    "reduceOnly": false,
+    "price": 2.8044,
+    "capital_per_trade": 5.0,
+    "leverage": 2.0,
+    "cap_usd": 5.0,
+    "gross_usd": 10.0,
+    "min_notional": 5.0
+  }
 }

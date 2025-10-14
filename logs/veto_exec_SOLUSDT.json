@@ -1,7 +1,22 @@
 {
   "symbol": "SOLUSDT",
-  "veto": "trade_rate_limit",
-  "gross_usd": 110.0,
-  "price": 239.21,
-  "ts": 1758145231.5449505
+  "side": "BUY",
+  "positionSide": "LONG",
+  "reason": "trade_gt_max_trade_nav_pct",
+  "gross_usd": 15.0,
+  "price": 199.96,
+  "ts": 1760474388.2173703,
+  "intent": {
+    "timestamp": "2025-10-14T20:39:46+00:00",
+    "symbol": "SOLUSDT",
+    "timeframe": "15m",
+    "signal": "BUY",
+    "reduceOnly": false,
+    "price": 199.96,
+    "capital_per_trade": 5.0,
+    "leverage": 3.0,
+    "cap_usd": 5.0,
+    "gross_usd": 15.0,
+    "min_notional": 5.0
+  }
 }

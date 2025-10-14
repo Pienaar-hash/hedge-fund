@@ -46,13 +46,18 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
     return wallet, detail
 
 
+_STABLES = {"USDT", "USDC", "BUSD"}
+
+
 def _treasury_nav_usdt(treasury_path: str = "config/treasury.json") -> Tuple[float, Dict]:
     treasury = _load_json(treasury_path)
     if not treasury:
         return 0.0, {"treasury": {}}
+
     total = 0.0
     holdings: Dict[str, Dict[str, float]] = {}
     missing: Dict[str, str] = {}
+
     for asset, qty in treasury.items():
         if qty in (None, "", []):
             continue
@@ -62,20 +67,26 @@ def _treasury_nav_usdt(treasury_path: str = "config/treasury.json") -> Tuple[flo
             continue
         if abs(qty_float) < 1e-12:
             continue
-        symbol = f"{asset}USDT"
+
+        asset_code = str(asset).upper()
         try:
-            price = float(get_price(symbol))
+            if asset_code in _STABLES:
+                price = 1.0
+            else:
+                price = float(get_price(f"{asset_code}USDT"))
         except Exception as exc:
-            missing[asset] = str(exc)
+            missing[asset_code] = str(exc)
             continue
+
         value = qty_float * price
         total += value
-        holdings[asset] = {
+        holdings[asset_code] = {
             "qty": qty_float,
             "px": price,
             "val_usdt": value,
         }
-    breakdown: Dict[str, Any] = {"treasury": holdings}
+
+    breakdown: Dict[str, Any] = {"treasury": holdings, "total_treasury_usdt": total}
     if missing:
         breakdown["missing_prices"] = missing
     return total, breakdown
@@ -108,6 +119,24 @@ def compute_trading_nav(cfg: Dict) -> Tuple[float, Dict]:
     return _fallback_capital(cfg)
 
 
+def compute_nav_summary(cfg: Dict | None = None) -> Dict[str, Any]:
+    cfg = cfg or _load_json("config/strategy_config.json")
+
+    futures_nav, futures_detail = _futures_nav_usdt()
+    treasury_nav, treasury_detail = _treasury_nav_usdt()
+
+    summary = {
+        "futures_nav": float(futures_nav),
+        "treasury_nav": float(treasury_nav),
+        "total_nav": float(futures_nav + treasury_nav),
+        "details": {
+            "futures": futures_detail,
+            "treasury": treasury_detail,
+        },
+    }
+    return summary
+
+
 def compute_reporting_nav(cfg: Dict) -> Tuple[float, Dict]:
     _, reporting_source, include_treasury, manual = _nav_sources(cfg)
     if reporting_source == "manual":
@@ -115,12 +144,25 @@ def compute_reporting_nav(cfg: Dict) -> Tuple[float, Dict]:
             return float(manual), {"source": "manual"}
         return _fallback_capital(cfg)
 
-    fut_nav, fut_detail = _futures_nav_usdt()
+    summary = compute_nav_summary(cfg)
+    fut_detail = summary["details"].get("futures", {})
     detail: Dict[str, Any] = {"source": "exchange", **fut_detail}
+    total_nav = float(summary["futures_nav"])
+
     if include_treasury:
-        detail["treasury_note"] = "treasury_excluded"
-    if fut_nav > 0:
-        return float(fut_nav), detail
+        treasury_detail = summary["details"].get("treasury", {})
+        holdings = treasury_detail.get("treasury", {}) if isinstance(treasury_detail, dict) else {}
+        if holdings:
+            detail["treasury"] = holdings
+        missing = treasury_detail.get("missing_prices") if isinstance(treasury_detail, dict) else None
+        if missing:
+            detail["treasury_missing_prices"] = missing
+        detail["treasury_total_usdt"] = float(summary["treasury_nav"])
+        detail["source"] = "exchange+treasury"
+        total_nav = float(summary["total_nav"])
+
+    if total_nav > 0:
+        return total_nav, detail
     return _fallback_capital(cfg)
 
 
@@ -143,13 +185,13 @@ def compute_nav(cfg: Dict) -> Tuple[float, Dict]:
     return compute_trading_nav(cfg)
 
 
-def compute_gross_exposure_usd() -> float:
-    """Aggregate absolute notional exposure across all open futures positions."""
+def compute_symbol_gross_usd() -> Dict[str, float]:
+    """Return per-symbol absolute gross exposure in USD."""
     try:
         positions = get_positions() or []
     except Exception:
-        return 0.0
-    gross = 0.0
+        return {}
+    gross: Dict[str, float] = {}
     for pos in positions:
         try:
             qty = float(pos.get("qty", pos.get("positionAmt", 0.0)) or 0.0)
@@ -163,10 +205,19 @@ def compute_gross_exposure_usd() -> float:
                         mark = float(get_price(str(symbol)))
                     except Exception:
                         mark = 0.0
-            gross += abs(qty) * abs(mark)
+            if mark <= 0:
+                continue
+            symbol = str(pos.get("symbol", "")).upper()
+            gross[symbol] = gross.get(symbol, 0.0) + abs(qty) * abs(mark)
         except Exception:
             continue
-    return float(gross)
+    return gross
+
+
+def compute_gross_exposure_usd() -> float:
+    """Aggregate absolute notional exposure across all open futures positions."""
+    gross_map = compute_symbol_gross_usd()
+    return float(sum(gross_map.values()))
 
 
 class PortfolioSnapshot:
@@ -176,6 +227,7 @@ class PortfolioSnapshot:
         self.cfg = cfg or _load_json("config/strategy_config.json")
         self._nav: float | None = None
         self._gross: float | None = None
+        self._symbol_gross: Dict[str, float] = {}
         self._stale = True
 
     def refresh(self) -> None:
@@ -184,7 +236,8 @@ class PortfolioSnapshot:
             self._nav = float(nav_val or 0.0)
         except Exception:
             self._nav = float(self.cfg.get("capital_base_usdt", 0.0) or 0.0)
-        self._gross = compute_gross_exposure_usd()
+        self._symbol_gross = compute_symbol_gross_usd()
+        self._gross = float(sum(self._symbol_gross.values()))
         self._stale = False
 
     def current_nav_usd(self) -> float:
@@ -197,6 +250,11 @@ class PortfolioSnapshot:
             self.refresh()
         return float(self._gross or 0.0)
 
+    def symbol_gross_usd(self) -> Dict[str, float]:
+        if self._stale:
+            self.refresh()
+        return dict(self._symbol_gross)
+
 
 __all__ = [
     "compute_nav",
@@ -205,5 +263,6 @@ __all__ = [
     "compute_nav_pair",
     "compute_treasury_only",
     "compute_gross_exposure_usd",
+    "compute_nav_summary",
     "PortfolioSnapshot",
 ]

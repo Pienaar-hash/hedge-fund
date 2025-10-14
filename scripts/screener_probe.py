@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 
 def _load_risk_cfg() -> Dict[str, Any]:

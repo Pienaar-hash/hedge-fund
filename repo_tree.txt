@@ -1,29 +1,213 @@
 hedge-fund/
-├── docs/
-│   ├── Runbook.md
-│   ├── Investors_Access.md
-│   ├── Mainnet_Cutover_Checklist.md
-│   ├── Telemetry_Format.md
-│   └── QuantWizardPrompt.md
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── bin/
+│   ├── run-dashboard.sh
+│   ├── run-executor.sh
+│   └── run-sync.sh
 ├── config/
-│   ├── strategy_config.json
+│   ├── dashboard.yml
+│   ├── firestore_schema.json
 │   ├── pairs_universe.json
 │   ├── risk_limits.json
-│   ├── dashboard.yml
-│   ├── firebase_creds.json.example   # placeholder only
-│   └── ...
-├── execution/
-│   ├── executor_live.py
-│   ├── risk_limits.py
-│   └── ...
+│   ├── settings.json
+│   ├── strategy_config.json
+│   ├── symbol_tiers.json
+│   └── treasury.json
 ├── dashboard/
-│   └── ...
-├── telegram/
-│   └── ...
-├── scripts/
-├── tests/
-│   └── test_risk_limits.py
+│   ├── __init__.py
+│   ├── app.py
+│   ├── dashboard_utils.py
+│   ├── firestore_helpers.py
+│   ├── main.py
+│   ├── nav_helpers.py
+│   └── theme.css
+├── deploy/
+│   ├── nginx/
+│   │   └── hedge-dashboard.conf
+│   ├── supervisor/
+│   │   ├── hedge-dashboard.conf
+│   │   ├── hedge-executor.conf
+│   │   └── ml-retrain-nightly.conf
+│   ├── supervisor-user/
+│   │   └── supervisord.conf
+│   ├── run_dashboard.sh
+│   └── run_dashboard_min.sh
+├── docs/
+│   ├── CloudEnvironment.md
+│   ├── CONFIG_GUIDE.md
+│   ├── CutoverChecklist.md
+│   ├── FIRESTORE.md
+│   ├── investor_agreement.pdf
+│   ├── investor_landing_summary.pdf
+│   ├── investor_pitch_deck.pdf
+│   ├── ML_Retrain.md
+│   ├── one_page_summary.pdf
+│   ├── OPERATIONS.md
+│   ├── paths + purpose.md
+│   └── Runbook.md
+├── execution/
+│   ├── ml/
+│   │   ├── __init__.py
+│   │   ├── data.py
+│   │   ├── features.py
+│   │   ├── predict.py
+│   │   └── train.py
+│   ├── __init__.py
+│   ├── exchange_utils.py
+│   ├── executor_live.py
+│   ├── firestore_utils.py
+│   ├── flatten_all.py
+│   ├── hedge_sync.py
+│   ├── leaderboard_sync.py
+│   ├── nav.py
+│   ├── orderbook_features.py
+│   ├── pipeline_probe.py
+│   ├── risk_limits.py
+│   ├── rules_sl_tp.py
+│   ├── signal_doctor.py
+│   ├── signal_screener.py
+│   ├── state_publish.py
+│   ├── sync_daemon.py
+│   ├── sync_state.py
+│   ├── telegram_report.py
+│   ├── telegram_utils.py
+│   ├── universe_resolver.py
+│   └── utils.py
+├── grep_logs/
+│   ├── all_env_refs.log
+│   ├── apikeys.log
+│   ├── dotenv.log
+│   └── os_getenv.log
+├── infrastructure/
+│   ├── .env.template
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── startup.sh
+├── logs/
+│   ├── audit_intents.jsonl
+│   ├── audit_orders_ETHUSDT.jsonl
+│   ├── audit_orders_SUIUSDT.jsonl
+│   ├── audit_orders_WIFUSDT.jsonl
+│   ├── nav.jsonl
+│   ├── nav_reporting.json
+│   ├── nav_snapshot.json
+│   ├── nav_trading.json
+│   ├── nav_treasury.json
+│   ├── positions.jsonl
+│   ├── veto_exec_BTCUSDT.json
+│   ├── veto_exec_ETHUSDT.json
+│   ├── veto_exec_LINKUSDT.json
+│   ├── veto_exec_LTCUSDT.json
+│   ├── veto_exec_SOLUSDT.json
+│   ├── veto_exec_SUIUSDT.json
+│   └── veto_exec_WIFUSDT.json
+├── models/
+│   ├── BTCUSDT_logreg.pkl
+│   ├── ETHUSDT_logreg.pkl
+│   ├── last_train_report.json
+│   ├── LINKUSDT_logreg.pkl
+│   ├── LTCUSDT_logreg.pkl
+│   ├── registry.json
+│   ├── signal_eval.json
+│   ├── SOLUSDT_logreg.pkl
+│   ├── SUIUSDT_logreg.pkl
+│   └── WIFUSDT_logreg.pkl
 ├── ops/
-│   └── hedge.conf
-└── .github/
-    └── workflows/ci.yml
+│   ├── grep_patterns.txt
+│   ├── hedge.conf
+│   ├── nginx_site.conf
+│   └── README.md
+├── pr/
+│   └── PR_BODY.md
+├── research/
+│   └── rl/
+│       └── market_env.py
+├── scripts/
+│   ├── examples/
+│   │   └── grep_patterns.txt
+│   ├── ai_discovery.py
+│   ├── balance_doctor.py
+│   ├── binance_auth_doctor.py
+│   ├── doctor.py
+│   ├── exec_once_timeout.sh
+│   ├── fetch_synced_state.py
+│   ├── fs_doctor.py
+│   ├── go_live_now.sh
+│   ├── grep_order_req.sh
+│   ├── leverage_once.py
+│   ├── margin_mode_once.py
+│   ├── ml_fit.py
+│   ├── ml_health.sh
+│   ├── ml_retrain_cron.sh
+│   ├── ml_retrain_daemon.py
+│   ├── ml_retrain_now.sh
+│   ├── ml_score.py
+│   ├── portfolio_probe.py
+│   ├── quick_checks.sh
+│   ├── quick_watch.sh
+│   ├── replay_logs.py
+│   ├── run_executor_once.sh
+│   ├── screener_probe.py
+│   ├── seed_universe.py
+│   ├── signal_eval.py
+│   ├── sv_user.sh
+│   ├── tail_exec_log.sh
+│   ├── trim_to_cap.py
+│   └── write_keys_env.sh
+├── strategies/
+│   ├── __init__.py
+│   ├── btc_grid.py
+│   ├── factor_allocation.py
+│   ├── hedge_fund_structure.py
+│   ├── market_maker.py
+│   ├── momentum.py
+│   ├── momentum_vol.py
+│   ├── relative_value.py
+│   └── volatility_target.py
+├── telegram/
+│   └── heartbeat.py
+├── tests/
+│   ├── __init__.py
+│   ├── test_config_parsing.py
+│   ├── test_dashboard_metrics.py
+│   ├── test_executor_flips.py
+│   ├── test_filters_rounding.py
+│   ├── test_last_train_report_schema.py
+│   ├── test_ml_features.py
+│   ├── test_nav.py
+│   ├── test_nav_modes.py
+│   ├── test_orderbook_features.py
+│   ├── test_risk_gross_gate.py
+│   ├── test_risk_limits.py
+│   ├── test_rules_sl_tp.py
+│   ├── test_screener_tier_caps.py
+│   ├── test_signal_eval_report_shape.py
+│   ├── test_signal_eval_smoke.py
+│   ├── test_signal_screener.py
+│   ├── test_symbol_filters.py
+│   ├── test_telegram_report.py
+│   ├── test_tier_caps.py
+│   ├── test_treasury_nav.py
+│   ├── test_treasury_only.py
+│   └── test_universe_resolver.py
+├── utils/
+│   ├── __init__.py
+│   └── firestore_client.py
+├── .env
+├── .gitignore
+├── AGENTS.md
+├── mypy.ini
+├── README.md
+├── repo_snapshot.txt
+├── repo_tree.txt
+├── requirements-dashboard.txt
+├── requirements-execution.txt
+├── requirements.txt
+├── ruff.toml
+├── run_all.sh
+├── screener_state.json
+├── tore .
+└── VERSION

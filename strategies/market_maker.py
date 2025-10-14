@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable
 
 
 def _b(x: str) -> bool:

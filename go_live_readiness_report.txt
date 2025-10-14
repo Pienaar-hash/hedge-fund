@@ -1,0 +1,24 @@
+Go-Live Readiness Audit – 2025-10-11 20:42 UTC
+
+Pass/Fail Checks
+Check                                 Status  Notes
+pytest -q                             PASS    61 tests; 2 FutureWarning (pandas freq "H" deprecated)
+ruff check .                          FAIL    207 lint errors; e.g. scripts/balance_doctor.py multi-imports, strategies/hedge_fund_structure.py invalid syntax from box-drawing chars
+mypy --ignore-missing-imports .       PASS    Success; mypy notes bodies of untyped tests/test_dashboard_metrics.py:38 and tests/test_treasury_nav.py:11
+
+Warnings & Skips
+- FutureWarning: pandas freq "H" deprecated in tests/test_ml_features.py:8 and tests/test_signal_eval_smoke.py:8.
+- No skipped tests reported.
+
+Integration Review
+- scripts/replay_logs.py uses utils.firestore_client.get_db with cached Firestore client; falls back to no-op when credentials missing, so replay silently degrades—validate FIREBASE_* envs before production replay.
+- execution/executor_live.py instantiates execution.state_publish.StatePublisher; if google-cloud-firestore is absent it downgrades to a no-op publisher, preventing dashboard state updates—ensure dependency and FS_PUB_INTERVAL are configured for go-live.
+- dashboard/firestore_helpers.py shares get_db but ignores the optional env argument, relying solely on ENV; confirm ENV=prod in deployment or extend helper to honour overrides.
+
+Outstanding TODOs
+- Resolve Ruff violations (207) before release; includes multiple statements per line in scripts/doctor.py and scripts/leverage_once.py, unused imports in scripts/balance_doctor.py, and non-ASCII tree in strategies/hedge_fund_structure.py that triggers invalid syntax.
+- Remove unused symbols such as typing.List in strategies/market_maker.py and the unused pnl assignment in strategies/momentum.py flagged by Ruff.
+- Update pandas date_range frequency strings from "H" to "h" in tests to silence FutureWarning and maintain forward compatibility.
+- Consider enabling mypy --check-untyped-defs for critical tests to tighten coverage where annotation-unchecked notes were reported.
+
+Confidence Rating: Medium — runtime tests and type-checks pass, but unresolved lint blockers and Firestore dependency caveats reduce readiness.

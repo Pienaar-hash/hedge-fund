@@ -27,6 +27,7 @@ def test_strategy_config_exists_and_parses():
 def test_risk_limits_exists_and_parses():
     assert RISK.exists()
     risk_cfg = _load(RISK)
+    global_cfg = risk_cfg.get("global", {})
     required = [
         "daily_loss_limit_pct",
         "cooldown_minutes_after_stop",
@@ -34,17 +35,17 @@ def test_risk_limits_exists_and_parses():
         "drawdown_alert_pct",
         "max_gross_exposure_pct",
         "max_symbol_exposure_pct",
-        "min_notional_usdt",
     ]
     for key in required:
-        assert key in risk_cfg
+        assert key in global_cfg
 
 
 def test_caps_consistency_between_files():
     cfg = _load(SCFG)
     risk_cfg = _load(RISK)
+    global_cfg = risk_cfg.get("global", {})
     sizing = cfg.get("sizing", {})
     risk = cfg.get("risk", {})
-    assert risk_cfg["max_gross_exposure_pct"] <= sizing["max_gross_exposure_pct"]
-    assert risk_cfg["max_symbol_exposure_pct"] <= sizing["max_symbol_exposure_pct"]
-    assert risk_cfg["daily_loss_limit_pct"] <= risk["daily_loss_limit_pct"]
+    assert global_cfg["max_gross_exposure_pct"] <= sizing["max_gross_exposure_pct"]
+    assert global_cfg["max_symbol_exposure_pct"] <= sizing["max_symbol_exposure_pct"]
+    assert global_cfg["daily_loss_limit_pct"] <= risk["daily_loss_limit_pct"]

@@ -31,7 +31,6 @@ class StrategyImpl(Strategy):
         df.dropna(inplace=True)
 
         all_trades = []
-        equity = self.starting_equity
         last_exit_idx = -100
 
         for tp in self.grid_tp:
