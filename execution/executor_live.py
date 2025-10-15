@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -157,6 +158,17 @@ SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", "0") or 0)
 
 
+def _git_commit() -> str:
+    try:
+        return (
+            subprocess.check_output(["git", "describe", "--tags", "--always"])
+            .decode()
+            .strip()
+        )
+    except Exception:
+        return "unknown"
+
+
 def _read_dry_run_flag() -> bool:
     return os.getenv("DRY_RUN", "1").lower() in ("1", "true", "yes")
 
@@ -168,6 +180,13 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 DRY_RUN = _read_dry_run_flag()
 set_dry_run(DRY_RUN)
 INTENT_TEST = _truthy_env("INTENT_TEST", "0")
+
+LOG.info(
+    "[executor] starting loop ENV=%s DRY_RUN=%s commit=%s",
+    os.getenv("ENV", "dev"),
+    DRY_RUN,
+    _git_commit(),
+)
 
 
 def _sync_dry_run() -> None:
