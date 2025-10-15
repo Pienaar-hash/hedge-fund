@@ -29,14 +29,14 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------- Firestore import (supports multiple layouts) ---------------
 try:
     # legacy: project root
-    from firestore_client import get_db  # type: ignore
+    from firestore_client import with_firestore  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover
     try:
         # sibling package layout
-        from utils.firestore_client import get_db  # type: ignore
+        from utils.firestore_client import with_firestore  # type: ignore
     except ModuleNotFoundError:
         # monorepo package layout
-        from hedge_fund.utils.firestore_client import get_db  # type: ignore
+        from hedge_fund.utils.firestore_client import with_firestore  # type: ignore
 
 # ------------------------------- Files ---------------------------------------
 NAV_LOG: str = "nav_log.json"
@@ -45,6 +45,9 @@ SYNCED_STATE: str = "synced_state.json"
 
 # ------------------------------ Settings ------------------------------------
 MAX_POINTS: int = 500  # dashboard series cap
+
+_FIRESTORE_FAIL_COUNT = 0
+_FAILURE_THRESHOLD = 5
 
 
 # ------------------------------- Utilities ----------------------------------
@@ -268,6 +271,15 @@ def _lb_doc_ref(db):
     )
 
 
+def _health_doc_ref(db):
+    return (
+        db.collection("hedge")
+        .document(_get_env())
+        .collection("telemetry")
+        .document("health")
+    )
+
+
 def _maybe_fetch_nav_doc(db) -> Dict[str, Any]:
     try:
         snap = _nav_doc_ref(db).get()
@@ -333,16 +345,22 @@ def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _publish_health(db, ok: bool, last_error: str) -> None:
+    payload = {
+        "firestore_ok": bool(ok),
+        "last_error": str(last_error or ""),
+        "ts": time.time(),
+    }
+    try:
+        _health_doc_ref(db).set(payload, merge=True)
+    except Exception as exc:
+        print(f"[sync] WARN telemetry_write_failed: {exc}", flush=True)
+
+
 # ------------------------------ Public API ----------------------------------
 
 
-def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    """
-    Read files -> filter/compute -> upsert Firestore once.
-    Returns (nav_payload, positions_payload, leaderboard_payload).
-    """
-    db = get_db()
-
+def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     # NAV rows with cutoff + zero-equity filter
     rows = [p for p in _read_nav_rows(NAV_LOG) if _is_good_nav_row(p)]
 
@@ -410,6 +428,34 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
         pass
 
     return nav_payload, pos_payload, lb_payload
+
+
+def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """
+    Read files -> filter/compute -> upsert Firestore once.
+    Returns (nav_payload, positions_payload, leaderboard_payload).
+    """
+    global _FIRESTORE_FAIL_COUNT
+    try:
+        with with_firestore() as db:
+            result = _sync_once_with_db(db)
+            _publish_health(db, True, "")
+            _FIRESTORE_FAIL_COUNT = 0
+            return result
+    except Exception as exc:
+        _FIRESTORE_FAIL_COUNT += 1
+        print(
+            f"[sync] WARN firestore_sync_error count={_FIRESTORE_FAIL_COUNT} err={exc}",
+            flush=True,
+        )
+        if _FIRESTORE_FAIL_COUNT >= _FAILURE_THRESHOLD:
+            print("[sync] ERROR firestore_degraded", flush=True)
+        try:
+            with with_firestore() as db:
+                _publish_health(db, False, str(exc))
+        except Exception:
+            pass
+        raise
 
 
 # --------------------------------- Runner -----------------------------------

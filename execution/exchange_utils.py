@@ -68,7 +68,26 @@ except Exception:
     pass
 
 # DRY_RUN guard for signed endpoints (allows full loop without signed calls)
-_DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
+_DRY_RUN: bool = os.environ.get("DRY_RUN", "0") == "1"
+
+
+def set_dry_run(flag: bool) -> None:
+    """Toggle dry-run mode at runtime."""
+    global _DRY_RUN
+    new_flag = bool(flag)
+    if new_flag == _DRY_RUN:
+        return
+    _LOG.info("[dry-run] exchange utils set to %s", "enabled" if new_flag else "disabled")
+    _DRY_RUN = new_flag
+
+
+def is_dry_run() -> bool:
+    return _DRY_RUN
+
+
+def _dry_run_stub(action: str, stub: Any) -> Any:
+    _LOG.info("[dry-run] stubbed %s", action)
+    return stub
 
 
 def is_testnet() -> bool:
@@ -373,16 +392,31 @@ def build_order_payload(
 # --- account ---
 def get_balances() -> List[Dict[str, Any]]:
     # Avoid signed USD-M calls in DRY_RUN to prevent -2015 while keys/env are being fixed
-    if _DRY_RUN:
-        return []
+    if is_dry_run():
+        return _dry_run_stub("get_balances", [])
     return _req("GET", "/fapi/v2/balance", signed=True).json()
 
 
 def get_account() -> Dict[str, Any]:
+    if is_dry_run():
+        return _dry_run_stub(
+            "get_account",
+            {
+                "assets": [],
+                "positions": [],
+                "totalMarginBalance": "0.0",
+                "totalWalletBalance": "0.0",
+                "totalUnrealizedProfit": "0.0",
+                "dryRun": True,
+            },
+        )
     return _req("GET", "/fapi/v2/account", signed=True).json()
 
 
 def _is_dual_side() -> bool:
+    if is_dry_run():
+        _dry_run_stub("_is_dual_side", {"dualSidePosition": True})
+        return True
     return bool(
         _req("GET", "/fapi/v1/positionSide/dual", signed=True)
         .json()
@@ -391,6 +425,15 @@ def _is_dual_side() -> bool:
 
 
 def set_dual_side(flag: bool) -> Dict[str, Any]:
+    if is_dry_run():
+        return _dry_run_stub(
+            "set_dual_side",
+            {
+                "ok": True,
+                "dualSidePosition": str(flag).lower(),
+                "dryRun": True,
+            },
+        )
     try:
         return _req(
             "POST",
@@ -409,6 +452,16 @@ def set_dual_side(flag: bool) -> Dict[str, Any]:
 
 
 def set_symbol_margin_mode(symbol: str, margin_type: str = "CROSSED") -> Dict[str, Any]:
+    if is_dry_run():
+        return _dry_run_stub(
+            "set_symbol_margin_mode",
+            {
+                "ok": True,
+                "symbol": symbol,
+                "marginType": margin_type,
+                "dryRun": True,
+            },
+        )
     try:
         return _req(
             "POST",
@@ -426,6 +479,16 @@ def set_symbol_margin_mode(symbol: str, margin_type: str = "CROSSED") -> Dict[st
 
 
 def set_symbol_leverage(symbol: str, leverage: int) -> Dict[str, Any]:
+    if is_dry_run():
+        return _dry_run_stub(
+            "set_symbol_leverage",
+            {
+                "ok": True,
+                "symbol": symbol,
+                "leverage": int(leverage),
+                "dryRun": True,
+            },
+        )
     return _req(
         "POST",
         "/fapi/v1/leverage",
@@ -436,8 +499,8 @@ def set_symbol_leverage(symbol: str, leverage: int) -> Dict[str, Any]:
 
 def get_positions(symbol: Optional[str] = None) -> List[Dict[str, Any]]:
     # Avoid signed USD-M calls in DRY_RUN to prevent -2015 while keys/env are being fixed
-    if _DRY_RUN:
-        return []
+    if is_dry_run():
+        return _dry_run_stub("get_positions", [])
     params: Dict[str, Any] = {}
     if symbol:
         params["symbol"] = symbol
@@ -502,6 +565,24 @@ def send_order(
 
     if params["type"] == "MARKET":
         params.pop("price", None)
+
+    if is_dry_run():
+        qty_view = str(params.get("quantity", "0"))
+        return _dry_run_stub(
+            "send_order",
+            {
+                "dryRun": True,
+                "orderId": 0,
+                "symbol": params.get("symbol"),
+                "side": params.get("side"),
+                "type": params.get("type"),
+                "status": "DRY_RUN",
+                "origQty": qty_view,
+                "executedQty": "0",
+                "avgPrice": "0.0",
+                "updateTime": int(time.time() * 1000),
+            },
+        )
 
     try:
         r = _req("POST", "/fapi/v1/order", signed=True, params=params)

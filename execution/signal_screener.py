@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import OrderedDict
 from typing import Any, Dict, Iterable, List, Tuple
 
 import os
@@ -18,6 +19,55 @@ except Exception:  # pragma: no cover - optional dependency
     _score_symbol = None
 
 LOG_TAG = "[screener]"
+_DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
+_DEDUP_MAX_SIZE = 2048
+
+
+def _tf_seconds(tf: str | None) -> float:
+    if not tf:
+        return 60.0
+    tf = tf.strip().lower()
+    if not tf:
+        return 60.0
+    digits = ""
+    unit = ""
+    for ch in tf:
+        if ch.isdigit():
+            digits += ch
+        else:
+            unit += ch
+    try:
+        value = float(digits or 0)
+    except Exception:
+        value = 0.0
+    if value <= 0:
+        value = 1.0
+    unit = unit or "m"
+    if unit in ("s", "sec", "secs"):
+        mult = 1.0
+    elif unit in ("m", "min", "mins"):
+        mult = 60.0
+    elif unit in ("h", "hr", "hrs"):
+        mult = 3600.0
+    elif unit in ("d", "day", "days"):
+        mult = 86400.0
+    else:
+        mult = 60.0
+    return max(value * mult, 1.0)
+
+
+def _dedupe_key(symbol: str, timeframe: str, side: str, candle_close: Any) -> Tuple[str, str, str, str]:
+    return (str(symbol).upper(), str(timeframe).lower(), str(side).upper(), str(candle_close))
+
+
+def _dedupe_prune(now: float) -> None:
+    while _DEDUP_CACHE:
+        _, expires_at = next(iter(_DEDUP_CACHE.items()))
+        if expires_at > now:
+            break
+        _DEDUP_CACHE.popitem(last=False)
+    while len(_DEDUP_CACHE) > _DEDUP_MAX_SIZE:
+        _DEDUP_CACHE.popitem(last=False)
 
 
 def _positions_by_side(
@@ -150,11 +200,14 @@ def would_emit(
     current_gross_notional: float = 0.0,
     current_tier_gross_notional: float = 0.0,
     orderbook_gate: bool = True,
+    timeframe: str | None = None,
+    candle_close_ts: float | None = None,
 ) -> tuple[bool, List[str], Dict[str, Any]]:
     """Return (would_emit, reasons, extra_info) for a hypothetical entry now.
 
     - Applies: listing check, orderbook gate, and risk caps (portfolio, tier, concurrent).
     - Uses gross notional = notional * lev for caps.
+    - Optionally de-duplicates intents per (symbol, timeframe, side, candle_close_ts).
     """
     sym = str(symbol).upper()
     extra: Dict[str, Any] = {}
@@ -225,6 +278,20 @@ def would_emit(
         if reason and reason not in reasons:
             reasons.append(reason)
     overall_ok = (len(reasons) == 0) and ok
+
+    if overall_ok and timeframe and candle_close_ts is not None:
+        now_ts = time.time()
+        _dedupe_prune(now_ts)
+        key = _dedupe_key(sym, timeframe, side, candle_close_ts)
+        expires_at = _DEDUP_CACHE.get(key)
+        if expires_at and expires_at > now_ts:
+            reasons.append("dedupe")
+            overall_ok = False
+        else:
+            ttl = max(_tf_seconds(timeframe) * 3.0, 60.0)
+            _DEDUP_CACHE[key] = now_ts + ttl
+            _DEDUP_CACHE.move_to_end(key)
+
     return overall_ok, reasons, extra
 
 

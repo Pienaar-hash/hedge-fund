@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import requests
 # Optional .env so Supervisor doesn't need to export everything
@@ -31,7 +31,12 @@ from execution.exchange_utils import (
     get_price,
     is_testnet,
     send_order,
+    set_dry_run,
 )
+try:
+    from execution.order_router import route_order as _route_order
+except Exception:
+    _route_order = None  # type: ignore[assignment]
 from execution.risk_limits import RiskState, check_order, RiskGate
 from execution.nav import compute_nav_pair, compute_treasury_only, PortfolioSnapshot
 from execution.utils import (
@@ -42,13 +47,27 @@ from execution.utils import (
 )
 
 # ---- Screener (best effort) ----
-generate_signals_from_config: Optional[Callable[[], Iterable[Dict[str, Any]]]] = None
+def _default_signal_source() -> Iterable[Dict[str, Any]]:
+    return []
+
+
+generate_signals_from_config: Callable[[], Iterable[Dict[str, Any]]] = _default_signal_source
 try:
     from execution.signal_screener import generate_signals_from_config as _gen
 
     generate_signals_from_config = _gen
 except Exception:
-    generate_signals_from_config = None
+    pass
+
+_generate_intents: Optional[
+    Callable[[float, Sequence[str] | None, Mapping[str, Any] | None], List[Mapping[str, Any]]]
+] = None
+try:
+    from execution.signal_generator import generate_intents as _imported_generate_intents
+except Exception:
+    _generate_intents = None
+else:
+    _generate_intents = _imported_generate_intents
 
 # ---- Firestore publisher handle (revisions differ) ----
 _PUB: Any
@@ -136,8 +155,28 @@ _RISK_GATE.nav_provider = _PORTFOLIO_SNAPSHOT
 # ---- knobs ----
 SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", "0") or 0)
-DRY_RUN = os.getenv("DRY_RUN", "1").lower() in ("1", "true", "yes")
-INTENT_TEST = os.getenv("INTENT_TEST", "0").lower() in ("1", "true", "yes")
+
+
+def _read_dry_run_flag() -> bool:
+    return os.getenv("DRY_RUN", "1").lower() in ("1", "true", "yes")
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).lower() in ("1", "true", "yes")
+
+
+DRY_RUN = _read_dry_run_flag()
+set_dry_run(DRY_RUN)
+INTENT_TEST = _truthy_env("INTENT_TEST", "0")
+
+
+def _sync_dry_run() -> None:
+    global DRY_RUN
+    current = _read_dry_run_flag()
+    if current != DRY_RUN:
+        LOG.info("[executor] DRY_RUN flag changed -> %s", current)
+        DRY_RUN = current
+    set_dry_run(DRY_RUN)
 
 # ------------- helpers -------------
 
@@ -259,7 +298,7 @@ def _update_risk_state_counters(
     _RISK_STATE.daily_pnl_pct = -loss_pct
 
 
-def _send_order(intent: Dict[str, Any]) -> None:
+def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     symbol = intent["symbol"]
     sig = str(intent.get("signal", "")).upper()
     side = "BUY" if sig == "BUY" else "SELL"
@@ -361,7 +400,11 @@ def _send_order(intent: Dict[str, Any]) -> None:
     except Exception:
         positions = []
 
-    if not reduce_only and not intent.get("_skip_flip"):
+    force_direct_send = False
+
+    # Flip handling: flatten any opposing hedge-mode position via a dedicated
+    # reduce-only order, then fall through to emit the new opening leg.
+    if not reduce_only and not skip_flip:
         opp_side, opp_qty, opp_mark = _opposite_position(symbol, pos_side, positions)
         if opp_side and opp_qty > 0:
             reduce_price = opp_mark if opp_mark > 0 else float(intent.get("price", 0.0) or 0.0)
@@ -372,35 +415,69 @@ def _send_order(intent: Dict[str, Any]) -> None:
                     reduce_price = 0.0
             if reduce_price <= 0:
                 LOG.warning("Invalid reduce_price, skipping reduce-only intent")
-            else:
-                reduce_notional = abs(opp_qty) * reduce_price
-                reduce_intent = {
-                    "symbol": symbol,
-                    "signal": "BUY" if opp_side == "SHORT" else "SELL",
-                    "positionSide": opp_side,
-                    "reduceOnly": "true",
-                    "price": reduce_price,
-                    "capital_per_trade": reduce_notional,
-                    "gross_usd": reduce_notional,
-                    "leverage": 1.0,
-                    "_skip_flip": True,
-                }
-                LOG.info(
-                    "[executor] flip flatten symbol=%s side=%s notional=%.4f",
-                    symbol,
-                    opp_side,
-                    reduce_notional,
+                return
+
+            reduce_notional = abs(opp_qty) * reduce_price
+            reduce_signal = "BUY" if opp_side == "SHORT" else "SELL"
+            try:
+                reduce_payload, reduce_meta = build_order_payload(
+                    symbol=symbol,
+                    side=reduce_signal,
+                    price=reduce_price,
+                    desired_gross_usd=reduce_notional,
+                    reduce_only=True,
+                    position_side=opp_side,
                 )
-                try:
-                    send_order(**reduce_intent)
-                except Exception as exc:
-                    LOG.error(
-                        "[executor] reduce_only_send_failed %s %s", symbol, exc
-                    )
-                try:
-                    positions = list(get_positions() or [])
-                except Exception:
-                    positions = []
+            except Exception as exc:
+                LOG.error("[executor] reduce_only_build_failed %s %s", symbol, exc)
+                return
+
+            LOG.info(
+                "[executor] flip flatten symbol=%s side=%s notional=%.4f",
+                symbol,
+                opp_side,
+                reduce_notional,
+            )
+            try:
+                send_order(**reduce_payload)
+            except Exception as exc:
+                LOG.error("[executor] reduce_only_send_failed %s %s", symbol, exc)
+                return
+            try:
+                publish_order_audit(
+                    symbol,
+                    {
+                        "phase": "flip_reduce",
+                        "side": reduce_signal,
+                        "positionSide": opp_side,
+                        "payload": {
+                            k: reduce_payload[k]
+                            for k in ("type", "quantity", "reduceOnly", "positionSide")
+                            if k in reduce_payload
+                        },
+                        "normalized": {
+                            "price": reduce_meta.get("normalized_price"),
+                            "qty": reduce_meta.get("normalized_qty"),
+                        },
+                    },
+                )
+            except Exception:
+                pass
+
+            try:
+                positions = list(get_positions() or [])
+            except Exception:
+                positions = []
+            opp_after_side, opp_after_qty, _ = _opposite_position(symbol, pos_side, positions)
+            if opp_after_qty > 0:
+                LOG.warning(
+                    "[executor] flip flatten incomplete symbol=%s side=%s qty=%.6f",
+                    symbol,
+                    opp_after_side,
+                    opp_after_qty,
+                )
+                return
+            force_direct_send = True
     nav = _compute_nav()
     current_gross, sym_open_qty = _gross_and_open_qty(symbol, pos_side, positions)
     _update_risk_state_counters(positions, current_gross)
@@ -513,6 +590,10 @@ def _send_order(intent: Dict[str, Any]) -> None:
         except (TypeError, ValueError):
             return fallback
 
+    if not reduce_only:
+        # Ensure the opening order never carries the reduceOnly flag
+        payload.pop("reduceOnly", None)
+
     norm_price = _meta_float(meta.get("normalized_price"), price_hint)
     norm_qty = _meta_float(meta.get("normalized_qty"), _meta_float(payload.get("quantity"), 0.0))
     payload_view = {
@@ -586,13 +667,7 @@ def _send_order(intent: Dict[str, Any]) -> None:
             pass
         return
 
-    LOG.info(
-        "[executor] SEND_ORDER %s %s payload=%s meta=%s",
-        symbol,
-        side,
-        payload_view,
-        meta,
-    )
+    LOG.info("[executor] SEND_ORDER %s %s payload=%s meta=%s", symbol, side, payload_view, meta)
     try:
         publish_order_audit(
             symbol,
@@ -609,69 +684,133 @@ def _send_order(intent: Dict[str, Any]) -> None:
     except Exception:
         pass
 
-    try:
-        resp = send_order(**payload)
-    except requests.HTTPError as exc:
+    resp: Dict[str, Any] = {}
+    router_error: Optional[str] = None
+
+    if force_direct_send:
         try:
-            _RISK_STATE.note_error(time.time())
-        except Exception:
-            pass
-        err_code = None
-        try:
-            if exc.response is not None:
-                err_code = exc.response.json().get("code")
-        except Exception:
-            err_code = None
-        LOG.error(
-            "[executor] ORDER_ERR code=%s symbol=%s side=%s meta=%s payload=%s err=%s",
-            err_code,
-            symbol,
-            side,
-            meta,
-            payload_view,
-            exc,
-        )
-        try:
-            publish_order_audit(
-                symbol,
-                {
-                    "phase": "error",
-                    "side": side,
-                    "positionSide": pos_side,
-                    "error": str(exc),
-                    "code": err_code,
-                    "normalized": normalized_ctx,
-                    "payload": payload_view,
-                },
-            )
-        except Exception:
-            pass
-        if err_code == -1111:
-            LOG.error(
-                "[executor] ORDER_PRECISION ctx=%s payload=%s",
-                normalized_ctx,
-                payload_view,
-            )
+            resp = send_order(**payload)
+        except Exception as exc:
+            router_error = str(exc)
+            LOG.error("[executor] flip open send_failed %s %s", symbol, exc)
             return
-        raise
-    except Exception as exc:
-        try:
-            _RISK_STATE.note_error(time.time())
-        except Exception:
-            pass
         try:
             publish_order_audit(
                 symbol,
                 {
-                    "phase": "error",
+                    "phase": "flip_open",
                     "side": side,
                     "positionSide": pos_side,
-                    "error": str(exc),
+                    "payload": {
+                        k: payload[k]
+                        for k in ("type", "quantity", "positionSide")
+                        if k in payload
+                    },
+                    "normalized": {"price": norm_price, "qty": norm_qty},
                 },
             )
         except Exception:
             pass
-        raise
+
+    if _route_order is not None and not force_direct_send:
+        router_intent = {
+            **intent,
+            "symbol": symbol,
+            "side": side,
+            "positionSide": pos_side,
+            "reduceOnly": reduce_only,
+            "quantity": payload.get("quantity"),
+            "type": payload.get("type"),
+            "price": payload.get("price", price_hint),
+        }
+        router_ctx = {
+            "payload": payload,
+            "price": price_hint,
+            "positionSide": pos_side,
+            "reduceOnly": reduce_only,
+        }
+        try:
+            result = _route_order(router_intent, router_ctx, DRY_RUN)
+        except Exception as exc:
+            router_error = str(exc)
+        else:
+            if result.get("accepted"):
+                resp = result.get("raw") or {}
+                if result.get("price") is not None:
+                    resp.setdefault("avgPrice", result.get("price"))
+                if result.get("qty") is not None:
+                    resp.setdefault("executedQty", str(result.get("qty")))
+            else:
+                router_error = str(result.get("reason") or "router_reject")
+
+    if not resp:
+        if router_error and not force_direct_send:
+            LOG.error(
+                "[executor] router_reject %s %s reason=%s", symbol, side, router_error
+            )
+        try:
+            resp = send_order(**payload)
+        except requests.HTTPError as exc:
+            try:
+                _RISK_STATE.note_error(time.time())
+            except Exception:
+                pass
+            err_code = None
+            try:
+                if exc.response is not None:
+                    err_code = exc.response.json().get("code")
+            except Exception:
+                err_code = None
+            LOG.error(
+                "[executor] ORDER_ERR code=%s symbol=%s side=%s meta=%s payload=%s err=%s",
+                err_code,
+                symbol,
+                side,
+                meta,
+                payload_view,
+                exc,
+            )
+            try:
+                publish_order_audit(
+                    symbol,
+                    {
+                        "phase": "error",
+                        "side": side,
+                        "positionSide": pos_side,
+                        "error": str(exc),
+                        "code": err_code,
+                        "normalized": normalized_ctx,
+                        "payload": payload_view,
+                    },
+                )
+            except Exception:
+                pass
+            if err_code == -1111:
+                LOG.error(
+                    "[executor] ORDER_PRECISION ctx=%s payload=%s",
+                    normalized_ctx,
+                    payload_view,
+                )
+                return
+            raise
+        except Exception as exc:
+            try:
+                _RISK_STATE.note_error(time.time())
+            except Exception:
+                pass
+            try:
+                publish_order_audit(
+                    symbol,
+                    {
+                        "phase": "error",
+                        "side": side,
+                        "positionSide": pos_side,
+                        "error": str(exc),
+                    },
+                )
+            except Exception:
+                pass
+            raise
 
     oid = resp.get("orderId")
     avg = resp.get("avgPrice", "0.00")
@@ -824,6 +963,7 @@ def _pub_tick() -> None:
 
 
 def _loop_once(i: int) -> None:
+    _sync_dry_run()
     _account_snapshot()
 
     try:
@@ -855,10 +995,26 @@ def _loop_once(i: int) -> None:
         else:
             LOG.error("[screener] missing signal generator")
 
+    if callable(_generate_intents):
+        try:
+            cfg = load_json("config/strategy_config.json") or {}
+        except Exception:
+            cfg = {}
+        universe = cfg.get("universe") or []
+        try:
+            auto_intents = list(_generate_intents(time.time(), universe, cfg) or [])
+        except Exception as e:
+            LOG.error("[signal-gen] error: %s", e)
+            auto_intents = []
+        for auto_intent in auto_intents:
+            LOG.info("[signal-gen] %s", auto_intent)
+            _send_order(dict(auto_intent))
+
     _pub_tick()
 
 
 def main() -> None:
+    _sync_dry_run()
     try:
         if not _is_dual_side():
             LOG.warning("[executor] WARNING — account not in hedge (dualSide) mode")

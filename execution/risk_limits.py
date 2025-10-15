@@ -26,6 +26,16 @@ _GLOBAL_KEYS = {
 }
 
 
+def _normalize_pct(value: Any) -> float:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if 0.0 < pct <= 1.0:
+        return pct * 100.0
+    return pct
+
+
 def _normalize_risk_cfg(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     """Ensure risk config exposes `global` and `per_symbol` sections."""
     if not isinstance(cfg, dict):
@@ -539,6 +549,10 @@ class RiskGate:
         below_min_notional, trade_rate_limit
         """
         now_ts = float(now_ts or time.time())
+        try:
+            gross_value = float(gross_usd)
+        except (TypeError, ValueError):
+            return False, "invalid_notional"
 
         # cooldown after stop
         try:
@@ -567,14 +581,25 @@ class RiskGate:
 
         guard_multiplier = 0.8 if os.environ.get("EVENT_GUARD", "0") == "1" else 1.0
 
-        try:
-            max_trade_pct = float(self.sizing.get("max_trade_nav_pct", 0.0) or 0.0)
-        except Exception:
-            max_trade_pct = 0.0
-        max_trade_pct *= guard_multiplier
+        sym_key = str(symbol).upper()
+        floor = float(self.min_gross_usd_per_order or 0.0)
+        floor = max(floor, float(self.per_symbol_min_gross_usd.get(sym_key, 0.0)))
+        min_floor = max(float(self.min_notional), floor)
+        if min_floor > 0.0 and gross_value + 1e-9 < min_floor:
+            return False, "below_min_notional"
+
+        max_trade_pct = _normalize_pct(self.sizing.get("max_trade_nav_pct", 0.0)) * guard_multiplier
         if max_trade_pct > 0.0 and nav > 0.0:
-            if float(gross_usd) > nav * (max_trade_pct / 100.0):
+            if gross_value > nav * (max_trade_pct / 100.0):
                 return False, "trade_gt_max_trade_nav_pct"
+
+        additional_pct = (gross_value / nav) * 100.0 if nav > 0 else float("inf")
+
+        max_sym_pct = _normalize_pct(self.sizing.get("max_symbol_exposure_pct", 50)) * guard_multiplier
+        if max_sym_pct > 0:
+            symbol_pct = float(self._symbol_exposure_pct(symbol))
+            if symbol_pct + additional_pct > max_sym_pct:
+                return False, "symbol_cap"
 
         current_gross = float(self._portfolio_gross_usd())
         if current_gross <= 0.0 and nav > 0.0:
@@ -582,42 +607,11 @@ class RiskGate:
                 current_gross = max(0.0, float(self._gross_exposure_pct())) * nav / 100.0
             except Exception:
                 current_gross = 0.0
-        try:
-            max_gross_pct = float(self.sizing.get("max_gross_exposure_pct", 150) or 0)
-        except Exception:
-            max_gross_pct = 150.0
-        max_gross_pct *= guard_multiplier
+        max_gross_pct = _normalize_pct(self.sizing.get("max_gross_exposure_pct", 150)) * guard_multiplier
         if nav > 0 and max_gross_pct > 0:
-            cap_usd = nav * (max_gross_pct / 100.0)
-            if current_gross >= cap_usd:
-                return False, "portfolio_cap_reached"
-
-        sym_key = str(symbol).upper()
-        floor = float(self.min_gross_usd_per_order or 0.0)
-        floor = max(floor, float(self.per_symbol_min_gross_usd.get(sym_key, 0.0)))
-        if floor > 0.0 and float(gross_usd) + 1e-9 < floor:
-            return False, "below_min_notional"
-
-        # portfolio gross exposure cap after this trade
-        future_exposure_pct = 0.0
-        if nav > 0:
-            future_exposure_pct = ((current_gross + float(gross_usd)) / nav) * 100.0
-        if max_gross_pct > 0 and future_exposure_pct >= max_gross_pct:
-            return False, "portfolio_cap"
-
-        # per-symbol cap after this trade
-        try:
-            max_sym_pct = float(self.sizing.get("max_symbol_exposure_pct", 50) or 0)
-        except Exception:
-            max_sym_pct = 50.0
-        max_sym_pct *= guard_multiplier
-        future_symbol_pct = float(self._symbol_exposure_pct(symbol)) + (100.0 * (float(gross_usd) / nav))
-        if max_sym_pct > 0 and future_symbol_pct >= max_sym_pct:
-            return False, "symbol_cap"
-
-        # notional sanity
-        if float(gross_usd) < float(self.min_notional):
-            return False, "below_min_notional"
+            current_pct = (current_gross / nav) * 100.0
+            if current_pct + additional_pct > max_gross_pct:
+                return False, "portfolio_cap"
 
         # rate limit per symbol/hour
         key = (str(symbol), int(self._now_hour_key()))

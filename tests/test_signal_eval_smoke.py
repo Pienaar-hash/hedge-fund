@@ -5,7 +5,7 @@ from execution.ml.features import build_feature_frame, make_labels
 
 
 def test_smoke_features_labels_shape():
-    idx = pd.date_range("2024-01-01", periods=200, freq="H", tz="UTC")
+    idx = pd.date_range("2024-01-01", periods=200, freq="h", tz="UTC")
     close = pd.Series(np.linspace(100, 110, len(idx)), index=idx)
     df = pd.DataFrame(
         {

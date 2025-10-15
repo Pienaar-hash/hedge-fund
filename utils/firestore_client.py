@@ -1,9 +1,14 @@
-from functools import lru_cache
+from __future__ import annotations
+
+import base64
+import json
+import logging
 import os
 import sys
-import json
-import base64
-from typing import Any, Dict, TYPE_CHECKING
+import time
+from contextlib import contextmanager
+from functools import lru_cache
+from typing import Any, Dict, TYPE_CHECKING, Callable
 
 service_account: Any
 firestore: Any
@@ -22,9 +27,180 @@ if TYPE_CHECKING:  # pragma: no cover - type hint only
 else:
     FirestoreClient = Any
 
+_LOG = logging.getLogger("firestore")
 _ADC_WARNED = False
-
 REQUIRED_FIELDS = ("project_id", "client_email", "private_key")
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+class _NoopDoc:
+    _is_noop = True
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    def set(self, *_a, **_k):
+        return None
+
+    def update(self, *_a, **_k):
+        return None
+
+    def add(self, *_a, **_k):
+        return None
+
+    def commit(self, *_a, **_k):
+        return None
+
+    def collection(self, name: str) -> "_NoopCollection":
+        return _NoopCollection(f"{self.path}/{name}")
+
+    def get(self):
+        class _Empty:
+            exists = False
+
+            def to_dict(self_inner):
+                return {}
+
+        return _Empty()
+
+
+class _NoopCollection:
+    _is_noop = True
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    def document(self, name: str) -> _NoopDoc:
+        return _NoopDoc(f"{self.path}/{name}")
+
+    def add(self, *_a, **_k):
+        return (None, None)
+
+
+class _NoopBatch:
+    _is_noop = True
+
+    def commit(self):
+        return None
+
+
+class _NoopDB:
+    _is_noop = True
+
+    def collection(self, name: str) -> _NoopCollection:
+        return _NoopCollection(name)
+
+    def batch(self) -> _NoopBatch:
+        return _NoopBatch()
+
+
+def _noop_db() -> _NoopDB:
+    return _NoopDB()
+
+
+def _call_with_retry(op: Callable[[], Any], action: str) -> Any:
+    delay = 0.25
+    for attempt in range(1, 6):
+        try:
+            return op()
+        except Exception as exc:
+            if attempt == 5:
+                _LOG.error("Firestore action failed (%s): %s", action, exc)
+                raise
+            _LOG.warning("Firestore retry %s/5 for %s: %s", attempt, action, exc)
+            _sleep(delay)
+            delay = min(delay * 2.0, 4.0)
+    return None
+
+
+class _DocWrapper:
+    _is_noop = False
+
+    def __init__(self, doc: Any) -> None:
+        self._doc = doc
+        self._path = getattr(doc, "path", "doc")
+
+    def set(self, *args, **kwargs):
+        return _call_with_retry(
+            lambda: self._doc.set(*args, **kwargs), f"doc.set {self._path}"
+        )
+
+    def collection(self, *args, **kwargs):
+        return _CollectionWrapper(self._doc.collection(*args, **kwargs))
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._doc, item)
+
+
+class _CollectionWrapper:
+    _is_noop = False
+
+    def __init__(self, col: Any) -> None:
+        self._col = col
+        self._path = getattr(col, "path", "collection")
+
+    def document(self, *args, **kwargs):
+        return _DocWrapper(self._col.document(*args, **kwargs))
+
+    def add(self, *args, **kwargs):
+        result = _call_with_retry(
+            lambda: self._col.add(*args, **kwargs), f"collection.add {self._path}"
+        )
+        if isinstance(result, tuple) and result and hasattr(result[0], "path"):
+            wrapped = _DocWrapper(result[0])
+            if len(result) == 1:
+                return (wrapped,)
+            return (wrapped,) + tuple(result[1:])
+        return result
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._col, item)
+
+
+class _BatchWrapper:
+    _is_noop = False
+
+    def __init__(self, batch: Any) -> None:
+        self._batch = batch
+
+    def commit(self):
+        return _call_with_retry(self._batch.commit, "batch.commit")
+
+    def set(self, doc_ref, *args, **kwargs):
+        base_ref = getattr(doc_ref, "_doc", doc_ref)
+        return self._batch.set(base_ref, *args, **kwargs)
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._batch, item)
+
+
+class _ClientWrapper:
+    _is_noop = False
+
+    def __init__(self, client: FirestoreClient) -> None:
+        self._client = client
+
+    def collection(self, *args, **kwargs):
+        return _CollectionWrapper(self._client.collection(*args, **kwargs))
+
+    def collection_group(self, *args, **kwargs):
+        return self._client.collection_group(*args, **kwargs)
+
+    def document(self, *args, **kwargs):
+        return _DocWrapper(self._client.document(*args, **kwargs))
+
+    def batch(self):
+        return _BatchWrapper(self._client.batch())
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._client, item)
+
+
+def _is_noop_client(db: Any) -> bool:
+    return getattr(db, "_is_noop", False)
 
 
 def _load_creds_dict() -> Dict[str, Any]:
@@ -34,33 +210,30 @@ def _load_creds_dict() -> Dict[str, Any]:
     3) GOOGLE_APPLICATION_CREDENTIALS -> file path (GCP standard)
     4) ./config/firebase_creds.json -> repo default
     """
-    # 1) Explicit path
     path = os.environ.get("FIREBASE_CREDS_PATH")
     if path and os.path.exists(path):
         os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", path)
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    # 2) Inline env JSON (raw or base64)
     inline = os.environ.get("FIREBASE_CREDS_JSON")
     if inline:
         try:
-            # Try raw JSON first
             return json.loads(inline)
         except Exception:
             try:
                 decoded = base64.b64decode(inline).decode("utf-8")
                 return json.loads(decoded)
             except Exception as e:
-                raise RuntimeError(f"FIREBASE_CREDS_JSON invalid (not JSON or base64): {e}")
+                raise RuntimeError(
+                    f"FIREBASE_CREDS_JSON invalid (not JSON or base64): {e}"
+                )
 
-    # 3) Standard GCP path
     gpath = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if gpath and os.path.exists(gpath):
         with open(gpath, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    # 4) Repo default
     default_path = os.path.join(os.getcwd(), "config", "firebase_creds.json")
     if os.path.exists(default_path):
         with open(default_path, "r", encoding="utf-8") as f:
@@ -76,38 +249,6 @@ def _validate_creds(info: Dict[str, Any]) -> None:
     missing = [k for k in REQUIRED_FIELDS if not info.get(k)]
     if missing:
         raise RuntimeError(f"Firebase creds missing fields: {', '.join(missing)}")
-
-
-def _noop_db():
-    class _NoopDoc:
-        def set(self, *_a, **_k):
-            return None
-
-        def update(self, *_a, **_k):
-            return None
-
-        def get(self):
-            class _Empty:
-                def to_dict(self_inner):
-                    return {}
-
-            return _Empty()
-
-    class _NoopCollection:
-        def document(self, *_a, **_k):
-            return _NoopDoc()
-
-        def add(self, *_a, **_k):
-            return (None, None)
-
-        def where(self, *_a, **_k):
-            return self
-
-    class _NoopDB:
-        def collection(self, *_a, **_k):
-            return _NoopCollection()
-
-    return _NoopDB()
 
 
 @lru_cache(maxsize=1)
@@ -126,17 +267,16 @@ def get_db() -> FirestoreClient:
     try:
         info = _load_creds_dict()
         _validate_creds(info)
-
         project_id = os.environ.get("FIREBASE_PROJECT_ID") or info.get("project_id")
         creds = service_account.Credentials.from_service_account_info(info)
-        return firestore.Client(credentials=creds, project=project_id)
+        client = firestore.Client(credentials=creds, project=project_id)
+        return _ClientWrapper(client)
     except Exception as exc:
         fallback_exc = exc
-        # Fallback: use GOOGLE_APPLICATION_CREDENTIALS directly if valid
         gac = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
         if gac and os.path.exists(gac):
             try:
-                return firestore.Client()
+                return _ClientWrapper(firestore.Client())
             except Exception as inner:
                 fallback_exc = inner
         if not _ADC_WARNED:
@@ -146,3 +286,15 @@ def get_db() -> FirestoreClient:
                 file=sys.stderr,
             )
         return _noop_db()
+
+
+@contextmanager
+def with_firestore():
+    db = get_db()
+    if _is_noop_client(db):
+        if os.environ.get("FIRESTORE_ENABLED", "1") == "0":
+            raise RuntimeError("Firestore disabled (FIRESTORE_ENABLED=0)")
+        raise RuntimeError(
+            "Firestore unavailable: credentials missing or client not installed"
+        )
+    yield db
