@@ -1,4 +1,10 @@
 {
+  "sizing": {
+    "max_trade_nav_pct": 0.5,
+    "max_gross_exposure_pct": 150,
+    "max_symbol_exposure_pct": 50,
+    "min_notional": 5
+  },
   "global": {
     "daily_loss_limit_pct": 2,
     "cooldown_minutes_after_stop": 60,

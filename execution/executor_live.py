@@ -7,7 +7,8 @@ import logging
 import os
 import subprocess
 import time
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from datetime import datetime
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import requests
 # Optional .env so Supervisor doesn't need to export everything
@@ -47,28 +48,7 @@ from execution.utils import (
     save_json,
 )
 
-# ---- Screener (best effort) ----
-def _default_signal_source() -> Iterable[Dict[str, Any]]:
-    return []
-
-
-generate_signals_from_config: Callable[[], Iterable[Dict[str, Any]]] = _default_signal_source
-try:
-    from execution.signal_screener import generate_signals_from_config as _gen
-
-    generate_signals_from_config = _gen
-except Exception:
-    pass
-
-_generate_intents: Optional[
-    Callable[[float, Sequence[str] | None, Mapping[str, Any] | None], List[Mapping[str, Any]]]
-] = None
-try:
-    from execution.signal_generator import generate_intents as _imported_generate_intents
-except Exception:
-    _generate_intents = None
-else:
-    _generate_intents = _imported_generate_intents
+from execution.signal_generator import generate_intents
 
 # ---- Firestore publisher handle (revisions differ) ----
 _PUB: Any
@@ -182,7 +162,7 @@ set_dry_run(DRY_RUN)
 INTENT_TEST = _truthy_env("INTENT_TEST", "0")
 
 LOG.info(
-    "[executor] starting loop ENV=%s DRY_RUN=%s commit=%s",
+    "[executor] starting loop ENV=%s DRY_RUN=%s commit=%s signal_source=generate_intents unified=True",
     os.getenv("ENV", "dev"),
     DRY_RUN,
     _git_commit(),
@@ -196,6 +176,86 @@ def _sync_dry_run() -> None:
         LOG.info("[executor] DRY_RUN flag changed -> %s", current)
         DRY_RUN = current
     set_dry_run(DRY_RUN)
+
+
+def _coerce_veto_reasons(raw: Any) -> List[str]:
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, Sequence):
+        return [str(item) for item in raw if item]
+    return [str(raw)]
+
+
+def _normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = dict(intent)
+    symbol = normalized.get("symbol") or normalized.get("pair")
+    if symbol:
+        normalized["symbol"] = str(symbol).upper()
+    normalized.setdefault("timestamp", datetime.utcnow().isoformat())
+    if not normalized.get("tf"):
+        normalized["tf"] = (
+            normalized.get("timeframe")
+            or normalized.get("interval")
+            or normalized.get("time_frame")
+            or "unknown"
+        )
+    normalized_signal = normalized.get("signal") or normalized.get("side")
+    normalized["signal"] = str(normalized_signal or "").upper()
+    normalized.setdefault("reduceOnly", False)
+    gross = normalized.get("gross_usd")
+    if gross in (None, ""):
+        try:
+            capital = float(normalized.get("capital_per_trade") or 0.0)
+        except (TypeError, ValueError):
+            capital = 0.0
+        try:
+            leverage = float(normalized.get("leverage") or 1.0)
+        except (TypeError, ValueError):
+            leverage = 1.0
+        normalized["gross_usd"] = capital * max(leverage, 1.0)
+    return normalized
+
+
+def _publish_intent_audit(symbol: Optional[str], intent: Dict[str, Any]) -> None:
+    LOG.info("[screener->executor] %s", intent)
+    if not symbol:
+        return
+    payload = dict(intent)
+    payload.setdefault("symbol", symbol)
+    payload.setdefault("ts", time.time())
+    try:
+        publish_intent_audit(payload)
+    except Exception:
+        pass
+
+
+def _publish_veto_exec(symbol: Optional[str], reasons: Sequence[str], intent: Mapping[str, Any]) -> None:
+    reasons_list = [str(r) for r in reasons if r]
+    LOG.info("[screener] veto symbol=%s reasons=%s", symbol, reasons_list)
+    payload = {
+        "symbol": symbol,
+        "reasons": reasons_list,
+        "intent": dict(intent),
+        "ts": time.time(),
+    }
+    try:
+        save_json(f"logs/veto_exec_{(symbol or 'UNKNOWN').upper()}.json", payload)
+    except Exception:
+        pass
+    try:
+        publish_order_audit(
+            (symbol or "UNKNOWN").upper(),
+            {
+                "phase": "veto",
+                "reasons": reasons_list,
+                "intent": dict(intent),
+            },
+        )
+    except Exception:
+        pass
+
 
 # ------------- helpers -------------
 
@@ -1004,30 +1064,33 @@ def _loop_once(i: int) -> None:
         LOG.info("[screener->executor] %s", intent)
         _send_order(intent)
     else:
-        if callable(generate_signals_from_config):
-            try:
-                for intent in generate_signals_from_config() or []:
-                    LOG.info("[screener->executor] %s", intent)
-                    _send_order(intent)
-            except Exception as e:
-                LOG.error("[screener] error: %s", e)
-        else:
-            LOG.error("[screener] missing signal generator")
-
-    if callable(_generate_intents):
         try:
-            cfg = load_json("config/strategy_config.json") or {}
-        except Exception:
-            cfg = {}
-        universe = cfg.get("universe") or []
-        try:
-            auto_intents = list(_generate_intents(time.time(), universe, cfg) or [])
+            intents_raw = list(generate_intents(time.time()))
         except Exception as e:
-            LOG.error("[signal-gen] error: %s", e)
-            auto_intents = []
-        for auto_intent in auto_intents:
-            LOG.info("[signal-gen] %s", auto_intent)
-            _send_order(dict(auto_intent))
+            LOG.error("[screener] error: %s", e)
+            intents_raw = []
+
+        attempted = len(intents_raw)
+        emitted = 0
+        for raw_intent in intents_raw:
+            intent = _normalize_intent(raw_intent)
+            symbol = intent.get("symbol")
+            if not symbol:
+                LOG.warning("[screener] missing symbol in intent %s", intent)
+                continue
+
+            veto_reasons = _coerce_veto_reasons(intent.get("veto"))
+            if veto_reasons:
+                _publish_veto_exec(symbol, veto_reasons, intent)
+                continue
+
+            emitted += 1
+            try:
+                _publish_intent_audit(symbol, intent)
+                _send_order(intent)
+            except Exception as exc:
+                LOG.error("[executor] failed to send intent %s %s", symbol, exc)
+        LOG.info("[screener] attempted=%d emitted=%d", attempted, emitted)
 
     _pub_tick()
 
