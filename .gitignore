@@ -21,3 +21,8 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# Ignore runtime logs
+logs/*.json
+logs/*.jsonl
+
