@@ -3,6 +3,8 @@ import sys
 import json
 import time
 import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List
 
 import pandas as pd
@@ -42,6 +44,8 @@ WANT_TAGS = tuple((os.getenv("DASHBOARD_SIGNAL_TAGS") or "[screener],[screener->
 # stable-coins to include in equity calc
 STABLES = [s.strip() for s in (os.getenv("DASHBOARD_STABLES", "USDT,FDUSD,BFUSD,USDC").split(",")) if s.strip()]
 
+LATENCY_CACHE_PATH = Path(os.getenv("EXEC_LATENCY_CACHE", "logs/execution/replay_cache.json"))
+
 # Optional auto-refresh
 try:
     from streamlit_extras.st_autorefresh import st_autorefresh
@@ -59,6 +63,26 @@ def load_json(path: str, default=None):
             return json.load(f)
     except Exception:
         return {} if default is None else default
+
+def parse_iso_ts(ts: str):
+    if not ts:
+        return None
+    try:
+        cleaned = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+def format_latency(value):
+    try:
+        if value is None or (isinstance(value, float) and value != value):
+            return "—"
+        return f"{float(value):.0f} ms"
+    except Exception:
+        return "—"
 
 def human_age(ts) -> str:
     if not ts:
@@ -125,8 +149,8 @@ btc_mark = fetch_mark_price_usdt("BTCUSDT")
 reserve_usdt = RESERVE_BTC * btc_mark if btc_mark > 0 else 0.0
 
 # ---- Tabs layout --------------------------------------------------------------
-tab_overview, tab_positions, tab_leader, tab_signals, tab_ml, tab_doctor = st.tabs(
-    ["Overview", "Positions", "Leaderboard", "Signals", "ML", "Doctor"]
+tab_overview, tab_positions, tab_execution, tab_leader, tab_signals, tab_ml, tab_doctor = st.tabs(
+    ["Overview", "Positions", "Execution", "Leaderboard", "Signals", "ML", "Doctor"]
 )
 
 # --------------------------- Overview Tab ------------------------------------
@@ -162,6 +186,98 @@ with tab_positions:
     else:
         st.dataframe(positions_df, use_container_width=True, height=420)
 
+# --------------------------- Execution Tab ----------------------------------
+with tab_execution:
+    st.subheader("Execution Health")
+
+    exec_stats = (
+        pos_doc.get("exec_stats")
+        or nav_doc.get("exec_stats")
+        or {}
+    )
+    latency_cache = load_json(str(LATENCY_CACHE_PATH), default={})
+    latency_summary = (
+        (latency_cache.get("summary") or {}).get("latency")
+        or latency_cache.get("latency")
+        or {}
+    )
+
+    heartbeats = exec_stats.get("last_heartbeats") or {}
+    now_ts = time.time()
+    hb_rows = []
+    stale = False
+    for svc in ("executor_live", "sync_daemon"):
+        ts_iso = heartbeats.get(svc)
+        ts_val = parse_iso_ts(ts_iso) if ts_iso else None
+        if ts_val is not None:
+            age = now_ts - ts_val
+            hb_rows.append((svc, age))
+            if age > 180:
+                stale = True
+        else:
+            hb_rows.append((svc, None))
+            stale = True
+
+    hb_text = []
+    for svc, age in hb_rows:
+        if age is None:
+            hb_text.append(f"{svc}: n/a")
+        elif age < 60:
+            hb_text.append(f"{svc}: {int(age)}s")
+        elif age < 3600:
+            hb_text.append(f"{svc}: {int(age // 60)}m")
+        else:
+            hb_text.append(f"{svc}: {int(age // 3600)}h")
+
+    banner_message = " · ".join(hb_text) if hb_text else "No heartbeat data"
+    if stale:
+        st.error(f"Heartbeat stale · {banner_message}")
+    else:
+        st.success(f"Heartbeats healthy · {banner_message}")
+
+    if not exec_stats:
+        st.info("Execution stats unavailable. Ensure executor and sync daemon telemetry is publishing.")
+    else:
+        col_attempts, col_exec, col_veto, col_fill, col_p50, col_p90 = st.columns(6)
+        attempted = exec_stats.get("attempted_24h")
+        executed = exec_stats.get("executed_24h")
+        vetoes = exec_stats.get("vetoes_24h")
+        fill_rate = exec_stats.get("fill_rate")
+
+        col_attempts.metric("Attempted (24h)", f"{attempted:,}" if attempted is not None else "—")
+        col_exec.metric("Executed (24h)", f"{executed:,}" if executed is not None else "—")
+        col_veto.metric("Vetoes (24h)", f"{vetoes:,}" if vetoes is not None else "—")
+
+        if fill_rate is None:
+            fill_display = "—"
+        else:
+            try:
+                fr = float(fill_rate)
+                fill_display = f"{fr*100:.1f}%" if fr <= 1 else f"{fr:.1f}%"
+            except Exception:
+                fill_display = "—"
+        col_fill.metric("Fill Rate", fill_display)
+
+        col_p50.metric("Latency p50", format_latency(latency_summary.get("p50_ms")))
+        col_p90.metric("Latency p90", format_latency(latency_summary.get("p90_ms")))
+
+        top_vetoes = exec_stats.get("top_vetoes") or []
+        if top_vetoes:
+            st.markdown("#### Top Veto Reasons (24h)")
+            df_veto = pd.DataFrame(top_vetoes)
+            if not df_veto.empty:
+                df_veto = df_veto.rename(columns={"reason": "Reason", "count": "Count"})
+                st.dataframe(df_veto, use_container_width=True, height=280)
+            else:
+                st.info("No veto data to display.")
+        else:
+            st.info("No veto data in the last 24 hours.")
+
+        if not latency_summary:
+            st.caption(
+                "Latency metrics unavailable. Generate a cache with "
+                "`python scripts/replay_logs.py --since <iso> --json logs/execution/replay_cache.json`."
+            )
 # --------------------------- Leaderboard Tab ---------------------------------
 with tab_leader:
     st.subheader("Leaderboard")

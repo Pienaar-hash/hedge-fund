@@ -7,6 +7,7 @@ import time
 from execution.nav import compute_trading_nav, compute_gross_exposure_usd
 from execution.utils import load_json
 from execution.exchange_utils import get_balances
+from execution.log_utils import get_logger, log_event, safe_dump
 
 
 _GLOBAL_KEYS = {
@@ -24,6 +25,60 @@ _GLOBAL_KEYS = {
     "error_circuit",
     "whitelist",
 }
+
+LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
+
+REASONS = {
+    "kill_switch_triggered": "kill_switch",
+    "below_min_notional": "min_notional",
+    "exceeds_per_trade_cap": "per_trade_cap",
+    "exceeds_leverage_cap": "leverage_cap",
+    "exceeds_open_notional_cap": "open_notional_cap",
+    "too_many_positions": "position_limit",
+    "invalid_notional": "invalid_notional",
+    "cooldown": "cooldown",
+    "daily_loss_limit": "daily_loss",
+    "day_loss_limit": "daily_loss",
+    "trade_gt_max_trade_nav_pct": "max_trade_nav",
+    "trade_gt_10pct_equity": "max_trade_nav",
+    "symbol_cap": "symbol_cap",
+    "portfolio_cap": "portfolio_cap",
+    "max_gross_nav_pct": "portfolio_cap",
+    "trade_rate_limit": "trade_rate_limit",
+    "not_whitelisted": "whitelist",
+    "circuit_breaker": "circuit_breaker",
+    "burst_limit": "burst_limit",
+    "side_blocked": "side_blocked",
+    "leverage_exceeded": "leverage_cap",
+    "max_concurrent": "max_concurrent",
+    "tier_cap": "tier_cap",
+}
+
+
+def _emit_veto(
+    symbol: Any,
+    reason: str,
+    *,
+    detail: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+    strategy: Optional[str] = None,
+    signal_ts: Any = None,
+    qty: Any = None,
+) -> None:
+    try:
+        payload = {
+            "symbol": symbol,
+            "strategy": strategy,
+            "veto_reason": REASONS.get(reason, reason or "unknown"),
+            "original_reason": reason,
+            "veto_detail": detail or {},
+            "signal_ts": signal_ts,
+            "qty_req": qty,
+            "context": context or {},
+        }
+        log_event(LOG_VETOES, "risk_veto", safe_dump(payload))
+    except Exception:
+        pass
 
 
 def _normalize_pct(value: Any) -> float:
@@ -119,17 +174,78 @@ class RiskState:
 def _can_open_position_legacy(
     symbol: str, notional: float, lev: float, cfg: RiskConfig, st: RiskState
 ) -> tuple[bool, str]:
+    context_base = {
+        "requested_notional": float(notional),
+        "open_notional": float(getattr(st, "open_notional", 0.0)),
+        "open_positions": int(getattr(st, "open_positions", 0)),
+        "leverage": float(lev),
+    }
     if st.portfolio_drawdown_pct <= cfg.kill_switch_drawdown_pct:
+        _emit_veto(
+            symbol,
+            "kill_switch_triggered",
+            detail={
+                "kill_switch_drawdown_pct": float(cfg.kill_switch_drawdown_pct),
+                "portfolio_drawdown_pct": float(getattr(st, "portfolio_drawdown_pct", 0.0)),
+            },
+            context=context_base,
+        )
         return False, "kill_switch_triggered"
     if notional < cfg.min_notional:
+        _emit_veto(
+            symbol,
+            "below_min_notional",
+            detail={
+                "min_notional": float(cfg.min_notional),
+                "requested_notional": float(notional),
+            },
+            context=context_base,
+        )
         return False, "below_min_notional"
     if notional > cfg.max_notional_per_trade:
+        _emit_veto(
+            symbol,
+            "exceeds_per_trade_cap",
+            detail={
+                "max_notional_per_trade": float(cfg.max_notional_per_trade),
+                "requested_notional": float(notional),
+            },
+            context=context_base,
+        )
         return False, "exceeds_per_trade_cap"
     if lev > cfg.max_leverage:
+        _emit_veto(
+            symbol,
+            "exceeds_leverage_cap",
+            detail={
+                "max_leverage": float(cfg.max_leverage),
+                "requested_leverage": float(lev),
+            },
+            context=context_base,
+        )
         return False, "exceeds_leverage_cap"
     if (st.open_notional + notional) > cfg.max_open_notional:
+        _emit_veto(
+            symbol,
+            "exceeds_open_notional_cap",
+            detail={
+                "max_open_notional": float(cfg.max_open_notional),
+                "current_open_notional": float(getattr(st, "open_notional", 0.0)),
+                "requested_notional": float(notional),
+            },
+            context=context_base,
+        )
         return False, "exceeds_open_notional_cap"
     if st.open_positions >= cfg.max_positions:
+        _emit_veto(
+            symbol,
+            "too_many_positions",
+            detail={
+                "max_positions": int(cfg.max_positions),
+                "current_positions": int(getattr(st, "open_positions", 0)),
+            },
+            context=context_base,
+        )
         return False, "too_many_positions"
     return True, "ok"
 
@@ -245,14 +361,27 @@ def check_order(
     cfg = _normalize_risk_cfg(cfg)
 
     reasons: List[str] = []
-    details: Dict[str, float | List[str]] = {
+    details: Dict[str, Any] = {
         "reasons": reasons,
         "notional": float(requested_notional),
     }
+    thresholds: Dict[str, Any] = details.setdefault("thresholds", {})
 
     sym = str(symbol)
     s_cfg = _cfg_get(cfg, ["per_symbol", sym], {}) or {}
     g_cfg = _cfg_get(cfg, ["global"], {}) or {}
+    strategy_name = (
+        s_cfg.get("strategy")
+        or s_cfg.get("strategy_name")
+        or s_cfg.get("strategyId")
+        or g_cfg.get("strategy")
+    )
+    signal_ts = (
+        s_cfg.get("signal_ts")
+        or s_cfg.get("timestamp")
+        or s_cfg.get("ts")
+        or g_cfg.get("signal_ts")
+    )
 
     # Whitelist guardrail (if provided)
     wl = g_cfg.get("whitelist") or []
@@ -268,8 +397,11 @@ def check_order(
         day_lim = 0.0
     if day_lim > 0.0:
         try:
-            if float(getattr(state, "daily_pnl_pct", 0.0)) <= -day_lim:
+            current_pnl_pct = float(getattr(state, "daily_pnl_pct", 0.0))
+            if current_pnl_pct <= -day_lim:
                 reasons.append("day_loss_limit")
+                thresholds.setdefault("daily_loss_limit_pct", day_lim)
+                thresholds.setdefault("observed_daily_pnl_pct", current_pnl_pct)
         except Exception:
             pass
 
@@ -281,9 +413,11 @@ def check_order(
 
     if min_notional > 0.0 and req_notional < min_notional:
         reasons.append("below_min_notional")
+        thresholds.setdefault("min_notional", float(min_notional))
 
     if max_order_notional > 0.0 and req_notional > max_order_notional:
         reasons.append("symbol_cap")
+        thresholds.setdefault("max_order_notional", float(max_order_notional))
 
     # Open quantity cap (applies to increasing long exposure)
     max_open_qty = s_cfg.get("max_open_qty", None)
@@ -298,6 +432,7 @@ def check_order(
                 and float(open_qty) >= max_open_qty_f
             ):
                 reasons.append("symbol_cap")
+                thresholds.setdefault("max_open_qty", float(max_open_qty_f))
 
     # Side block (optional)
     try:
@@ -316,6 +451,7 @@ def check_order(
         lev_cap = 0.0
     if lev_cap > 0.0 and float(lev or 0.0) > lev_cap:
         reasons.append("leverage_exceeded")
+        thresholds.setdefault("max_leverage", float(lev_cap))
 
     # Per-symbol cooldown after last fill
     cooldown_sec = int(float(s_cfg.get("cooldown_sec", 0) or 0))
@@ -326,6 +462,8 @@ def check_order(
             if float(now) < cooldown_until:
                 reasons.append("cooldown")
                 details["cooldown_until"] = float(cooldown_until)
+                thresholds.setdefault("cooldown_sec", cooldown_sec)
+                thresholds.setdefault("last_fill_ts", float(last_fill))
 
     # Error circuit breaker (global)
     err_cfg = g_cfg.get("error_circuit", {}) or {}
@@ -335,6 +473,7 @@ def check_order(
         errors_in = getattr(state, "errors_in", lambda _w, _n: 0)
         if errors_in(window_sec, float(now)) >= max_errors:
             reasons.append("circuit_breaker")
+            thresholds.setdefault("error_circuit", {"max_errors": max_errors, "window_sec": window_sec})
 
     # Burst limit on order attempts (global)
     burst_cfg = g_cfg.get("burst_limit", {}) or {}
@@ -348,6 +487,7 @@ def check_order(
         attempts_in = getattr(state, "attempts_in", lambda _w, _n: 0)
         if attempts_in(burst_win, float(now)) >= burst_max:
             reasons.append("burst_limit")
+            thresholds.setdefault("burst_limit", {"max_orders": burst_max, "window_sec": burst_win})
 
     # Per-trade NAV cap
     try:
@@ -358,6 +498,7 @@ def check_order(
         if req_notional > float(nav) * (max_trade_pct / 100.0):
             reasons.append("trade_gt_max_trade_nav_pct")
             reasons.append("trade_gt_10pct_equity")
+            thresholds.setdefault("max_trade_nav_pct", max_trade_pct)
 
     # Gross exposure cap (global) — accept legacy/new keys
     max_gross_nav_pct = float(
@@ -373,6 +514,7 @@ def check_order(
             # keep legacy reason plus standardized alias
             reasons.append("max_gross_nav_pct")
             reasons.append("portfolio_cap")
+            thresholds.setdefault("max_gross_exposure_pct", max_gross_nav_pct)
 
     # Max concurrent positions (global)
     try:
@@ -382,6 +524,7 @@ def check_order(
     if max_conc > 0 and open_positions_count is not None:
         if int(open_positions_count) >= max_conc:
             reasons.append("max_concurrent")
+            thresholds.setdefault("max_concurrent_positions", max_conc)
 
     # Per-tier soft budget per-symbol (gross as % NAV)
     if tier_name:
@@ -397,8 +540,75 @@ def check_order(
             cur = float(current_tier_gross_notional)
             if (cur + req_notional) > cap_abs:
                 reasons.append("tier_cap")
+                thresholds.setdefault("tier_cap", {"tier": tier_name, "per_symbol_nav_pct": per_sym_pct})
 
     ok = len(reasons) == 0
+    if not ok and reasons:
+        try:
+            qty_req = (
+                float(req_notional / float(price))
+                if price not in (None, 0, 0.0) and float(price or 0.0) != 0.0
+                else None
+            )
+        except Exception:
+            qty_req = None
+        try:
+            nav_f = float(nav)
+        except Exception:
+            nav_f = 0.0
+        try:
+            current_gross_f = float(current_gross_notional)
+        except Exception:
+            current_gross_f = 0.0
+        try:
+            open_qty_f = float(open_qty)
+        except Exception:
+            open_qty_f = 0.0
+        try:
+            lev_f = float(lev)
+        except Exception:
+            lev_f = 0.0
+        try:
+            now_f = float(now)
+        except Exception:
+            now_f = time.time()
+        try:
+            tier_gross_f = float(current_tier_gross_notional)
+        except Exception:
+            tier_gross_f = 0.0
+        context = {
+            "nav": nav_f,
+            "requested_notional": req_notional,
+            "current_gross_notional": current_gross_f,
+            "open_qty": open_qty_f,
+            "lev": lev_f,
+            "now": now_f,
+            "open_positions_count": open_positions_count,
+            "tier": tier_name,
+            "current_tier_gross_notional": tier_gross_f,
+        }
+        if nav_f > 0.0:
+            context["post_trade_exposure_pct"] = ((current_gross_f + req_notional) / nav_f) * 100.0
+        detail_payload: Dict[str, Any] = {
+            "reasons": list(reasons),
+            "thresholds": thresholds,
+        }
+        extra = {
+            k: v
+            for k, v in details.items()
+            if k not in ("reasons", "thresholds")
+        }
+        if extra:
+            detail_payload["observations"] = extra
+        _emit_veto(
+            symbol,
+            reasons[0],
+            detail=detail_payload,
+            context=context,
+            strategy=strategy_name,
+            signal_ts=signal_ts,
+            qty=qty_req,
+        )
     return ok, details
 
 
@@ -552,7 +762,15 @@ class RiskGate:
         try:
             gross_value = float(gross_usd)
         except (TypeError, ValueError):
+            _emit_veto(
+                symbol,
+                "invalid_notional",
+                detail={"raw_gross_usd": gross_usd},
+                context={"requested_gross_usd": gross_usd, "now": now_ts},
+            )
             return False, "invalid_notional"
+
+        base_context = {"requested_gross_usd": gross_value, "now": now_ts}
 
         # cooldown after stop
         try:
@@ -560,6 +778,16 @@ class RiskGate:
         except Exception:
             cd_min = 60.0
         if cd_min > 0 and (now_ts - float(self._last_stop_ts)) < (60.0 * cd_min):
+            cooldown_elapsed = now_ts - float(self._last_stop_ts)
+            _emit_veto(
+                symbol,
+                "cooldown",
+                detail={
+                    "cooldown_minutes_after_stop": cd_min,
+                    "elapsed_since_stop_sec": cooldown_elapsed,
+                },
+                context={**base_context, "last_stop_ts": float(self._last_stop_ts)},
+            )
             return False, "cooldown"
 
         # daily loss stop
@@ -567,7 +795,17 @@ class RiskGate:
             day_lim = float(self.risk.get("daily_loss_limit_pct", 5) or 0)
         except Exception:
             day_lim = 5.0
-        if day_lim > 0 and (self._daily_loss_pct() >= day_lim):
+        daily_loss_pct = self._daily_loss_pct()
+        if day_lim > 0 and daily_loss_pct >= day_lim:
+            _emit_veto(
+                symbol,
+                "daily_loss_limit",
+                detail={
+                    "daily_loss_limit_pct": day_lim,
+                    "observed_daily_loss_pct": daily_loss_pct,
+                },
+                context=base_context,
+            )
             self._last_stop_ts = now_ts
             return False, "daily_loss_limit"
 
@@ -577,20 +815,45 @@ class RiskGate:
                 provider.refresh()
             except Exception:
                 pass
-        nav = max(float(self._portfolio_nav()), 1.0)
+        raw_nav = float(self._portfolio_nav())
+        nav = max(raw_nav, 1.0)
 
         guard_multiplier = 0.8 if os.environ.get("EVENT_GUARD", "0") == "1" else 1.0
+        nav_context = {
+            **base_context,
+            "nav": raw_nav,
+            "guard_multiplier": guard_multiplier,
+        }
 
         sym_key = str(symbol).upper()
         floor = float(self.min_gross_usd_per_order or 0.0)
         floor = max(floor, float(self.per_symbol_min_gross_usd.get(sym_key, 0.0)))
         min_floor = max(float(self.min_notional), floor)
         if min_floor > 0.0 and gross_value + 1e-9 < min_floor:
+            _emit_veto(
+                symbol,
+                "below_min_notional",
+                detail={
+                    "min_gross_usd": min_floor,
+                    "requested_gross_usd": gross_value,
+                },
+                context=nav_context,
+            )
             return False, "below_min_notional"
 
         max_trade_pct = _normalize_pct(self.sizing.get("max_trade_nav_pct", 0.0)) * guard_multiplier
         if max_trade_pct > 0.0 and nav > 0.0:
             if gross_value > nav * (max_trade_pct / 100.0):
+                _emit_veto(
+                    symbol,
+                    "trade_gt_max_trade_nav_pct",
+                    detail={
+                        "max_trade_nav_pct": max_trade_pct,
+                        "requested_gross_usd": gross_value,
+                        "nav": nav,
+                    },
+                    context=nav_context,
+                )
                 return False, "trade_gt_max_trade_nav_pct"
 
         additional_pct = (gross_value / nav) * 100.0 if nav > 0 else float("inf")
@@ -599,6 +862,16 @@ class RiskGate:
         if max_sym_pct > 0:
             symbol_pct = float(self._symbol_exposure_pct(symbol))
             if symbol_pct + additional_pct > max_sym_pct:
+                _emit_veto(
+                    symbol,
+                    "symbol_cap",
+                    detail={
+                        "max_symbol_exposure_pct": max_sym_pct,
+                        "current_symbol_pct": symbol_pct,
+                        "incoming_pct": additional_pct,
+                    },
+                    context={**nav_context, "symbol_pct": symbol_pct},
+                )
                 return False, "symbol_cap"
 
         current_gross = float(self._portfolio_gross_usd())
@@ -611,6 +884,20 @@ class RiskGate:
         if nav > 0 and max_gross_pct > 0:
             current_pct = (current_gross / nav) * 100.0
             if current_pct + additional_pct > max_gross_pct:
+                _emit_veto(
+                    symbol,
+                    "portfolio_cap",
+                    detail={
+                        "max_gross_exposure_pct": max_gross_pct,
+                        "current_portfolio_pct": current_pct,
+                        "incoming_pct": additional_pct,
+                    },
+                    context={
+                        **nav_context,
+                        "current_portfolio_pct": current_pct,
+                        "current_gross_usd": current_gross,
+                    },
+                )
                 return False, "portfolio_cap"
 
         # rate limit per symbol/hour
@@ -621,6 +908,15 @@ class RiskGate:
         except Exception:
             max_trades = 6
         if max_trades > 0 and self._trade_counts[key] > max_trades:
+            _emit_veto(
+                symbol,
+                "trade_rate_limit",
+                detail={
+                    "max_trades_per_symbol_per_hour": max_trades,
+                    "observed_count": self._trade_counts[key],
+                },
+                context=nav_context,
+            )
             return False, "trade_rate_limit"
 
         return True, ""

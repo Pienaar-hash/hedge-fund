@@ -5,6 +5,8 @@ Realtime insider-trade detector for Polymarket using the RTDS WebSocket feed.
 No authentication required.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import csv
@@ -12,6 +14,7 @@ import os
 import random
 from datetime import datetime, timezone
 from collections import defaultdict
+from typing import Dict, List
 import websockets
 
 # ───────────────────────────────────────────────────────────────
@@ -33,6 +36,9 @@ HEADERS = {
     ),
 }
 # ───────────────────────────────────────────────────────────────
+
+
+_SNAPSHOT_CACHE: List[Dict[str, str | float]] = []
 
 async def run_once():
     """Connect once to RTDS and stream live trades."""
@@ -108,6 +114,13 @@ async def run_once():
                             writer.writeheader()
                             writer.writerows(trades)
                         print(f"📁 {len(trades)} trades logged → {path}")
+
+
+def get_polymarket_snapshot() -> List[Dict[str, str | float]]:
+    """
+    Return cached Polymarket insider snapshots for dashboard usage.
+    """
+    return list(_SNAPSHOT_CACHE)
 
 
 async def main():

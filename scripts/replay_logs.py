@@ -1,292 +1,328 @@
-"""
-Replay dry-run audit logs into Firestore for dashboard continuity.
-Usage:
-    python -m scripts.replay_logs --accelerated --seed-nav --seed-positions
-"""
+#!/usr/bin/env python3
+from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
-import time
-from datetime import datetime
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
 
-# ---------------------------------------------------------------------
-# Ensure project root on path
-# ---------------------------------------------------------------------
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
-from utils.firestore_client import get_db  # noqa: E402
-
-# Firestore client
-db = get_db()
+ROOT = Path(__file__).resolve().parents[1]
+LOG_DIR = ROOT / "logs" / "execution"
 
 
-# ---------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------
-def normalize_order(event):
-    """Transform dry-run audit order into Firestore document."""
-    n = event.get("normalized", {}) or {}
+def _parse_iso(ts: str) -> Optional[float]:
+    try:
+        cleaned = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _coerce_ts(record: Dict[str, Any]) -> Optional[float]:
+    for key in ("ts", "timestamp", "time", "t", "local_ts"):
+        value = record.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+            try:
+                return float(value)
+            except ValueError:
+                parsed = _parse_iso(value)
+                if parsed is not None:
+                    return parsed
+    return None
+
+
+def _load_jsonl(path: Path, since: Optional[float], malformed_counter: Counter) -> Iterable[Dict[str, Any]]:
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for idx, line in enumerate(fh, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    malformed_counter[path.name] += 1
+                    continue
+                if not isinstance(record, dict):
+                    malformed_counter[path.name] += 1
+                    continue
+                ts = _coerce_ts(record)
+                if ts is None:
+                    malformed_counter[path.name] += 1
+                    continue
+                if since is not None and ts < since:
+                    continue
+                record["_ts"] = ts
+                record["_line"] = idx
+                yield record
+    except FileNotFoundError:
+        return
+    except Exception:
+        return
+
+
+def _bucket_ts(ts: float, bucket_seconds: int = 60) -> int:
+    return int(ts // bucket_seconds)
+
+
+def _extract_strategy(record: Dict[str, Any]) -> str:
+    for key in ("strategy", "strategy_name", "strategyId", "strategy_id", "source"):
+        value = record.get(key)
+        if value:
+            return str(value)
+    payload = record.get("nav_snapshot") or record.get("intent") or {}
+    if isinstance(payload, dict):
+        for key in ("strategy", "strategy_name", "strategyId"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+    return "unknown"
+
+
+def _extract_symbol(record: Dict[str, Any]) -> str:
+    symbol = record.get("symbol") or record.get("pair")
+    if symbol:
+        return str(symbol).upper()
+    payload = record.get("intent") or record.get("veto_detail") or {}
+    if isinstance(payload, dict):
+        value = payload.get("symbol")
+        if value:
+            return str(value).upper()
+    return "UNKNOWN"
+
+
+def _extract_request_id(record: Dict[str, Any]) -> Optional[str]:
+    req_id = record.get("request_id") or record.get("client_order_id") or record.get("clientOrderId")
+    if req_id:
+        return str(req_id)
+    payload = record.get("intent") or record.get("veto_detail") or record.get("normalized") or {}
+    if isinstance(payload, dict):
+        for key in ("request_id", "client_order_id", "clientOrderId"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+def _group_key(record: Dict[str, Any]) -> tuple[str, str, Optional[str], int]:
+    strategy = _extract_strategy(record)
+    symbol = _extract_symbol(record)
+    req_id = _extract_request_id(record)
+    bucket = _bucket_ts(record["_ts"])
+    return strategy, symbol, req_id, bucket
+
+
+def _percentile(values: List[float], pct: float) -> float:
+    if not values:
+        return math.nan
+    values_sorted = sorted(values)
+    k = (len(values_sorted) - 1) * pct
+    f = math.floor(k)
+    c = math.ceil(k)
+    if f == c:
+        return values_sorted[int(k)]
+    d0 = values_sorted[f] * (c - k)
+    d1 = values_sorted[c] * (k - f)
+    return d0 + d1
+
+
+@dataclass
+class AttemptChain:
+    attempt: Dict[str, Any]
+    vetos: List[Dict[str, Any]] = field(default_factory=list)
+    orders: List[Dict[str, Any]] = field(default_factory=list)
+    positions: List[Dict[str, Any]] = field(default_factory=list)
+
+    def latency_ms(self) -> Optional[float]:
+        if not self.orders:
+            return None
+        first_order_ts = min(order["_ts"] for order in self.orders)
+        return max(0.0, (first_order_ts - self.attempt["_ts"]) * 1000.0)
+
+    def is_resolved(self) -> bool:
+        return bool(self.vetos or self.orders)
+
+    def has_gap(self, window_seconds: float = 300.0) -> bool:
+        if self.is_resolved():
+            return False
+        latest_ts = self.attempt["_ts"]
+        return (datetime.now(timezone.utc).timestamp() - latest_ts) > window_seconds
+
+
+def _load_chains(since: Optional[float]) -> tuple[Dict[tuple[str, str, int], AttemptChain], Counter]:
+    malformed = Counter()
+
+    attempts: Dict[tuple[str, str, int], AttemptChain] = {}
+    attempts_with_req: Dict[tuple[str, str, str], AttemptChain] = {}
+
+    for record in _load_jsonl(LOG_DIR / "orders_attempted.jsonl", since, malformed):
+        key = _group_key(record)
+        chains_key = (key[0], key[1], key[3])
+        chain = AttemptChain(attempt=record)
+        attempts[chains_key] = chain
+        if key[2]:
+            attempts_with_req[(key[0], key[1], key[2])] = chain
+
+    def attach(record: Dict[str, Any], attr: str) -> None:
+        key = _group_key(record)
+        req_key = (key[0], key[1], key[2])
+        if key[2] and req_key in attempts_with_req:
+            chain = attempts_with_req[req_key]
+        else:
+            bucket_key = (key[0], key[1], key[3])
+            chain = attempts.get(bucket_key)
+        if chain is None:
+            return
+        getattr(chain, attr).append(record)
+
+    for record in _load_jsonl(LOG_DIR / "risk_vetoes.jsonl", since, malformed):
+        attach(record, "vetos")
+
+    for record in _load_jsonl(LOG_DIR / "orders_executed.jsonl", since, malformed):
+        attach(record, "orders")
+
+    for record in _load_jsonl(LOG_DIR / "position_state.jsonl", since, malformed):
+        attach(record, "positions")
+
+    return attempts, malformed
+
+
+def _summaries(chains: Iterable[AttemptChain]) -> Dict[str, Any]:
+    total_attempts = 0
+    resolved = 0
+    latencies: List[float] = []
+    gaps: List[AttemptChain] = []
+
+    for chain in chains:
+        total_attempts += 1
+        if chain.is_resolved():
+            resolved += 1
+        latency = chain.latency_ms()
+        if latency is not None:
+            latencies.append(latency)
+        if chain.has_gap():
+            gaps.append(chain)
+
+    coverage = (resolved / total_attempts) * 100.0 if total_attempts else 0.0
+
+    latency_stats = {
+        "p50_ms": _percentile(latencies, 0.5) if latencies else math.nan,
+        "p90_ms": _percentile(latencies, 0.9) if latencies else math.nan,
+        "p99_ms": _percentile(latencies, 0.99) if latencies else math.nan,
+    }
+
+    gaps_summary = [
+        {
+            "strategy": _extract_strategy(chain.attempt),
+            "symbol": _extract_symbol(chain.attempt),
+            "ts": datetime.fromtimestamp(chain.attempt["_ts"], tz=timezone.utc).isoformat(),
+        }
+        for chain in gaps
+    ]
+
     return {
-        "timestamp": datetime.utcfromtimestamp(event.get("t", time.time())),
-        "symbol": event.get("symbol"),
-        "side": event.get("side"),
-        "positionSide": event.get("positionSide"),
-        "price": n.get("price"),
-        "qty": n.get("qty"),
-        "notional": event.get("notional"),
-        "finalNotional": n.get("finalNotional"),
-        "reduceOnly": event.get("reduceOnly", False),
-        "phase": event.get("phase"),
-        "mode": "replay",
+        "total_attempts": total_attempts,
+        "resolved_attempts": resolved,
+        "coverage_pct": coverage,
+        "latency": latency_stats,
+        "gaps": gaps_summary,
     }
 
 
-def inject_orders(log_dir, accelerated=False, delay=0.25):
-    """Read audit_orders_*.jsonl logs and push to Firestore."""
-    order_files = sorted(Path(log_dir).glob("audit_orders_*.jsonl"))
-    total_files = len(order_files)
-    print(
-        f"Scanning for audit logs in {log_dir} … found {total_files} file"
-        f"{'s' if total_files != 1 else ''}"
-    )
-
-    if not order_files:
-        print("⚠️  No audit order logs found")
-        return 0
-
-    injected = 0
-    for index, file in enumerate(order_files, start=1):
-        print(f"[{index}/{total_files}] Replaying orders from {file}")
-        symbol = file.stem.replace("audit_orders_", "")
-        with open(file, "r") as f:
-            for line_number, line in enumerate(f, start=1):
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    print(
-                        "⚠️  JSON decode error in "
-                        f"{file}:{line_number} - {exc}"
-                    )
-                    continue
-
-                doc = normalize_order(event)
-                ts = str(event.get("t", time.time()))
-
-                try:
-                    db.collection("orders_replay").document(f"{symbol}_{ts}").set(doc)
-                except Exception as exc:  # noqa: BLE001
-                    print(
-                        "❌  Failed to write order from "
-                        f"{file}:{line_number} - {exc}"
-                    )
-                    continue
-
-                print(f"[Firestore] Injected {symbol} {doc['side']} @ {doc['price']}")
-                injected += 1
-
-                if not accelerated:
-                    time.sleep(delay)
-
-    print(f"Injected {injected} order entries")
-    return injected
-
-
-def inject_nav(nav_file="logs/nav.jsonl"):
-    """Optional: seed NAV history for dashboard continuity."""
-    path = Path(nav_file)
-    if not path.exists():
-        print(f"⚠️  NAV file not found: {nav_file}")
-        return 0
-
-    print(f"Seeding NAV from {nav_file} …")
-    nav_collection = db.collection("nav_replay")
-    batch = db.batch()
-    batch_size = 0
-    seeded = 0
-    last_line = 0
-
-    def commit_batch():
-        nonlocal batch, batch_size, seeded
-        if batch_size == 0:
-            return
-        try:
-            batch.commit()
-            seeded += batch_size
-        except Exception as exc:  # noqa: BLE001
-            print(
-                "❌  Failed to commit NAV batch ending at "
-                f"{path}:{last_line} - {exc}"
-            )
-        finally:
-            batch = db.batch()
-            batch_size = 0
-
-    with open(path, "r") as f:
-        for line_number, line in enumerate(f, start=1):
-            last_line = line_number
-            try:
-                nav = json.loads(line)
-            except json.JSONDecodeError as exc:
-                print(
-                    "⚠️  JSON decode error in "
-                    f"{path}:{line_number} - {exc}"
-                )
-                continue
-
-            doc = {
-                "timestamp": datetime.utcfromtimestamp(nav.get("t", time.time())),
-                "nav": nav.get("nav"),
-                "balance": nav.get("balance"),
-                "equity": nav.get("equity"),
-                "mode": "replay",
+def _chains_as_dict(chains: Iterable[AttemptChain]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for chain in chains:
+        attempt_ts = chain.attempt["_ts"]
+        items.append(
+            {
+                "attempt": chain.attempt,
+                "vetos": chain.vetos,
+                "orders": chain.orders,
+                "positions": chain.positions,
+                "latency_ms": chain.latency_ms(),
+                "resolved": chain.is_resolved(),
+                "attempt_iso": datetime.fromtimestamp(attempt_ts, tz=timezone.utc).isoformat(),
             }
-
-            try:
-                batch.set(nav_collection.document(), doc)
-                batch_size += 1
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    "❌  Failed to queue NAV entry from "
-                    f"{path}:{line_number} - {exc}"
-                )
-                continue
-
-            if batch_size >= 200:
-                commit_batch()
-
-    commit_batch()
-    print(f"Seeded {seeded} NAV entries")
-    return seeded
+        )
+    return items
 
 
-def inject_positions(positions_file="logs/positions.jsonl"):
-    """Optional: seed live positions for dashboard continuity."""
-    path = Path(positions_file)
-    if not path.exists():
-        print(f"⚠️  Positions file not found: {positions_file}")
-        return 0
-
-    print(f"Seeding positions from {positions_file} …")
-    positions_collection = db.collection("positions_replay")
-    batch = db.batch()
-    batch_size = 0
-    seeded = 0
-    last_line = 0
-    next_progress = 500
-
-    def commit_batch():
-        nonlocal batch, batch_size, seeded, next_progress
-        if batch_size == 0:
-            return
-        try:
-            batch.commit()
-            seeded += batch_size
-            while seeded >= next_progress:
-                print(f"[Firestore] Injected {next_progress} positions so far …")
-                next_progress += 500
-        except Exception as exc:  # noqa: BLE001
-            print(
-                "❌  Failed to commit positions batch ending at "
-                f"{path}:{last_line} - {exc}"
-            )
-        finally:
-            batch = db.batch()
-            batch_size = 0
-
-    with open(path, "r") as f:
-        for line_number, line in enumerate(f, start=1):
-            last_line = line_number
-            try:
-                position = json.loads(line)
-            except json.JSONDecodeError as exc:
-                print(
-                    "⚠️  JSON decode error in "
-                    f"{path}:{line_number} - {exc}"
-                )
-                continue
-
-            doc = {
-                "timestamp": datetime.utcfromtimestamp(position.get("t", time.time())),
-                "symbol": position.get("symbol"),
-                "positionSide": position.get("positionSide"),
-                "entryPrice": position.get("entryPrice"),
-                "unrealizedPnl": position.get("unrealizedPnl"),
-                "mode": "replay",
-            }
-
-            if "size" in position:
-                doc["size"] = position.get("size")
-            elif "positionAmt" in position:
-                doc["positionAmt"] = position.get("positionAmt")
-
-            try:
-                batch.set(positions_collection.document(), doc)
-                batch_size += 1
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    "❌  Failed to queue position entry from "
-                    f"{path}:{line_number} - {exc}"
-                )
-                continue
-
-            if batch_size >= 200:
-                commit_batch()
-
-    commit_batch()
-    print(f"Seeded {seeded} position entries")
-    return seeded
-
-
-# ---------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--log-dir", default="logs", help="Directory with dry-run JSONL logs")
-    parser.add_argument("--accelerated", action="store_true", help="Fast playback without sleep")
-    parser.add_argument("--delay", type=float, default=0.25, help="Delay between events (sec)")
-    parser.add_argument("--seed-nav", action="store_true", help="Seed NAV history from nav.jsonl")
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Reconstruct execution chains from JSONL logs.")
     parser.add_argument(
-        "--seed-positions",
-        action="store_true",
-        help="Seed position history from positions.jsonl",
+        "--since",
+        help="ISO8601 timestamp; only consider entries at or after this time (UTC).",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--json",
+        help="Optional path to write reconstructed chains as JSON.",
+    )
+    args = parser.parse_args(argv)
 
-    nav_count = 0
-    position_count = 0
+    since_ts: Optional[float] = None
+    if args.since:
+        since_ts = _parse_iso(args.since)
+        if since_ts is None:
+            print(f"Could not parse --since timestamp: {args.since}", file=sys.stderr)
+            return 1
 
-    if args.seed_nav:
-        nav_path = Path(args.log_dir) / "nav.jsonl"
+    chains_map, malformed = _load_chains(since_ts)
+    chains = list(chains_map.values())
+
+    summary = _summaries(chains)
+
+    print("=== Execution Replay Summary ===")
+    print(f"Attempts: {summary['total_attempts']}")
+    print(f"Resolved: {summary['resolved_attempts']} ({summary['coverage_pct']:.1f}%)")
+    latency = summary["latency"]
+    print("Latency ms (attempt → order):")
+    for pct in ("p50_ms", "p90_ms", "p99_ms"):
+        value = latency[pct]
+        value_display = f"{value:.1f}" if value == value else "n/a"
+        print(f"  {pct.replace('_', '').upper()}: {value_display}")
+    gaps = summary["gaps"]
+    print(f"Gaps (>5m with no veto/order): {len(gaps)}")
+    for gap in gaps[:10]:
+        print(f"  - {gap['strategy']} {gap['symbol']} @ {gap['ts']}")
+
+    if malformed:
+        print("Malformed records encountered:")
+        for name, count in malformed.items():
+            print(f"  {name}: {count}")
+
+    if args.json:
         try:
-            nav_count = inject_nav(nav_path)
-            print(f"NAV seeding complete (entries: {nav_count}). Continuing …")
-        except Exception as exc:  # noqa: BLE001
-            print(f"❌  NAV seeding failed - {exc}. Continuing to order replay …")
+            output = {
+                "summary": summary,
+                "chains": _chains_as_dict(chains),
+                "malformed": dict(malformed),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "since": args.since,
+            }
+            with open(args.json, "w", encoding="utf-8") as fh:
+                json.dump(output, fh, indent=2, default=str)
+            print(f"Wrote JSON chains to {args.json}")
+        except Exception as exc:
+            print(f"Failed to write JSON output: {exc}", file=sys.stderr)
+            return 1
 
-    if args.seed_positions:
-        positions_path = Path(args.log_dir) / "positions.jsonl"
-        try:
-            position_count = inject_positions(positions_path)
-            print(
-                "Position seeding complete "
-                f"(entries: {position_count}). Continuing to order replay …"
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(
-                "❌  Position seeding failed - "
-                f"{exc}. Continuing to order replay …"
-            )
+    return 0
 
-    print("Replaying dry orders …")
-    order_count = inject_orders(args.log_dir, accelerated=args.accelerated, delay=args.delay)
 
-    summary = [f"orders: {order_count}"]
-    if args.seed_positions:
-        summary.append(f"positions: {position_count}")
-    if args.seed_nav:
-        summary.append(f"nav: {nav_count}")
-
-    print(f"✅ Replay complete ({', '.join(summary)})")
+if __name__ == "__main__":
+    raise SystemExit(main())

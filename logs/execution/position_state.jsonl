@@ -1,0 +1,1 @@
+{"strategy": "smoke_test", "symbol": "BTCUSDT", "signal_ts": 1760812986.120708, "pos_qty": 0.2, "entry_px": 30050, "unrealized_pnl": 5.0, "leverage": 2, "mode": "LONG", "ts": "2025-10-18T18:43:06.136785+00:00", "event_type": "position_snapshot", "pid": 614558, "hostname": "ubuntu-4gb-fsn1-2"}

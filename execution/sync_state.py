@@ -1,6 +1,62 @@
 from __future__ import annotations
 
 import json
+import os, sys
+from copy import deepcopy
+
+# --- Ensure repo root is importable & files are read from repo root ---
+# /root/hedge-fund/execution/sync_state.py -> repo_root=/root/hedge-fund
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+print(f"[sync] PYTHONPATH bootstrapped: {REPO_ROOT}", flush=True)
+
+FORCED_ENV = "prod"
+
+
+def _force_env_to_prod() -> str:
+    """Ensure Firestore writes always use the prod namespace."""
+    previous = os.environ.get("ENV", "unset")
+    os.environ["ENV"] = FORCED_ENV
+    print(f"[sync] ENV forced to prod (was {previous})", flush=True)
+    return FORCED_ENV
+
+
+def _dry_run_mode() -> str:
+    """Return DRY_RUN flag as string (default 0) for consistent logging."""
+    return os.getenv("DRY_RUN", "0")
+
+
+def _repo_root_log() -> None:
+    """Log repo root resolution for clarity in supervisor output."""
+    print(f"[sync] repo_root resolved: {REPO_ROOT}", flush=True)
+
+# --- Force package import path when launched via Supervisor ---
+import importlib.util
+
+try:
+    import utils.firestore_client as fc  # type: ignore
+    with_firestore = fc.with_firestore
+except Exception as e:
+    # fallback explicit loader in case Supervisor pythonpath differs
+    import importlib.util
+    _utils_path = os.path.join(REPO_ROOT, "utils", "firestore_client.py")
+    if os.path.exists(_utils_path):
+        spec = importlib.util.spec_from_file_location("firestore_client", _utils_path)
+        if spec and spec.loader:
+            fc = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fc)  # type: ignore[attr-defined]
+            with_firestore = fc.with_firestore
+            print("[sync] Fallback importloader success", flush=True)
+        else:
+            raise RuntimeError(f"Cannot import firestore_client: loader missing (spec={spec})")
+    else:
+        raise RuntimeError(f"Cannot import firestore_client: {e}")
+# Make relative file reads (nav_log.json, etc.) deterministic under Supervisor
+try:
+    os.chdir(REPO_ROOT)
+except Exception:
+    pass
 
 # execution/sync_state.py — Phase‑4.1 “Stability & Signals” (hardened sync)
 #
@@ -21,27 +77,22 @@ import json
 #  NAV_CUTOFF_SECAGO=86400                       # or relative cutoff in seconds
 #  SYNC_INTERVAL_SEC=20
 #
-import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-# ---------------- Firestore import (supports multiple layouts) ---------------
-try:
-    # legacy: project root
-    from firestore_client import with_firestore  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
-    try:
-        # sibling package layout
-        from utils.firestore_client import with_firestore  # type: ignore
-    except ModuleNotFoundError:
-        # monorepo package layout
-        from hedge_fund.utils.firestore_client import with_firestore  # type: ignore
+# ---------------- Firestore import (repo-root on sys.path now) ---------------
+# with_firestore provided by guarded import block above.
 
 # ------------------------------- Files ---------------------------------------
-NAV_LOG: str = "nav_log.json"
-PEAK_STATE: str = "peak_state.json"
-SYNCED_STATE: str = "synced_state.json"
+LOGS_DIR = os.path.join(REPO_ROOT, "logs")
+NAV_LOG: str = os.path.join(LOGS_DIR, "nav_log.json")
+PEAK_STATE: str = os.path.join(LOGS_DIR, "peak_state.json")
+SYNCED_STATE: str = os.path.join(LOGS_DIR, "synced_state.json")
+SPOT_CACHE_PATH: str = os.path.join(LOGS_DIR, "spot_state.json")
+TREASURY_CACHE_PATH: str = os.path.join(LOGS_DIR, "treasury.json")
+POLYMARKET_CACHE_PATH: str = os.path.join(LOGS_DIR, "polymarket.json")
+print(f"[sync] file paths => NAV_LOG={NAV_LOG}", flush=True)
 
 # ------------------------------ Settings ------------------------------------
 MAX_POINTS: int = 500  # dashboard series cap
@@ -49,12 +100,518 @@ MAX_POINTS: int = 500  # dashboard series cap
 _FIRESTORE_FAIL_COUNT = 0
 _FAILURE_THRESHOLD = 5
 
+_STABLE_ASSETS = {"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP"}
+
 
 # ------------------------------- Utilities ----------------------------------
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _to_float(value: Any) -> float:
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _load_existing_cache(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if isinstance(payload, dict):
+            return payload
+        if isinstance(payload, list):
+            return {"items": payload}
+    except Exception:
+        pass
+    return {}
+
+
+def _cache_asset_lookup(cache: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    lookup: Dict[str, Dict[str, Any]] = {}
+    items = cache.get("assets")
+    if isinstance(items, list):
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            sym = str(
+                entry.get("asset")
+                or entry.get("symbol")
+                or entry.get("Asset")
+                or entry.get("code")
+                or ""
+            ).upper()
+            if sym:
+                lookup[sym] = entry
+    for key, value in cache.items():
+        if key in {"assets", "total_usd", "updated_at", "source"}:
+            continue
+        if isinstance(value, dict):
+            lookup[str(key).upper()] = value
+    return lookup
+
+
+def _safe_usd_price(asset: str) -> float:
+    sym = str(asset or "").upper()
+    if not sym:
+        return 0.0
+    if sym in _STABLE_ASSETS:
+        return 1.0
+    try:
+        from execution.exchange_utils import get_price  # type: ignore
+
+        price_symbol = f"{sym}USDT"
+        px = get_price(price_symbol)
+        return float(px or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _price_from_nav_log(symbol: str) -> float:
+    sym = str(symbol or "").upper()
+    if not sym or not os.path.exists(NAV_LOG):
+        return 0.0
+    try:
+        with open(NAV_LOG, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return 0.0
+
+    candidates: List[Any]
+    if isinstance(data, list):
+        candidates = list(reversed(data[-500:]))  # tail-first, cap for perf
+    else:
+        candidates = [data]
+
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        for key in (
+            "prices",
+            "price_map",
+            "spot_prices",
+            "spot",
+            "px",
+            "marks",
+        ):
+            bucket = entry.get(key)
+            if isinstance(bucket, dict):
+                for search in (sym, f"{sym}USDT"):
+                    if search in bucket:
+                        return _to_float(bucket.get(search))
+        for key, value in entry.items():
+            key_u = str(key).upper()
+            if key_u in (sym, f"{sym}USDT"):
+                return _to_float(value)
+    return 0.0
+
+
+def _convert_to_usd(symbol: str, qty: float) -> float:
+    sym = str(symbol or "").upper()
+    amount = _to_float(qty)
+    if not sym or amount <= 0:
+        return 0.0
+
+    price = _safe_usd_price(sym)
+    if price > 0:
+        print(f"[sync] price resolve {sym}: {price}", flush=True)
+        return amount * price
+
+    price = _price_from_nav_log(sym)
+    if price > 0:
+        print(f"[sync] price resolve {sym}: {price}", flush=True)
+        return amount * price
+
+    return 0.0
+
+
+def _infer_price(asset: str, quantity: float, previous: Optional[Dict[str, Any]]) -> float:
+    sym = str(asset or "").upper()
+    if quantity <= 0:
+        return 0.0
+    price = _safe_usd_price(sym)
+    if price > 0:
+        return price
+    if previous:
+        prev_val = _to_float(
+            previous.get("value_usd")
+            or previous.get("USD Value")
+            or previous.get("usd")
+        )
+        prev_qty = _to_float(
+            previous.get("balance")
+            or previous.get("qty")
+            or previous.get("Units")
+            or previous.get("free")
+        )
+        if prev_qty > 0 and prev_val > 0:
+            try:
+                return float(prev_val / prev_qty)
+            except Exception:
+                return 0.0
+    return 0.0
+
+
+def _write_json_cache(
+    path: str,
+    data: Dict[str, Any],
+    *,
+    label: Optional[str] = None,
+    total_note: Optional[float] = None,
+) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except Exception:
+            pass
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(
+                data,
+                handle,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        os.replace(tmp_path, path)
+        if label:
+            suffix = ""
+            if total_note is not None:
+                suffix = f": total_usd={total_note:.2f}"
+            print(f"[sync] cache written ({label}){suffix}", flush=True)
+        else:
+            print(f"[sync] cache written: {os.path.basename(path)}", flush=True)
+    except Exception as exc:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        print(
+            f"[sync] WARN cache_write_failed: {os.path.basename(path)} err={exc}",
+            flush=True,
+        )
+
+
+def _collect_spot_cache(previous: Dict[str, Any]) -> Dict[str, Any]:
+    updated_at = _now_iso()
+    assets: List[Dict[str, Any]] = []
+    total_usd = 0.0
+    prev_lookup = _cache_asset_lookup(previous)
+
+    raw: Any = None
+    try:
+        import execution.exchange_utils as exu  # type: ignore
+
+        for attr in (
+            "get_spot_balances",
+            "get_spot_snapshot",
+            "get_spot_account",
+            "get_spot_account_balances",
+        ):
+            getter = getattr(exu, attr, None)
+            if not callable(getter):
+                continue
+            candidate = getter()
+            if candidate:
+                raw = candidate
+                break
+    except Exception as exc:
+        print(f"[sync] WARN spot_cache_fetch_failed: {exc}", flush=True)
+
+    if raw is None:
+        alt_path = os.path.join(LOGS_DIR, "spot_snapshot.json")
+        if os.path.exists(alt_path):
+            raw = _load_existing_cache(alt_path)
+
+    entries: List[Dict[str, Any]] = []
+    if isinstance(raw, dict):
+        balances = raw.get("balances")
+        if isinstance(balances, list):
+            entries = [entry for entry in balances if isinstance(entry, dict)]
+        elif isinstance(raw.get("assets"), list):
+            entries = [entry for entry in raw["assets"] if isinstance(entry, dict)]
+        else:
+            entries = [
+                {"asset": key, "free": raw[key]}
+                for key in raw
+                if isinstance(raw.get(key), (int, float, str))
+            ]
+    elif isinstance(raw, list):
+        entries = [entry for entry in raw if isinstance(entry, dict)]
+
+    for entry in entries:
+        asset_code = str(
+            entry.get("asset")
+            or entry.get("symbol")
+            or entry.get("coin")
+            or ""
+        ).upper()
+        if not asset_code:
+            continue
+        free_amt = _to_float(
+            entry.get("free")
+            or entry.get("available")
+            or entry.get("availableBalance")
+            or entry.get("balance")
+            or entry.get("qty")
+            or entry.get("units")
+        )
+        if free_amt <= 0:
+            continue
+        locked_amt = _to_float(entry.get("locked") or entry.get("freeze"))
+        prev_entry = prev_lookup.get(asset_code)
+        usd_val = _to_float(
+            entry.get("usdValue")
+            or entry.get("usd")
+            or entry.get("value_usd")
+        )
+        price = 0.0
+        if usd_val > 0 and free_amt > 0:
+            try:
+                price = float(usd_val / free_amt)
+            except Exception:
+                price = 0.0
+        if price <= 0:
+            price = _infer_price(asset_code, free_amt, prev_entry)
+        if usd_val <= 0 and price > 0:
+            usd_val = free_amt * price
+        if usd_val <= 0 and prev_entry:
+            usd_val = _to_float(
+                prev_entry.get("value_usd")
+                or prev_entry.get("USD Value")
+                or prev_entry.get("usd")
+            )
+        assets.append(
+            {
+                "asset": asset_code,
+                "free": float(free_amt),
+                "locked": float(max(locked_amt, 0.0)),
+                "price": float(max(price, 0.0)),
+                "value_usd": float(max(usd_val, 0.0)),
+            }
+        )
+        total_usd += max(usd_val, 0.0)
+
+    if not assets and previous:
+        assets = deepcopy(previous.get("assets") or [])
+        total_usd = _to_float(previous.get("total_usd"))
+
+    if total_usd <= 0 and assets:
+        total_usd = sum(_to_float(item.get("value_usd")) for item in assets)
+
+    payload = {
+        "source": "binance_spot",
+        "assets": assets,
+        "total_usd": float(total_usd),
+        "updated_at": updated_at,
+    }
+    return payload
+
+
+def _collect_treasury_cache(previous: Dict[str, Any]) -> Dict[str, Any]:
+    updated_at = _now_iso()
+    prev_lookup = _cache_asset_lookup(previous)
+
+    base_qty: Dict[str, float] = {}
+    for sym, entry in prev_lookup.items():
+        qty = _to_float(
+            entry.get("qty")
+            or entry.get("balance")
+            or entry.get("Units")
+            or entry.get("units")
+            or entry.get("free")
+        )
+        if qty > 0:
+            base_qty[sym] = qty
+
+    if not base_qty:
+        treasury_cfg_path = os.path.join(REPO_ROOT, "config", "treasury.json")
+        try:
+            with open(treasury_cfg_path, "r", encoding="utf-8") as handle:
+                cfg_payload = json.load(handle) or {}
+            if isinstance(cfg_payload, dict):
+                for raw_asset, raw_qty in cfg_payload.items():
+                    sym = str(raw_asset or "").upper()
+                    qty = _to_float(raw_qty)
+                    if sym and qty > 0:
+                        base_qty[sym] = qty
+        except Exception:
+            pass
+
+    asset_map: Dict[str, Dict[str, Any]] = {}
+    asset_rows: List[Dict[str, Any]] = []
+    total_usd = 0.0
+
+    for sym, qty in base_qty.items():
+        usd_val = _convert_to_usd(sym, qty)
+        prev_entry = prev_lookup.get(sym)
+        if usd_val <= 0 and prev_entry:
+            usd_val = _to_float(
+                prev_entry.get("value_usd")
+                or prev_entry.get("usd_value")
+                or prev_entry.get("USD Value")
+                or prev_entry.get("usd")
+            )
+
+        price = 0.0
+        if qty > 0 and usd_val > 0:
+            try:
+                price = float(usd_val / qty)
+            except Exception:
+                price = 0.0
+        if price <= 0:
+            price = _infer_price(sym, qty, prev_entry)
+            if price > 0 and usd_val <= 0:
+                usd_val = qty * price
+
+        total_usd += max(usd_val, 0.0)
+        asset_payload = {
+            "qty": float(qty),
+            "price": float(max(price, 0.0)),
+            "value_usd": float(max(usd_val, 0.0)),
+            "usd_value": float(max(usd_val, 0.0)),
+        }
+        asset_map[sym] = asset_payload
+        asset_rows.append(
+            {
+                "Asset": sym,
+                "Units": float(qty),
+                "USD Value": float(max(usd_val, 0.0)),
+                "price": float(max(price, 0.0)),
+            }
+        )
+
+    if total_usd <= 0 and prev_lookup:
+        total_usd = sum(
+            _to_float(
+                entry.get("value_usd")
+                or entry.get("usd_value")
+                or entry.get("USD Value")
+                or entry.get("usd")
+            )
+            for entry in prev_lookup.values()
+        )
+
+    payload: Dict[str, Any] = {
+        "assets": asset_rows,
+        "total_usd": float(total_usd),
+        "updated_at": updated_at,
+    }
+    payload.update(asset_map)
+    return payload
+
+
+def _collect_polymarket_cache(previous: Dict[str, Any]) -> Dict[str, Any]:
+    updated_at = _now_iso()
+    positions: List[Dict[str, Any]] = []
+    total_usd = 0.0
+
+    try:
+        from scripts.polymarket_insiders import get_polymarket_snapshot  # type: ignore
+
+        snapshot = get_polymarket_snapshot()
+        if isinstance(snapshot, list) and snapshot:
+            for entry in snapshot:
+                if not isinstance(entry, dict):
+                    continue
+                positions.append(entry)
+                total_usd += _to_float(
+                    entry.get("total_usd")
+                    or entry.get("totalUsd")
+                    or entry.get("usd")
+                    or entry.get("sizeUsd")
+                    or entry.get("notional_usd")
+                )
+    except Exception as exc:
+        print(f"[sync] WARN polymarket_snapshot_unavailable: {exc}", flush=True)
+
+    alt_path = os.path.join(LOGS_DIR, "polymarket_snapshot.json")
+    if not positions and os.path.exists(alt_path):
+        existing = _load_existing_cache(alt_path)
+        if isinstance(existing, dict):
+            maybe_positions = existing.get("positions") or existing.get("entries")
+            if isinstance(maybe_positions, list):
+                positions = [
+                    entry for entry in maybe_positions if isinstance(entry, dict)
+                ]
+            total_usd = _to_float(
+                existing.get("total_usd")
+                or existing.get("usd")
+                or existing.get("notional")
+            )
+        elif isinstance(existing, list):
+            positions = [entry for entry in existing if isinstance(entry, dict)]
+
+    if total_usd <= 0 and previous:
+        if not positions:
+            maybe_prev_positions = previous.get("positions") or previous.get("entries")
+            if isinstance(maybe_prev_positions, list):
+                positions = deepcopy(
+                    [entry for entry in maybe_prev_positions if isinstance(entry, dict)]
+                )
+        total_usd = _to_float(
+            previous.get("total_usd")
+            or previous.get("USD")
+            or previous.get("usd")
+        )
+
+    payload = {
+        "source": "polymarket",
+        "positions": positions,
+        "total_usd": float(total_usd),
+        "updated_at": updated_at,
+    }
+    return payload
+
+
+def _export_dashboard_caches() -> None:
+    previous_spot = _load_existing_cache(SPOT_CACHE_PATH)
+    previous_treasury = _load_existing_cache(TREASURY_CACHE_PATH)
+    previous_poly = _load_existing_cache(POLYMARKET_CACHE_PATH)
+
+    tasks: List[
+        Tuple[str, Dict[str, Any], Callable[[Dict[str, Any]], Dict[str, Any]]]
+    ] = [
+        (SPOT_CACHE_PATH, previous_spot, _collect_spot_cache),
+        (TREASURY_CACHE_PATH, previous_treasury, _collect_treasury_cache),
+        (POLYMARKET_CACHE_PATH, previous_poly, _collect_polymarket_cache),
+    ]
+
+    for path, previous, builder in tasks:
+        try:
+            payload = builder(previous)
+        except Exception as exc:
+            print(
+                f"[sync] WARN cache_build_failed: {os.path.basename(path)} err={exc}",
+                flush=True,
+            )
+            payload = {
+                "total_usd": 0.0,
+                "assets": [],
+                "updated_at": _now_iso(),
+            }
+        if "updated_at" not in payload:
+            payload["updated_at"] = _now_iso()
+        if "total_usd" not in payload:
+            payload["total_usd"] = 0.0
+        if os.path.basename(path) == "spot_state.json" and "assets" not in payload:
+            payload["assets"] = []
+        if os.path.basename(path) == "treasury.json" and "assets" not in payload:
+            payload["assets"] = []
+        if os.path.abspath(path) == os.path.abspath(TREASURY_CACHE_PATH):
+            total_note = _to_float(payload.get("total_usd"))
+            _write_json_cache(path, payload, label="treasury", total_note=total_note)
+        else:
+            _write_json_cache(path, payload)
 
 
 def _parse_iso(ts: str) -> Optional[datetime]:
@@ -85,6 +642,17 @@ def _cutoff_dt() -> Optional[datetime]:
     return None
 
 
+def _resolve_equity_value(payload: Dict[str, Any]) -> float:
+    """Best-effort float conversion for equity-like keys."""
+    for key in ("equity", "total_equity", "nav"):
+        if key in payload:
+            try:
+                return float(payload[key])
+            except Exception:
+                continue
+    return 0.0
+
+
 # ----------------------------- File readers ---------------------------------
 
 
@@ -99,16 +667,26 @@ def _read_nav_rows(path: str) -> List[Dict[str, Any]]:
         if isinstance(data, list):
             cut = _cutoff_dt()
             for p in data:
+                item = dict(p)
                 # normalize timestamp key for series
-                ts = p.get("timestamp") or p.get("t")
-                if ts and "t" not in p:
-                    p = {**p, "t": ts}
+                ts = item.get("timestamp")
+                if ts is None:
+                    ts = item.get("t")
+                if isinstance(ts, (int, float)):
+                    item["t"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                    print("[sync] normalized numeric timestamp -> ISO", flush=True)
+                elif ts and "t" not in item:
+                    item["t"] = ts
+                equity = _resolve_equity_value(item)
+                if equity > 0.0:
+                    item.setdefault("equity", equity)
+                    item.setdefault("total_equity", equity)
                 # enforce cutoff if configured
                 if cut:
-                    dt = _parse_iso(p.get("t") or "")
+                    dt = _parse_iso(str(item.get("t") or ""))
                     if dt and dt < cut:
                         continue
-                rows.append(p)
+                rows.append(item)
     except Exception:
         pass
     return rows
@@ -147,18 +725,59 @@ def _read_nav_tail_metrics(path: str) -> Dict[str, float]:
         "drawdown": 0.0,
     }
     if not os.path.exists(path):
+        print(f"[sync] tail equity resolved: {out['total_equity']}", flush=True)
         return out
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list) and data:
             last = data[-1]
-            out["total_equity"] = float(last.get("equity", 0.0))
-            out["realized_pnl"] = float(last.get("realized", 0.0))
-            out["unrealized_pnl"] = float(last.get("unrealized", 0.0))
-            out["drawdown"] = float(last.get("drawdown_pct", 0.0))
+            candidate_maps: List[Dict[str, Any]] = []
+            top_level_map: Optional[Dict[str, Any]] = None
+            if isinstance(last, dict):
+                last_map = dict(last)
+                top_level_map = last_map
+                data_block = last_map.get("data")
+                if isinstance(data_block, dict):
+                    candidate_maps.append(dict(data_block))
+                candidate_maps.append(last_map)
+
+            equity_value = 0.0
+            for mp in candidate_maps:
+                val = _resolve_equity_value(mp)
+                if val > 0.0:
+                    equity_value = val
+                    if top_level_map is not None and mp is top_level_map:
+                        print(
+                            f"[sync] tail equity from top-level map: {equity_value}",
+                            flush=True,
+                        )
+                    break
+            if equity_value <= 0.0 and top_level_map is not None:
+                equity_value = _resolve_equity_value(top_level_map)
+                if equity_value > 0.0:
+                    print(
+                        f"[sync] tail equity from top-level map: {equity_value}",
+                        flush=True,
+                    )
+            out["total_equity"] = equity_value
+
+            def _resolve_metric(keys: Tuple[str, ...]) -> float:
+                for mp in candidate_maps:
+                    for key in keys:
+                        if key in mp:
+                            try:
+                                return float(mp[key] or 0.0)
+                            except Exception:
+                                continue
+                return 0.0
+
+            out["realized_pnl"] = _resolve_metric(("realized", "realized_pnl"))
+            out["unrealized_pnl"] = _resolve_metric(("unrealized", "unrealized_pnl"))
+            out["drawdown"] = _resolve_metric(("drawdown_pct", "drawdown"))
     except Exception:
         pass
+    print(f"[sync] tail equity resolved: {out['total_equity']}", flush=True)
     return out
 
 
@@ -166,13 +785,9 @@ def _read_nav_tail_metrics(path: str) -> Dict[str, float]:
 
 
 def _is_good_nav_row(p: Dict[str, Any]) -> bool:
-    try:
-        eq = float(p.get("equity") or 0.0)
-    except Exception:
-        eq = 0.0
     if p.get("heartbeat_reason") == "exchange_unhealthy":
         return False
-    return eq > 0.0
+    return _resolve_equity_value(p) > 0.0
 
 
 def _compute_peak_from_rows(rows: List[Dict[str, Any]]) -> float:
@@ -244,7 +859,9 @@ def _exposure_from_positions(items: List[Dict[str, Any]]) -> Dict[str, float]:
 
 
 def _get_env() -> str:
-    return os.getenv("ENV", "dev")
+    if os.environ.get("ENV") != FORCED_ENV:
+        os.environ["ENV"] = FORCED_ENV
+    return FORCED_ENV
 
 
 def _nav_doc_ref(db):
@@ -308,6 +925,7 @@ def _commit_nav(db, rows: List[Dict[str, Any]], peak: float) -> Dict[str, Any]:
             **tail,
         }
     _nav_doc_ref(db).set(payload, merge=True)
+    print("[sync] write success (nav)", flush=True)
     return payload
 
 
@@ -361,12 +979,18 @@ def _publish_health(db, ok: bool, last_error: str) -> None:
 
 
 def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    print("[sync] executing _sync_once_with_db", flush=True)
     # NAV rows with cutoff + zero-equity filter
     rows = [p for p in _read_nav_rows(NAV_LOG) if _is_good_nav_row(p)]
 
     # Tail equity guard: avoid writing garbage when executor/sync is cold
     tail_kpis = _read_nav_tail_metrics(NAV_LOG)
     if tail_kpis.get("total_equity", 0.0) <= 0.0:
+        print(
+            f"[sync] skipping write because nav tail total_equity <= 0 "
+            f"(value={tail_kpis.get('total_equity')})",
+            flush=True,
+        )
         # still log positions exposure to nav doc (merge), but skip full write
         try:
             pos_snap = _read_positions_snapshot(SYNCED_STATE)
@@ -427,6 +1051,8 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
     except Exception:
         pass
 
+    _export_dashboard_caches()
+
     return nav_payload, pos_payload, lb_payload
 
 
@@ -469,19 +1095,37 @@ def _interval_seconds() -> int:
 
 
 def main_loop() -> None:
-    env = os.getenv("ENV", "dev")
+    env = _get_env()
+    dry_run = _dry_run_mode()
+    interval = _interval_seconds()
     print(
-        "[sync] starting: ENV=%s interval=%ss files=(%s, %s, %s)"
-        % (env, _interval_seconds(), NAV_LOG, PEAK_STATE, SYNCED_STATE),
+        f"[sync] entering main_loop (ENV={env}, DRY_RUN={dry_run}, interval={interval}s, repo_root={REPO_ROOT})",
         flush=True,
     )
-    while True:
-        try:
-            sync_once()
-        except Exception as e:
-            print(f"[sync] ERROR: {e}", flush=True)
-        time.sleep(_interval_seconds())
+    try:
+        while True:
+            try:
+                sync_once()
+            except Exception as e:
+                print(f"[sync] ERROR: {e}", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        raise
+
+
+def run() -> None:
+    env = _force_env_to_prod()
+    _repo_root_log()
+    dry_run = _dry_run_mode()
+    print(
+        f"[sync] startup context: ENV={env}, DRY_RUN={dry_run}, repo_root={REPO_ROOT}",
+        flush=True,
+    )
+    try:
+        main_loop()
+    except KeyboardInterrupt:
+        print("[sync] shutdown requested via KeyboardInterrupt", flush=True)
 
 
 if __name__ == "__main__":
-    main_loop()
+    run()

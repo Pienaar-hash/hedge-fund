@@ -18,17 +18,42 @@ except Exception:
 import os
 import json
 import time
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, Dict, List, Mapping, Optional
 import pandas as pd
 import streamlit as st
 from pathlib import Path
 
-from execution import nav as navmod
+try:
+    from flask import Flask, jsonify, render_template_string, request
+except Exception:  # pragma: no cover - dashboard fallback
+    Flask = None  # type: ignore
+    jsonify = None  # type: ignore
+    render_template_string = None  # type: ignore
+    request = None  # type: ignore
+
+from execution.signal_generator import generate_intents, normalize_intent
+from dashboard.dashboard_utils import (
+    get_firestore_connection,
+    fetch_state_document,
+    fetch_telemetry_health,
+    compute_total_nav_cached,
+    parse_nav_to_df_and_kpis,
+    positions_sorted,
+    fetch_mark_price_usdt,
+    get_env_float,
+)
 from dashboard.nav_helpers import (
     format_treasury_table,
     signal_attempts_summary,
-    treasury_table_from_summary,
 )
+from dashboard.live_helpers import get_nav_snapshot, get_caps, get_veto_counts, get_treasury
+
+try:
+    from scripts.polymarket_insiders import get_polymarket_snapshot
+except Exception:
+    def get_polymarket_snapshot() -> List[Dict[str, Any]]:
+        return []
 
 # Diagnostics container populated during data loads
 _DIAG: Dict[str, Any] = {
@@ -44,12 +69,524 @@ _DIAG: Dict[str, Any] = {
 ENV = os.getenv("ENV", "prod")
 TESTNET = os.getenv("BINANCE_TESTNET", "0") == "1"
 ENV_KEY = f"{ENV}{'-testnet' if TESTNET else ''}"
+DRY_RUN = os.getenv("DRY_RUN", "0")
 
 RESERVE_BTC = float(os.getenv("RESERVE_BTC", "0.025"))
 # Local-only log files when Firestore is not selected
 LOG_PATH = os.getenv("EXECUTOR_LOG", f"logs/{ENV_KEY}/screener_tail.log")
 TAIL_LINES = 10
 RISK_CFG_PATH = os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
+
+LOGGER = logging.getLogger("dashboard.live")
+DEFAULT_POLL_MS = 15000
+DEFAULT_POLY_POLL_MS = 30000
+STREAMLIT_REFRESH_MS = 15000
+FOOTER_VERSION = "v4.2-stability-sync"
+
+_INTENT_STATUS_STYLE = {
+    "live": "background-color: #0f5132; color: #e6ffed;",
+    "pending": "background-color: #8a6d1d; color: #fff4c2;",
+    "vetoed": "background-color: #3c3c3c; color: #f2f2f2;",
+}
+
+def _status_cell_style(val: Any) -> str:
+    if isinstance(val, str):
+        return _INTENT_STATUS_STYLE.get(val.lower(), "")
+    return ""
+
+_LIVE_PAGE_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Live Signals</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 16px; background: #111; color: #f5f5f5; }
+    header { margin-bottom: 20px; }
+    h1 { margin: 0 0 8px 0; font-size: 1.6rem; }
+    h2 { margin: 0 0 12px 0; font-size: 1.2rem; }
+    section { margin-bottom: 24px; padding: 12px 16px; background: #1c1c1c; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border-bottom: 1px solid #333; padding: 6px 8px; text-align: left; font-size: 0.95rem; }
+    th { color: #bbb; }
+    .badge { display: inline-block; background: #2c2c2c; padding: 4px 8px; margin-right: 8px; border-radius: 4px; font-size: 0.85rem; }
+    #fetch-status { margin-top: 6px; font-size: 0.85rem; }
+    .status-ok { color: #7ed957; }
+    .status-warn { color: #ff9800; }
+    ul { margin: 8px 0 0 16px; padding: 0; }
+    li { margin-bottom: 4px; }
+    tfoot td { border-top: 1px solid #333; font-weight: 600; }
+    tfoot td:last-child { text-align: right; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Unified Live Signals</h1>
+    <div>
+      <span class="badge">ENV: {{ env_label }}</span>
+      <span class="badge">DRY_RUN: {{ dry_run_label }}</span>
+      <span class="badge">Poll: <span id="poll-interval">{{ default_poll }}</span> ms</span>
+    </div>
+    <div id="fetch-status" class="status-warn">Waiting for first update…</div>
+  </header>
+  <main>
+    <section>
+      <h2>Signals (polled)</h2>
+      <div>Last poll: <span id="last-poll">–</span></div>
+      <div>Attempted: <span id="attempted">0</span> | Emitted: <span id="emitted">0</span></div>
+      <table>
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Timeframe</th>
+            <th>Signal</th>
+            <th>Gross USD</th>
+            <th>Reduce Only</th>
+            <th>Position Side</th>
+            <th>Veto</th>
+          </tr>
+        </thead>
+        <tbody id="signals-body">
+          <tr><td colspan="7">Waiting for data…</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Risk &amp; NAV</h2>
+      <div>NAV: <span id="nav-nav">0</span> | Equity: <span id="nav-equity">0</span> | Snapshot: <span id="nav-ts">–</span></div>
+      <div>max_trade_nav_pct: <span id="caps-trade">0</span></div>
+      <div>max_gross_exposure_pct: <span id="caps-gross">0</span></div>
+      <div>max_symbol_exposure_pct: <span id="caps-symbol">0</span></div>
+      <div>min_notional: <span id="caps-min-notional">0</span></div>
+    </section>
+    <section>
+      <h2>Treasury</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Asset</th>
+            <th>Balance</th>
+            <th>Price (USD)</th>
+            <th>USD Value</th>
+          </tr>
+        </thead>
+        <tbody id="treasury-body">
+          <tr><td colspan="4">Waiting for data…</td></tr>
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3">Total USD</td>
+            <td id="treasury-total">$0.00</td>
+          </tr>
+        </tfoot>
+      </table>
+    </section>
+    <section>
+      <h2>Veto summary</h2>
+      <ul id="veto-summary">
+        <li>Waiting for data…</li>
+      </ul>
+    </section>
+  </main>
+  <script>
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const defaultPoll = parseInt('{{ default_poll }}', 10) || 10000;
+      const pollMs = parseInt(params.get('poll') || defaultPoll, 10) || defaultPoll;
+      document.getElementById('poll-interval').textContent = pollMs;
+      const statusEl = document.getElementById('fetch-status');
+      const formatTs = (value) => {
+        if (!value) { return '–'; }
+        const num = Number(value);
+        if (!Number.isFinite(num)) { return String(value); }
+        return new Date(num * 1000).toLocaleString();
+      };
+      const updateSignals = (intents) => {
+        const body = document.getElementById('signals-body');
+        body.innerHTML = '';
+        if (!intents || intents.length === 0) {
+          body.innerHTML = '<tr><td colspan="7">No intents emitted.</td></tr>';
+          return;
+        }
+        intents.slice(0, 25).forEach((intent) => {
+          const row = document.createElement('tr');
+          const cells = [
+            intent.symbol || intent.pair || '',
+            intent.timeframe || intent.tf || '',
+            intent.signal || '',
+            (Number(intent.gross_usd || 0)).toFixed(2),
+            intent.reduceOnly ? 'yes' : 'no',
+            intent.positionSide || intent.side || '',
+            (intent.veto && intent.veto.length ? intent.veto.join(', ') : '')
+          ];
+          cells.forEach((text) => {
+            const td = document.createElement('td');
+            td.textContent = text;
+            row.appendChild(td);
+          });
+          body.appendChild(row);
+        });
+      };
+      const updateVeto = (counts) => {
+        const list = document.getElementById('veto-summary');
+        list.innerHTML = '';
+        if (!counts || Object.keys(counts).length === 0) {
+          list.innerHTML = '<li>No veto activity.</li>';
+          return;
+        }
+        Object.entries(counts)
+          .sort((a, b) => Number(b[1]) - Number(a[1]))
+          .forEach(([reason, count]) => {
+            const li = document.createElement('li');
+            li.textContent = reason + ': ' + count;
+            list.appendChild(li);
+          });
+      };
+      const updateTreasury = (treasury) => {
+        const body = document.getElementById('treasury-body');
+        if (!body) { return; }
+        body.innerHTML = '';
+        const assets = (treasury && Array.isArray(treasury.assets)) ? treasury.assets : [];
+        if (!assets.length) {
+          body.innerHTML = '<tr><td colspan="4">No treasury data.</td></tr>';
+        } else {
+          assets.forEach((entry) => {
+            const row = document.createElement('tr');
+            const balance = Number(entry.balance ?? 0);
+            const price = Number(entry.price ?? 0);
+            const usd = Number(entry.usd ?? 0);
+            const cells = [
+              entry.asset || '',
+              balance.toFixed(6),
+              '$' + price.toFixed(2),
+              '$' + usd.toFixed(2)
+            ];
+            cells.forEach((text, idx) => {
+              const td = document.createElement('td');
+              td.textContent = text;
+              if (idx > 0) {
+                td.style.textAlign = 'right';
+              }
+              row.appendChild(td);
+            });
+            body.appendChild(row);
+          });
+        }
+        const totalEl = document.getElementById('treasury-total');
+        if (totalEl) {
+          const total = Number(treasury && treasury.total_usd ? treasury.total_usd : 0);
+          totalEl.textContent = '$' + total.toFixed(2);
+        }
+      };
+      const applyData = (data) => {
+        const now = new Date();
+        document.getElementById('last-poll').textContent = now.toLocaleTimeString();
+        document.getElementById('attempted').textContent = data.attempted ?? 0;
+        document.getElementById('emitted').textContent = data.emitted ?? 0;
+        updateSignals(data.intents || []);
+        const nav = data.nav || {};
+        document.getElementById('nav-nav').textContent = (Number(nav.nav || 0)).toFixed(2);
+        document.getElementById('nav-equity').textContent = (Number(nav.equity || nav.nav || 0)).toFixed(2);
+        document.getElementById('nav-ts').textContent = formatTs(nav.ts || data.ts);
+        const caps = data.caps || {};
+        document.getElementById('caps-trade').textContent = caps.max_trade_nav_pct ?? 0;
+        document.getElementById('caps-gross').textContent = caps.max_gross_exposure_pct ?? 0;
+        document.getElementById('caps-symbol').textContent = caps.max_symbol_exposure_pct ?? 0;
+        document.getElementById('caps-min-notional').textContent = caps.min_notional ?? 0;
+        updateVeto(data.veto_counts || {});
+        updateTreasury(data.treasury || {});
+        statusEl.textContent = 'Last update ' + now.toLocaleTimeString();
+        statusEl.className = 'status-ok';
+      };
+      const fetchData = async () => {
+        try {
+          const resp = await fetch('{{ api_path }}');
+          if (!resp.ok) {
+            throw new Error('HTTP ' + resp.status);
+          }
+          const data = await resp.json();
+          applyData(data);
+        } catch (err) {
+          statusEl.textContent = 'Fetch failed: ' + (err && err.message ? err.message : err);
+          statusEl.className = 'status-warn';
+          console.error(err);
+        }
+      };
+      fetchData();
+      setInterval(fetchData, pollMs);
+    })();
+  </script>
+</body>
+</html>
+"""
+
+_POLY_PAGE_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Polymarket Insights</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 16px; background: #0f1115; color: #f4f4f4; }
+    header { margin-bottom: 20px; }
+    h1 { margin: 0 0 8px 0; font-size: 1.5rem; }
+    section { margin-bottom: 24px; padding: 14px 18px; background: #1b1e26; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.35); }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border-bottom: 1px solid #2a2e3b; padding: 8px 10px; text-align: left; font-size: 0.95rem; }
+    th { color: #9fa6b6; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.85rem; }
+    tr:last-child td { border-bottom: none; }
+    .muted { color: #7a8194; font-size: 0.85rem; }
+    .badge { display: inline-block; background: #272b38; padding: 4px 8px; border-radius: 4px; margin-right: 6px; font-size: 0.85rem; }
+    .status { margin-top: 6px; font-size: 0.85rem; }
+    .status-ok { color: #6dd07f; }
+    .status-warn { color: #ffb55a; }
+    td.numeric { text-align: right; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Polymarket Insights</h1>
+    <div>
+      <span class="badge">Poll: <span id="poly-poll-interval">{{ default_poll }}</span> ms</span>
+    </div>
+    <div id="poly-status" class="status status-warn">Waiting for first update…</div>
+  </header>
+  <main>
+    <section>
+      <div class="muted">Latest curated signals from scripts/polymarket_insiders.py</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Side</th>
+            <th>Confidence</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody id="poly-body">
+          <tr><td colspan="4">Loading…</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+  <script>
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const defaultPoll = parseInt('{{ default_poll }}', 10) || 30000;
+      const pollMs = parseInt(params.get('poll') || defaultPoll, 10) || defaultPoll;
+      document.getElementById('poly-poll-interval').textContent = pollMs;
+      const statusEl = document.getElementById('poly-status');
+      const formatScore = (value) => {
+        if (value === null || value === undefined) { return '–'; }
+        const num = Number(value);
+        if (Number.isFinite(num)) {
+          if (Math.abs(num) < 1) {
+            return (num * 100).toFixed(1) + '%';
+          }
+          return num.toFixed(2);
+        }
+        return String(value);
+      };
+      const formatTime = (value) => {
+        if (!value) { return '–'; }
+        const num = Number(value);
+        if (Number.isFinite(num)) {
+          if (num > 1e12) {
+            return new Date(num).toLocaleString();
+          }
+          if (num > 1e3) {
+            return new Date(num * 1000).toLocaleString();
+          }
+        }
+        const date = new Date(value);
+        if (!Number.isNaN(date.getTime())) {
+          return date.toLocaleString();
+        }
+        return String(value);
+      };
+      const updateTable = (rows) => {
+        const body = document.getElementById('poly-body');
+        body.innerHTML = '';
+        if (!rows || !rows.length) {
+          body.innerHTML = '<tr><td colspan="4">No signals available.</td></tr>';
+          return;
+        }
+        rows.slice(0, 50).forEach((row) => {
+          const tr = document.createElement('tr');
+          const cells = [
+            row.market || '',
+            row.side || '',
+            formatScore(row.score),
+            formatTime(row.updated_at)
+          ];
+          cells.forEach((text, idx) => {
+            const td = document.createElement('td');
+            td.textContent = text;
+            if (idx === 2) {
+              td.classList.add('numeric');
+            }
+            tr.appendChild(td);
+          });
+          body.appendChild(tr);
+        });
+      };
+      const applyData = (payload) => {
+        updateTable(payload.markets || []);
+        statusEl.textContent = 'Last refresh ' + new Date().toLocaleTimeString();
+        statusEl.className = 'status status-ok';
+      };
+      const fetchData = async () => {
+        try {
+          const resp = await fetch('{{ api_path }}');
+          if (!resp.ok) {
+            throw new Error('HTTP ' + resp.status);
+          }
+          const data = await resp.json();
+          applyData(data);
+        } catch (err) {
+          statusEl.textContent = 'Fetch failed: ' + (err && err.message ? err.message : err);
+          statusEl.className = 'status status-warn';
+          console.error(err);
+        }
+      };
+      fetchData();
+      setInterval(fetchData, pollMs);
+    })();
+  </script>
+</body>
+</html>
+"""
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+if Flask is not None:
+    flask_app = Flask(__name__)
+
+    @flask_app.route("/live")
+    def live_signals_page():
+        env_label = ENV_KEY
+        dry_label = str(DRY_RUN if DRY_RUN not in (None, "") else "0")
+        return render_template_string(
+            _LIVE_PAGE_TEMPLATE,
+            env_label=env_label,
+            dry_run_label=dry_label,
+            default_poll=DEFAULT_POLL_MS,
+            api_path="/api/live_signals",
+        )
+
+    @flask_app.route("/api/live_signals")
+    def api_live_signals():
+        now = time.time()
+        try:
+            raw_intents = generate_intents(now)
+        except Exception as exc:
+            LOGGER.error("generate_intents failed: %s", exc, exc_info=True)
+            raw_intents = []
+
+        intents_payload: List[Dict[str, Any]] = []
+        emitted = 0
+        for raw in raw_intents:
+            try:
+                normalized = normalize_intent(raw)
+            except Exception as exc:
+                LOGGER.debug("intent normalization failed: %s", exc)
+                continue
+            veto_raw = normalized.get("veto")
+            if isinstance(veto_raw, str):
+                veto_list = [veto_raw]
+            elif isinstance(veto_raw, (list, tuple, set)):
+                veto_list = [str(item) for item in veto_raw if item]
+            else:
+                veto_list = []
+            sanitized = {
+                "symbol": str(normalized.get("symbol") or "").upper(),
+                "timeframe": str(normalized.get("timeframe") or normalized.get("tf") or ""),
+                "tf": str(normalized.get("tf") or normalized.get("timeframe") or ""),
+                "signal": str(normalized.get("signal") or ""),
+                "gross_usd": _safe_float(normalized.get("gross_usd")),
+                "reduceOnly": bool(normalized.get("reduceOnly")),
+                "positionSide": str(normalized.get("positionSide") or normalized.get("side") or ""),
+                "timestamp": str(normalized.get("timestamp") or ""),
+                "price": _safe_float(normalized.get("price")),
+                "capital_per_trade": _safe_float(normalized.get("capital_per_trade")),
+                "leverage": _safe_float(normalized.get("leverage")),
+                "veto": veto_list,
+            }
+            intents_payload.append(sanitized)
+            if not veto_list:
+                emitted += 1
+
+        attempted = len(raw_intents)
+        nav_snapshot = get_nav_snapshot()
+        caps = get_caps()
+        veto_counts = get_veto_counts()
+        treasury = get_treasury()
+
+        response = {
+            "attempted": attempted,
+            "emitted": emitted if attempted else len(intents_payload),
+            "intents": intents_payload,
+            "nav": nav_snapshot,
+            "caps": caps,
+            "veto_counts": veto_counts,
+            "treasury": treasury,
+            "ts": now,
+        }
+        return jsonify(response)
+
+    @flask_app.route("/polymarket")
+    def polymarket_page():
+        return render_template_string(
+            _POLY_PAGE_TEMPLATE,
+            default_poll=DEFAULT_POLY_POLL_MS,
+            api_path="/api/polymarket",
+        )
+
+    @flask_app.route("/api/polymarket")
+    def api_polymarket():
+        now = time.time()
+        try:
+            snapshot = get_polymarket_snapshot()
+        except Exception as exc:
+            LOGGER.error("polymarket snapshot failed: %s", exc, exc_info=True)
+            snapshot = []
+
+        entries: List[Dict[str, Any]] = []
+        for item in snapshot:
+            if not isinstance(item, Mapping):
+                continue
+            market = str(item.get("market") or item.get("name") or "")
+            side = str(item.get("side") or item.get("position") or "")
+            score_raw = item.get("score", item.get("edge", item.get("confidence")))
+            if isinstance(score_raw, (int, float)):
+                score: Any = float(score_raw)
+            elif score_raw in (None, ""):
+                score = None
+            else:
+                score = str(score_raw)
+            updated_raw = item.get("updated_at") or item.get("ts") or item.get("timestamp")
+            updated = str(updated_raw) if updated_raw not in (None, "") else ""
+            entries.append(
+                {
+                    "market": market,
+                    "side": side,
+                    "score": score,
+                    "updated_at": updated,
+                }
+            )
+
+        return jsonify({"markets": entries, "ts": now})
+
+    app = flask_app
+else:
+    flask_app = None
+    app = None
 
 # ---------- helpers ----------
 def btc_24h_change() -> float | None:
@@ -310,13 +847,62 @@ def _literal_tail(tag: str, n: int) -> List[str]:
     return hits[-n:]
 
 def load_signals_table(limit: int = 100) -> pd.DataFrame:
-    """Signals from local screener tail only (when local source).
-    Parse `[screener->executor] {...}` and keep last 24h sorted desc.
-    """
-    import ast
+    """Return recent signals using generate_intents feed; fallback to screener tail when empty."""
     rows: List[Dict[str, Any]] = []
+    now = time.time()
+    def _status_from_intent(gross: float, vetoed: bool) -> str:
+        if vetoed:
+            return "vetoed"
+        if gross > 0:
+            return "live"
+        return "pending"
+    try:
+        intents = generate_intents(now)
+    except Exception as exc:
+        LOGGER.debug("generate_intents unavailable for dashboard: %s", exc, exc_info=True)
+        intents = []
+
+    if intents:
+        for intent in intents:
+            if not isinstance(intent, Mapping):
+                continue
+            ts_raw = intent.get("timestamp") or intent.get("t") or intent.get("ts") or intent.get("time")
+            t_epoch = _to_epoch_seconds(ts_raw) or now
+            if not is_recent(t_epoch, 24 * 3600):
+                continue
+            veto_field = intent.get("veto") or []
+            if isinstance(veto_field, (list, tuple, set)):
+                veto_display = ", ".join(str(item) for item in veto_field if item)
+            elif veto_field in (None, ""):
+                veto_display = ""
+            else:
+                veto_display = str(veto_field)
+            gross_val = _safe_float(intent.get("gross_usd"))
+            status = _status_from_intent(gross_val, bool(veto_display))
+            rows.append(
+                {
+                    "ts": t_epoch,
+                    "symbol": intent.get("symbol"),
+                    "tf": intent.get("timeframe") or intent.get("tf"),
+                    "signal": intent.get("signal"),
+                    "price": _safe_float(intent.get("price")),
+                    "cap": _safe_float(intent.get("capital_per_trade")),
+                    "gross_usd": _safe_float(intent.get("gross_usd")),
+                    "lev": _safe_float(intent.get("leverage")),
+                    "reduceOnly": bool(intent.get("reduceOnly")),
+                    "veto": veto_display,
+                    "status": status,
+                }
+            )
+        rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
+        return pd.DataFrame(rows[:limit])
+
+    # Fallback: local screener tail parser (legacy flow)
     if _DS["source"] != "local":
         return pd.DataFrame(rows)
+
+    import ast
+
     tag = "[screener->executor]"
     raw = _literal_tail(tag, 200)
     for ln in raw:
@@ -324,7 +910,7 @@ def load_signals_table(limit: int = 100) -> pd.DataFrame:
             payload = ln.split(tag, 1)[1].strip() if tag in ln else None
             if not payload:
                 continue
-            obj: Optional[Dict[str,Any]] = None
+            obj: Optional[Dict[str, Any]] = None
             if payload.startswith("{"):
                 try:
                     obj = json.loads(payload)
@@ -337,17 +923,23 @@ def load_signals_table(limit: int = 100) -> pd.DataFrame:
                 continue
             ts = obj.get("timestamp") or obj.get("t") or obj.get("time")
             t_epoch = _to_epoch_seconds(ts)
-            if not is_recent(t_epoch, 24*3600):
+            if not is_recent(t_epoch, 24 * 3600):
                 continue
-            rows.append({
-                "ts": t_epoch,
-                "symbol": obj.get("symbol"),
-                "tf": obj.get("timeframe"),
-                "signal": obj.get("signal"),
-                "price": obj.get("price"),
-                "cap": obj.get("capital_per_trade"),
-                "lev": obj.get("leverage"),
-            })
+            rows.append(
+                {
+                    "ts": t_epoch,
+                    "symbol": obj.get("symbol"),
+                    "tf": obj.get("timeframe"),
+                    "signal": obj.get("signal"),
+                    "price": _safe_float(obj.get("price")),
+                    "cap": _safe_float(obj.get("capital_per_trade")),
+                    "gross_usd": _safe_float(obj.get("gross_usd")),
+                    "lev": _safe_float(obj.get("leverage")),
+                    "reduceOnly": bool(obj.get("reduceOnly")),
+                    "veto": "",
+                    "status": "pending",
+                }
+            )
         except Exception:
             continue
     rows.sort(key=lambda x: x.get("ts") or 0.0, reverse=True)
@@ -534,6 +1126,11 @@ def compute_nav_kpis(series: List[Dict[str,Any]]) -> Dict[str,Any]:
 
 # ---------- UI ----------
 st.set_page_config(page_title="Hedge — Overview", layout="wide")
+refresh_counter = 0
+try:
+    refresh_counter = st_autorefresh(interval=STREAMLIT_REFRESH_MS, key="live-refresh")
+except Exception:
+    refresh_counter = 0
 st.title("Hedge — Overview")
 
 # Source banner with namespace
@@ -548,41 +1145,154 @@ try:
         fs_marker = "OK" if ok else "Mixed"
 except Exception:
     fs_marker = "N/A"
+refresh_seconds = STREAMLIT_REFRESH_MS // 1000
+_top_banner.caption(
+    f"Source: {source_label} • ENV_KEY: {ENV_KEY} • FS: {fs_marker} • Refresh: {refresh_seconds}s"
+)
 
-_top_banner.caption(f"Source: {source_label} • ENV_KEY: {ENV_KEY} • FS: {fs_marker}")
+# Live data pulls
+nav_snapshot = get_nav_snapshot()
+polymarket_entries = get_polymarket_snapshot()
+try:
+    nav_snapshot_nav = float(nav_snapshot.get("nav")) if nav_snapshot.get("nav") not in (None, "") else None
+except Exception:
+    nav_snapshot_nav = None
+try:
+    nav_snapshot_equity = float(nav_snapshot.get("equity")) if nav_snapshot.get("equity") not in (None, "") else None
+except Exception:
+    nav_snapshot_equity = None
+try:
+    nav_snapshot_ts = float(nav_snapshot.get("ts")) if nav_snapshot.get("ts") not in (None, "") else None
+except Exception:
+    nav_snapshot_ts = None
 
-# KPIs
-
-
+veto_counts = get_veto_counts()
 series = load_nav_series()
 k = compute_nav_kpis(series)
-try:
-    nav_summary = navmod.compute_nav_summary()
-except Exception as exc:  # pragma: no cover - display best effort
-    nav_summary = {
-        "futures_nav": None,
-        "treasury_nav": None,
-        "total_nav": None,
-        "details": {"error": str(exc)},
-    }
-futures_nav = nav_summary.get("futures_nav")
-treasury_nav = nav_summary.get("treasury_nav")
-total_nav = nav_summary.get("total_nav")
+
+nav_sources, total_nav = compute_total_nav_cached()
+futures_source = nav_sources.get("futures") or {}
+spot_source = nav_sources.get("spot") or {}
+treasury_source = nav_sources.get("treasury") or {}
+poly_source = nav_sources.get("poly") or {}
+
+futures_nav = float(futures_source.get("nav") or 0.0)
+spot_nav = float(spot_source.get("nav") or 0.0)
+treasury_nav = float(treasury_source.get("nav") or 0.0)
+poly_nav = float(poly_source.get("nav") or 0.0)
+non_futures_nav = float(max(total_nav - futures_nav, 0.0))
+treasury_assets = treasury_source.get("assets") or []
+
+if _DS["source"] == "firestore":
+    try:
+        telemetry_health = fetch_telemetry_health(ENV)
+    except Exception as exc:  # pragma: no cover - health is best-effort
+        LOGGER.debug("telemetry health fetch failed: %s", exc, exc_info=True)
+        telemetry_health = {"error": str(exc)}
+else:
+    telemetry_health = {}
 
 # KPI helpers derived from positions (defined after functions above)
 pos_now = load_positions()
 open_cnt = sum(1 for p in pos_now if abs(p.get('qty') or 0) > 0)
+df_sig = load_signals_table(100)
+df_tr = load_trade_log(100)
+df_rb = load_blocked_orders(200)
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Futures NAV", f"{futures_nav:,.2f}" if futures_nav is not None else "—")
-c2.metric("Treasury NAV", f"{treasury_nav:,.2f}" if treasury_nav is not None else "—")
+nav_series_latest_ts = None
+if series:
+    try:
+        nav_series_latest_ts = max(
+            _to_epoch_seconds(x.get("ts") or x.get("t") or x.get("time"))
+            for x in series
+            if isinstance(x, dict)
+        ) or None
+    except Exception:
+        nav_series_latest_ts = None
+
+nav_latest_ts = nav_series_latest_ts or (nav_snapshot_ts if (nav_snapshot_nav or nav_snapshot_equity) else None)
+tr_latest_ts = float(df_tr["ts"].max()) if isinstance(df_tr, pd.DataFrame) and not df_tr.empty and "ts" in df_tr else None
+rb_latest_ts = float(df_rb["ts"].max()) if isinstance(df_rb, pd.DataFrame) and not df_rb.empty and "ts" in df_rb else None
+last_sync_candidates = [ts for ts in (nav_latest_ts, tr_latest_ts, rb_latest_ts) if ts]
+last_sync_ts = max(last_sync_candidates) if last_sync_candidates else None
+
+sidebar_status = st.sidebar.container()
+with sidebar_status:
+    dry_label = DRY_RUN if DRY_RUN not in (None, "", "None") else "0"
+    st.subheader("Session")
+    st.markdown(f"**ENV**: `{ENV_KEY}`")
+    st.markdown(f"**DRY_RUN**: `{dry_label}`")
+    st.markdown(
+        f"**Last sync**: {humanize_ago(last_sync_ts) if last_sync_ts else 'waiting…'}"
+    )
+    st.caption(f"Auto-refresh every {refresh_seconds}s • refresh #{refresh_counter}")
+
+data_ready = any(
+    [
+        nav_latest_ts,
+        nav_snapshot_nav,
+        nav_snapshot_equity,
+        sum(veto_counts.values()) > 0 if veto_counts else False,
+        bool(series),
+        bool(pos_now),
+        not df_tr.empty,
+        not df_rb.empty,
+    ]
+)
+if not data_ready:
+    st.info("Waiting for Firestore sync… data will populate automatically once available.")
+
+primary_nav_value = k.get("nav")
+primary_drawdown = k.get("dd")
+
+latest_nav_display = (
+    f"{primary_nav_value:,.2f}" if isinstance(primary_nav_value, (int, float)) else "—"
+)
+if latest_nav_display == "—" and isinstance(total_nav, (int, float)):
+    latest_nav_display = f"{total_nav:,.2f}"
+
+if isinstance(nav_snapshot_equity, (int, float)):
+    latest_equity_display = f"{nav_snapshot_equity:,.2f}"
+elif isinstance(total_nav, (int, float)):
+    latest_equity_display = f"{total_nav:,.2f}"
+else:
+    latest_equity_display = "—"
+
+drawdown_display = (
+    f"{primary_drawdown:.2f}%" if isinstance(primary_drawdown, (int, float)) else "—"
+)
+veto_total = int(sum(veto_counts.values())) if veto_counts else 0
+if veto_counts:
+    top_reason, top_count = max(veto_counts.items(), key=lambda item: item[1])
+    veto_delta = f"{top_reason}: {top_count}"
+else:
+    veto_delta = "waiting…"
+refresh_note = humanize_ago(nav_latest_ts) if nav_latest_ts else "waiting…"
+
+c_nav, c_eq, c_dd, c_veto = st.columns(4)
+c_nav.metric("NAV (latest)", latest_nav_display, refresh_note)
+c_eq.metric("Equity", latest_equity_display, refresh_note)
+c_dd.metric("Drawdown", drawdown_display)
+c_veto.metric("Veto events", str(veto_total), veto_delta)
+
+LOGGER.info(
+    "[dashboard] polling ok | source=%s nav_rows=%s trades=%s risk=%s",
+    _DS["source"],
+    len(series),
+    len(df_tr) if isinstance(df_tr, pd.DataFrame) else 0,
+    len(df_rb) if isinstance(df_rb, pd.DataFrame) else 0,
+)
+
 delta_text = (
     f"{k['delta']:,.2f} / {k['delta_pct']:+.2f}%"
     if k.get('nav') is not None
     else ""
 )
-c3.metric("Total NAV", f"{total_nav:,.2f}" if total_nav is not None else "—", delta_text)
-c4.metric("Drawdown", f"{k['dd']:.2f}%" if k['dd'] is not None else "—")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Futures NAV", f"{futures_nav:,.2f}")
+c2.metric("Non-Futures NAV", f"{non_futures_nav:,.2f}")
+c3.metric("Total NAV", f"{total_nav:,.2f}", delta_text)
+c4.metric("Poly NAV", f"{poly_nav:,.2f}")
 
 btc_delta = btc_24h_change()
 c5, c6 = st.columns(2)
@@ -593,10 +1303,125 @@ c5.metric(
 )
 c6.metric("Open positions", str(open_cnt))
 
-treasury_df = treasury_table_from_summary(nav_summary)
-if not treasury_df.empty:
-    st.caption("Treasury Breakdown")
-    st.table(format_treasury_table(treasury_df))
+treasury_df = pd.DataFrame(treasury_assets)
+
+poly_rows: List[Dict[str, Any]] = []
+poly_latest_ts: Optional[float] = None
+if isinstance(polymarket_entries, list):
+    for item in polymarket_entries:
+        if not isinstance(item, Mapping):
+            continue
+        market = str(item.get("market") or item.get("name") or "").strip()
+        side = str(item.get("side") or item.get("position") or "").upper()
+        score_raw = item.get("score", item.get("edge", item.get("confidence")))
+        if isinstance(score_raw, (int, float)):
+            score_val: Any = float(score_raw)
+        elif score_raw in (None, ""):
+            score_val = None
+        else:
+            score_val = str(score_raw)
+        ts_raw = item.get("updated_at") or item.get("timestamp") or item.get("ts")
+        t_epoch = _to_epoch_seconds(ts_raw)
+        if t_epoch:
+            poly_latest_ts = max(poly_latest_ts or t_epoch, t_epoch)
+        poly_rows.append(
+            {
+                "Market": market,
+                "Side": side,
+                "Score": score_val,
+                "UpdatedEpoch": t_epoch,
+            }
+        )
+
+if poly_rows:
+    poly_rows.sort(
+        key=lambda row: row.get("Score") if isinstance(row.get("Score"), (int, float)) else 0.0,
+        reverse=True,
+    )
+
+cards_treasury, cards_poly = st.columns(2)
+with cards_treasury:
+    st.markdown("#### Treasury (live balances)")
+    st.metric(
+        "Total USD",
+        f"${float(treasury_nav or 0.0):,.2f}",
+    )
+    st.caption(
+        f"Spot ${spot_nav:,.2f} · Treasury ${treasury_nav:,.2f} · Poly ${poly_nav:,.2f}"
+    )
+    nav_mix_total = float(total_nav or 0.0)
+    if nav_mix_total > 0:
+        futures_pct = max(0.0, min(1.0, float(futures_nav or 0.0) / nav_mix_total))
+        non_futures_pct = max(
+            0.0,
+            min(1.0, float(non_futures_nav) / nav_mix_total),
+        )
+        mix_bar = f"""
+        <div style="margin-top:6px;">
+          <div style="height:10px; background:#2d2d2d; border-radius:6px; overflow:hidden;">
+            <div style="height:100%; width:{futures_pct*100:.2f}%; background:#147ad6; float:left;"></div>
+            <div style="height:100%; width:{non_futures_pct*100:.2f}%; background:#13b26b; float:left;"></div>
+          </div>
+          <div style="font-size:0.75rem; margin-top:4px;">
+            Futures {futures_pct*100:.1f}% · Non-Futures {non_futures_pct*100:.1f}%
+          </div>
+        </div>
+        """
+        st.markdown(mix_bar, unsafe_allow_html=True)
+    if not treasury_df.empty:
+        treasury_display = treasury_df.copy()
+        rename_cols = {
+            "Asset": "Symbol",
+            "asset": "Symbol",
+            "Units": "Qty",
+            "units": "Qty",
+            "usd_value": "USD Value",
+            "value_usd": "USD Value",
+        }
+        treasury_display = treasury_display.rename(columns=rename_cols)
+        for col in ("Qty", "USD Value"):
+            if col in treasury_display.columns:
+                try:
+                    treasury_display[col] = treasury_display[col].astype(float)
+                except Exception:
+                    pass
+        drop_cols = [col for col in ("Source", "price") if col in treasury_display.columns]
+        if drop_cols:
+            treasury_display = treasury_display.drop(columns=drop_cols)
+        ordered_cols = [col for col in ["Symbol", "Qty", "USD Value"] if col in treasury_display.columns]
+        remainder = [c for c in treasury_display.columns if c not in ordered_cols]
+        treasury_display = treasury_display[ordered_cols + remainder]
+        st.table(format_treasury_table(treasury_display))
+    else:
+        st.caption("Treasury balances unavailable.")
+
+with cards_poly:
+    st.markdown("#### Polymarket insights")
+    poly_count = len(poly_rows)
+    poly_delta = humanize_ago(poly_latest_ts) if poly_latest_ts else "waiting…"
+    st.metric("Active signals", str(poly_count), poly_delta)
+    if poly_rows:
+        display_rows: List[Dict[str, Any]] = []
+        for entry in poly_rows[:5]:
+            score_val = entry.get("Score")
+            if isinstance(score_val, (int, float)):
+                score_display = f"{score_val:.2f}"
+            elif score_val is None:
+                score_display = "—"
+            else:
+                score_display = str(score_val)
+            updated_display = humanize_ago(entry.get("UpdatedEpoch")) if entry.get("UpdatedEpoch") else "—"
+            display_rows.append(
+                {
+                    "Market": entry.get("Market"),
+                    "Side": entry.get("Side"),
+                    "Score": score_display,
+                    "Updated": updated_display,
+                }
+            )
+        st.table(display_rows)
+    else:
+        st.caption("No Polymarket alerts detected.")
 
 # Risk Status KPI (open gross vs cap)
 risk_cfg = _load_risk_cfg()
@@ -654,19 +1479,74 @@ else:
 
 # Signals
 st.subheader("Signals (last 24h)")
-df_sig = load_signals_table(100)
 if not df_sig.empty:
     newest_sig = float(df_sig["ts"].max()) if "ts" in df_sig else None
     st.caption(f"Last updated: {humanize_ago(newest_sig)}")
     if newest_sig and not is_recent(newest_sig, 1800):
         st.warning("Signals data may be stale (>30m)")
-    st.dataframe(df_sig, use_container_width=True, height=210)
+    df_sig_display = df_sig.copy()
+    if "ts" in df_sig_display.columns:
+        df_sig_display["Age"] = df_sig_display["ts"].apply(
+            lambda ts: humanize_ago(_to_epoch_seconds(ts)) if ts else "—"
+        )
+    if "reduceOnly" in df_sig_display.columns:
+        df_sig_display["reduceOnly"] = df_sig_display["reduceOnly"].apply(lambda v: "yes" if v else "no")
+    status_series = (
+        df_sig_display["status"]
+        if "status" in df_sig_display.columns
+        else pd.Series(["pending"] * len(df_sig_display))
+    )
+    df_sig_display["Status"] = status_series.apply(
+        lambda s: str(s).title() if s not in (None, "") else "Pending"
+    )
+    rename_map = {
+        "symbol": "Symbol",
+        "tf": "TF",
+        "signal": "Signal",
+        "gross_usd": "Gross USD",
+        "cap": "Capital",
+        "price": "Price",
+        "lev": "Lev",
+        "reduceOnly": "Reduce-Only",
+        "veto": "Veto",
+    }
+    df_sig_display = df_sig_display.rename(columns=rename_map)
+    for col in ("ts", "status"):
+        if col in df_sig_display.columns:
+            df_sig_display = df_sig_display.drop(columns=[col])
+    display_order = [
+        "Status",
+        "Symbol",
+        "TF",
+        "Signal",
+        "Gross USD",
+        "Capital",
+        "Price",
+        "Lev",
+        "Reduce-Only",
+        "Veto",
+        "Age",
+    ]
+    df_sig_display = df_sig_display[
+        [col for col in display_order if col in df_sig_display.columns]
+    ]
+    style = (
+        df_sig_display.style.applymap(_status_cell_style, subset=["Status"])
+        .format(
+            {
+                "Gross USD": "{:,.0f}",
+                "Capital": "{:,.0f}",
+                "Price": "{:,.4f}",
+                "Lev": "{:.2f}",
+            }
+        )
+    )
+    st.dataframe(style, use_container_width=True, height=210)
 else:
     st.write("No recent signals")
 
 # Trade log
 st.subheader("Trade Log (last 24h)")
-df_tr = load_trade_log(100)
 if not df_tr.empty:
     newest_tr = float(df_tr["ts"].max()) if "ts" in df_tr else None
     st.caption(f"Last updated: {humanize_ago(newest_tr)}")
@@ -678,7 +1558,6 @@ else:
 
 # Risk blocks
 st.subheader("Risk Blocks (last 24h)")
-df_rb = load_blocked_orders(200)
 if not df_rb.empty:
     newest_rb = float(df_rb["ts"].max()) if "ts" in df_rb else None
     st.caption(f"Last updated: {humanize_ago(newest_rb)}")
@@ -719,24 +1598,17 @@ st.code("\n".join(tail) if tail else "(empty)")
 
 # Compact recency banner (NAV/Trades/Risk)
 try:
-    nav_latest_ts = None
-    if series:
-        try:
-            nav_latest_ts = max(
-                _to_epoch_seconds(x.get("ts") or x.get("t") or x.get("time"))
-                for x in series if isinstance(x, dict)
-            )
-        except Exception:
-            nav_latest_ts = None
-    tr_latest_ts = float(df_tr["ts"].max()) if isinstance(df_tr, pd.DataFrame) and not df_tr.empty and "ts" in df_tr else None
-    rb_latest_ts = float(df_rb["ts"].max()) if isinstance(df_rb, pd.DataFrame) and not df_rb.empty and "ts" in df_rb else None
     _top_banner.caption(
         f"Source: {'Firestore' if _DS['source']=='firestore' else 'Local'} • ENV_KEY: {ENV_KEY} "
-        f"• FS: {fs_marker} • NAV: {humanize_ago(nav_latest_ts)} • Trades: {humanize_ago(tr_latest_ts)} • Risk: {humanize_ago(rb_latest_ts)}"
+        f"• FS: {fs_marker} • Refresh: {refresh_seconds}s • NAV: {humanize_ago(nav_latest_ts)} "
+        f"• Trades: {humanize_ago(tr_latest_ts)} • Risk: {humanize_ago(rb_latest_ts)} "
+        f"• Last sync: {humanize_ago(last_sync_ts) if last_sync_ts else 'waiting…'}"
     )
 except Exception:
     # Keep original simple banner if anything goes wrong
-    _top_banner.caption(f"Source: {'Firestore' if _DS['source']=='firestore' else 'Local'} • ENV_KEY: {ENV_KEY}")
+    _top_banner.caption(
+        f"Source: {'Firestore' if _DS['source']=='firestore' else 'Local'} • ENV_KEY: {ENV_KEY} • Refresh: {refresh_seconds}s"
+    )
 
 # Keep banner simple per acceptance
 
@@ -840,3 +1712,61 @@ try:
         st.write("No exit plans recorded yet.")
 except Exception as e:
     st.write(f"Exit plans unavailable: {e}")
+
+footer = st.container()
+with footer:
+    if telemetry_health and isinstance(telemetry_health, Mapping):
+        if "error" in telemetry_health and not telemetry_health.get("firestore_ok"):
+            msg = str(telemetry_health.get("error"))
+            st.caption(f"Backend health: telemetry unavailable ({msg}) • version {FOOTER_VERSION}")
+        else:
+            health_ok = bool(telemetry_health.get("firestore_ok"))
+            health_ts_val = telemetry_health.get("ts") or telemetry_health.get("updated_at")
+            ts_epoch = _to_epoch_seconds(health_ts_val)
+            updated_str = humanize_ago(ts_epoch) if ts_epoch else "unknown"
+            last_error = str(telemetry_health.get("last_error") or "none")
+            if len(last_error) > 120:
+                last_error = last_error[:117] + "…"
+            uptime_keys = (
+                "rolling_uptime_pct",
+                "uptime_pct",
+                "uptime_percent",
+                "uptime24h",
+                "uptime",
+            )
+            uptime_value: Optional[float] = None
+            uptime_raw_str: Optional[str] = None
+            for key in uptime_keys:
+                raw = telemetry_health.get(key)
+                if raw in (None, ""):
+                    continue
+                try:
+                    uptime_value = float(raw)
+                    break
+                except Exception:
+                    uptime_raw_str = str(raw)
+                    break
+            if uptime_value is not None:
+                uptime_display = f"{uptime_value:.2f}%"
+            elif uptime_raw_str:
+                uptime_display = uptime_raw_str
+            else:
+                uptime_display = telemetry_health.get("uptime_display")
+                if uptime_display in (None, ""):
+                    uptime_display = "N/A"
+                else:
+                    uptime_display = str(uptime_display)
+            status_word = "HEALTHY" if health_ok else "ATTENTION"
+            color = "#16c784" if health_ok else "#f5a623"
+            footer_html = (
+                f"<div style='margin-top:12px; font-size:0.8rem;'>"
+                f"<span style='color:{color}; font-weight:600;'>Backend health: {status_word}</span>"
+                f" · firestore_ok={health_ok} · uptime {uptime_display}"
+                f" · last error: {last_error}"
+                f" · updated {updated_str}"
+                f" · version {FOOTER_VERSION}"
+                f"</div>"
+            )
+            st.markdown(footer_html, unsafe_allow_html=True)
+    else:
+        st.caption(f"Backend health: telemetry unavailable • version {FOOTER_VERSION}.")

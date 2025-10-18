@@ -3,7 +3,8 @@ from __future__ import annotations
 import importlib
 import logging
 from collections import OrderedDict
-from typing import Any, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from datetime import datetime
 
 from execution.utils import load_json
 
@@ -99,12 +100,17 @@ def generate_intents(now: float, universe: Sequence[str] | None = None, cfg: Map
         for intent in candidates:
             if not isinstance(intent, Mapping):
                 continue
-            key = _intent_key(intent)
+            try:
+                normalized = normalize_intent(intent)
+            except Exception as exc:
+                _LOG.debug("intent normalization failed for %s: %s", name, exc)
+                continue
+            key = _intent_key(normalized)
             if key is None:
                 continue
             if not _register_key(key):
                 continue
-            emitted.append(dict(intent))
+            emitted.append(normalized)
 
     return emitted
 
@@ -117,4 +123,87 @@ def generate_signals(
     return generate_intents(now, universe, cfg)
 
 
-__all__ = ["generate_intents", "generate_signals"]
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _normalize_timestamp(raw: Any) -> str:
+    if raw in (None, ""):
+        return datetime.utcnow().isoformat()
+    if isinstance(raw, (int, float)):
+        try:
+            return datetime.utcfromtimestamp(float(raw)).isoformat()
+        except Exception:
+            return datetime.utcnow().isoformat()
+    return str(raw)
+
+
+def normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = dict(intent)
+    symbol = normalized.get("symbol") or normalized.get("pair")
+    symbol_str = str(symbol or "").upper()
+    if not symbol_str:
+        raise ValueError("intent missing symbol")
+    normalized["symbol"] = symbol_str
+
+    normalized["timestamp"] = _normalize_timestamp(
+        normalized.get("timestamp") or normalized.get("ts") or normalized.get("time")
+    )
+
+    tf = (
+        normalized.get("timeframe")
+        or normalized.get("tf")
+        or normalized.get("interval")
+        or normalized.get("time_frame")
+    )
+    tf_str = str(tf or "unknown").lower()
+    normalized["timeframe"] = tf_str
+    normalized["tf"] = tf_str
+
+    signal = normalized.get("signal") or normalized.get("side")
+    normalized["signal"] = str(signal or "").upper()
+
+    normalize_reduce = normalized.get("reduceOnly", normalized.get("reduce_only"))
+    normalized["reduceOnly"] = bool(normalize_reduce)
+
+    normalized["price"] = _safe_float(normalized.get("price"))
+    normalized["capital_per_trade"] = _safe_float(
+        normalized.get("capital_per_trade") or normalized.get("capital") or normalized.get("notional")
+    )
+    lev_value = (
+        normalized.get("leverage")
+        or normalized.get("lev")
+        or normalized.get("leverage_target")
+    )
+    lev_float = _safe_float(lev_value)
+    normalized["leverage"] = lev_float if lev_float > 0 else 1.0
+
+    gross_value = normalized.get("gross_usd")
+    if gross_value in (None, ""):
+        normalized["gross_usd"] = abs(normalized["capital_per_trade"]) * max(normalized["leverage"], 1.0)
+    else:
+        normalized["gross_usd"] = abs(_safe_float(gross_value))
+
+    pos_side = normalized.get("positionSide") or normalized.get("posSide") or normalized.get("side")
+    normalized["positionSide"] = str(pos_side or "")
+
+    veto_raw = normalized.get("veto")
+    if isinstance(veto_raw, str):
+        veto_list = [veto_raw]
+    elif isinstance(veto_raw, Mapping):
+        veto_list = [str(item) for item in veto_raw.values() if item]
+    elif isinstance(veto_raw, Iterable) and not isinstance(veto_raw, (str, bytes)):
+        veto_list = [str(item) for item in veto_raw if item]
+    elif veto_raw:
+        veto_list = [str(veto_raw)]
+    else:
+        veto_list = []
+    normalized["veto"] = veto_list
+
+    return normalized
+
+
+__all__ = ["generate_intents", "generate_signals", "normalize_intent"]

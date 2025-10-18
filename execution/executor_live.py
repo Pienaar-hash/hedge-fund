@@ -2,15 +2,23 @@
 # ruff: noqa: E402
 from __future__ import annotations
 
+import sys, os
+
+repo_root = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, repo_root)
+
 import json
 import logging
-import os
 import subprocess
 import time
-from datetime import datetime
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+import socket
+import uuid
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
+
+from execution.log_utils import get_logger, log_event, safe_dump
 
 import requests
+from utils.firestore_client import with_firestore
 # Optional .env so Supervisor doesn't need to export everything
 try:
     from dotenv import load_dotenv
@@ -23,6 +31,18 @@ LOG = logging.getLogger("exutil")
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s [exutil] %(message)s"
 )
+
+HOSTNAME = socket.gethostname()
+RUN_ID = os.getenv("EXECUTOR_RUN_ID") or str(uuid.uuid4())
+LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
+LOG_ATTEMPTS = get_logger("logs/execution/orders_attempted.jsonl")
+LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
+LOG_POSITION = get_logger("logs/execution/position_state.jsonl")
+LOG_HEART = get_logger("logs/execution/sync_heartbeats.jsonl")
+_HEARTBEAT_INTERVAL = 60.0
+_LAST_HEARTBEAT = 0.0
+_LAST_SIGNAL_PULL = 0.0
+_LAST_QUEUE_DEPTH = 0
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (
@@ -48,9 +68,11 @@ from execution.utils import (
     save_json,
 )
 
-from execution.signal_generator import generate_intents
+from execution.signal_generator import generate_intents, normalize_intent as generator_normalize_intent
 
 # ---- Firestore publisher handle (revisions differ) ----
+ENV = os.getenv("ENV", "prod")
+_FS_PUB_INTERVAL = int(os.getenv("FS_PUB_INTERVAL", "60") or 60)
 _PUB: Any
 try:
     from execution.state_publish import (
@@ -58,14 +80,20 @@ try:
         publish_close_audit,
         publish_intent_audit,
         publish_order_audit,
+        publish_nav_value,
     )
 
-    _PUB = StatePublisher(interval_s=int(os.getenv("FS_PUB_INTERVAL", "60")))
+    try:
+        _PUB = StatePublisher(env=ENV, interval_s=_FS_PUB_INTERVAL)  # type: ignore[arg-type]
+    except TypeError:
+        _PUB = StatePublisher(interval_s=_FS_PUB_INTERVAL)
+        setattr(_PUB, "env", ENV)
 except Exception:
 
     class _Publisher:
-        def __init__(self, interval_s: int = 60):
+        def __init__(self, interval_s: int = 60, env: str = ENV):
             self.interval_s = interval_s
+            self.env = env
 
     def publish_intent_audit(intent: Dict[Any, Any]) -> None:
         pass
@@ -78,7 +106,10 @@ except Exception:
     ) -> None:
         pass
 
-    _PUB = _Publisher(interval_s=int(os.getenv("FS_PUB_INTERVAL", "60")))
+    def publish_nav_value(nav: float, min_interval_s: int = 60, max_points: int = 20000) -> None:
+        return None
+
+    _PUB = _Publisher(interval_s=_FS_PUB_INTERVAL)
 
 # ---- risk limits config ----
 _RISK_CFG_PATH = os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
@@ -189,32 +220,8 @@ def _coerce_veto_reasons(raw: Any) -> List[str]:
 
 
 def _normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
-    normalized: Dict[str, Any] = dict(intent)
-    symbol = normalized.get("symbol") or normalized.get("pair")
-    if symbol:
-        normalized["symbol"] = str(symbol).upper()
-    normalized.setdefault("timestamp", datetime.utcnow().isoformat())
-    if not normalized.get("tf"):
-        normalized["tf"] = (
-            normalized.get("timeframe")
-            or normalized.get("interval")
-            or normalized.get("time_frame")
-            or "unknown"
-        )
-    normalized_signal = normalized.get("signal") or normalized.get("side")
-    normalized["signal"] = str(normalized_signal or "").upper()
-    normalized.setdefault("reduceOnly", False)
-    gross = normalized.get("gross_usd")
-    if gross in (None, ""):
-        try:
-            capital = float(normalized.get("capital_per_trade") or 0.0)
-        except (TypeError, ValueError):
-            capital = 0.0
-        try:
-            leverage = float(normalized.get("leverage") or 1.0)
-        except (TypeError, ValueError):
-            leverage = 1.0
-        normalized["gross_usd"] = capital * max(leverage, 1.0)
+    normalized = generator_normalize_intent(intent)
+    normalized.setdefault("tf", normalized.get("timeframe"))
     return normalized
 
 
@@ -258,6 +265,110 @@ def _publish_veto_exec(symbol: Optional[str], reasons: Sequence[str], intent: Ma
 
 
 # ------------- helpers -------------
+def _record_structured_event(logger_obj: Any, event_type: str, payload: Mapping[str, Any] | None) -> None:
+    try:
+        sanitized = safe_dump(payload or {})
+        log_event(logger_obj, event_type, sanitized)
+    except Exception as exc:
+        LOG.debug("structured_log_failed event=%s err=%s", event_type, exc)
+
+
+def _nav_snapshot() -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {}
+    try:
+        snapshot["nav_usd"] = float(_PORTFOLIO_SNAPSHOT.current_nav_usd())
+    except Exception:
+        pass
+    try:
+        snapshot["gross_usd"] = float(_PORTFOLIO_SNAPSHOT.current_gross_usd())
+    except Exception:
+        pass
+    try:
+        gross_map = _PORTFOLIO_SNAPSHOT.symbol_gross_usd()
+        if gross_map:
+            snapshot["symbol_gross_usd"] = gross_map
+    except Exception:
+        pass
+    return snapshot
+
+
+def _estimate_intent_qty(intent: Mapping[str, Any], gross_target: float, price_hint: float) -> float:
+    for key in ("quantity", "qty", "order_qty", "orderQty", "size", "units"):
+        if key in intent:
+            try:
+                return float(intent[key])
+            except Exception:
+                continue
+    try:
+        normalized = intent.get("normalized")
+        if isinstance(normalized, Mapping) and "qty" in normalized:
+            return float(normalized.get("qty") or 0.0)
+    except Exception:
+        pass
+    try:
+        if price_hint and price_hint > 0:
+            return float(gross_target) / float(price_hint)
+    except Exception:
+        pass
+    return float(intent.get("qty_estimate", 0.0) or 0.0)
+
+
+def _position_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
+    try:
+        positions = list(get_positions() or [])
+    except Exception:
+        positions = []
+    symbol_upper = str(symbol).upper()
+    rows: List[Dict[str, Any]] = []
+    for pos in positions:
+        try:
+            if str(pos.get("symbol", "")).upper() != symbol_upper:
+                continue
+            rows.append(dict(pos))
+        except Exception:
+            continue
+    return rows
+
+
+def _emit_position_snapshots(symbol: str) -> None:
+    rows = _position_rows_for_symbol(symbol)
+    ts = time.time()
+    for row in rows:
+        payload = {
+            "symbol": symbol,
+            "pos_qty": row.get("qty", row.get("positionAmt")),
+            "entry_px": row.get("entryPrice"),
+            "unrealized_pnl": row.get("unRealizedProfit"),
+            "leverage": row.get("leverage"),
+            "mode": row.get("positionSide", row.get("marginType")),
+            "ts": ts,
+            "run_id": RUN_ID,
+            "hostname": HOSTNAME,
+        }
+        _record_structured_event(LOG_POSITION, "position_snapshot", payload)
+
+
+def _maybe_emit_heartbeat() -> None:
+    global _LAST_HEARTBEAT
+    now = time.time()
+    if (now - _LAST_HEARTBEAT) < _HEARTBEAT_INTERVAL:
+        return
+    _LAST_HEARTBEAT = now
+    lag = None
+    if _LAST_SIGNAL_PULL > 0:
+        lag = max(0.0, now - _LAST_SIGNAL_PULL)
+    payload: Dict[str, Any] = {
+        "service": "executor_live",
+        "run_id": RUN_ID,
+        "hostname": HOSTNAME,
+        "ts": now,
+    }
+    if lag is not None:
+        payload["lag_secs"] = lag
+    if _LAST_QUEUE_DEPTH is not None:
+        payload["queue_depth"] = _LAST_QUEUE_DEPTH
+    _record_structured_event(LOG_HEART, "heartbeat", payload)
+
 
 
 def _account_snapshot() -> None:
@@ -400,6 +511,37 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         pass
     margin_target = gross_target / max(lev, 1.0)
     reduce_only = bool(intent.get("reduceOnly", False))
+    attempt_start_monotonic = time.monotonic()
+    nav_snapshot = _nav_snapshot()
+    price_guess = 0.0
+    try:
+        price_guess = float(intent.get("price", 0.0) or 0.0)
+    except Exception:
+        price_guess = 0.0
+    attempt_payload = {
+        "symbol": symbol,
+        "side": side,
+        "qty": _estimate_intent_qty(intent, gross_target, price_guess),
+        "strategy": (
+            intent.get("strategy")
+            or intent.get("strategy_name")
+            or intent.get("strategyId")
+            or intent.get("source")
+        ),
+        "signal_ts": (
+            intent.get("signal_ts")
+            or intent.get("timestamp")
+            or intent.get("ts")
+            or intent.get("time")
+        ),
+        "local_ts": time.time(),
+        "nav_snapshot": nav_snapshot,
+        "run_id": RUN_ID,
+        "hostname": HOSTNAME,
+        "reduce_only": reduce_only,
+        "price_hint": price_guess,
+    }
+    _record_structured_event(LOG_ATTEMPTS, "order_attempt", attempt_payload)
 
     def _persist_veto(reason: str, price_hint: float, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -426,6 +568,23 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
             except Exception:
                 pass
+        thresholds = {}
+        if extra:
+            maybe_thresholds = extra.get("thresholds")
+            if isinstance(maybe_thresholds, Mapping):
+                thresholds = dict(maybe_thresholds)
+        log_payload = {
+            "symbol": symbol,
+            "side": side,
+            "position_side": pos_side,
+            "run_id": RUN_ID,
+            "hostname": HOSTNAME,
+            "veto_reason": reason,
+            "veto_detail": extra or {},
+            "thresholds": thresholds,
+            "ts": payload.get("ts"),
+        }
+        _record_structured_event(LOG_VETOES, "risk_veto", log_payload)
         return payload
 
     try:
@@ -436,7 +595,15 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     if os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on"):
         price_hint = float(intent.get("price", 0.0) or 0.0)
         LOG.warning("[risk] kill switch active; veto %s %s", symbol, side)
-        _persist_veto("kill_switch_on", price_hint, {"intent": intent})
+        _persist_veto(
+            "kill_switch_on",
+            price_hint,
+            {
+                "intent": intent,
+                "nav_snapshot": nav_snapshot,
+                "thresholds": {"kill_switch": True},
+            },
+        )
         try:
             publish_order_audit(
                 symbol,
@@ -471,7 +638,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             allowed, veto = True, ""
         if not allowed:
             price_hint = float(intent.get("price", 0.0) or 0.0)
-            _persist_veto(veto or "blocked", price_hint, {"intent": intent})
+            _persist_veto(
+                veto or "blocked",
+                price_hint,
+                {
+                    "intent": intent,
+                    "nav_snapshot": nav_snapshot,
+                    "thresholds": {
+                        "max_gross_exposure_pct": _RISK_GATE.sizing.get("max_gross_exposure_pct"),
+                        "max_trade_nav_pct": _RISK_GATE.sizing.get("max_trade_nav_pct"),
+                    },
+                },
+            )
             return
 
     try:
@@ -517,8 +695,9 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 opp_side,
                 reduce_notional,
             )
+            reduce_resp: Dict[str, Any] = {}
             try:
-                send_order(**reduce_payload)
+                reduce_resp = send_order(**reduce_payload)
             except Exception as exc:
                 LOG.error("[executor] reduce_only_send_failed %s %s", symbol, exc)
                 return
@@ -542,6 +721,41 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
             except Exception:
                 pass
+            if reduce_resp:
+                try:
+                    exchange_name = "binance_testnet" if is_testnet() else "binance"
+                except Exception:
+                    exchange_name = "binance"
+                reduce_price = (
+                    reduce_resp.get("avgPrice")
+                    or reduce_resp.get("price")
+                    or reduce_payload.get("price")
+                )
+                reduce_qty = (
+                    reduce_resp.get("executedQty")
+                    or reduce_resp.get("origQty")
+                    or reduce_payload.get("quantity")
+                )
+                reduce_latency_ms = max(
+                    0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0
+                )
+                reduce_log_payload = {
+                    "symbol": symbol,
+                    "side": reduce_signal,
+                    "client_order_id": reduce_resp.get("clientOrderId")
+                    or reduce_resp.get("orderId"),
+                    "exchange": exchange_name,
+                    "price": reduce_price,
+                    "qty": reduce_qty,
+                    "order_type": reduce_payload.get("type"),
+                    "reduce_only": True,
+                    "latency_ms": reduce_latency_ms,
+                    "status": reduce_resp.get("status"),
+                    "context": "flip_reduce",
+                    "run_id": RUN_ID,
+                    "hostname": HOSTNAME,
+                }
+                _record_structured_event(LOG_ORDERS, "order_executed", reduce_log_payload)
 
             try:
                 positions = list(get_positions() or [])
@@ -560,6 +774,13 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     nav = _compute_nav()
     current_gross, sym_open_qty = _gross_and_open_qty(symbol, pos_side, positions)
     _update_risk_state_counters(positions, current_gross)
+    try:
+        nav_snapshot = {**nav_snapshot}
+    except Exception:
+        nav_snapshot = dict(nav_snapshot or {})
+    nav_snapshot.setdefault("nav_usd", nav)
+    nav_snapshot["portfolio_gross_usd"] = current_gross
+    nav_snapshot["symbol_open_qty"] = sym_open_qty
 
     try:
         _RISK_STATE.note_attempt(time.time())
@@ -621,7 +842,19 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             publish_order_audit(symbol, audit)
         except Exception:
             pass
-        _persist_veto(reason, price_hint, {"reasons": reasons, "intent": intent})
+        thresholds = {}
+        if isinstance(details, Mapping):
+            thresholds = dict(details.get("thresholds") or {})
+        _persist_veto(
+            reason,
+            price_hint,
+            {
+                "reasons": reasons,
+                "intent": intent,
+                "nav_snapshot": nav_snapshot,
+                "thresholds": thresholds,
+            },
+        )
         return
 
     price_hint = float(intent.get("price", 0.0) or 0.0)
@@ -690,12 +923,21 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             LOG.warning(
                 "[risk] final gate veto %s %s reason=%s", symbol, side, veto_now or "blocked"
             )
-            _persist_veto(veto_now or "blocked", norm_price, {
-                "intent": intent,
-                "normalized_qty": norm_qty,
-                "payload": payload_view,
-                "meta": meta,
-            })
+            _persist_veto(
+                veto_now or "blocked",
+                norm_price,
+                {
+                    "intent": intent,
+                    "normalized_qty": norm_qty,
+                    "payload": payload_view,
+                    "meta": meta,
+                    "nav_snapshot": nav_snapshot,
+                    "thresholds": {
+                        "max_gross_exposure_pct": _RISK_GATE.sizing.get("max_gross_exposure_pct"),
+                        "max_trade_nav_pct": _RISK_GATE.sizing.get("max_trade_nav_pct"),
+                    },
+                },
+            )
             try:
                 publish_order_audit(
                     symbol,
@@ -891,6 +1133,39 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 pass
             raise
 
+    try:
+        exchange_name = "binance_testnet" if is_testnet() else "binance"
+    except Exception:
+        exchange_name = "binance"
+    price_exec = (
+        resp.get("avgPrice")
+        or resp.get("price")
+        or payload.get("price")
+        or norm_price
+    )
+    qty_exec = (
+        resp.get("executedQty")
+        or resp.get("origQty")
+        or payload.get("quantity")
+        or norm_qty
+    )
+    latency_ms = max(0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0)
+    execution_payload = {
+        "symbol": symbol,
+        "side": side,
+        "client_order_id": resp.get("clientOrderId") or resp.get("orderId"),
+        "exchange": exchange_name,
+        "price": price_exec,
+        "qty": qty_exec,
+        "order_type": resp.get("type") or payload.get("type"),
+        "reduce_only": reduce_only,
+        "latency_ms": latency_ms,
+        "status": resp.get("status"),
+        "run_id": RUN_ID,
+        "hostname": HOSTNAME,
+    }
+    _record_structured_event(LOG_ORDERS, "order_executed", execution_payload)
+
     oid = resp.get("orderId")
     avg = resp.get("avgPrice", "0.00")
     qty = resp.get("executedQty", resp.get("origQty", "0"))
@@ -926,6 +1201,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             _RISK_STATE.note_fill(symbol, time.time())
         except Exception:
             pass
+        _emit_position_snapshots(symbol)
         if (
             reduce_only
             or (side == "SELL" and pos_side == "LONG")
@@ -939,6 +1215,56 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
             except Exception:
                 pass
+
+
+
+def _compute_nav_snapshot() -> Optional[float]:
+    try:
+        from execution.state_publish import compute_nav
+
+        return float(compute_nav())
+    except Exception as exc:
+        LOG.error("[executor] compute_nav not available: %s", exc)
+        try:
+            from execution.exchange_utils import get_account
+
+            acc = get_account()
+            return float(
+                acc.get("totalMarginBalance")
+                or (
+                    float(acc.get("totalWalletBalance", 0) or 0)
+                    + float(acc.get("totalUnrealizedProfit", 0) or 0)
+                )
+            )
+        except Exception as account_exc:
+            LOG.error("[executor] account NAV error: %s", account_exc)
+    return None
+
+
+def _collect_rows() -> List[Dict[str, Any]]:
+    try:
+        raw: Iterable[Dict[str, Any]] = get_positions()
+    except Exception as exc:
+        LOG.error("[executor] get_positions error: %s", exc)
+        return []
+    rows: List[Dict[str, Any]] = []
+    for payload in raw:
+        try:
+            rows.append(
+                {
+                    "symbol": payload.get("symbol"),
+                    "positionSide": payload.get("positionSide", "BOTH"),
+                    "qty": float(payload.get("qty", payload.get("positionAmt", 0)) or 0.0),
+                    "entryPrice": float(payload.get("entryPrice") or 0.0),
+                    "unrealized": float(
+                        payload.get("unRealizedProfit", payload.get("unrealized", 0)) or 0.0
+                    ),
+                    "leverage": float(payload.get("leverage") or 0.0),
+                }
+            )
+        except Exception:
+            continue
+    return rows
 
 
 
@@ -959,89 +1285,36 @@ def _pub_tick() -> None:
 
     # Inline minimal publish (NAV + positions) — Firestore-first dashboard compatible
     try:
-        nav_val = None
-        try:
-            from execution.state_publish import compute_nav
+        nav_val = _compute_nav_snapshot()
+        rows = _collect_rows()
 
-            nav_val = float(compute_nav())
-        except Exception as e:
-            LOG.error("[executor] compute_nav not available: %s", e)
+        if hasattr(_PUB, "maybe_publish_positions"):
             try:
-                from execution.exchange_utils import get_account
+                _PUB.maybe_publish_positions(rows)
+            except Exception as exc:
+                LOG.error("[executor] StatePublisher.maybe_publish_positions error: %s", exc)
 
-                acc = get_account()
-                nav_val = float(
-                    acc.get("totalMarginBalance")
-                    or (
-                        float(acc.get("totalWalletBalance", 0) or 0)
-                        + float(acc.get("totalUnrealizedProfit", 0) or 0)
-                    )
-                )
-            except Exception as ee:
-                LOG.error("[executor] account NAV error: %s", ee)
-
-        # Positions -> normalized rows
-        try:
-            raw: Iterable[Dict[str, Any]] = get_positions()
-        except Exception as e:
-            LOG.error("[executor] get_positions error: %s", e)
-            raw = []
-        rows: List[Dict[str, Any]] = []
-        for p in raw:
+        if nav_val is not None:
             try:
-                rows.append(
-                    {
-                        "symbol": p.get("symbol"),
-                        "positionSide": p.get("positionSide", "BOTH"),
-                        "qty": float(p.get("qty", p.get("positionAmt", 0)) or 0.0),
-                        "entryPrice": float(p.get("entryPrice") or 0.0),
-                        "unrealized": float(
-                            p.get("unRealizedProfit", p.get("unrealized", 0)) or 0.0
-                        ),
-                        "leverage": float(p.get("leverage") or 0.0),
-                    }
-                )
-            except Exception:
-                continue
+                publish_nav_value(float(nav_val))
+            except Exception as exc:
+                LOG.error("[executor] publish_nav_value error: %s", exc)
 
-        # Firestore write
+        if os.environ.get("FIRESTORE_ENABLED", "1") == "0":
+            return
+
         try:
-            if os.environ.get("FIRESTORE_ENABLED", "1") == "0":
-                try:
-                    from execution.state_publish import publish_nav_value, publish_positions
-
-                    if rows:
-                        publish_positions(rows)
-                    if nav_val is not None:
-                        publish_nav_value(float(nav_val))
-                except Exception as inner:
-                    LOG.error("[executor] local publish fallback error: %s", inner)
-                return
-
-            from google.cloud import firestore
-
-            ENV = os.getenv("ENV", "prod")
-            db = firestore.Client()
-
-            if nav_val is not None:
-                doc_nav = db.document(f"hedge/{ENV}/state/nav")
-                snap = doc_nav.get()
-                series: List[Dict[str, Any]] = []
-                if snap.exists:
-                    d = snap.to_dict() or {}
-                    series = d.get("series") or d.get("rows") or []
-                series.append({"t": time.time(), "nav": float(nav_val)})
-                series = series[-20000:]
-                doc_nav.set({"series": series}, merge=False)
-
-            db.document(f"hedge/{ENV}/state/positions").set({"rows": rows}, merge=False)
-        except Exception as e:
-            LOG.error("[executor] Firestore publish error: %s", e)
-    except Exception as e:
-        LOG.error("[executor] publisher fallback error: %s", e)
+            with with_firestore() as db:
+                db.document(f"hedge/{ENV}/state/positions").set({"rows": rows}, merge=False)
+            print("[executor] Firestore publish ok", flush=True)
+        except Exception as exc:
+            LOG.error("[executor] Firestore publish error: %s", exc)
+    except Exception as exc:
+        LOG.error("[executor] publisher fallback error: %s", exc)
 
 
 def _loop_once(i: int) -> None:
+    global _LAST_SIGNAL_PULL, _LAST_QUEUE_DEPTH
     _sync_dry_run()
     _account_snapshot()
 
@@ -1063,18 +1336,21 @@ def _loop_once(i: int) -> None:
         }
         LOG.info("[screener->executor] %s", intent)
         _send_order(intent)
+        _LAST_SIGNAL_PULL = time.time()
+        _LAST_QUEUE_DEPTH = 0
     else:
+        _LAST_SIGNAL_PULL = time.time()
         try:
-            intents_raw = list(generate_intents(time.time()))
+            intents_raw = list(generate_intents(_LAST_SIGNAL_PULL))
         except Exception as e:
             LOG.error("[screener] error: %s", e)
             intents_raw = []
-
+        _LAST_QUEUE_DEPTH = len(intents_raw)
         attempted = len(intents_raw)
         emitted = 0
         for raw_intent in intents_raw:
             intent = _normalize_intent(raw_intent)
-            symbol = intent.get("symbol")
+            symbol = cast(Optional[str], intent.get("symbol"))
             if not symbol:
                 LOG.warning("[screener] missing symbol in intent %s", intent)
                 continue
@@ -1106,6 +1382,7 @@ def main() -> None:
     i = 0
     while True:
         _loop_once(i)
+        _maybe_emit_heartbeat()
         i += 1
         if MAX_LOOPS and i >= MAX_LOOPS:
             LOG.info("[executor] MAX_LOOPS reached — exiting.")

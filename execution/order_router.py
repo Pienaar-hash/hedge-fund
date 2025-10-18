@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Mapping
 
 from execution import exchange_utils as ex
+from execution.log_utils import get_logger, log_event, safe_dump
 
 __all__ = ["route_order"]
 
 _LOG = logging.getLogger("order_router")
+LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
 
 
 def _truthy(value: Any) -> bool:
@@ -56,6 +59,14 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         price: float | None
         qty: float | None
         raw: Dict[str, Any] (optional raw exchange response)
+        request_id: str | None
+        latency_ms: float | None
+        exchange_filters_used: Dict[str, Any]
+        rounded_qty: float | None
+        rounded_price: float | None
+
+    Raises:
+        Exception: Propagated exchange error after logging.
     """
 
     try:
@@ -127,29 +138,62 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     ex.set_dry_run(bool(dry_run))
 
     try:
+        filters_snapshot = ex.get_symbol_filters(symbol)
+    except Exception:
+        filters_snapshot = {}
+
+    latency_ms: float | None = None
+    try:
+        t0 = time.perf_counter()
         resp = ex.send_order(**payload)
+        latency_ms = (time.perf_counter() - t0) * 1000.0
     except Exception as exc:
-        _LOG.error("route_order failed: %s", exc)
-        return {
-            "accepted": False,
-            "reason": str(exc),
-            "order_id": None,
+        error_payload: Dict[str, Any] = {
+            "exc": repr(exc),
+            "symbol": symbol,
+            "side": side,
+            "order_type": order_type,
             "price": _to_float(price),
             "qty": _to_float(qty),
-            "raw": None,
+            "payload": payload,
+            "dry_run": bool(dry_run),
+            "position_side": payload.get("positionSide"),
+            "reduce_only": payload.get("reduceOnly"),
         }
+        if filters_snapshot:
+            error_payload["exchange_filters_used"] = filters_snapshot
+        log_event(LOG_ORDERS, "order_error", safe_dump(error_payload))
+        _LOG.error("route_order failed: %s", exc)
+        raise
 
     order_id = resp.get("orderId")
     avg_price = resp.get("avgPrice") or price
     executed_qty = resp.get("executedQty") or resp.get("origQty") or qty
     reason = "dry_run" if resp.get("dryRun") else None
+    request_id = (
+        resp.get("clientOrderId")
+        or payload.get("newClientOrderId")
+        or payload.get("clientOrderId")
+    )
+    rounded_qty = _to_float(payload.get("quantity"))
+    if rounded_qty is None:
+        rounded_qty = _to_float(executed_qty)
+    rounded_price = _to_float(payload.get("price"))
+    if rounded_price is None:
+        rounded_price = _to_float(avg_price)
 
-    return {
+    result: Dict[str, Any] = {
         "accepted": True,
         "reason": reason,
         "order_id": order_id,
         "price": _to_float(avg_price),
         "qty": _to_float(executed_qty),
         "raw": resp,
+        "request_id": request_id,
+        "latency_ms": latency_ms,
+        "exchange_filters_used": filters_snapshot,
+        "rounded_qty": rounded_qty,
+        "rounded_price": rounded_price,
     }
-
+    log_event(LOG_ORDERS, "order_ack", safe_dump(result))
+    return result

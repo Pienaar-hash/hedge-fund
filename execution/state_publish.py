@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
+from datetime import datetime, timezone
 
 # Publishes read-only state to Firestore (positions + NAV).
 # - Loads .env from repo root (override=True) so ad-hoc runs see keys.
@@ -28,6 +30,8 @@ CREDS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or str(
     ROOT_DIR / "config/firebase_creds.json"
 )
 LOG_DIR = ROOT_DIR / "logs"
+EXEC_LOG_DIR = LOG_DIR / "execution"
+_EXEC_STATS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
 
 
 def _ensure_keys() -> None:
@@ -46,6 +50,177 @@ def _ensure_keys() -> None:
 
 
 _ensure_keys()
+
+
+def _extract_timestamp(record: Dict[str, Any]) -> Optional[float]:
+    candidates = (
+        record.get("ts"),
+        record.get("timestamp"),
+        record.get("time"),
+        record.get("t"),
+        record.get("local_ts"),
+    )
+    for value in candidates:
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            try:
+                return float(value)
+            except Exception:
+                continue
+        if isinstance(value, str):
+            val = value.strip()
+            if not val:
+                continue
+            try:
+                return float(val)
+            except ValueError:
+                pass
+            try:
+                iso_val = val.replace("Z", "+00:00") if val.endswith("Z") else val
+                dt = datetime.fromisoformat(iso_val)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.timestamp()
+            except Exception:
+                continue
+    return None
+
+
+def _to_iso(ts: Optional[float]) -> Optional[str]:
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _iter_recent_records(path: pathlib.Path, cutoff: float):
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        return
+    except Exception:
+        return
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(record, dict):
+            continue
+        ts = _extract_timestamp(record)
+        if ts is None:
+            continue
+        if ts < cutoff:
+            break
+        yield record
+
+
+def _last_heartbeats() -> Dict[str, Optional[str]]:
+    path = EXEC_LOG_DIR / "sync_heartbeats.jsonl"
+    latest: Dict[str, float] = {}
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                service = record.get("service")
+                if not service:
+                    continue
+                ts = _extract_timestamp(record)
+                if ts is None:
+                    continue
+                if ts >= latest.get(service, float("-inf")):
+                    latest[service] = ts
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return {svc: _to_iso(ts) for svc, ts in latest.items()}
+
+
+def _compute_exec_stats() -> Dict[str, Any]:
+    now_ts = time.time()
+    if (
+        isinstance(_EXEC_STATS_CACHE.get("ts"), (int, float))
+        and _EXEC_STATS_CACHE.get("data") is not None
+        and (now_ts - float(_EXEC_STATS_CACHE["ts"])) < 30.0
+    ):
+        return _EXEC_STATS_CACHE["data"]
+
+    try:
+        cutoff = now_ts - 86400.0
+        attempted = 0
+        executed = 0
+        successful = 0
+        veto_counter: Counter[str] = Counter()
+
+        attempt_path = EXEC_LOG_DIR / "orders_attempted.jsonl"
+        for _ in _iter_recent_records(attempt_path, cutoff) or []:
+            attempted += 1
+
+        executed_path = EXEC_LOG_DIR / "orders_executed.jsonl"
+        for record in _iter_recent_records(executed_path, cutoff) or []:
+            executed += 1
+            status = str(record.get("status") or record.get("order_status") or "").upper()
+            if status in {"FILLED", "SUCCESS"}:
+                successful += 1
+
+        veto_path = EXEC_LOG_DIR / "risk_vetoes.jsonl"
+        for record in _iter_recent_records(veto_path, cutoff) or []:
+            reason = record.get("veto_reason") or record.get("reason") or "unknown"
+            veto_counter[str(reason)] += 1
+
+        fill_rate = 0.0
+        denominator = attempted if attempted > 0 else (executed if executed > 0 else 0)
+        numerator = successful if attempted > 0 else successful
+        if denominator > 0:
+            fill_rate = float(numerator) / float(denominator)
+
+        last_hb = _last_heartbeats()
+        stats = {
+            "attempted_24h": attempted,
+            "executed_24h": executed,
+            "vetoes_24h": sum(veto_counter.values()),
+            "fill_rate": fill_rate,
+            "top_vetoes": [
+                {"reason": reason, "count": count}
+                for reason, count in veto_counter.most_common(5)
+            ],
+            "last_heartbeats": {
+                "executor_live": last_hb.get("executor_live"),
+                "sync_daemon": last_hb.get("sync_daemon"),
+            },
+        }
+    except Exception:
+        stats = {
+            "attempted_24h": 0,
+            "executed_24h": 0,
+            "vetoes_24h": 0,
+            "fill_rate": 0.0,
+            "top_vetoes": [],
+            "last_heartbeats": {
+                "executor_live": None,
+                "sync_daemon": None,
+            },
+        }
+
+    _EXEC_STATS_CACHE["ts"] = now_ts
+    _EXEC_STATS_CACHE["data"] = stats
+    return stats
 
 
 def _firestore_enabled() -> bool:
@@ -120,7 +295,8 @@ def normalize_positions(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def publish_positions(rows: List[Dict[str, Any]]) -> None:
-    payload = {"rows": rows, "updated": time.time()}
+    stats = _compute_exec_stats()
+    payload = {"rows": rows, "updated": time.time(), "exec_stats": stats}
     if not _firestore_enabled():
         _append_local_jsonl("positions", payload)
         return
@@ -143,8 +319,9 @@ def publish_nav_value(
     nav: float, min_interval_s: int = 60, max_points: int = 20000
 ) -> None:
     now = time.time()
+    stats = _compute_exec_stats()
     if not _firestore_enabled():
-        _append_local_jsonl("nav", {"t": now, "nav": float(nav)})
+        _append_local_jsonl("nav", {"t": now, "nav": float(nav), "exec_stats": stats})
         return
     cli = _fs_client()
     doc = cli.document(f"{FS_ROOT}/nav")
@@ -163,7 +340,7 @@ def publish_nav_value(
     series.append({"t": now, "nav": float(nav)})
     if len(series) > max_points:
         series = series[-max_points:]
-    doc.set({"series": series, "updated": now}, merge=True)
+    doc.set({"series": series, "updated": now, "exec_stats": stats}, merge=True)
 
 
 class StatePublisher:

@@ -1,0 +1,4 @@
+{"message": "hello", "ts": "2025-10-18T17:15:14.324504+00:00", "event_type": "self_test_start", "pid": 602220, "hostname": "ubuntu-4gb-fsn1-2"}
+{"sequence": 2, "ts": "2025-10-18T17:15:14.328656+00:00", "event_type": "self_test_end", "pid": 602220, "hostname": "ubuntu-4gb-fsn1-2"}
+{"message": "hello", "ts": "2025-10-18T18:31:18.931622+00:00", "event_type": "self_test_start", "pid": 613030, "hostname": "ubuntu-4gb-fsn1-2"}
+{"sequence": 2, "ts": "2025-10-18T18:31:18.936246+00:00", "event_type": "self_test_end", "pid": 613030, "hostname": "ubuntu-4gb-fsn1-2"}

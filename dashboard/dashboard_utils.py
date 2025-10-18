@@ -3,6 +3,7 @@ import json
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
+import requests
 
 # Optional Streamlit caching if running under Streamlit; safe no-op otherwise
 try:
@@ -12,6 +13,10 @@ except Exception:  # pragma: no cover
     _HAVE_ST = False
     class _Dummy:
         def cache_resource(self, **kwargs):
+            def deco(fn):
+                return fn
+            return deco
+        def cache_data(self, **kwargs):
             def deco(fn):
                 return fn
             return deco
@@ -47,6 +52,7 @@ def _doc_path(env: str, name: str) -> Tuple[str, str, str, str]:
     return ("hedge", env, "state", name)
 
 
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_state_document(name: str, env: str = "prod") -> Dict[str, Any]:
     """Load a state document from Firestore. Returns {} if not found.
 
@@ -58,6 +64,362 @@ def fetch_state_document(name: str, env: str = "prod") -> Dict[str, Any]:
         db.collection(c1).document(d1).collection(c2).document(d2).get()
     )
     return snap.to_dict() or {}
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_telemetry_health(env: str = "prod") -> Dict[str, Any]:
+    """Return sync_state telemetry health document (hedge/{env}/telemetry/health)."""
+    db = get_firestore_connection()
+    snap = (
+        db.collection("hedge")
+        .document(env)
+        .collection("telemetry")
+        .document("health")
+        .get()
+    )
+    if hasattr(snap, "to_dict"):
+        data = snap.to_dict() or {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _to_float(value: Any) -> float:
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def load_treasury_cache(payload: Any | None = None, path: str | None = None) -> Dict[str, Any]:
+    """Return normalized treasury cache with assets, totals, and timestamp."""
+
+    if payload is None:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        target = path or os.path.join(base_dir, "logs", "treasury.json")
+        try:
+            with open(target, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            payload = {}
+
+    if not isinstance(payload, dict):
+        return {"assets": [], "total_usd": 0.0, "updated_at": None}
+
+    assets: List[Dict[str, Any]] = []
+
+    raw_assets = payload.get("assets") if isinstance(payload.get("assets"), list) else None
+    if isinstance(raw_assets, list):
+        for item in raw_assets:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(
+                item.get("Asset")
+                or item.get("asset")
+                or item.get("symbol")
+                or item.get("code")
+                or ""
+            ).upper()
+            if not symbol:
+                continue
+            units = _to_float(
+                item.get("Units")
+                or item.get("units")
+                or item.get("qty")
+                or item.get("balance")
+                or item.get("amount")
+            )
+            usd_val = _to_float(
+                item.get("USD Value")
+                or item.get("usd_value")
+                or item.get("value_usd")
+                or item.get("usd")
+            )
+            assets.append({"Asset": symbol, "Units": units, "USD Value": usd_val})
+    else:
+        for key, value in payload.items():
+            key_lower = str(key).lower()
+            if key_lower in {"total_usd", "updated_at", "source"}:
+                continue
+            symbol = str(key).upper()
+            units: float
+            usd_val: float
+            if isinstance(value, dict):
+                units = _to_float(
+                    value.get("qty")
+                    or value.get("Units")
+                    or value.get("units")
+                    or value.get("balance")
+                    or value.get("amount")
+                )
+                usd_val = _to_float(
+                    value.get("usd_value")
+                    or value.get("USD Value")
+                    or value.get("value_usd")
+                    or value.get("usd")
+                )
+            else:
+                units = _to_float(value)
+                usd_val = units
+            if symbol:
+                assets.append({"Asset": symbol, "Units": units, "USD Value": usd_val})
+
+    total_usd = _to_float(payload.get("total_usd")) if isinstance(payload, dict) else 0.0
+    if total_usd <= 0 and assets:
+        total_usd = sum(_to_float(item.get("USD Value")) for item in assets)
+
+    return {
+        "assets": assets,
+        "total_usd": float(total_usd),
+        "updated_at": payload.get("updated_at"),
+        "raw": payload,
+    }
+
+
+def compute_total_nav_cached() -> Tuple[Dict[str, Any], float]:
+    """
+    Compute NAV from cached files instead of hitting live APIs.
+    Reads:
+      - logs/nav_log.json       → Binance Futures NAV
+      - logs/spot_state.json    → Binance Spot balances (if exists)
+      - logs/treasury.json      → Off-exchange reserves
+      - logs/polymarket.json    → Polymarket holdings
+    Returns (sources_dict, total_nav) where sources_dict has per-source NAV/asset data.
+    """
+
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    def _abs_path(rel: str) -> str:
+        return os.path.join(base_dir, rel)
+
+    def safe_load(rel_path: str, label: str) -> Tuple[Any, bool]:
+        path = _abs_path(rel_path)
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f), False
+            except Exception:
+                return {}, False
+        print(f"[dash] missing cache file: {label}", flush=True)
+        return {}, True
+
+    nav_data, nav_missing = safe_load("logs/nav_log.json", "nav_log.json")
+    spot_data, spot_missing = safe_load("logs/spot_state.json", "spot_state.json")
+    treasury_data, treasury_missing = safe_load("logs/treasury.json", "treasury.json")
+    treasury_cache = load_treasury_cache(treasury_data)
+    poly_data, poly_missing = safe_load("logs/polymarket.json", "polymarket.json")
+
+    def extract_equity(payload: Any) -> float:
+        if isinstance(payload, dict):
+            try:
+                return float(
+                    payload.get("total_equity")
+                    or payload.get("equity")
+                    or payload.get("nav")
+                    or payload.get("total_usd")
+                    or 0.0
+                )
+            except Exception:
+                return 0.0
+        if isinstance(payload, list) and payload:
+            last = payload[-1]
+            if isinstance(last, dict):
+                try:
+                    return float(
+                        last.get("equity")
+                        or last.get("nav")
+                        or last.get("total_equity")
+                        or 0.0
+                    )
+                except Exception:
+                    return 0.0
+        return 0.0
+
+    futures_nav = extract_equity(nav_data)
+
+    def extract_assets(payload: Any) -> List[Dict[str, float | str]]:
+        assets: List[Dict[str, float | str]] = []
+        if isinstance(payload, dict):
+            if isinstance(payload.get("assets"), list):
+                for item in payload.get("assets") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    symbol = str(
+                        item.get("symbol")
+                        or item.get("asset")
+                        or item.get("Asset")
+                        or item.get("code")
+                        or ""
+                    ).upper()
+                    units = _to_float(
+                        item.get("balance")
+                        or item.get("amount")
+                        or item.get("qty")
+                        or item.get("units")
+                        or item.get("Units")
+                        or item.get("free")
+                    )
+                    usd_val = _to_float(
+                        item.get("usd_value")
+                        or item.get("value_usd")
+                        or item.get("USD Value")
+                        or item.get("usd")
+                        or item.get("notional_usd")
+                        or item.get("val_usdt")
+                    )
+                    if symbol:
+                        assets.append(
+                            {
+                                "Asset": symbol,
+                                "Units": units,
+                                "USD Value": usd_val,
+                            }
+                        )
+                return assets
+            if isinstance(payload.get("balances"), list):
+                for item in payload.get("balances") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    symbol = str(item.get("asset") or item.get("symbol") or "").upper()
+                    units = _to_float(
+                        item.get("balance")
+                        or item.get("free")
+                        or item.get("amount")
+                        or item.get("qty")
+                        or item.get("units")
+                    )
+                    usd_val = _to_float(
+                        item.get("usd_value")
+                        or item.get("value_usd")
+                        or item.get("usd")
+                        or item.get("val_usdt")
+                    )
+                    if symbol:
+                        assets.append(
+                            {"Asset": symbol, "Units": units, "USD Value": usd_val}
+                        )
+                return assets
+            for key, value in payload.items():
+                key_lower = str(key).lower()
+                if key_lower in {"total_usd", "updated_at", "source"}:
+                    continue
+                if key.lower() == "total_usd":
+                    continue
+                symbol = str(key).upper()
+                if isinstance(value, dict):
+                    units = _to_float(
+                        value.get("qty")
+                        or value.get("amount")
+                        or value.get("balance")
+                        or value.get("units")
+                        or value.get("Units")
+                        or value.get("free")
+                    )
+                    usd_val = _to_float(
+                        value.get("usd_value")
+                        or value.get("value_usd")
+                        or value.get("usd")
+                        or value.get("val_usdt")
+                    )
+                else:
+                    units = _to_float(value)
+                    usd_val = units
+                assets.append({"Asset": symbol, "Units": units, "USD Value": usd_val})
+        return assets
+
+    spot_assets = extract_assets(spot_data)
+    treasury_assets = treasury_cache.get("assets") or extract_assets(treasury_data)
+    poly_assets = extract_assets(poly_data)
+
+    def sum_usd(assets: List[Dict[str, Any]]) -> float:
+        total = 0.0
+        for item in assets:
+            try:
+                total += float(item.get("USD Value", 0.0))
+            except Exception:
+                continue
+        return total
+
+    spot_nav = float(spot_data.get("total_usd", 0.0) or 0.0)
+    if spot_nav <= 0 and spot_assets:
+        spot_nav = sum_usd(spot_assets)
+
+    treasury_nav = float(treasury_cache.get("total_usd") or treasury_data.get("total_usd", 0.0) or 0.0)
+    if treasury_nav <= 0 and treasury_assets:
+        treasury_nav = sum_usd(treasury_assets)
+    treasury_updated_at = treasury_cache.get("updated_at")
+
+    poly_nav = float(
+        (poly_data.get("total_usd") if isinstance(poly_data, dict) else 0.0) or 0.0
+    )
+    if poly_nav <= 0 and poly_assets:
+        poly_nav = sum_usd(poly_assets)
+
+    total_nav = futures_nav + spot_nav + treasury_nav + poly_nav
+
+    print(
+        (
+            "[dash] NAV composition: "
+            f"futures={futures_nav:.2f}, spot={spot_nav:.2f}, "
+            f"treasury={treasury_nav:.2f}, poly={poly_nav:.2f} "
+            f"→ total={total_nav:.2f}"
+        ),
+        flush=True,
+    )
+
+    def _label_assets(items: List[Dict[str, Any]], source_name: str) -> List[Dict[str, Any]]:
+        labeled: List[Dict[str, Any]] = []
+        for entry in items:
+            entry = dict(entry)
+            entry.setdefault("Asset", source_name.upper())
+            entry["Source"] = source_name
+            labeled.append(entry)
+        return labeled
+
+    combined_assets = (
+        _label_assets(spot_assets, "Spot")
+        + _label_assets(treasury_assets, "Treasury")
+        + _label_assets(poly_assets, "Poly")
+    )
+
+    sources: Dict[str, Dict[str, Any]] = {
+        "futures": {
+            "label": "Futures",
+            "nav": futures_nav,
+            "assets": [],
+            "missing": nav_missing,
+        },
+        "spot": {
+            "label": "Spot",
+            "nav": spot_nav,
+            "assets": _label_assets(spot_assets, "Spot"),
+            "missing": spot_missing,
+        },
+        "treasury": {
+            "label": "Treasury",
+            "nav": treasury_nav,
+            "assets": _label_assets(treasury_assets, "Treasury"),
+            "missing": treasury_missing,
+            "updated_at": treasury_updated_at,
+        },
+        "poly": {
+            "label": "Poly",
+            "nav": poly_nav,
+            "assets": _label_assets(poly_assets, "Poly"),
+            "missing": poly_missing,
+        },
+        "combined": {
+            "label": "All",
+            "nav": total_nav,
+            "assets": combined_assets,
+            "missing": spot_missing and treasury_missing and poly_missing,
+        },
+    }
+
+    return sources, total_nav
 
 # ---------------------------- NAV helpers ------------------------------------
 
@@ -189,7 +551,6 @@ def fmt_pct(x: Any) -> str:
 
 # --- Price helpers (read-only) ------------------------------------------------
 import math
-import requests
 
 def get_env_float(name: str, default: float) -> float:
     try:
