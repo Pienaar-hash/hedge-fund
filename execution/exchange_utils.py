@@ -495,6 +495,25 @@ def set_symbol_leverage(symbol: str, leverage: int) -> Dict[str, Any]:
     ).json()
 
 
+def get_income_history(
+    start_time_ms: int,
+    end_time_ms: Optional[int] = None,
+    income_type: Optional[str] = None,
+    limit: int = 1000,
+) -> List[Dict[str, Any]]:
+    if is_dry_run():
+        return _dry_run_stub("get_income_history", [])
+    params: Dict[str, Any] = {
+        "startTime": int(start_time_ms),
+        "limit": int(limit),
+    }
+    if end_time_ms is not None:
+        params["endTime"] = int(end_time_ms)
+    if income_type:
+        params["incomeType"] = str(income_type)
+    return _req("GET", "/fapi/v1/income", signed=True, params=params).json()
+
+
 def get_positions(symbol: Optional[str] = None) -> List[Dict[str, Any]]:
     # Avoid signed USD-M calls in DRY_RUN to prevent -2015 while keys/env are being fixed
     if is_dry_run():

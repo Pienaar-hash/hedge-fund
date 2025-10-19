@@ -12,7 +12,7 @@ from utils.firestore_client import get_db
 
 LEADERBOARD_FILE = "leaderboard.json"
 NAV_FILE = "nav_log.json"
-PEAK_FILE = "peak_state.json"
+PEAK_FILE = "logs/cache/peak_state.json"
 STATE_FILE = "synced_state.json"  # adjust if your project uses a different name
 
 INTERVAL = int(os.getenv("SYNC_INTERVAL_SEC", "15"))

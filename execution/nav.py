@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
+import os
+import time
 from typing import Any, Dict, Tuple
 
 from execution.exchange_utils import get_balances, get_positions, get_price
+
+_NAV_CACHE_PATH = "logs/cache/nav_confirmed.json"
 
 
 def _load_json(path: str) -> Dict:
@@ -16,7 +21,10 @@ def _load_json(path: str) -> Dict:
 
 def _futures_nav_usdt() -> Tuple[float, Dict]:
     """Compute USD-M futures wallet NAV and provide detail."""
+    balances_ok = False
+    positions_ok = False
     bal = get_balances() or {}
+    balances_ok = True
     # Support both dict-of-balances and list-of-dicts returns
     wallet = 0.0
     if isinstance(bal, dict):
@@ -33,6 +41,7 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
     # Include unrealized PnL if present via positions
     try:
         positions = get_positions() or []
+        positions_ok = True
         unreal = 0.0
         for pos in positions:
             try:
@@ -43,6 +52,8 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
         wallet += unreal
     except Exception:
         pass
+    if balances_ok and positions_ok:
+        _persist_confirmed_nav(wallet, detail)
     return wallet, detail
 
 
@@ -220,6 +231,81 @@ def compute_gross_exposure_usd() -> float:
     return float(sum(gross_map.values()))
 
 
+def _persist_confirmed_nav(nav_value: float, detail: Dict[str, Any] | None = None) -> None:
+    try:
+        nav_float = float(nav_value)
+    except Exception:
+        return
+    if not math.isfinite(nav_float):
+        return
+    record: Dict[str, Any] = {
+        "ts": time.time(),
+        "nav": nav_float,
+    }
+    if isinstance(detail, dict) and detail:
+        record["detail"] = detail
+    try:
+        os.makedirs(os.path.dirname(_NAV_CACHE_PATH), exist_ok=True)
+    except Exception:
+        return
+    try:
+        with open(_NAV_CACHE_PATH, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, sort_keys=True)
+    except Exception:
+        pass
+
+
+def get_confirmed_nav() -> Dict[str, Any]:
+    cached = _load_json(_NAV_CACHE_PATH)
+    if not isinstance(cached, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    ts_val = cached.get("ts")
+    nav_val = cached.get("nav")
+    try:
+        ts_float = float(ts_val)
+        if math.isfinite(ts_float) and ts_float > 0:
+            out["ts"] = ts_float
+    except Exception:
+        pass
+    try:
+        nav_float = float(nav_val)
+        if math.isfinite(nav_float):
+            out["nav"] = nav_float
+    except Exception:
+        pass
+    detail = cached.get("detail")
+    if isinstance(detail, dict):
+        out["detail"] = detail
+    return out
+
+
+def get_nav_age(default: float | None = None) -> float | None:
+    """Return age in seconds for the last confirmed NAV, or default if unknown."""
+    record = get_confirmed_nav()
+    ts_val = record.get("ts")
+    if not isinstance(ts_val, (int, float)):
+        return default
+    try:
+        age = max(0.0, time.time() - float(ts_val))
+    except Exception:
+        return default
+    return age
+
+
+def is_nav_fresh(threshold_s: float | int | None = None) -> bool:
+    try:
+        threshold = float(threshold_s or 0.0)
+    except Exception:
+        threshold = 0.0
+    if threshold <= 0.0:
+        return True
+    age = get_nav_age()
+    if age is None:
+        return False
+    return age <= threshold
+
+
 class PortfolioSnapshot:
     """Single-call helper to expose current NAV and gross exposure."""
 
@@ -264,5 +350,7 @@ __all__ = [
     "compute_treasury_only",
     "compute_gross_exposure_usd",
     "compute_nav_summary",
+    "get_confirmed_nav",
+    "is_nav_fresh",
     "PortfolioSnapshot",
 ]

@@ -28,6 +28,7 @@ from dashboard.dashboard_utils import (
     get_env_badge,
 )
 from dashboard.nav_helpers import signal_attempts_summary
+from scripts.doctor import collect_doctor_snapshot
 try:
     from execution.signal_generator import generate_intents
 except Exception:  # pragma: no cover - optional dependency
@@ -41,6 +42,14 @@ try:
     from execution.utils import get_usd_to_zar
 except Exception:  # pragma: no cover
     get_usd_to_zar = None
+try:
+    from execution.nav import get_confirmed_nav as nav_get_confirmed_nav
+    from execution.nav import get_nav_age as nav_get_age
+    from execution.nav import is_nav_fresh as nav_is_fresh
+except Exception:  # pragma: no cover
+    nav_get_confirmed_nav = None
+    nav_get_age = None
+    nav_is_fresh = None
 
 # Read-only exchange helpers
 
@@ -117,6 +126,24 @@ def main():
             return f"{d//3600}h"
         except Exception:
             return "–"
+
+    def format_age_seconds(age_seconds: Optional[float]) -> str:
+        if age_seconds is None:
+            return "n/a"
+        try:
+            age_val = float(age_seconds)
+        except Exception:
+            return "n/a"
+        if age_val != age_val or age_val < 0:
+            return "n/a"
+        if age_val < 60:
+            return f"{age_val:.1f}s"
+        age_int = int(age_val)
+        if age_int < 3600:
+            return f"{age_int // 60}m"
+        if age_int < 86400:
+            return f"{age_int // 3600}h"
+        return f"{age_int // 86400}d"
 
     def tail_text(path: str, max_bytes: int = TAIL_BYTES) -> str:
         try:
@@ -221,6 +248,57 @@ def main():
             return (time.time() - float(ts)) <= window_sec
         except Exception:
             return False
+
+    def nav_freshness_info() -> Dict[str, Any]:
+        record: Dict[str, Any] = {}
+        if callable(nav_get_confirmed_nav):
+            try:
+                data = nav_get_confirmed_nav()
+                if isinstance(data, dict):
+                    record = data
+            except Exception as exc:
+                LOG.debug("[dash] get_confirmed_nav failed: %s", exc, exc_info=True)
+        if not record:
+            record = load_json("logs/cache/nav_confirmed.json", default={}) or {}
+        nav_age: Optional[float] = None
+        if callable(nav_get_age):
+            try:
+                nav_age = nav_get_age()
+            except Exception as exc:
+                LOG.debug("[dash] get_nav_age failed: %s", exc, exc_info=True)
+        if nav_age is None:
+            ts_val = record.get("ts")
+            if isinstance(ts_val, (int, float)):
+                try:
+                    nav_age = max(0.0, time.time() - float(ts_val))
+                except Exception:
+                    nav_age = None
+        risk_cfg = load_json("config/risk_limits.json", default={})
+        threshold = None
+        if isinstance(risk_cfg, dict):
+            candidates = []
+            global_cfg = risk_cfg.get("global") if isinstance(risk_cfg.get("global"), dict) else None
+            if isinstance(global_cfg, dict):
+                candidates.append(global_cfg.get("nav_freshness_seconds"))
+            candidates.append(risk_cfg.get("nav_freshness_seconds"))
+            for candidate in candidates:
+                try:
+                    val = float(candidate)
+                    if val > 0:
+                        threshold = val
+                        break
+                except Exception:
+                    continue
+        if threshold is not None and callable(nav_is_fresh):
+            try:
+                fresh = bool(nav_is_fresh(threshold))
+            except Exception:
+                fresh = nav_age is not None and nav_age <= threshold
+        elif threshold is not None:
+            fresh = nav_age is not None and nav_age <= threshold
+        else:
+            fresh = nav_age is not None
+        return {"age": nav_age, "threshold": threshold, "fresh": bool(fresh)}
 
     def read_jsonl_tail(path: Path, limit: int) -> List[Dict[str, Any]]:
         try:
@@ -631,6 +709,8 @@ def main():
     pos_doc, pos_source = load_positions_state()
     lb_doc, lb_source = load_leaderboard_state()
 
+    doctor_snapshot = collect_doctor_snapshot()
+
     nav_df, kpis = parse_nav_to_df_and_kpis(nav_doc or {})
     positions_fs = positions_sorted((pos_doc or {}).get("items") or [])
     leaderboard = (lb_doc or {}).get("items") or []
@@ -712,10 +792,15 @@ def main():
         except Exception:
             prev_nav_value = None
 
+    nav_freshness = doctor_snapshot.get("nav_freshness", {}) or {}
+    if not isinstance(nav_freshness, dict):
+        nav_freshness = {}
+
     nav_usd_text = format_currency(nav_value, "$")
     nav_zar_value = None
     nav_zar_text = "≈ R—"
-    zar_rate = cached_usd_to_zar()
+    zar_rate = nav_freshness.get("zar_rate") or cached_usd_to_zar()
+    zar_source = nav_freshness.get("zar_source") or ("cached" if zar_rate else "none")
     if zar_rate and isinstance(nav_value, (int, float)):
         nav_zar_value = float(nav_value) * float(zar_rate)
         nav_zar_text = f"≈ {format_currency(nav_zar_value, 'R')}"
@@ -725,6 +810,8 @@ def main():
         prev_nav_zar = float(prev_nav_value) * float(zar_rate)
 
     nav_delta_html = compare_nav_zar(prev_nav_zar, nav_zar_value)
+
+    nav_display = f"{nav_value:,.2f} USD" if isinstance(nav_value, (int, float)) else "n/a"
 
     header_css = """
     <style>
@@ -748,6 +835,12 @@ def main():
         flex-direction: column;
         gap: 0.15rem;
         font-weight: 600;
+    }
+    .dash-top-nav .dash-nav-main-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        row-gap: 0.2rem;
     }
     .dash-top-nav .dash-nav-main {
         font-size: 1.08rem;
@@ -787,28 +880,96 @@ def main():
         color: rgba(71, 85, 105, 0.9);
         font-size: 0.85rem;
     }
+    .dash-top-nav .dash-nav-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.1rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        margin-left: 0.6rem;
+    }
+    .dash-top-nav .dash-nav-chip.fresh {
+        background: rgba(34, 197, 94, 0.15);
+        color: #15803d;
+        border: 1px solid rgba(34, 197, 94, 0.35);
+    }
+    .dash-top-nav .dash-nav-chip.stale {
+        background: rgba(248, 113, 113, 0.18);
+        color: #b91c1c;
+        border: 1px solid rgba(248, 113, 113, 0.4);
+    }
+    .dash-top-nav .dash-nav-chip.dd-ok {
+        background: rgba(34, 197, 94, 0.12);
+        color: #166534;
+        border: 1px solid rgba(34, 197, 94, 0.25);
+    }
+    .dash-top-nav .dash-nav-chip.dd-warn {
+        background: rgba(248, 113, 113, 0.18);
+        color: #b91c1c;
+        border: 1px solid rgba(248, 113, 113, 0.35);
+    }
+    .dash-top-nav .dash-nav-heartbeat {
+        font-size: 0.78rem;
+        color: rgba(30, 41, 59, 0.78);
+        background: rgba(148, 163, 184, 0.18);
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+    }
     </style>
     """
 
-    nav_usd_text = format_currency(nav_value, "$")
-    nav_zar_value = None
-    nav_zar_text = "≈ R—"
-    zar_rate = cached_usd_to_zar()
-    if zar_rate and isinstance(nav_value, (int, float)):
-        nav_zar_value = float(nav_value) * float(zar_rate)
-        nav_zar_text = f"≈ {format_currency(nav_zar_value, 'R')}"
     nav_main_text = f"⚡ NAV {nav_usd_text} | {nav_zar_text} | {env_label}"
     rate_display = f"R{zar_rate:.2f}/USD" if zar_rate else "R—/USD"
+
+    drawdown_snapshot = nav_freshness.get("drawdown", {})
+    heartbeat_snapshot = doctor_snapshot.get("heartbeats", {})
+    reserves_snapshot = doctor_snapshot.get("reserves", {})
+
+    nav_age_display = format_age_seconds(nav_freshness.get("age"))
+    nav_is_fresh = bool(nav_freshness.get("fresh"))
+    nav_chip_class = "fresh" if nav_is_fresh else "stale"
+    nav_chip_label = "Fresh" if nav_is_fresh else "STALE"
+    nav_chip_label = f"{nav_chip_label} · {nav_age_display}"
+    nav_chip_title = f"NAV age {nav_age_display}"
+    nav_chip_html = f"<span class='dash-nav-chip {nav_chip_class}' title=\"{nav_chip_title}\">{nav_chip_label}</span>"
+
+    dd_pct = drawdown_snapshot.get("dd_pct") or 0.0
+    dd_abs = drawdown_snapshot.get("dd_abs") or 0.0
+    dd_chip_class = "dd-ok" if not dd_pct or dd_pct <= 0 else "dd-warn"
+    dd_chip_label = f"Drawdown · {dd_pct:.2f}%"
+    dd_chip_title = f"Daily drawdown {dd_pct:.2f}%"
+    dd_chip_html = f"<span class='dash-nav-chip {dd_chip_class}' title=\"{dd_chip_title}\">{dd_chip_label}</span>"
+
+    treasury_total = reserves_snapshot.get("total")
+    treasury_display = format_currency(treasury_total, "$") if isinstance(treasury_total, (int, float)) else "n/a"
+    nav_tooltip = (
+        f"Total NAV (USD)\nExchange: {nav_display} (source {nav_info.get('source', 'n/a')})\nTreasury: {treasury_display}"
+        if nav_display != "n/a"
+        else "Total NAV (USD)"
+    )
+    nav_tooltip = nav_tooltip.replace("\n", "&#10;")
+    nav_span = f"<span class='dash-nav-main' title=\"{nav_tooltip}\">{nav_main_text}</span>"
+    nav_main_block = f"<div class='dash-nav-main-row'>{nav_span}{nav_chip_html}{dd_chip_html}</div>"
+
+    hb_services = (heartbeat_snapshot or {}).get("services", {})
+    hb_status = heartbeat_snapshot.get("status", "n/a")
+    hb_exec_age = hb_services.get("executor", {}).get("age_display", "n/a")
+    hb_sync_age = hb_services.get("sync_state", {}).get("age_display", "n/a")
+    heartbeat_brief = f"Exec {hb_exec_age} · Sync {hb_sync_age}"
 
     header_html = f"""
     <div class="dash-top-nav">
         <div class="dash-nav-left">
-            <span class="dash-nav-main">{nav_main_text}</span>
+            {nav_main_block}
             {nav_delta_html}
         </div>
         <div class="dash-nav-right">
             <span class="dash-nav-rate">{rate_display}</span>
             <span class="dash-nav-ts">Last Sync: {last_sync_label} UTC</span>
+            <span class="dash-nav-heartbeat">{heartbeat_brief}</span>
             <span class="dash-env-badge" style="background:{env_color};">{badge_icon} {env_label}</span>
         </div>
     </div>
@@ -835,6 +996,32 @@ def main():
 
     # --------------------------- Overview Tab ------------------------------------
     with tab_overview:
+        st.subheader("Doctor Summary")
+        doc_col1, doc_col2, doc_col3, doc_col4 = st.columns(4)
+        doc_col1.metric("NAV", nav_display, None)
+        doc_col2.metric("Freshness", nav_status, nav_age_display)
+        doc_col3.metric("Drawdown", f"{dd_pct:.2f}%", format_currency(dd_abs, "$"))
+        doc_col4.metric("Heartbeat", hb_status, heartbeat_brief)
+
+        doc_row2 = st.columns(4)
+        doc_row2[0].metric("Positions", positions_info.get("count", 0), None)
+        doc_row2[1].metric(
+            "Firestore",
+            firestore_info.get("status", "n/a").upper() if firestore_info.get("enabled") else "DISABLED",
+            firestore_info.get("age", "n/a"),
+        )
+        doc_row2[2].metric(
+            "ZAR Rate",
+            f"{zar_rate:.2f}" if zar_rate else "n/a",
+            zar_source if zar_rate else "none",
+        )
+        doc_row2[3].metric(
+            "Reserves",
+            treasury_display,
+            None,
+        )
+
+        st.markdown("---")
         st.subheader("Portfolio KPIs")
         equity = kpis.get("total_equity")
         peak_equity = kpis.get("peak_equity")
@@ -875,6 +1062,28 @@ def main():
         if positions_df is None or positions_df.empty:
             st.info("No open positions.")
         else:
+            for col in ("entryPrice", "markPrice"):
+                if col in positions_df.columns:
+                    positions_df[col] = pd.to_numeric(positions_df[col], errors="coerce")
+            if "entryPrice" in positions_df.columns and "markPrice" in positions_df.columns:
+                entry = positions_df["entryPrice"].replace({0: pd.NA})
+                pnl_pct = ((positions_df["markPrice"] - entry) / entry) * 100
+                positions_df["PnL%"] = pnl_pct.round(2)
+            cols_order = [
+                c for c in [
+                    "symbol",
+                    "positionAmt",
+                    "entryPrice",
+                    "markPrice",
+                    "PnL%",
+                    "unrealizedPnl",
+                    "leverage",
+                    "updatedAt",
+                ]
+                if c in positions_df.columns
+            ]
+            remaining_cols = [c for c in positions_df.columns if c not in cols_order]
+            positions_df = positions_df[cols_order + remaining_cols]
             st.dataframe(positions_df, use_container_width=True, height=420)
 
     # --------------------------- Execution Tab ----------------------------------
@@ -1062,6 +1271,57 @@ def main():
     with tab_ml:
         st.header("ML — Models & Evaluation")
         try:
+            meta_dir = Path("models")
+            meta_rows = []
+            if meta_dir.exists():
+                for meta_path in meta_dir.glob("*_model_metadata.json"):
+                    try:
+                        data = json.load(open(meta_path, "r", encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict):
+                        continue
+                    meta_rows.append(
+                        {
+                            "symbol": data.get("symbol"),
+                            "version": data.get("version"),
+                            "trained_at": data.get("trained_at"),
+                            "date_start": data.get("date_start"),
+                            "date_end": data.get("date_end"),
+                            "oos_roc_auc": data.get("oos_roc_auc"),
+                            "oos_brier": data.get("oos_brier"),
+                        }
+                    )
+            if meta_rows:
+                meta_df = pd.DataFrame(meta_rows).set_index("symbol")
+                st.subheader("Model Metadata")
+                st.dataframe(meta_df)
+
+            live_metrics_path = Path("logs/ml/live_metrics.json")
+            if live_metrics_path.exists():
+                try:
+                    live_payload = json.load(open(live_metrics_path, "r", encoding="utf-8"))
+                except Exception as exc:
+                    st.warning(f"Failed to load live metrics: {exc}")
+                    live_payload = {}
+                symbols_live = (live_payload or {}).get("symbols") or {}
+                if symbols_live:
+                    st.subheader("Live Hit-Rate Monitor")
+                    for sym, info in symbols_live.items():
+                        history = info.get("history") or []
+                        if history:
+                            hist_df = pd.DataFrame(history)
+                            try:
+                                hist_df["ts"] = pd.to_datetime(hist_df["ts"], unit="s")
+                            except Exception:
+                                hist_df["ts"] = pd.to_datetime(hist_df["ts"])
+                            hist_df = hist_df.set_index("ts")
+                            st.caption(f"{sym} — rolling hit-rate vs avg prob")
+                            st.line_chart(hist_df[["hit_rate", "avg_prob"]], height=140)
+                        windows = info.get("windows") or {}
+                        if windows:
+                            st.write({sym: windows})
+
             reg_path = "models/registry.json"
             if os.path.exists(reg_path):
                 registry = json.load(open(reg_path, "r"))

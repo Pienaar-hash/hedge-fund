@@ -1,11 +1,17 @@
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Dict, List, Tuple, Optional, Any, Callable
+from typing import Dict, List, Tuple, Optional, Any
 import logging
 import os
 import time
 
-from execution.nav import compute_trading_nav, compute_gross_exposure_usd
+from execution.drawdown_tracker import load_peak_state
+from execution.nav import (
+    compute_trading_nav,
+    compute_gross_exposure_usd,
+    get_nav_age,
+    is_nav_fresh,
+)
 from execution.utils import load_json, get_live_positions
 from execution.exchange_utils import get_balances
 
@@ -27,6 +33,8 @@ _GLOBAL_KEYS = {
     "burst_limit",
     "error_circuit",
     "whitelist",
+    "nav_freshness_seconds",
+    "fail_closed_on_nav_stale",
 }
 
 LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
@@ -55,6 +63,7 @@ REASONS = {
     "leverage_exceeded": "leverage_cap",
     "max_concurrent": "max_concurrent",
     "tier_cap": "tier_cap",
+    "nav_stale": "nav_stale",
 }
 
 
@@ -116,6 +125,31 @@ def _normalize_risk_cfg(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     out["per_symbol"] = per_symbol
 
     return out
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _drawdown_snapshot() -> Dict[str, float]:
+    state = load_peak_state()
+    if not isinstance(state, dict):
+        state = {}
+    dd_pct = _as_float(state.get("dd_pct"))
+    dd_abs = _as_float(state.get("dd_abs"))
+    peak = _as_float(state.get("peak") or state.get("peak_equity"))
+    nav = _as_float(state.get("nav") or state.get("nav_usd"))
+    realized = _as_float(state.get("realized_pnl_today"))
+    return {
+        "dd_pct": dd_pct,
+        "dd_abs": dd_abs,
+        "peak": peak,
+        "nav": nav,
+        "realized_today": realized,
+    }
 
 getcontext().prec = 28
 
@@ -363,13 +397,6 @@ def check_order(
     """
     cfg = _normalize_risk_cfg(cfg)
 
-    reasons: List[str] = []
-    details: Dict[str, Any] = {
-        "reasons": reasons,
-        "notional": float(requested_notional),
-    }
-    thresholds: Dict[str, Any] = details.setdefault("thresholds", {})
-
     sym = str(symbol)
     s_cfg = _cfg_get(cfg, ["per_symbol", sym], {}) or {}
     g_cfg = _cfg_get(cfg, ["global"], {}) or {}
@@ -385,6 +412,99 @@ def check_order(
         or s_cfg.get("ts")
         or g_cfg.get("signal_ts")
     )
+
+    reasons: List[str] = []
+    details: Dict[str, Any] = {
+        "reasons": reasons,
+        "notional": float(requested_notional),
+    }
+    thresholds: Dict[str, Any] = details.setdefault("thresholds", {})
+
+    nav_threshold_raw = g_cfg.get("nav_freshness_seconds")
+    try:
+        nav_threshold_s = float(nav_threshold_raw or 0.0)
+    except Exception:
+        nav_threshold_s = 0.0
+    nav_fail_closed = bool(g_cfg.get("fail_closed_on_nav_stale", False))
+
+    nav_age = get_nav_age()
+    nav_age_s: Optional[int] = None
+    if isinstance(nav_age, (int, float)):
+        try:
+            nav_age_s = int(max(0.0, float(nav_age)))
+        except Exception:
+            nav_age_s = None
+    if nav_age_s is not None:
+        details["nav_age_s"] = nav_age_s
+
+    nav_status_known = nav_threshold_s > 0.0
+    nav_fresh = {
+        "fresh": bool(is_nav_fresh(nav_threshold_s if nav_status_known else None)),
+        "age": nav_age,
+    }
+
+    age_for_log = (
+        f"{float(nav_age):.1f}s" if isinstance(nav_age, (int, float)) else "unknown"
+    )
+    if nav_status_known or nav_age is not None:
+        if nav_fresh["fresh"]:
+            LOGGER.info("[risk] nav_ok (age=%s, fresh=%s)", age_for_log, nav_fresh["fresh"])
+        else:
+            log_msg = "[risk] veto nav_stale (age=%s)" if nav_fail_closed else "[risk] nav_stale (age=%s) (fail-open)"
+            LOGGER.warning(log_msg, age_for_log)
+
+    if nav_status_known and not nav_fresh["fresh"] and nav_fail_closed:
+        reasons.append("nav_stale")
+        thresholds.setdefault("nav_freshness_seconds", float(nav_threshold_s))
+        if nav_age_s is None:
+            details.setdefault("nav_age_s", None)
+        qty_req = None
+        try:
+            if price not in (None, 0, 0.0) and float(price or 0.0) != 0.0:
+                qty_req = float(requested_notional) / float(price)
+        except Exception:
+            qty_req = None
+        try:
+            nav_f = float(nav)
+        except Exception:
+            nav_f = 0.0
+        try:
+            current_gross_f = float(current_gross_notional)
+        except Exception:
+            current_gross_f = 0.0
+        try:
+            now_f = float(now)
+        except Exception:
+            now_f = time.time()
+        context = {
+            "nav": nav_f,
+            "requested_notional": float(requested_notional),
+            "current_gross_notional": current_gross_f,
+            "now": now_f,
+            "nav_age_s": nav_age_s,
+            "nav_freshness_seconds": nav_threshold_s,
+        }
+        detail_payload: Dict[str, Any] = {
+            "reasons": list(reasons),
+            "thresholds": thresholds,
+        }
+        extra = {
+            k: v
+            for k, v in details.items()
+            if k not in ("reasons", "thresholds")
+        }
+        if extra:
+            detail_payload["observations"] = extra
+        _emit_veto(
+            symbol,
+            "nav_stale",
+            detail=detail_payload,
+            context=context,
+            strategy=strategy_name,
+            signal_ts=signal_ts,
+            qty=qty_req,
+        )
+        return False, details
 
     # Block duplicate exposure if a live position already exists
     try:
@@ -425,20 +545,34 @@ def check_order(
         if sym.upper() not in wl_set:
             reasons.append("not_whitelisted")
 
-    # Daily loss limit (portfolio). Expect state.daily_pnl_pct to be set by caller.
+    dd_snapshot = _drawdown_snapshot()
+    dd_pct = dd_snapshot.get("dd_pct", 0.0)
+    dd_peak = dd_snapshot.get("peak", 0.0)
+    dd_nav_snapshot = dd_snapshot.get("nav", 0.0)
+    dd_abs = dd_snapshot.get("dd_abs", 0.0)
+    if dd_peak > 0.0 or dd_pct > 0.0:
+        LOGGER.info("[risk] drawdown dd=%.1f%% peak=%.2f nav=%.2f", dd_pct, dd_peak, dd_nav_snapshot)
+    if dd_abs:
+        details["drawdown_abs"] = dd_abs
+    details["drawdown_pct"] = dd_pct
+    if dd_peak:
+        details["drawdown_peak"] = dd_peak
+    if dd_nav_snapshot:
+        details["drawdown_nav"] = dd_nav_snapshot
+
+    # Daily loss limit (portfolio) sourced from drawdown tracker.
     try:
         day_lim = float(g_cfg.get("daily_loss_limit_pct", 0.0) or 0.0)
     except Exception:
         day_lim = 0.0
     if day_lim > 0.0:
-        try:
-            current_pnl_pct = float(getattr(state, "daily_pnl_pct", 0.0))
-            if current_pnl_pct <= -day_lim:
-                reasons.append("day_loss_limit")
-                thresholds.setdefault("daily_loss_limit_pct", day_lim)
-                thresholds.setdefault("observed_daily_pnl_pct", current_pnl_pct)
-        except Exception:
-            pass
+        if dd_pct >= day_lim:
+            reasons.append("daily_loss_limit")
+            thresholds.setdefault("daily_loss_limit_pct", day_lim)
+            thresholds.setdefault("observed_daily_drawdown_pct", dd_pct)
+            thresholds.setdefault("drawdown_peak", dd_peak)
+            thresholds.setdefault("drawdown_nav", dd_nav_snapshot)
+            LOGGER.warning("[risk] veto daily_loss_limit dd=%.1f%% limit=%.1f%%", dd_pct, day_lim)
 
     # Per-order notional constraints
     g_min = float(g_cfg.get("min_notional_usdt", 0.0) or 0.0)
@@ -766,22 +900,20 @@ class RiskGate:
         return int(time.time() // 3600)
 
     def _daily_loss_pct(self) -> float:
-        # Compute daily loss % from peak_state.json if present: (peak - curr)/peak
-        try:
-            _load_json: Callable[[Any], Any]
-            try:
-                from execution.utils import load_json as _load_json
-            except Exception:
-                def _load_json(_path: Any) -> Any:
-                    return {}
-            s = _load_json("peak_state.json") or {}
-            peak = float(s.get("peak_equity", 0.0))
-            curr = float(self._portfolio_nav())
-            if peak <= 0:
-                return 0.0
-            return 100.0 * max(0.0, (peak - curr) / peak)
-        except Exception:
+        snapshot = _drawdown_snapshot()
+        dd_pct = snapshot.get("dd_pct", 0.0)
+        if dd_pct and dd_pct > 0.0:
+            return float(dd_pct)
+        peak = snapshot.get("peak", 0.0)
+        if peak <= 0:
             return 0.0
+        try:
+            curr = float(self._portfolio_nav())
+        except Exception:
+            curr = snapshot.get("nav", 0.0)
+        if curr is None or peak <= 0:
+            return 0.0
+        return 100.0 * max(0.0, (peak - float(curr)) / peak)
 
     # NEW: canonical gross-notional checker used by both screener & executor
     def allowed_gross_notional(

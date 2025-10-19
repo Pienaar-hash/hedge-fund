@@ -1,0 +1,16 @@
+{
+  "momentum": {
+    "enabled": true,
+    "sandbox": false,
+    "max_concurrent": 3,
+    "confidence": 0.6,
+    "capacity_usd": 250.0
+  },
+  "relative_value": {
+    "enabled": true,
+    "sandbox": false,
+    "max_concurrent": 2,
+    "confidence": 0.7,
+    "capacity_usd": 200.0
+  }
+}

@@ -12,7 +12,7 @@ from firebase_admin import credentials, firestore, initialize_app
 from execution.config_loader import get, load
 
 STATE_FILE = "synced_state.json"
-PEAK_FILE = "peak_state.json"
+PEAK_FILE = "logs/cache/peak_state.json"
 LOG_DIR = Path("logs")
 EXEC_LOG_DIR = LOG_DIR / "execution"
 LOCAL_METRICS_PATH = LOG_DIR / "leaderboard_metrics.json"

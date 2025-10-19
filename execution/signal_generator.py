@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import math
 import logging
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 from datetime import datetime
 
@@ -12,6 +14,52 @@ _LOG = logging.getLogger("signal_generator")
 _STRATEGY_MODULES = ("momentum", "relative_value")
 _SEEN_KEYS: "OrderedDict[tuple[str, str, str, str], None]" = OrderedDict()
 _LRU_CAPACITY = 1000
+_REGISTRY_PATH = Path("config/strategy_registry.json")
+_DEFAULT_REG_ENTRY: Dict[str, Any] = {
+    "enabled": True,
+    "sandbox": False,
+    "max_concurrent": 10,
+    "confidence": 1.0,
+    "capacity_usd": float("inf"),
+}
+
+
+def _load_registry() -> Dict[str, Dict[str, Any]]:
+    payload = {}
+    try:
+        data = load_json(str(_REGISTRY_PATH)) or {}
+        if isinstance(data, dict):
+            payload = {
+                str(k): (dict(v) if isinstance(v, Mapping) else {})
+                for k, v in data.items()
+            }
+    except Exception:
+        payload = {}
+    # Normalize entries with defaults
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for key, entry in payload.items():
+        normalized_entry = dict(_DEFAULT_REG_ENTRY)
+        normalized_entry.update(
+            {k: v for k, v in entry.items() if v is not None}
+        )
+        # Ensure types and sane limits
+        normalized_entry["enabled"] = bool(normalized_entry.get("enabled", True))
+        normalized_entry["sandbox"] = bool(normalized_entry.get("sandbox", False))
+        normalized_entry["max_concurrent"] = max(
+            0, int(normalized_entry.get("max_concurrent", 0))
+        )
+        try:
+            normalized_entry["confidence"] = float(normalized_entry.get("confidence", 1.0))
+        except Exception:
+            normalized_entry["confidence"] = 1.0
+        normalized_entry["confidence"] = max(0.0, min(1.5, normalized_entry["confidence"]))
+        try:
+            cap = float(normalized_entry.get("capacity_usd", float("inf")))
+        except Exception:
+            cap = float("inf")
+        normalized_entry["capacity_usd"] = cap if cap > 0 else float("inf")
+        normalized[key] = normalized_entry
+    return normalized
 
 
 def _intent_key(intent: Mapping[str, Any]) -> tuple[str, str, str, str] | None:
@@ -81,8 +129,16 @@ def generate_intents(now: float, universe: Sequence[str] | None = None, cfg: Map
     if cfg is None:
         cfg = load_json("config/strategy_config.json") or {}
 
+    registry = _load_registry()
     emitted: List[Mapping[str, Any]] = []
+    per_strategy_counts: Dict[str, int] = defaultdict(int)
+    per_strategy_gross: Dict[str, float] = defaultdict(float)
+
     for name in _STRATEGY_MODULES:
+        reg_entry = registry.get(name, dict(_DEFAULT_REG_ENTRY))
+        if not reg_entry.get("enabled", True) or reg_entry.get("sandbox", False):
+            _LOG.info("strategy %s disabled%s", name, " (sandbox)" if reg_entry.get("sandbox") else "")
+            continue
         try:
             mod = importlib.import_module(f"strategies.{name}")
         except ModuleNotFoundError:
@@ -97,6 +153,9 @@ def generate_intents(now: float, universe: Sequence[str] | None = None, cfg: Map
             _LOG.error("strategy %s generate failed: %s", name, exc)
             continue
 
+        max_concurrent = reg_entry.get("max_concurrent") or _DEFAULT_REG_ENTRY["max_concurrent"]
+        capacity_usd = reg_entry.get("capacity_usd") or _DEFAULT_REG_ENTRY["capacity_usd"]
+
         for intent in candidates:
             if not isinstance(intent, Mapping):
                 continue
@@ -105,11 +164,61 @@ def generate_intents(now: float, universe: Sequence[str] | None = None, cfg: Map
             except Exception as exc:
                 _LOG.debug("intent normalization failed for %s: %s", name, exc)
                 continue
+            strategy_key = (
+                str(
+                    normalized.get("strategy")
+                    or normalized.get("strategy_name")
+                    or normalized.get("strategyId")
+                    or name
+                )
+            )
+            entry = registry.get(strategy_key, reg_entry)
+            if not entry.get("enabled", True) or entry.get("sandbox", False):
+                continue
+            max_allowed = entry.get("max_concurrent") or max_concurrent
+            if max_allowed and per_strategy_counts[strategy_key] >= max_allowed:
+                continue
+
+            # Determine gross sizing for capacity gating
+            gross_val = _safe_float(normalized.get("gross_usd"))
+            if gross_val <= 0:
+                gross_val = 0.0
+            cap_usd = entry.get("capacity_usd") or capacity_usd
+            if (
+                math.isfinite(cap_usd)
+                and cap_usd > 0
+                and (per_strategy_gross[strategy_key] + gross_val) > cap_usd
+            ):
+                continue
+
+            confidence = entry.get("confidence", 1.0)
+            try:
+                confidence = float(confidence)
+            except Exception:
+                confidence = 1.0
+            confidence = max(0.0, min(1.5, confidence))
+            normalized["strategy"] = strategy_key
+            normalized["confidence"] = confidence
+            normalized["signal_strength"] = confidence
+            normalized["expected_edge"] = confidence - 0.5
+            normalized.setdefault("metadata", {})
+            if isinstance(normalized["metadata"], Mapping):
+                meta = dict(normalized["metadata"])
+                meta.update(
+                    {
+                        "registry_confidence": confidence,
+                        "registry_capacity": cap_usd,
+                        "registry_max_concurrent": max_allowed,
+                    }
+                )
+                normalized["metadata"] = meta
             key = _intent_key(normalized)
             if key is None:
                 continue
             if not _register_key(key):
                 continue
+            per_strategy_counts[strategy_key] += 1
+            per_strategy_gross[strategy_key] += gross_val
             emitted.append(normalized)
 
     return emitted

@@ -33,7 +33,23 @@
     "per_symbol_min_gross_usd": {
       "BTCUSDT": 15
     },
-    "max_trade_nav_pct": 5
+    "max_trade_nav_pct": 5,
+    "atr_interval": "1h",
+    "atr_lookback": 14,
+    "vol_target_bps": 25,
+    "bucket_caps_pct": {
+      "majors": 30,
+      "alts": 20
+    },
+    "symbol_buckets": {
+      "BTCUSDT": "majors",
+      "ETHUSDT": "majors",
+      "LTCUSDT": "majors",
+      "SOLUSDT": "alts",
+      "SUIUSDT": "alts",
+      "WIFUSDT": "alts",
+      "LINKUSDT": "alts"
+    }
   },
   "risk": {
     "daily_loss_limit_pct": 2,
@@ -98,6 +114,7 @@
       "timeframe": "15m",
       "capital_per_trade": 5.0,
       "leverage": 5,
+      "bucket": "majors",
       "risk": {
         "fixed_sl_pct": 0.4,
         "fixed_tp_pct": 0.8,
@@ -128,6 +145,7 @@
       "timeframe": "15m",
       "capital_per_trade": 5.0,
       "leverage": 4,
+      "bucket": "majors",
       "risk": {
         "fixed_sl_pct": 0.4,
         "fixed_tp_pct": 0.8,
@@ -154,6 +172,7 @@
       "timeframe": "15m",
       "capital_per_trade": 5.0,
       "leverage": 3,
+      "bucket": "alts",
       "risk": {
         "fixed_sl_pct": 0.5,
         "fixed_tp_pct": 1.0,
@@ -180,6 +199,7 @@
       "timeframe": "15m",
       "capital_per_trade": 5.0,
       "leverage": 3,
+      "bucket": "alts",
       "risk": {
         "fixed_sl_pct": 0.5,
         "fixed_tp_pct": 1.0,

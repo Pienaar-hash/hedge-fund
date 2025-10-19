@@ -664,6 +664,22 @@ def _update_risk_state_counters(
     _RISK_STATE.daily_pnl_pct = -loss_pct
 
 
+def _current_bucket_gross(symbol_gross: Mapping[str, float], buckets: Mapping[str, str]) -> Dict[str, float]:
+    totals: Dict[str, float] = {}
+    for sym, gross in symbol_gross.items():
+        try:
+            bucket = buckets.get(str(sym).upper())
+        except Exception:
+            bucket = None
+        if not bucket:
+            continue
+        try:
+            totals[bucket] = totals.get(bucket, 0.0) + float(gross)
+        except Exception:
+            continue
+    return totals
+
+
 def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     symbol = intent["symbol"]
     sig = str(intent.get("signal", "")).upper()
@@ -674,50 +690,29 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     gross_target = float(intent.get("gross_usd") or (cap * lev))
     if lev <= 0:
         lev = 1.0
-    try:
-        cfg = load_json("config/strategy_config.json")
-        sizing_cfg = (cfg.get("sizing") or {})
-        floor_gross = float((sizing_cfg.get("min_gross_usd_per_order", 0.0)) or 0.0)
-        per_symbol_cfg = sizing_cfg.get("per_symbol_min_gross_usd") or {}
-        sym_floor = per_symbol_cfg.get(symbol.upper())
-        if sym_floor is not None:
-            floor_gross = max(floor_gross, float(sym_floor or 0.0))
-        gross_target = max(gross_target, floor_gross)
-    except Exception:
-        pass
-    margin_target = gross_target / max(lev, 1.0)
-    reduce_only = bool(intent.get("reduceOnly", False))
-    attempt_start_monotonic = time.monotonic()
-    nav_snapshot = _nav_snapshot()
     price_guess = 0.0
     try:
         price_guess = float(intent.get("price", 0.0) or 0.0)
     except Exception:
         price_guess = 0.0
-    attempt_payload = {
-        "symbol": symbol,
-        "side": side,
-        "qty": _estimate_intent_qty(intent, gross_target, price_guess),
-        "strategy": (
-            intent.get("strategy")
-            or intent.get("strategy_name")
-            or intent.get("strategyId")
-            or intent.get("source")
-        ),
-        "signal_ts": (
-            intent.get("signal_ts")
-            or intent.get("timestamp")
-            or intent.get("ts")
-            or intent.get("time")
-        ),
-        "local_ts": time.time(),
-        "nav_snapshot": nav_snapshot,
-        "run_id": RUN_ID,
-        "hostname": HOSTNAME,
-        "reduce_only": reduce_only,
-        "price_hint": price_guess,
-    }
-    _record_structured_event(LOG_ATTEMPTS, "order_attempt", attempt_payload)
+    reduce_only = bool(intent.get("reduceOnly", False))
+    try:
+        _PORTFOLIO_SNAPSHOT.refresh()
+    except Exception:
+        pass
+    nav_snapshot = _nav_snapshot()
+    nav_usd = float(nav_snapshot.get("nav_usd", 0.0) or 0.0)
+    symbol_gross_map: Dict[str, float] = {}
+    try:
+        raw_map = nav_snapshot.get("symbol_gross_usd") or {}
+        if isinstance(raw_map, Mapping):
+            for key, value in raw_map.items():
+                try:
+                    symbol_gross_map[str(key).upper()] = float(value)
+                except Exception:
+                    continue
+    except Exception:
+        symbol_gross_map = {}
 
     def _persist_veto(reason: str, price_hint: float, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -763,10 +758,127 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         _record_structured_event(LOG_VETOES, "risk_veto", log_payload)
         return payload
 
+    floor_gross = 0.0
     try:
-        _PORTFOLIO_SNAPSHOT.refresh()
+        cfg = load_json("config/strategy_config.json")
+        sizing_cfg = (cfg.get("sizing") or {})
+        floor_gross = float((sizing_cfg.get("min_gross_usd_per_order", 0.0)) or 0.0)
+        per_symbol_cfg = sizing_cfg.get("per_symbol_min_gross_usd") or {}
+        sym_floor = per_symbol_cfg.get(symbol.upper())
+        if sym_floor is not None:
+            floor_gross = max(floor_gross, float(sym_floor or 0.0))
+        gross_target = max(gross_target, floor_gross)
+        if not reduce_only:
+            symbol_buckets: Dict[str, str] = {}
+            for strat in cfg.get("strategies") or []:
+                if not isinstance(strat, Mapping):
+                    continue
+                sym = str(strat.get("symbol") or "").upper()
+                bucket = strat.get("bucket")
+                if sym and bucket:
+                    symbol_buckets[sym] = str(bucket)
+            extra_map = sizing_cfg.get("symbol_buckets") or {}
+            if isinstance(extra_map, Mapping):
+                for key, value in extra_map.items():
+                    if not value:
+                        continue
+                    symbol_buckets[str(key).upper()] = str(value)
+            size_risk_cfg = {
+                "min_notional_usd": floor_gross,
+                "fallback_gross_usd": gross_target,
+                "per_symbol_leverage": sizing_cfg.get("per_symbol_leverage") or {},
+                "default_leverage": sizing_cfg.get("default_leverage", 1.0),
+                "max_symbol_exposure_pct": sizing_cfg.get("max_symbol_exposure_pct"),
+                "max_gross_exposure_pct": sizing_cfg.get("max_gross_exposure_pct"),
+                "max_trade_nav_pct": sizing_cfg.get("max_trade_nav_pct"),
+                "vol_target_bps": sizing_cfg.get("vol_target_bps"),
+                "atr_interval": sizing_cfg.get("atr_interval"),
+                "atr_lookback": sizing_cfg.get("atr_lookback"),
+                "bucket_caps_pct": sizing_cfg.get("bucket_caps_pct"),
+                "symbol_bucket": symbol_buckets,
+                "current_symbol_gross": symbol_gross_map,
+                "current_bucket_gross": _current_bucket_gross(symbol_gross_map, symbol_buckets),
+                "current_portfolio_gross": nav_snapshot.get("gross_usd"),
+                "price": price_guess,
+            }
+            signal_strength = float(
+                intent.get("signal_strength")
+                or intent.get("confidence")
+                or intent.get("score")
+                or 1.0
+            )
+            sizing_suggestion = size_model.suggest_gross_usd(
+                symbol,
+                nav_usd,
+                signal_strength,
+                size_risk_cfg,
+            )
+            sized_gross = float(sizing_suggestion.get("gross_usd", gross_target))
+            if sized_gross <= 0.0:
+                LOG.info(
+                    "[sizer] sym=%s atr=%.4f blocked (reason=%s)",
+                    symbol,
+                    sizing_suggestion.get("atr", 0.0),
+                    sizing_suggestion.get("reason", "sizer_cap"),
+                )
+                _persist_veto(
+                    sizing_suggestion.get("reason", "sizer_cap"),
+                    price_guess,
+                    {
+                        "intent": intent,
+                        "nav_snapshot": nav_snapshot,
+                        "thresholds": {
+                            "bucket": sizing_suggestion.get("bucket"),
+                            "bucket_cap": sizing_suggestion.get("bucket_cap"),
+                        },
+                    },
+                )
+                return
+            gross_target = max(sized_gross, floor_gross)
+            lev_cap = float(sizing_suggestion.get("leverage_cap") or lev)
+            if lev_cap > 0.0 and lev > lev_cap:
+                lev = lev_cap
+            LOG.info(
+                "[sizer] sym=%s atr=%.4f gross_usd=%.2f bucket_used=%.2f/%.2f",
+                symbol,
+                sizing_suggestion.get("atr", 0.0),
+                gross_target,
+                sizing_suggestion.get("bucket_used") or 0.0,
+                sizing_suggestion.get("bucket_cap") or 0.0,
+            )
     except Exception:
-        pass
+        gross_target = max(gross_target, floor_gross)
+    margin_target = gross_target / max(lev, 1.0)
+    attempt_start_monotonic = time.monotonic()
+    attempt_payload = {
+        "symbol": symbol,
+        "side": side,
+        "qty": _estimate_intent_qty(intent, gross_target, price_guess),
+        "strategy": (
+            intent.get("strategy")
+            or intent.get("strategy_name")
+            or intent.get("strategyId")
+            or intent.get("source")
+        ),
+        "signal_ts": (
+            intent.get("signal_ts")
+            or intent.get("timestamp")
+            or intent.get("ts")
+            or intent.get("time")
+        ),
+        "local_ts": time.time(),
+        "nav_snapshot": nav_snapshot,
+        "run_id": RUN_ID,
+        "hostname": HOSTNAME,
+        "reduce_only": reduce_only,
+        "price_hint": price_guess,
+    }
+    try:
+        attempt_payload["confidence"] = float(intent.get("confidence", 1.0) or 1.0)
+    except Exception:
+        attempt_payload["confidence"] = 1.0
+    attempt_payload["expected_edge"] = float(intent.get("expected_edge", 0.0) or 0.0)
+    _record_structured_event(LOG_ATTEMPTS, "order_attempt", attempt_payload)
 
     if os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on"):
         price_hint = float(intent.get("price", 0.0) or 0.0)

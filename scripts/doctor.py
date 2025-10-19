@@ -16,6 +16,7 @@ ANSI_RED = "\033[91m"
 
 # --- Load screener pieces
 import execution.signal_screener as sc
+from execution.nav import get_nav_age, is_nav_fresh
 
 try:
     from execution.utils import load_json as utils_load_json
@@ -107,6 +108,13 @@ def _colorize(text: str, color_code: str, enable: bool) -> str:
     if not enable:
         return text
     return f"{color_code}{text}\033[0m"
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 def safe_load(path: str, default=None):
     default = {} if default is None else default
@@ -285,14 +293,87 @@ def _collect_heartbeats() -> Dict[str, Any]:
             print(f"[doctor] heartbeat parse failed: {exc}")
     display_parts = []
     stale = False
+    service_details: Dict[str, Dict[str, Any]] = {}
     for label, ts in services.items():
         age_str = _human_minutes(ts)
         display_parts.append(f"{label}={age_str}")
         mins = _mins_ago(ts)
         if mins is None or mins > 5:
             stale = True
+        service_details[label] = {
+            "ts": ts,
+            "age_minutes": mins,
+            "age_display": age_str,
+        }
     status = "stale" if stale else "fresh"
-    return {"display": " ".join(display_parts) if display_parts else "n/a", "status": status}
+    return {
+        "display": " ".join(display_parts) if display_parts else "n/a",
+        "status": status,
+        "services": service_details,
+    }
+
+
+def _drawdown_state() -> Dict[str, Any]:
+    payload = safe_load("logs/cache/peak_state.json", default={}) or {}
+    dd_pct = _safe_float(payload.get("dd_pct"))
+    dd_abs = _safe_float(payload.get("dd_abs"))
+    peak = _safe_float(payload.get("peak") or payload.get("peak_equity"))
+    nav = _safe_float(payload.get("nav") or payload.get("nav_usd"))
+    updated_at = payload.get("updated_at") or payload.get("ts")
+    return {
+        "dd_pct": dd_pct,
+        "dd_abs": dd_abs,
+        "peak": peak,
+        "nav": nav,
+        "updated_at": updated_at,
+    }
+
+
+def collect_doctor_snapshot() -> Dict[str, Any]:
+    nav_freshness = {
+        "fresh": is_nav_fresh(),
+        "age": get_nav_age(),
+        "drawdown": _drawdown_state(),
+        "zar_rate": None,
+        "zar_source": "none",
+    }
+    snapshot = {
+        "nav": _collect_nav(),
+        "positions": _collect_positions(),
+        "firestore": _collect_firestore_status(),
+        "heartbeats": _collect_heartbeats(),
+        "reserves": _collect_reserves(),
+        "nav_freshness": nav_freshness,
+    }
+    if utils_get_usd_to_zar is not None:
+        rate = None
+        source = "none"
+        try:
+            rate = utils_get_usd_to_zar(force=True)
+            if rate:
+                source = "fresh"
+        except Exception as exc:
+            print(f"[doctor] ZAR conversion fetch failed: {exc}")
+        if not rate:
+            try:
+                cached = utils_get_usd_to_zar()
+            except Exception:
+                cached = None
+            if cached:
+                rate = cached
+                source = "cached"
+                print("[doctor] ZAR conversion stale, using cached value")
+            else:
+                print("[doctor] ZAR conversion unavailable (no rate)")
+        nav_freshness["zar_rate"] = rate
+        nav_freshness["zar_source"] = source
+    else:
+        print("[doctor] ZAR conversion helper unavailable")
+    snapshot["drawdown"] = nav_freshness["drawdown"]
+    snapshot["zar_rate"] = nav_freshness["zar_rate"]
+    snapshot["zar_source"] = nav_freshness["zar_source"]
+    print("[doctor] nav_freshness integrated (is_nav_fresh + get_nav_age)")
+    return snapshot
 
 
 def main():
@@ -381,29 +462,16 @@ def main():
             "blocked_by": blocked_by
         })
 
-    nav_info = _collect_nav()
-    positions_info = _collect_positions()
-    firestore_info = _collect_firestore_status()
-    heartbeat_info = _collect_heartbeats()
-    reserves_info = _collect_reserves()
-    zar_rate = None
-    if utils_get_usd_to_zar is not None:
-        try:
-            zar_rate = utils_get_usd_to_zar(force=True)
-        except Exception as exc:
-            print(f"[doctor] ZAR conversion fetch failed: {exc}")
-        if not zar_rate:
-            try:
-                cached_rate = utils_get_usd_to_zar()
-            except Exception:
-                cached_rate = None
-            if cached_rate:
-                zar_rate = cached_rate
-                print("[doctor] ZAR conversion stale, using cached value")
-            else:
-                print("[doctor] ZAR conversion unavailable (no rate)")
-    else:
-        print("[doctor] ZAR conversion helper unavailable")
+    snapshot = collect_doctor_snapshot()
+    nav_info = snapshot["nav"]
+    positions_info = snapshot["positions"]
+    firestore_info = snapshot["firestore"]
+    heartbeat_info = snapshot["heartbeats"]
+    reserves_info = snapshot["reserves"]
+    nav_freshness = snapshot["nav_freshness"]
+    drawdown_info = nav_freshness.get("drawdown", {})
+    zar_rate = nav_freshness.get("zar_rate")
+    zar_source = nav_freshness.get("zar_source")
 
     payload = json.dumps(out, indent=2, sort_keys=False)
     print(payload)
@@ -416,6 +484,20 @@ def main():
     if nav_info["source"] and nav_info["source"] != "n/a":
         nav_line += f" (source={nav_info['source']})"
     print(nav_line)
+
+    nav_age = nav_freshness.get("age")
+    age_display = f"{nav_age:.1f}s" if isinstance(nav_age, (int, float)) else "n/a"
+    nav_status = "FRESH" if nav_freshness.get("fresh") else "STALE"
+    print(f"[doctor] NAV freshness: {nav_status} (age={age_display})")
+
+    dd_pct = drawdown_info.get("dd_pct") or 0.0
+    dd_abs = drawdown_info.get("dd_abs") or 0.0
+    peak_equity = drawdown_info.get("peak") or 0.0
+    nav_equity = drawdown_info.get("nav") or 0.0
+    print(
+        "[doctor] Drawdown: "
+        f"dd={dd_pct:.2f}% (abs=${dd_abs:,.2f}, peak=${peak_equity:,.2f}, nav=${nav_equity:,.2f})"
+    )
 
     if positions_info["error"]:
         print(f"[doctor] Positions: {positions_info['count']} open (fallback: {positions_info['error']})")
@@ -448,7 +530,7 @@ def main():
         nav_zar_display = f"R{nav_zar:,.0f}" if isinstance(nav_zar, (int, float)) else "n/a"
         reserves_zar_display = f"R{reserves_zar:,.0f}" if isinstance(reserves_zar, (int, float)) else "n/a"
         print(
-            f"[doctor] ZAR conversion @ {zar_rate:.2f} → NAV≈{nav_zar_display} | Reserves≈{reserves_zar_display}"
+            f"[doctor] ZAR conversion @ {zar_rate:.2f} ({zar_source}) → NAV≈{nav_zar_display} | Reserves≈{reserves_zar_display}"
         )
     else:
         print("[doctor] ZAR conversion data unavailable")
@@ -464,10 +546,12 @@ def main():
 
     summary_parts = [
         f"NAV: {nav_display}",
+        f"NAV Freshness: {nav_status}",
+        f"Drawdown: {dd_pct:.2f}%",
         f"Positions: {positions_info['count']}",
         f"Firestore: {firestore_info['status'].upper() if firestore_info['enabled'] else 'disabled'}",
         f"Reserves: {total_display}",
-        f"Heartbeat: {heartbeat_info['status']}",
+        f"Heartbeat: {hb_status}",
     ]
     if zar_rate and isinstance(nav_zar, (int, float)):
         zar_summary = f"ZAR≈R{nav_zar:,.0f}"
@@ -476,11 +560,21 @@ def main():
     summary_parts.append(zar_summary)
     colored_summary = " | ".join(summary_parts)
     if is_tty:
-        if isinstance(nav_info["value"], (int, float)):
+        if isinstance(nav_value, (int, float)):
             colored_summary = colored_summary.replace(
                 f"NAV: {nav_display}",
                 f"NAV: {_colorize(nav_display, ANSI_GREEN, True)}",
             )
+        nav_color = ANSI_GREEN if nav_status == "FRESH" else ANSI_RED
+        colored_summary = colored_summary.replace(
+            f"NAV Freshness: {nav_status}",
+            f"NAV Freshness: {_colorize(nav_status, nav_color, True)}",
+        )
+        dd_color = ANSI_RED if dd_pct and dd_pct > 0 else ANSI_GREEN
+        colored_summary = colored_summary.replace(
+            f"Drawdown: {dd_pct:.2f}%",
+            f"Drawdown: {_colorize(f'{dd_pct:.2f}%', dd_color, True)}",
+        )
         if firestore_info["enabled"]:
             color = ANSI_GREEN if firestore_info["status"] == "OK" else ANSI_RED
             colored_summary = colored_summary.replace(
@@ -492,10 +586,10 @@ def main():
                 f"Reserves: {total_display}",
                 f"Reserves: {_colorize(total_display, ANSI_GREEN, True)}",
             )
-        hb_color = ANSI_GREEN if heartbeat_info["status"] == "fresh" else ANSI_RED
+        hb_color = ANSI_GREEN if hb_status == "fresh" else ANSI_RED
         colored_summary = colored_summary.replace(
-            f"Heartbeat: {heartbeat_info['status']}",
-            f"Heartbeat: {_colorize(heartbeat_info['status'], hb_color, True)}",
+            f"Heartbeat: {hb_status}",
+            f"Heartbeat: {_colorize(hb_status, hb_color, True)}",
         )
         if zar_rate and isinstance(nav_zar, (int, float)):
             colored_summary = colored_summary.replace(
@@ -507,3 +601,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+__all__ = ["collect_doctor_snapshot"]

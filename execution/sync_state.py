@@ -126,7 +126,19 @@ except Exception:
 #
 import time
 from datetime import datetime, timedelta, timezone
+try:  # Python 3.9+
+    from zoneinfo import ZoneInfo  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    ZoneInfo = None  # type: ignore
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from execution.drawdown_tracker import (
+    compute_intraday_drawdown,
+    load_peak_state,
+    mirror_peak_state_to_firestore,
+    save_peak_state,
+)
+from execution.exchange_utils import get_income_history
 
 # ---------------- Firestore import (repo-root on sys.path now) ---------------
 # with_firestore provided by guarded import block above.
@@ -134,7 +146,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # ------------------------------- Files ---------------------------------------
 LOGS_DIR = os.path.join(REPO_ROOT, "logs")
 NAV_LOG: str = os.path.join(LOGS_DIR, "nav_log.json")
-PEAK_STATE: str = os.path.join(LOGS_DIR, "peak_state.json")
+PEAK_STATE: str = os.path.join(LOGS_DIR, "cache", "peak_state.json")
 SYNCED_STATE: str = os.path.join(LOGS_DIR, "synced_state.json")
 SPOT_CACHE_PATH: str = os.path.join(LOGS_DIR, "spot_state.json")
 TREASURY_CACHE_PATH: str = os.path.join(LOGS_DIR, "treasury.json")
@@ -739,13 +751,10 @@ def _read_nav_rows(path: str) -> List[Dict[str, Any]]:
     return rows
 
 
-def _read_peak_file(path: str) -> float:
-    if not os.path.exists(path):
-        return 0.0
+def _read_peak_file(_path: str) -> float:
+    state = load_peak_state()
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            j = json.load(f) or {}
-        return float(j.get("peak_equity") or 0.0)
+        return float(state.get("peak_equity") or state.get("peak") or 0.0)
     except Exception:
         return 0.0
 
@@ -826,6 +835,80 @@ def _read_nav_tail_metrics(path: str) -> Dict[str, float]:
         pass
     print(f"[sync] tail equity resolved: {out['total_equity']}", flush=True)
     return out
+
+
+def _load_risk_limits_config() -> Dict[str, Any]:
+    path = os.path.join(REPO_ROOT, "config", "risk_limits.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def _reset_timezone_name() -> str:
+    cfg = _load_risk_limits_config()
+    candidates: List[Any] = []
+    global_cfg = cfg.get("global")
+    if isinstance(global_cfg, dict):
+        candidates.append(global_cfg.get("reset_timezone"))
+    candidates.append(cfg.get("reset_timezone"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return "UTC"
+
+
+def _resolve_zone(name: str) -> timezone | ZoneInfo:
+    if not name or str(name).upper() == "UTC":
+        return timezone.utc
+    if ZoneInfo is None:
+        return timezone.utc
+    try:
+        return ZoneInfo(str(name))
+    except Exception:
+        return timezone.utc
+
+
+def _fetch_realized_pnl_today(reset_tz: str) -> float:
+    zone = _resolve_zone(reset_tz)
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(zone)
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = start_local.astimezone(timezone.utc)
+    start_ms = int(start_utc.timestamp() * 1000)
+    end_ms = int(now_utc.timestamp() * 1000)
+
+    total = 0.0
+    next_start = start_ms
+    try:
+        while True:
+            rows = get_income_history(
+                next_start,
+                end_time_ms=end_ms,
+                income_type="REALIZED_PNL",
+                limit=1000,
+            )
+            if not rows:
+                break
+            for row in rows:
+                total += _to_float(row.get("income"))
+            if len(rows) < 1000:
+                break
+            last_time = max(_to_float(row.get("time") or row.get("T") or 0.0) for row in rows)
+            if last_time <= 0.0:
+                break
+            next_start = int(last_time) + 1
+            if next_start > end_ms:
+                break
+    except Exception as exc:
+        print(f"[sync] WARN realized_pnl_fetch_failed: {exc}", flush=True)
+        cached = load_peak_state()
+        return _to_float(cached.get("realized_pnl_today"))
+    return total
 
 
 # --------------------------- Filtering / metrics -----------------------------
@@ -1032,7 +1115,8 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
 
     # Tail equity guard: avoid writing garbage when executor/sync is cold
     tail_kpis = _read_nav_tail_metrics(NAV_LOG)
-    if tail_kpis.get("total_equity", 0.0) <= 0.0:
+    nav_total_equity = float(tail_kpis.get("total_equity", 0.0) or 0.0)
+    if nav_total_equity <= 0.0:
         print(
             f"[sync] skipping write because nav tail total_equity <= 0 "
             f"(value={tail_kpis.get('total_equity')})",
@@ -1083,6 +1167,37 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
     if exposure:
         nav_payload.update(exposure)
         _nav_doc_ref(db).set(exposure, merge=True)
+
+    nav_for_drawdown = nav_total_equity
+    if nav_for_drawdown <= 0.0:
+        nav_for_drawdown = _to_float(nav_payload.get("total_equity"))
+    reset_tz = _reset_timezone_name()
+    realized_today = _fetch_realized_pnl_today(reset_tz)
+    drawdown_state = compute_intraday_drawdown(
+        nav_for_drawdown,
+        realized_today,
+        reset_timezone=reset_tz,
+    )
+    save_peak_state(drawdown_state)
+    mirror_peak_state_to_firestore(drawdown_state, db, env=_get_env())
+    dd_payload = {
+        "drawdown": drawdown_state.get("dd_pct", 0.0),
+        "drawdown_pct": drawdown_state.get("dd_pct", 0.0),
+        "drawdown_abs": drawdown_state.get("dd_abs", 0.0),
+        "peak_equity": drawdown_state.get("peak", nav_payload.get("peak_equity")),
+        "realized_pnl": realized_today,
+        "realized_pnl_today": realized_today,
+        "drawdown_snapshot_at": drawdown_state.get("updated_at"),
+    }
+    nav_payload.update(dd_payload)
+    _nav_doc_ref(db).set(dd_payload, merge=True)
+    print(
+        "[sync] drawdown tracker "
+        f"peak={drawdown_state.get('peak', 0.0):.2f} "
+        f"dd_pct={drawdown_state.get('dd_pct', 0.0):.2f} "
+        f"realized={realized_today:.2f}",
+        flush=True,
+    )
 
     pos_payload = _commit_positions(db, pos_snap)
     lb_payload = _commit_leaderboard(db, pos_snap)
