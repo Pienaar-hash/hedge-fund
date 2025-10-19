@@ -31,6 +31,52 @@ def _repo_root_log() -> None:
     """Log repo root resolution for clarity in supervisor output."""
     print(f"[sync] repo_root resolved: {REPO_ROOT}", flush=True)
 
+
+def _log_startup_summary() -> Dict[str, Any]:
+    testnet = os.getenv("BINANCE_TESTNET", "0").lower() in ("1", "true", "yes")
+    env = os.getenv("ENV", "prod")
+    dry_run = _dry_run_mode()
+    base = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
+    fs_enabled = bool(int(os.getenv("FIRESTORE_ENABLED", "0") or 0))
+    prefix = "testnet" if testnet else "live"
+    print(
+        f"[{prefix}] ENV={env} DRY_RUN={dry_run} testnet={testnet} base={base} FIRESTORE={'ON' if fs_enabled else 'OFF'}",
+        flush=True,
+    )
+    return {
+        "testnet": testnet,
+        "env": env,
+        "dry_run": dry_run,
+        "base": base,
+        "fs_enabled": fs_enabled,
+        "prefix": prefix,
+    }
+
+
+def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
+    if not flags.get("fs_enabled"):
+        return
+    try:
+        from execution.firestore_utils import publish_health
+
+        publish_health(
+            {
+                "process": "sync_state",
+                "status": "ok",
+                "ts": _now_iso(),
+                "env": flags.get("env"),
+            }
+        )
+        print(
+            f"[firestore] heartbeat write ok path=hedge/{flags.get('env')}/health/sync_state",
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[{flags.get('prefix', 'live')}] Firestore heartbeat failed: {exc}",
+            flush=True,
+        )
+
 # --- Force package import path when launched via Supervisor ---
 import importlib.util
 
@@ -52,6 +98,7 @@ except Exception as e:
             raise RuntimeError(f"Cannot import firestore_client: loader missing (spec={spec})")
     else:
         raise RuntimeError(f"Cannot import firestore_client: {e}")
+
 # Make relative file reads (nav_log.json, etc.) deterministic under Supervisor
 try:
     os.chdir(REPO_ROOT)
@@ -1117,6 +1164,16 @@ def run() -> None:
     env = _force_env_to_prod()
     _repo_root_log()
     dry_run = _dry_run_mode()
+    try:
+        flags = _log_startup_summary()
+    except Exception as exc:
+        print(f"[live] startup summary logging failed: {exc}", flush=True)
+        flags = {
+            "env": env,
+            "fs_enabled": bool(int(os.getenv("FIRESTORE_ENABLED", "0") or 0)),
+            "prefix": "live",
+        }
+    _publish_startup_heartbeat(flags)
     print(
         f"[sync] startup context: ENV={env}, DRY_RUN={dry_run}, repo_root={REPO_ROOT}",
         flush=True,

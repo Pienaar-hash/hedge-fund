@@ -1,19 +1,113 @@
 {
+  "hedge_dashboard": {
+    "nav_usd": 0.0,
+    "nav_zar": 0.0,
+    "positions": [
+      {
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "quantity": 0.0,
+        "notional_usd": 0.0,
+        "pnl_usd": 0.0,
+        "leverage": 0.0,
+        "mark_price": 0.0,
+        "entry_price": 0.0,
+        "updated_at": "iso-utc"
+      }
+    ],
+    "timestamp": "iso-utc",
+    "env": "prod",
+    "heartbeat": {
+      "executor_live": "iso-utc",
+      "sync_state": "iso-utc",
+      "telegram_report": "iso-utc"
+    }
+  },
+  "nav_snapshots": {
+    "series": [
+      {
+        "ts": "iso-utc",
+        "nav_usd": 0.0,
+        "nav_zar": 0.0,
+        "equity_usd": 0.0,
+        "drawdown_pct": 0.0
+      }
+    ],
+    "updated_at": "iso-utc"
+  },
+  "health": {
+    "firestore_ok": true,
+    "heartbeat_age_sec": 0,
+    "last_publish_ts": "iso-utc",
+    "last_error": "",
+    "uptime_pct": 0.0
+  },
+  "risk": {
+    "documents": [
+      {
+        "symbol": "BTCUSDT",
+        "env": "prod",
+        "exposure_usd": 0.0,
+        "gross_usd": 0.0,
+        "leverage": 0.0,
+        "margin_used_usd": 0.0,
+        "timestamp": "iso-utc"
+      }
+    ]
+  },
+  "hedge": {
+    "env": "prod",
+    "version": "v0.0.0",
+    "run_id": "",
+    "updated_at": "iso-utc",
+    "dry_run": false
+  },
   "leaderboard": {
     "updated_at": "iso-utc",
-    "items": [{"strategy":"str","cagr":0.0,"sharpe":0.0,"mdd":0.0,"win_rate":0.0,"trades":0,"pnl":0.0,"equity":0.0,"rank":1}]
-  },
-  "nav": {
-    "updated_at":"iso-utc",
-    "series":[{"ts":"iso-utc","equity":0.0}],
-    "total_equity":0.0,
-    "realized_pnl":0.0,
-    "unrealized_pnl":0.0,
-    "peak_equity":0.0,
-    "drawdown":0.0
+    "items": [
+      {
+        "strategy": "strategy_name",
+        "cagr": 0.0,
+        "sharpe": 0.0,
+        "mdd": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "pnl_usd": 0.0,
+        "pnl_zar": 0.0,
+        "equity_usd": 0.0,
+        "equity_zar": 0.0,
+        "rank": 1
+      }
+    ]
   },
   "positions": {
-    "updated_at":"iso-utc",
-    "items":[{"symbol":"BTCUSDT","side":"LONG","qty":0.0,"entry_price":0.0,"mark_price":0.0,"pnl":0.0,"leverage":1,"notional":0.0,"ts":"iso-utc"}]
+    "updated_at": "iso-utc",
+    "items": [
+      {
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "qty": 0.0,
+        "entry_price": 0.0,
+        "mark_price": 0.0,
+        "pnl_usd": 0.0,
+        "leverage": 0.0,
+        "notional_usd": 0.0,
+        "ts": "iso-utc"
+      }
+    ]
+  },
+  "nav": {
+    "updated_at": "iso-utc",
+    "series": [
+      {
+        "ts": "iso-utc",
+        "equity": 0.0
+      }
+    ],
+    "total_equity": 0.0,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": 0.0,
+    "peak_equity": 0.0,
+    "drawdown": 0.0
   }
 }

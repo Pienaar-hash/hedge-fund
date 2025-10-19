@@ -13,34 +13,32 @@ from urllib.parse import urlencode
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, getcontext, localcontext
 
 import requests
+from dotenv import load_dotenv  # type: ignore
+
 from execution.utils import load_json
 
-getcontext().prec = 28
-# --- robust .env load (works under supervisor too) ---
-try:
-    from dotenv import load_dotenv  # type: ignore
-
-    load_dotenv() or load_dotenv("/root/hedge-fund/.env")
-except Exception:
-    pass
-# manual fallback in case python-dotenv isn't available at runtime
-_envp = "/root/hedge-fund/.env"
-if os.path.exists(_envp):
-    try:
-        with open(_envp, "r") as _f:
-            for _ln in _f:
-                _ln = _ln.strip()
-                if not _ln or _ln.startswith("#") or "=" not in _ln:
-                    continue
-                k, v = _ln.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
-    except Exception:
-        pass
-
-_LOG = logging.getLogger("exutil")
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s [exutil] %(message)s"
 )
+LOGGER = logging.getLogger("exutil")
+_LOG = LOGGER
+
+if not LOGGER.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [exutil] %(message)s")
+    )
+    LOGGER.addHandler(handler)
+    LOGGER.setLevel(logging.INFO)
+
+try:
+    load_dotenv(override=True)
+    load_dotenv("/root/hedge-fund/.env", override=True)
+    LOGGER.info("[exutil] .env loaded (override=True)")
+except Exception:
+    LOGGER.info("[exutil] .env not found — using existing environment")
+
+getcontext().prec = 28
 
 # --- Base URL + one-time environment banner ---------------------------------
 def _base_url() -> str:
@@ -51,6 +49,8 @@ def _base_url() -> str:
         else "https://fapi.binance.com"
     )
 
+_DRY_RUN: bool = os.environ.get("DRY_RUN", "0") == "1"
+
 _BANNER_ONCE = False
 def _log_env_once() -> None:
     """Log base URL and testnet flag once per process (stderr)."""
@@ -60,15 +60,13 @@ def _log_env_once() -> None:
     _BANNER_ONCE = True
     testnet = os.environ.get("BINANCE_TESTNET", "0") == "1"
     print(f"[exutil] base={_base_url()} testnet={testnet}", file=sys.stderr)
+    LOGGER.info("[exutil] ENV context testnet=%s dry_run=%s", testnet, _DRY_RUN)
 
 # Run banner at import time (best-effort; never fail)
 try:
     _log_env_once()
 except Exception:
     pass
-
-# DRY_RUN guard for signed endpoints (allows full loop without signed calls)
-_DRY_RUN: bool = os.environ.get("DRY_RUN", "0") == "1"
 
 
 def set_dry_run(flag: bool) -> None:

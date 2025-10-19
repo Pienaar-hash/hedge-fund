@@ -558,6 +558,14 @@ def get_env_float(name: str, default: float) -> float:
     except Exception:
         return default
 
+def get_env_badge(testnet_flag: Any) -> Tuple[str, str]:
+    """Return (label, background_hex) for environment badges."""
+    value = str(testnet_flag).strip().lower()
+    if value in {"1", "true", "yes", "on", "testnet"}:
+        return "TESTNET", "#ea580c"
+    return "LIVE", "#059669"
+
+
 def fetch_mark_price_usdt(symbol: str = "BTCUSDT", timeout: float = 4.0) -> float:
     """
     Read-only quote for display purposes.

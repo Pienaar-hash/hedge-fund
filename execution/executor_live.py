@@ -13,7 +13,13 @@ import subprocess
 import time
 import socket
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
+
+try:
+    from binance.um_futures import UMFutures
+except Exception:  # pragma: no cover - optional dependency
+    UMFutures = None
 
 from execution.log_utils import get_logger, log_event, safe_dump
 
@@ -23,7 +29,8 @@ from utils.firestore_client import with_firestore
 try:
     from dotenv import load_dotenv
 
-    load_dotenv() or load_dotenv("/root/hedge-fund/.env")
+    load_dotenv(override=True)
+    load_dotenv("/root/hedge-fund/.env", override=True)
 except Exception:
     pass
 
@@ -66,9 +73,14 @@ from execution.utils import (
     write_nav_snapshots_pair,
     write_treasury_snapshot,
     save_json,
+    get_live_positions,
 )
 
 from execution.signal_generator import generate_intents, normalize_intent as generator_normalize_intent
+try:
+    from execution.signal_screener import run_once as run_screener_once
+except ImportError:  # pragma: no cover - optional dependency
+    run_screener_once = None
 
 # ---- Firestore publisher handle (revisions differ) ----
 ENV = os.getenv("ENV", "prod")
@@ -167,6 +179,8 @@ _RISK_GATE.nav_provider = _PORTFOLIO_SNAPSHOT
 # ---- knobs ----
 SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", "0") or 0)
+SCREENER_INTERVAL = int(os.getenv("SCREENER_INTERVAL", "300") or 300)
+_LAST_SCREENER_RUN = 0.0
 
 
 def _git_commit() -> str:
@@ -180,6 +194,41 @@ def _git_commit() -> str:
         return "unknown"
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _startup_flags() -> Dict[str, Any]:
+    testnet = is_testnet()
+    dry_run = os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
+    env = os.getenv("ENV", "prod")
+    base = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
+    fs_enabled = bool(int(os.getenv("FIRESTORE_ENABLED", "0") or 0))
+    return {
+        "testnet": testnet,
+        "dry_run": dry_run,
+        "env": env,
+        "base": base,
+        "fs_enabled": fs_enabled,
+    }
+
+
+def _log_startup_summary() -> Dict[str, Any]:
+    flags = _startup_flags()
+    prefix = "testnet" if flags["testnet"] else "live"
+    LOG.info(
+        "[%s] ENV=%s DRY_RUN=%s testnet=%s base=%s FIRESTORE=%s",
+        prefix,
+        flags["env"],
+        int(flags["dry_run"]),
+        flags["testnet"],
+        flags["base"],
+        "ON" if flags["fs_enabled"] else "OFF",
+    )
+    flags["prefix"] = prefix
+    return flags
+
+
 def _read_dry_run_flag() -> bool:
     return os.getenv("DRY_RUN", "1").lower() in ("1", "true", "yes")
 
@@ -188,9 +237,32 @@ def _truthy_env(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).lower() in ("1", "true", "yes")
 
 
+def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
+    if not flags.get("fs_enabled"):
+        return
+    try:
+        from execution.firestore_utils import publish_health  # local import to avoid circulars
+
+        payload = {
+            "process": "executor_live",
+            "status": "ok",
+            "ts": _now_iso(),
+            "env": flags.get("env"),
+        }
+        publish_health(payload)
+    except Exception as exc:
+        LOG.exception("[%s] Firestore heartbeat failed: %s", flags.get("prefix", "live"), exc)
+    else:
+        LOG.info(
+            "[firestore] heartbeat write ok path=hedge/%s/health/executor_live",
+            flags.get("env"),
+        )
+
+
 DRY_RUN = _read_dry_run_flag()
 set_dry_run(DRY_RUN)
 INTENT_TEST = _truthy_env("INTENT_TEST", "0")
+EXTERNAL_SIGNAL = _truthy_env("EXTERNAL_SIGNAL", "0")
 
 LOG.info(
     "[executor] starting loop ENV=%s DRY_RUN=%s commit=%s signal_source=generate_intents unified=True",
@@ -198,6 +270,18 @@ LOG.info(
     DRY_RUN,
     _git_commit(),
 )
+
+try:
+    _startup_flags_snapshot = _log_startup_summary()
+except Exception as exc:
+    LOG.exception("[live] startup summary logging failed: %s", exc)
+    _startup_flags_snapshot = {
+        "env": os.getenv("ENV", "prod"),
+        "fs_enabled": bool(int(os.getenv("FIRESTORE_ENABLED", "0") or 0)),
+        "prefix": "live",
+    }
+
+_publish_startup_heartbeat(_startup_flags_snapshot)
 
 
 def _sync_dry_run() -> None:
@@ -368,6 +452,98 @@ def _maybe_emit_heartbeat() -> None:
     if _LAST_QUEUE_DEPTH is not None:
         payload["queue_depth"] = _LAST_QUEUE_DEPTH
     _record_structured_event(LOG_HEART, "heartbeat", payload)
+
+
+def _startup_position_check(client: Any) -> None:
+    if client is None:
+        LOG.info("[startup-sync] unable to check positions (client unavailable)")
+        return
+    LOG.info("[startup-sync] checking open positions …")
+    live = get_live_positions(client)
+    if not live:
+        LOG.info("[startup-sync] no open positions detected")
+        return
+    LOG.warning("[startup-sync] found %d open positions -> listing them", len(live))
+    for pos in live:
+        LOG.warning(
+            "[startup-sync] %s side=%s amt=%.6f entry=%.4f upnl=%.2f",
+            pos.get("symbol"),
+            pos.get("positionSide"),
+            pos.get("positionAmt"),
+            pos.get("entryPrice"),
+            pos.get("unRealizedProfit"),
+        )
+    LOG.warning("[startup-sync] blocking trade initialization until manually flattened")
+    sys.exit(1)
+
+
+def _maybe_run_internal_screener() -> None:
+    global _LAST_SCREENER_RUN
+    if EXTERNAL_SIGNAL or run_screener_once is None:
+        return
+    now = time.time()
+    if (now - _LAST_SCREENER_RUN) < SCREENER_INTERVAL:
+        return
+    _LAST_SCREENER_RUN = now
+    try:
+        result = run_screener_once()
+    except Exception as exc:
+        LOG.error("[executor] internal screener failed: %s", exc)
+        return
+
+    attempted: Any = None
+    emitted: Any = None
+
+    if isinstance(result, dict):
+        attempted = (
+            result.get("attempted")
+            or result.get("attempted_24h")
+            or result.get("attempts")
+        )
+        emitted = (
+            result.get("emitted")
+            or result.get("emitted_24h")
+            or result.get("count")
+        )
+    elif isinstance(result, tuple) and len(result) >= 2:
+        attempted, emitted = result[0], result[1]
+    elif isinstance(result, list):
+        emitted = len(result)
+    elif hasattr(result, "attempted") and hasattr(result, "emitted"):
+        attempted = getattr(result, "attempted", None)
+        emitted = getattr(result, "emitted", None)
+
+    if attempted is None and emitted is not None:
+        attempted = emitted
+
+    intents = result.get("intents") if isinstance(result, Mapping) else []
+    if not isinstance(intents, list):
+        intents = []
+
+    submitted = 0
+    for entry in intents:
+        try:
+            payload = entry.get("raw") if isinstance(entry, Mapping) else entry
+            intent = _normalize_intent(payload)
+            symbol = cast(Optional[str], intent.get("symbol"))
+            if not symbol:
+                continue
+            _publish_intent_audit(symbol, intent)
+            _send_order(intent)
+            submitted += 1
+        except Exception as exc:
+            LOG.error("[executor] internal screener submit failed: %s", exc)
+
+    global _LAST_SIGNAL_PULL, _LAST_QUEUE_DEPTH
+    _LAST_SIGNAL_PULL = time.time()
+    _LAST_QUEUE_DEPTH = len(intents)
+
+    LOG.info(
+        "[screener] attempted=%s emitted=%s submitted=%d",
+        attempted if attempted is not None else "n/a",
+        emitted if emitted is not None else "n/a",
+        submitted,
+    )
 
 
 
@@ -1379,10 +1555,21 @@ def main() -> None:
     except Exception as e:
         LOG.error("[executor] dualSide check failed: %s", e)
 
+    client = None
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+    if UMFutures is not None and api_key and api_secret:
+        try:
+            client = UMFutures(key=api_key, secret=api_secret)
+        except Exception as exc:
+            LOG.error("[startup-sync] failed to initialise UMFutures client: %s", exc)
+    _startup_position_check(client)
+
     i = 0
     while True:
         _loop_once(i)
         _maybe_emit_heartbeat()
+        _maybe_run_internal_screener()
         i += 1
         if MAX_LOOPS and i >= MAX_LOOPS:
             LOG.info("[executor] MAX_LOOPS reached — exiting.")

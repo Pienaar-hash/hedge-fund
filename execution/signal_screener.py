@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 import os
 from .exchange_utils import get_klines, get_price, get_symbol_filters
 from .orderbook_features import evaluate_entry_gate
+from .signal_generator import normalize_intent as generator_normalize_intent
 from .universe_resolver import resolve_allowed_symbols, symbol_tier, is_listed_on_futures
 from .risk_limits import check_order, RiskState, RiskGate
 from .nav import PortfolioSnapshot
@@ -641,3 +642,52 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         )
     print(f"{LOG_TAG} attempted={attempted} emitted={len(out)}")
     return out
+
+
+def run_once(now: float | None = None) -> dict:
+    """
+    Compute trading intents for the current universe and return a summary.
+
+    Returns:
+        {
+          "attempted": int,
+          "emitted": int,
+          "intents": list[dict],
+        }
+    """
+    try:
+        strategies = _load_strategy_list()
+        attempted_count = len(strategies)
+    except Exception:
+        attempted_count = 0
+
+    try:
+        intents = list(generate_signals_from_config())
+    except Exception:
+        intents = []
+
+    normalized: List[Dict[str, Any]] = []
+    for raw in intents:
+        try:
+            norm = generator_normalize_intent(raw)
+        except Exception:
+            continue
+        summary: Dict[str, Any] = {
+            "symbol": norm.get("symbol"),
+            "side": norm.get("signal"),
+            "notional": norm.get("gross_usd") or norm.get("capital_per_trade"),
+            "strategy": norm.get("strategy") or norm.get("source"),
+            "timeframe": norm.get("timeframe"),
+            "reduce_only": norm.get("reduceOnly"),
+            "raw": norm,
+        }
+        normalized_meta = norm.get("normalized")
+        if isinstance(normalized_meta, dict) and "qty" in normalized_meta:
+            summary["qty"] = normalized_meta.get("qty")
+        normalized.append(summary)
+
+    return {
+        "attempted": attempted_count or len(intents),
+        "emitted": len(normalized),
+        "intents": normalized,
+    }

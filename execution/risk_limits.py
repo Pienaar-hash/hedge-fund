@@ -1,12 +1,15 @@
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Dict, List, Tuple, Optional, Any, Callable
+import logging
 import os
 import time
 
 from execution.nav import compute_trading_nav, compute_gross_exposure_usd
-from execution.utils import load_json
+from execution.utils import load_json, get_live_positions
 from execution.exchange_utils import get_balances
+
+LOGGER = logging.getLogger("risk_limits")
 from execution.log_utils import get_logger, log_event, safe_dump
 
 
@@ -382,6 +385,38 @@ def check_order(
         or s_cfg.get("ts")
         or g_cfg.get("signal_ts")
     )
+
+    # Block duplicate exposure if a live position already exists
+    try:
+        pos_amt = 0.0
+        live_positions = getattr(state, "live_positions", {}) or {}
+        if isinstance(live_positions, dict):
+            entry = live_positions.get(sym)
+            if isinstance(entry, (int, float)):
+                pos_amt = float(entry)
+            elif isinstance(entry, dict):
+                try:
+                    pos_amt = float(entry.get("positionAmt", entry.get("amt", 0.0)) or 0.0)
+                except Exception:
+                    pos_amt = 0.0
+
+        if abs(pos_amt) <= 0.0:
+            client = getattr(state, "client", None)
+            if client is not None:
+                live = get_live_positions(client)
+                for entry in live:
+                    if str(entry.get("symbol")) == sym:
+                        try:
+                            pos_amt = float(entry.get("positionAmt", 0.0) or 0.0)
+                        except Exception:
+                            pos_amt = 0.0
+                        break
+
+        if abs(pos_amt) > 0.0:
+            reasons.append("already_in_trade")
+            thresholds.setdefault("position_amt", abs(pos_amt))
+    except Exception as exc:
+        LOGGER.error("[risk] already_in_trade veto check failed: %s", exc)
 
     # Whitelist guardrail (if provided)
     wl = g_cfg.get("whitelist") or []
