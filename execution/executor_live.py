@@ -2,7 +2,8 @@
 # ruff: noqa: E402
 from __future__ import annotations
 
-import sys, os
+import sys
+import os
 
 repo_root = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, repo_root)

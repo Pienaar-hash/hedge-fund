@@ -4,7 +4,7 @@ import json
 import math
 import os
 from statistics import pstdev
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 from execution.exchange_utils import get_klines, get_price
 

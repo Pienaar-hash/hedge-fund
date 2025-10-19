@@ -4,7 +4,7 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, MutableMapping
+from typing import Any, Dict, List, MutableMapping
 
 MAX_EVENTS_PER_SYMBOL = 500
 ROLLING_WINDOWS = (20, 50, 100)

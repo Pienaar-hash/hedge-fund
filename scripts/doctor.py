@@ -6,7 +6,7 @@ import time
 import hmac
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 
 import requests

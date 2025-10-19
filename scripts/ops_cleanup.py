@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import argparse
-import json
-import time
 
 from utils.firestore_client import get_db
 
