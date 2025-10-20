@@ -1,0 +1,17 @@
+Metadata-Version: 2.1
+Name: klines
+Version: 0.4.3
+Summary: 
+Author: narumi
+Requires-Python: >=3.8,<4.0
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Dist: ccxt (>=4.1.10,<5.0.0)
+Requires-Dist: click (>=8.1.3,<9.0.0)
+Requires-Dist: loguru (>=0.6.0,<0.7.0)
+Requires-Dist: pandas (>=1.4.3,<2.0.0)
+Requires-Dist: pydantic (>=2.5.2,<3.0.0)
