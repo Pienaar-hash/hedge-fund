@@ -1,28 +1,9 @@
-# secrets
-.env
-config/firebase_creds.json
-
-# runtime/local
-peak_state.json
-synced_state.json
-trade_log.json
-
-# python noise
+# build and debug bundles
+debugdump_*/
+*.tar.gz
+# compiled
 __pycache__/
 *.pyc
-.venv/
-venv/
-
-# logs
-*.log
-/var/log/
-
-# OS/IDE
-.DS_Store
-.idea/
-.vscode/
-
-# Ignore runtime logs
-logs/*.json
-logs/*.jsonl
-
+# credentials
+configs/firebase_creds.json
+.env

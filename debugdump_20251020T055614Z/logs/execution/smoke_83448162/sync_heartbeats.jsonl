@@ -1,1 +1,0 @@
-{"service": "smoke_daemon", "ts": "2025-10-18T18:32:07.400985+00:00", "ok": true, "lag_secs": 1.23, "event_type": "heartbeat", "pid": 613264, "hostname": "ubuntu-4gb-fsn1-2"}

@@ -1,9 +1,0 @@
-== supervisorctl status ==
-hedge:dashboard                  RUNNING   pid 791249, uptime 9:32:21
-hedge:executor                   STARTING  
-hedge:sync_state                 RUNNING   pid 791251, uptime 9:32:21
-
-== supervisorctl reread (no-ops ok) ==
-No config updates to processes
-
-== supervisorctl update ==

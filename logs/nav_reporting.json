@@ -1,0 +1,20 @@
+{
+  "nav_usdt": 6197.53859258,
+  "breakdown": {
+    "source": "exchange+treasury",
+    "futures_wallet_usdt": 2395.99061193,
+    "unrealized_pnl": -0.06801934999999999,
+    "treasury": {
+      "BTC": {
+        "qty": 0.035,
+        "px": 108617.6,
+        "val_usdt": 3801.6160000000004
+      }
+    },
+    "treasury_missing_prices": {
+      "XAUT": "400 Client Error: Bad Request for url: https://fapi.binance.com/fapi/v1/ticker/price?symbol=XAUTUSDT :: {\"code\":-1121,\"msg\":\"Invalid symbol.\"}"
+    },
+    "treasury_total_usdt": 3801.6160000000004
+  },
+  "ts": "2025-10-19T16:56:01.357732+00:00"
+}

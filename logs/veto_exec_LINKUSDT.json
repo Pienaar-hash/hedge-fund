@@ -1,0 +1,33 @@
+{
+  "symbol": "LINKUSDT",
+  "side": "SELL",
+  "positionSide": "SHORT",
+  "reason": "symbol_cap",
+  "gross_usd": 15.0,
+  "price": 17.396,
+  "ts": 1760890608.614742,
+  "intent": {
+    "timestamp": "2025-10-19T16:16:42+00:00",
+    "symbol": "LINKUSDT",
+    "timeframe": "15m",
+    "signal": "SELL",
+    "reduceOnly": false,
+    "price": 17.396,
+    "capital_per_trade": 5.0,
+    "leverage": 3.0,
+    "cap_usd": 5.0,
+    "gross_usd": 15.0,
+    "min_notional": 5.0,
+    "tf": "15m",
+    "positionSide": "",
+    "veto": []
+  },
+  "nav_snapshot": {
+    "nav_usd": 0.0,
+    "gross_usd": 0.0
+  },
+  "thresholds": {
+    "max_gross_exposure_pct": 0.0,
+    "max_trade_nav_pct": 0.0
+  }
+}
