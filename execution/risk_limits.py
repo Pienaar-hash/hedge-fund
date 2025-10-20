@@ -9,8 +9,7 @@ from execution.drawdown_tracker import load_peak_state
 from execution.nav import (
     compute_trading_nav,
     compute_gross_exposure_usd,
-    get_nav_age,
-    is_nav_fresh,
+    get_nav_age as _nav_get_nav_age,
 )
 from execution.utils import load_json, get_live_positions
 from execution.exchange_utils import get_balances
@@ -38,6 +37,54 @@ _GLOBAL_KEYS = {
 }
 
 LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
+
+_NAV_SNAPSHOT_PATHS: List[str] = [
+    "logs/cache/nav_confirmed.json",
+    "logs/nav_log.json",
+    "logs/cache/peak_state.json",
+    "cache/nav_confirmed.json",  # legacy fallbacks
+    "cache/nav_log.json",
+    "cache/peak_state.json",
+]
+
+
+def get_nav_age() -> Optional[float]:
+    """Compute NAV age using freshest available snapshot source."""
+    now = time.time()
+    newest_mtime = 0.0
+    try:
+        for rel_path in _NAV_SNAPSHOT_PATHS:
+            if not os.path.exists(rel_path):
+                continue
+            try:
+                newest_mtime = max(newest_mtime, os.path.getmtime(rel_path))
+            except Exception:
+                continue
+        if newest_mtime > 0.0:
+            return max(0.0, now - newest_mtime)
+        fallback = _nav_get_nav_age()
+        return float(fallback) if fallback is not None else None
+    except Exception as exc:
+        LOGGER.error("[risk] get_nav_age_failed: %s", exc)
+        return None
+
+
+def is_nav_fresh(nav_age: Optional[float] = None, threshold_s: Optional[float] = 90) -> bool:
+    """Return True if NAV data is fresh."""
+    if nav_age is None:
+        nav_age = get_nav_age()
+    try:
+        threshold = float(threshold_s) if threshold_s is not None else 0.0
+    except Exception:
+        threshold = 0.0
+    if threshold <= 0.0:
+        threshold = 90.0
+    if nav_age is None:
+        LOGGER.warning("[risk] nav_age=n/a -> treating as stale")
+        return False
+    fresh = nav_age < threshold
+    LOGGER.info("[risk] nav_age=%.1fs threshold=%.1fs fresh=%s", nav_age, threshold, fresh)
+    return fresh
 
 REASONS = {
     "kill_switch_triggered": "kill_switch",
@@ -438,8 +485,9 @@ def check_order(
         details["nav_age_s"] = nav_age_s
 
     nav_status_known = nav_threshold_s > 0.0
+    nav_fresh_threshold = nav_threshold_s if nav_status_known else None
     nav_fresh = {
-        "fresh": bool(is_nav_fresh(nav_threshold_s if nav_status_known else None)),
+        "fresh": bool(is_nav_fresh(nav_age, nav_fresh_threshold)),
         "age": nav_age,
     }
 

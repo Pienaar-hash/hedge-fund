@@ -1,0 +1,32 @@
+2025-10-20 05:56:17,563 INFO [exutil] [exutil] .env loaded (override=True)
+2025-10-20 05:56:17,563 INFO [exutil] [exutil] .env loaded (override=True)
+[exutil] base=https://fapi.binance.com testnet=False
+2025-10-20 05:56:17,564 INFO [exutil] [exutil] ENV context testnet=False dry_run=False
+2025-10-20 05:56:17,564 INFO [exutil] [exutil] ENV context testnet=False dry_run=False
+2025-10-20 05:56:17,722 INFO [exutil] [coingecko] usd→zar updated: 17.3400
+[doctor] fallback load ok (no loader)
+[doctor] safe_load missing path, returning default
+[doctor] state fallback (empty)
+[get_live_positions] error: 'NoneType' object has no attribute 'get_position_risk'
+[doctor] nav_freshness integrated (is_nav_fresh + get_nav_age)
+{
+  "env": {
+    "dualSide": false,
+    "dualSide_raw": "spot-mode",
+    "telegram_enabled": false,
+    "heartbeat_minutes": "",
+    "dry_run": "0",
+    "testnet": "0",
+    "use_futures": ""
+  },
+  "strategies": []
+}
+[doctor] NAV check: 2,841.61 USD (source=nav_log.json)
+[doctor] NAV freshness: FRESH (age=n/a)
+[doctor] Drawdown: dd=0.00% (abs=$0.00, peak=$2,841.61, nav=$2,841.61)
+[doctor] Positions: 0 open
+[doctor] reserves BTC: 0.0000 → $0.00 | XAUT: 0.0000 → $0.00 | Total: n/a
+[doctor] ZAR conversion @ 17.34 (fresh) → NAV≈R49,274 | Reserves≈n/a
+[doctor] Firestore: STALE (last publish n/a ago)
+[doctor] Heartbeat: executor=12h sync_state=n/a (stale)
+[doctor] summary NAV: 2,841.61 USD | NAV Freshness: FRESH | Drawdown: 0.00% | Positions: 0 | Firestore: STALE | Reserves: n/a | Heartbeat: stale | ZAR≈R49,274

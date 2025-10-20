@@ -1,0 +1,8 @@
+{
+  "automerge_discovery": false,
+  "features": {
+    "market_maker": false,
+    "relative_value": false
+  }
+}
+

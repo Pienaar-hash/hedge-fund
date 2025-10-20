@@ -15,7 +15,7 @@ from decimal import ROUND_DOWN, ROUND_UP, Decimal, getcontext, localcontext
 import requests
 from dotenv import load_dotenv  # type: ignore
 
-from execution.utils import load_json
+from execution.utils import get_coingecko_prices, load_json
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s [exutil] %(message)s"
@@ -99,6 +99,32 @@ _SEC = os.getenv("BINANCE_API_SECRET", "").encode()
 _S = requests.Session()
 _S.headers["X-MBX-APIKEY"] = _KEY
 
+TIME_OFFSET_MS: Optional[int] = None
+LAST_TIME_SYNC: float = 0.0
+_TIME_SYNC_INTERVAL = 600  # seconds
+
+
+def _sync_server_time(force: bool = False) -> None:
+    """Refresh cached Binance server time offset."""
+    global TIME_OFFSET_MS, LAST_TIME_SYNC
+    now = time.time()
+    if not force and TIME_OFFSET_MS is not None and (now - LAST_TIME_SYNC) < _TIME_SYNC_INTERVAL:
+        return
+
+    try:
+        resp = requests.get(f"{_base_url()}/fapi/v1/time", timeout=5)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        server_time_ms = int(data.get("serverTime"))
+        local_time_ms = int(time.time() * 1000)
+        TIME_OFFSET_MS = server_time_ms - local_time_ms
+        LAST_TIME_SYNC = now
+        _LOG.info("[binance] server_time_offset_ms=%s", TIME_OFFSET_MS)
+    except Exception as exc:  # pragma: no cover - soft failure
+        _LOG.warning("[binance] time_sync_failed: %s", exc)
+        if TIME_OFFSET_MS is None:
+            TIME_OFFSET_MS = 0
+
 
 def _req(
     method: str,
@@ -120,8 +146,10 @@ def _req(
     params = {k: v for k, v in (params or {}).items() if v is not None}
 
     if signed:
-        params.setdefault("timestamp", int(time.time() * 1000))
-        params.setdefault("recvWindow", int(os.getenv("BINANCE_RECV_WINDOW", "5000")))
+        _sync_server_time()
+        params["recvWindow"] = 10000
+        timestamp_ms = int(time.time() * 1000) + (TIME_OFFSET_MS or 0)
+        params["timestamp"] = timestamp_ms
         kv = [(str(k), str(v)) for k, v in params.items()]
         qs = urlencode(kv, doseq=True, safe=":/")
         sig = hmac.new(_SEC, qs.encode(), hashlib.sha256).hexdigest()
@@ -214,8 +242,49 @@ def get_klines(symbol: str, interval: str, limit: int = 150) -> List[List[float]
     return out
 
 
-def get_price(symbol: str) -> float:
-    r = _req("GET", "/fapi/v1/ticker/price", params={"symbol": symbol})
+def get_price(symbol: str, venue: str = "auto", signed: bool = False) -> float:
+    sym = str(symbol or "").upper()
+    if not sym:
+        raise ValueError("symbol_required")
+
+    resolved_venue = venue
+    if venue == "auto":
+        resolved_venue = "testnet" if is_testnet() else "fapi"
+
+    if sym == "XAUTUSDT" and resolved_venue in ("fapi", "testnet"):
+        _LOG.warning(
+            "[price] invalid_symbol venue=%s symbol=%s -> routing to coingecko",
+            resolved_venue,
+            sym,
+        )
+        try:
+            prices = get_coingecko_prices()
+            price = float(prices.get("XAUT") or 0.0)
+            if price <= 0:
+                raise RuntimeError("coingecko_price_missing")
+            _LOG.info("[price] XAUT price source=coingecko value=%.2f", price)
+            return price
+        except Exception as exc:
+            _LOG.error("[price] coingecko_fallback_failed: %s", exc)
+            raise
+
+    if sym in {"USDC", "USDCUSDT", "USDT", "DAI", "TUSD", "FDUSD", "USDE"}:
+        return 1.0
+
+    if resolved_venue in ("spot", "coingecko"):
+        try:
+            resp = requests.get(
+                "https://api.binance.com/api/v3/ticker/price",
+                params={"symbol": sym},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json() or {}
+            return float(data["price"])
+        except Exception as exc:
+            raise requests.RequestException(f"spot_price_failed:{sym}") from exc
+
+    r = _req("GET", "/fapi/v1/ticker/price", params={"symbol": sym}, signed=signed)
     return float(r.json()["price"])
 
 

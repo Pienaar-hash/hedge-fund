@@ -50,6 +50,15 @@ except Exception:  # pragma: no cover
     nav_get_confirmed_nav = None
     nav_get_age = None
     nav_is_fresh = None
+try:
+    from execution.risk_limits import get_nav_age as risk_nav_get_age
+except Exception:  # pragma: no cover
+    risk_nav_get_age = None
+try:
+    from execution.reserves import load_reserves, value_reserves_usd
+except Exception:  # pragma: no cover
+    load_reserves = None  # type: ignore[assignment]
+    value_reserves_usd = None  # type: ignore[assignment]
 
 # Read-only exchange helpers
 
@@ -709,10 +718,30 @@ def main():
     pos_doc, pos_source = load_positions_state()
     lb_doc, lb_source = load_leaderboard_state()
 
-    doctor_snapshot = collect_doctor_snapshot()
+    doctor_snapshot = collect_doctor_snapshot() or {}
+    if not isinstance(doctor_snapshot, dict):
+        doctor_snapshot = {}
+
+    positions_info = doctor_snapshot.get("positions") or {}
+    if not isinstance(positions_info, dict):
+        positions_info = {}
+    firestore_info = doctor_snapshot.get("firestore") or {}
+    if not isinstance(firestore_info, dict):
+        firestore_info = {}
+    reserves_snapshot = doctor_snapshot.get("reserves") or {}
+    if not isinstance(reserves_snapshot, dict):
+        reserves_snapshot = {}
 
     nav_df, kpis = parse_nav_to_df_and_kpis(nav_doc or {})
-    positions_fs = positions_sorted((pos_doc or {}).get("items") or [])
+    kpis = dict(kpis or {})
+    try:
+        positions_fs = positions_sorted((pos_doc or {}).get("items") or [])
+    except Exception as exc:
+        LOG.warning("[dash] positions parse failed: %s", exc)
+        positions_fs = []
+    if not isinstance(positions_info.get("count"), (int, float)):
+        positions_info = dict(positions_info)
+        positions_info["count"] = len(positions_fs)
     leaderboard = (lb_doc or {}).get("items") or []
 
     status.success(
@@ -774,6 +803,52 @@ def main():
     else:
         last_sync_label = "—"
 
+    exchange_nav_value = nav_value if isinstance(nav_value, (int, float)) else None
+    reserves_total_usd = 0.0
+
+    if callable(load_reserves) and callable(value_reserves_usd):
+        try:
+            reserves_raw = load_reserves()
+            if reserves_raw:
+                reserves_total_calc, reserves_detail_calc = value_reserves_usd(reserves_raw)
+                reserves_total_usd = float(reserves_total_calc)
+                reserves_snapshot = {
+                    "total": reserves_total_usd,
+                    "reserves": reserves_detail_calc,
+                    "raw": reserves_raw,
+                }
+        except Exception as exc:
+            LOG.warning("[dash] reserves valuation failed: %s", exc)
+
+    if not reserves_total_usd:
+        candidate_total = reserves_snapshot.get("total")
+        if isinstance(candidate_total, (int, float)):
+            reserves_total_usd = float(candidate_total)
+
+    if (
+        reserves_total_usd
+        and isinstance(nav_df, pd.DataFrame)
+        and not nav_df.empty
+        and "equity" in nav_df.columns
+    ):
+        nav_df = nav_df.copy()
+        try:
+            nav_df["equity"] = pd.to_numeric(nav_df["equity"], errors="coerce").fillna(0.0) + reserves_total_usd
+        except Exception:
+            nav_df["equity"] = nav_df["equity"].apply(
+                lambda val: (float(val) if isinstance(val, (int, float)) else 0.0) + reserves_total_usd
+            )
+
+    total_nav_value = None
+    if exchange_nav_value is not None or reserves_total_usd:
+        total_nav_value = (exchange_nav_value or 0.0) + reserves_total_usd
+        nav_value = total_nav_value
+    else:
+        nav_value = None
+
+    if isinstance(total_nav_value, (int, float)):
+        kpis["total_equity"] = total_nav_value
+
     nav_delta: Optional[float] = None
     nav_delta_pct: Optional[float] = None
     if nav_value is not None and not nav_df.empty:
@@ -795,8 +870,35 @@ def main():
     nav_freshness = doctor_snapshot.get("nav_freshness", {}) or {}
     if not isinstance(nav_freshness, dict):
         nav_freshness = {}
+    nav_status = "FRESH" if nav_freshness.get("fresh") else "STALE"
+
+    nav_info = doctor_snapshot.get("nav", {}) or {}
+    if not isinstance(nav_info, dict):
+        nav_info = {}
+
+    nav_age_seconds: Optional[float]
+    raw_age = nav_freshness.get("age")
+    if isinstance(raw_age, (int, float)):
+        nav_age_seconds = float(raw_age)
+    else:
+        nav_age_candidate = nav_info.get("age")
+        if isinstance(nav_age_candidate, (int, float)):
+            nav_age_seconds = float(nav_age_candidate)
+        elif risk_nav_get_age is not None:
+            try:
+                nav_age_seconds = float(risk_nav_get_age())
+            except Exception:
+                nav_age_seconds = None
+        elif nav_get_age is not None:
+            try:
+                nav_age_seconds = float(nav_get_age())
+            except Exception:
+                nav_age_seconds = None
+        else:
+            nav_age_seconds = None
 
     nav_usd_text = format_currency(nav_value, "$")
+    exchange_nav_display = format_currency(exchange_nav_value, "$")
     nav_zar_value = None
     nav_zar_text = "≈ R—"
     zar_rate = nav_freshness.get("zar_rate") or cached_usd_to_zar()
@@ -926,9 +1028,8 @@ def main():
 
     drawdown_snapshot = nav_freshness.get("drawdown", {})
     heartbeat_snapshot = doctor_snapshot.get("heartbeats", {})
-    reserves_snapshot = doctor_snapshot.get("reserves", {})
 
-    nav_age_display = format_age_seconds(nav_freshness.get("age"))
+    nav_age_display = format_age_seconds(nav_age_seconds)
     nav_is_fresh = bool(nav_freshness.get("fresh"))
     nav_chip_class = "fresh" if nav_is_fresh else "stale"
     nav_chip_label = "Fresh" if nav_is_fresh else "STALE"
@@ -943,10 +1044,14 @@ def main():
     dd_chip_title = f"Daily drawdown {dd_pct:.2f}%"
     dd_chip_html = f"<span class='dash-nav-chip {dd_chip_class}' title=\"{dd_chip_title}\">{dd_chip_label}</span>"
 
-    treasury_total = reserves_snapshot.get("total")
-    treasury_display = format_currency(treasury_total, "$") if isinstance(treasury_total, (int, float)) else "n/a"
+    treasury_total = reserves_total_usd
+    if not isinstance(treasury_total, (int, float)):
+        candidate_total = reserves_snapshot.get("total")
+        if isinstance(candidate_total, (int, float)):
+            treasury_total = float(candidate_total)
+    treasury_display = format_currency(treasury_total, "$") if treasury_total is not None else "—"
     nav_tooltip = (
-        f"Total NAV (USD)\nExchange: {nav_display} (source {nav_info.get('source', 'n/a')})\nTreasury: {treasury_display}"
+        f"Total NAV (USD)\nExchange: {exchange_nav_display} (source {nav_info.get('source', 'n/a')})\nReserves: {treasury_display}"
         if nav_display != "n/a"
         else "Total NAV (USD)"
     )
@@ -1402,11 +1507,14 @@ def main():
             "dualSide": bool(((doctor_data or {}).get("env") or {}).get("dualSide", False)),
         }
 
-        cols = st.columns(4)
+        nav_age_metric_value = f"{nav_age_seconds:.1f}" if isinstance(nav_age_seconds, (int, float)) else "n/a"
+
+        cols = st.columns(5)
         cols[0].metric("Futures", "Yes" if flags.get("use_futures") else "No")
         cols[1].metric("Testnet", "Yes" if flags.get("testnet") else "No")
         cols[2].metric("Dry-run", "Yes" if flags.get("dry_run") else "No")
         cols[3].metric("Hedge Mode", "Yes" if flags.get("dualSide") else "No")
+        cols[4].metric("NAV Freshness (s)", nav_age_metric_value)
 
         if doctor_data:
             with st.expander("Raw doctor output", expanded=False):

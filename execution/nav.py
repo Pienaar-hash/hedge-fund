@@ -4,11 +4,16 @@ import json
 import math
 import os
 import time
-from typing import Any, Dict, Tuple
+import logging
+from typing import Any, Dict, List, Tuple
 
 from execution.exchange_utils import get_balances, get_positions, get_price
+from execution.reserves import load_reserves, value_reserves_usd
 
 _NAV_CACHE_PATH = "logs/cache/nav_confirmed.json"
+_NAV_LOG_PATH = "logs/nav_log.json"
+
+LOGGER = logging.getLogger("nav")
 
 
 def _load_json(path: str) -> Dict:
@@ -103,6 +108,31 @@ def _treasury_nav_usdt(treasury_path: str = "config/treasury.json") -> Tuple[flo
     return total, breakdown
 
 
+def _reserves_nav_usd() -> Tuple[float, Dict]:
+    """Load off-exchange reserves and value them in USD."""
+    try:
+        reserves = load_reserves()
+    except Exception as exc:
+        LOGGER.warning("[nav] reserves_load_failed: %s", exc)
+        return 0.0, {"reserves": {}, "error": str(exc)}
+
+    if not reserves:
+        return 0.0, {"reserves": {}}
+
+    try:
+        total, detail = value_reserves_usd(reserves)
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.warning("[nav] reserves_value_failed: %s", exc)
+        return 0.0, {"reserves": {}, "error": str(exc), "raw": reserves}
+
+    reserves_detail: Dict[str, Any] = {
+        "reserves": detail,
+        "total_reserves_usd": float(total),
+        "raw": reserves,
+    }
+    return float(total), reserves_detail
+
+
 def _nav_sources(cfg: Dict) -> Tuple[str, str, bool, Any]:
     nav_cfg = cfg.get("nav") or {}
     trading_source = nav_cfg.get("trading_source") or nav_cfg.get("source") or "exchange"
@@ -135,14 +165,17 @@ def compute_nav_summary(cfg: Dict | None = None) -> Dict[str, Any]:
 
     futures_nav, futures_detail = _futures_nav_usdt()
     treasury_nav, treasury_detail = _treasury_nav_usdt()
+    reserves_nav, reserves_detail = _reserves_nav_usd()
 
     summary = {
         "futures_nav": float(futures_nav),
         "treasury_nav": float(treasury_nav),
-        "total_nav": float(futures_nav + treasury_nav),
+        "reserves_nav": float(reserves_nav),
+        "total_nav": float(futures_nav + treasury_nav + reserves_nav),
         "details": {
             "futures": futures_detail,
             "treasury": treasury_detail,
+            "reserves": reserves_detail,
         },
     }
     return summary
@@ -169,8 +202,23 @@ def compute_reporting_nav(cfg: Dict) -> Tuple[float, Dict]:
         if missing:
             detail["treasury_missing_prices"] = missing
         detail["treasury_total_usdt"] = float(summary["treasury_nav"])
-        detail["source"] = "exchange+treasury"
-        total_nav = float(summary["total_nav"])
+
+        reserves_detail = summary["details"].get("reserves", {})
+        reserves_map = reserves_detail.get("reserves") if isinstance(reserves_detail, dict) else {}
+        if reserves_map:
+            detail["reserves"] = reserves_map
+        if isinstance(reserves_detail, dict) and reserves_detail.get("error"):
+            detail["reserves_error"] = reserves_detail.get("error")
+        reserves_total = float(summary.get("reserves_nav", 0.0) or 0.0)
+        if reserves_total > 0:
+            detail["reserves_total_usd"] = reserves_total
+
+        if reserves_total > 0:
+            detail["source"] = "exchange+treasury+reserves"
+        else:
+            detail["source"] = "exchange+treasury"
+
+        total_nav = float(summary["futures_nav"] + summary["treasury_nav"] + reserves_total)
 
     if total_nav > 0:
         return total_nav, detail
@@ -229,6 +277,60 @@ def compute_gross_exposure_usd() -> float:
     """Aggregate absolute notional exposure across all open futures positions."""
     gross_map = compute_symbol_gross_usd()
     return float(sum(gross_map.values()))
+
+
+def _load_nav_series() -> List[Dict[str, Any]]:
+    if not os.path.exists(_NAV_LOG_PATH):
+        return []
+    try:
+        with open(_NAV_LOG_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def write_nav(nav_value: float) -> None:
+    """Append a NAV point with timestamp to the nav log."""
+    try:
+        nav_float = float(nav_value)
+    except Exception as exc:
+        LOGGER.error("[nav] write_failed: invalid nav value (%s)", exc)
+        return
+    if not math.isfinite(nav_float):
+        LOGGER.error("[nav] write_failed: non-finite nav value %s", nav_value)
+        return
+
+    log_dir = os.path.dirname(_NAV_LOG_PATH) or "."
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except Exception as exc:
+        LOGGER.error("[nav] write_failed: mkdir %s (%s)", log_dir, exc)
+        return
+
+    if not os.path.exists(_NAV_LOG_PATH):
+        try:
+            with open(_NAV_LOG_PATH, "w", encoding="utf-8") as handle:
+                json.dump([], handle)
+                handle.write("\n")
+        except Exception as exc:
+            LOGGER.error("[nav] write_failed: init log %s (%s)", _NAV_LOG_PATH, exc)
+            return
+
+    ts = time.time()
+    entry = {"t": ts, "nav": nav_float}
+    try:
+        series = _load_nav_series()
+        series.append(entry)
+        with open(_NAV_LOG_PATH, "w", encoding="utf-8") as handle:
+            json.dump(series, handle, indent=2)
+            handle.write("\n")
+    except Exception as exc:
+        LOGGER.error("[nav] write_failed: %s", exc)
+        return
+    LOGGER.info("[nav] write nav=%.2f ts=%.3f path=%s", nav_float, ts, _NAV_LOG_PATH)
 
 
 def _persist_confirmed_nav(nav_value: float, detail: Dict[str, Any] | None = None) -> None:
@@ -353,4 +455,5 @@ __all__ = [
     "get_confirmed_nav",
     "is_nav_fresh",
     "PortfolioSnapshot",
+    "write_nav",
 ]

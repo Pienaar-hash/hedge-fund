@@ -8,6 +8,8 @@ from typing import Optional
 
 import requests
 
+ASSET_DECIMALS = {"BTC": 8, "ETH": 8, "USDT": 6, "USDC": 6}
+
 
 def load_env_var(key, default=None):
     val = os.getenv(key)

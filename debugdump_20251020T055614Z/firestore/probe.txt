@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "<stdin>", line 6, in <module>
+ModuleNotFoundError: No module named 'google'
+GOOGLE_APPLICATION_CREDENTIALS= None
+FIREBASE_CREDS_PATH= None
+Firestore read error: No module named 'google'
+Heartbeat write error: No module named 'google'

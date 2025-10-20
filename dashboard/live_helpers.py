@@ -11,6 +11,8 @@ from execution.risk_limits import RiskGate
 from execution.utils import load_json
 from execution.exchange_utils import get_balances, get_price
 
+STABLES = {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}
+
 
 def _read_strategy_cfg() -> Dict[str, Any]:
     cfg = load_json("config/strategy_config.json")

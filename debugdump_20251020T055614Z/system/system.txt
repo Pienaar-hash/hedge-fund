@@ -1,0 +1,48 @@
+== uname -a ==
+Linux ubuntu-4gb-fsn1-2 5.15.0-151-generic #161-Ubuntu SMP Tue Jul 22 14:25:40 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+
+== lsb_release -a ==
+Distributor ID:	Ubuntu
+Description:	Ubuntu 22.04.5 LTS
+Release:	22.04
+Codename:	jammy
+
+== df -h ==
+Filesystem      Size  Used Avail Use% Mounted on
+tmpfs           382M  1.2M  381M   1% /run
+/dev/sda1        38G  6.5G   30G  19% /
+tmpfs           1.9G     0  1.9G   0% /dev/shm
+tmpfs           5.0M     0  5.0M   0% /run/lock
+/dev/sda15      253M  142K  252M   1% /boot/efi
+tmpfs           382M  8.0K  382M   1% /run/user/0
+
+== free -m ==
+               total        used        free      shared  buff/cache   available
+Mem:            3815        1189         588           5        2037        2342
+Swap:              0           0           0
+
+== ulimit -a ==
+real-time non-blocking time  (microseconds, -R) unlimited
+core file size              (blocks, -c) 0
+data seg size               (kbytes, -d) unlimited
+scheduling priority                 (-e) 0
+file size                   (blocks, -f) unlimited
+pending signals                     (-i) 15108
+max locked memory           (kbytes, -l) 488424
+max memory size             (kbytes, -m) unlimited
+open files                          (-n) 1048576
+pipe size                (512 bytes, -p) 8
+POSIX message queues         (bytes, -q) 819200
+real-time priority                  (-r) 0
+stack size                  (kbytes, -s) 8192
+cpu time                   (seconds, -t) unlimited
+max user processes                  (-u) 15108
+virtual memory              (kbytes, -v) unlimited
+file locks                          (-x) unlimited
+
+== ss -tulpn (ports) ==
+tcp   LISTEN 0      128                 0.0.0.0:8501       0.0.0.0:*    users:(("python3",pid=791249,fd=6))         
+tcp   LISTEN 0      128                    [::]:8501          [::]:*    users:(("python3",pid=791249,fd=7))         
+
+== ufw status ==
+Status: inactive

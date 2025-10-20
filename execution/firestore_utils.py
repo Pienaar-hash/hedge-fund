@@ -1,6 +1,7 @@
 # execution/firestore_utils.py
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -41,7 +42,9 @@ def publish_health(payload: Dict[str, Any]) -> None:
     env = payload.get("env") or os.getenv("ENV", os.getenv("ENVIRONMENT", "prod"))
     process = payload.get("process") or "unknown"
     body = dict(payload)
-    body.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    now_ts = time.time()
+    body["ts"] = now_ts
+    body.setdefault("ts_iso", datetime.now(timezone.utc).isoformat())
     path = f"hedge/{env}/health/{process}"
     creds = os.environ.get("FIREBASE_CREDS_PATH") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not creds:
@@ -51,7 +54,31 @@ def publish_health(payload: Dict[str, Any]) -> None:
         db = get_firestore()
         LOGGER.debug("[firestore] client ready path=%s", path)
         LOGGER.debug("[firestore] heartbeat payload=%s", body)
-        db.collection("hedge").document(env).collection("health").document(process).set(body, merge=True)
-        LOGGER.info("[firestore] heartbeat write ok path=%s", path)
+        doc_ref = db.collection("hedge").document(env).collection("health").document(process)
+        doc_ref.set(body, merge=True)
+        LOGGER.info("[firestore] heartbeat write ok path=%s ts=%.3f", path, now_ts)
     except Exception as exc:
         LOGGER.warning("[firestore] heartbeat write failed path=%s error=%s", path, exc)
+
+
+def publish_state(snapshot: Dict[str, Any]) -> None:
+    """Publish NAV/state snapshot to hedge/{ENV}/state/snapshot."""
+    env = snapshot.get("env") or os.getenv("ENV", os.getenv("ENVIRONMENT", "prod"))
+    path = f"hedge/{env}/state/snapshot"
+    creds = os.environ.get("FIREBASE_CREDS_PATH") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not creds:
+        LOGGER.info("[firestore] skipped: no credentials set path=%s", path)
+        return
+    try:
+        db = get_firestore()
+        doc_ref = db.collection("hedge").document(env).collection("state").document("snapshot")
+        payload = dict(snapshot)
+        payload["nav_ts"] = time.time()
+        doc_ref.set(payload, merge=True)
+        LOGGER.info(
+            "[firestore] state publish ok path=%s nav_usd=%s",
+            path,
+            payload.get("nav_usd"),
+        )
+    except Exception as exc:
+        LOGGER.warning("[firestore] state publish failed path=%s error=%s", path, exc)

@@ -1,0 +1,40 @@
+{
+  "max_leverage": 4,
+  "max_symbol_exposure_pct": 0.15,
+  "max_nav_drawdown_pct": 0.20,
+  "daily_loss_limit_pct": 0.10,
+  "nav_freshness_seconds": 90,
+  "fail_closed_on_nav_stale": true,
+  "reset_timezone": "UTC",
+  "min_notional_usd": 5,
+  "quote_symbols": [
+    "USDT",
+    "USDC"
+  ],
+  "restricted_symbols": [],
+  "per_symbol": {
+    "BTCUSDT": {
+      "max_nav_pct": 0.08,
+      "max_notional_usd": 80000,
+      "max_leverage": 3
+    },
+    "ETHUSDT": {
+      "max_nav_pct": 0.06,
+      "max_notional_usd": 50000,
+      "max_leverage": 3
+    },
+    "SOLUSDT": {
+      "max_nav_pct": 0.04,
+      "max_notional_usd": 25000,
+      "max_leverage": 2
+    },
+    "XAUUSDT": {
+      "max_nav_pct": 0.03,
+      "max_notional_usd": 15000,
+      "max_leverage": 1.5
+    }
+  },
+  "non_prod": {
+    "require_dry_run": true
+  }
+}

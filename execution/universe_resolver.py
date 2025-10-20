@@ -165,4 +165,23 @@ __all__ = [
     "symbol_tier",
     "resolve_allowed_symbols",
     "is_listed_on_futures",
+    "get_symbol_price",
 ]
+
+
+def get_symbol_price(symbol: str) -> float:
+    """
+    Return a price for the supplied futures symbol, guarding off-exchange assets.
+    Routes XAUT/USDC style symbols to spot to avoid unsupported futures lookups.
+    """
+    from execution.exchange_utils import get_price
+
+    sym = str(symbol or "").upper()
+    if not sym:
+        raise ValueError("symbol_required")
+
+    if sym in {"XAUT", "XAUTUSDT"}:
+        return float(get_price("XAUTUSDT", venue="spot", signed=False))
+    if sym in {"USDC", "USDCUSDT"}:
+        return float(get_price("USDC", venue="spot", signed=False))
+    return float(get_price(sym, venue="fapi", signed=False))

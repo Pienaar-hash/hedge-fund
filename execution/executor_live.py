@@ -460,22 +460,34 @@ def _startup_position_check(client: Any) -> None:
         LOG.info("[startup-sync] unable to check positions (client unavailable)")
         return
     LOG.info("[startup-sync] checking open positions …")
-    live = get_live_positions(client)
-    if not live:
-        LOG.info("[startup-sync] no open positions detected")
-        return
-    LOG.warning("[startup-sync] found %d open positions -> listing them", len(live))
-    for pos in live:
+    retry_interval = 30
+    first_warning = True
+
+    while True:
+        live = get_live_positions(client)
+        if not live:
+            if not first_warning:
+                LOG.info("[startup-sync] all positions cleared -> resuming trading loop")
+            else:
+                LOG.info("[startup-sync] no open positions detected")
+            return
+
         LOG.warning(
-            "[startup-sync] %s side=%s amt=%.6f entry=%.4f upnl=%.2f",
-            pos.get("symbol"),
-            pos.get("positionSide"),
-            pos.get("positionAmt"),
-            pos.get("entryPrice"),
-            pos.get("unRealizedProfit"),
+            "[startup-sync] open positions detected (n=%d) -> trading init paused; will retry every %ss",
+            len(live),
+            retry_interval,
         )
-    LOG.warning("[startup-sync] blocking trade initialization until manually flattened")
-    sys.exit(1)
+        for pos in live:
+            LOG.warning(
+                "[startup-sync] %s side=%s amt=%.6f entry=%.4f upnl=%.2f",
+                pos.get("symbol"),
+                pos.get("positionSide"),
+                pos.get("positionAmt"),
+                pos.get("entryPrice"),
+                pos.get("unRealizedProfit"),
+            )
+        first_warning = False
+        time.sleep(retry_interval)
 
 
 def _maybe_run_internal_screener() -> None:
@@ -1662,6 +1674,7 @@ def _loop_once(i: int) -> None:
 
 def main() -> None:
     _sync_dry_run()
+    LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
     try:
         if not _is_dual_side():
             LOG.warning("[executor] WARNING — account not in hedge (dualSide) mode")
