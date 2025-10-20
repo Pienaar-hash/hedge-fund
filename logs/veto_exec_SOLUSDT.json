@@ -1,0 +1,40 @@
+{
+  "symbol": "SOLUSDT",
+  "side": "SELL",
+  "positionSide": "SHORT",
+  "reason": "symbol_cap",
+  "gross_usd": 190.73,
+  "price": 190.73,
+  "ts": 1760887116.8345826,
+  "intent": {
+    "timestamp": "2025-10-19T15:18:06+00:00",
+    "symbol": "SOLUSDT",
+    "timeframe": "15m",
+    "signal": "SELL",
+    "reduceOnly": false,
+    "price": 190.73,
+    "capital_per_trade": 63.57666666666666,
+    "leverage": 3.0,
+    "cap_usd": 63.57666666666666,
+    "gross_usd": 190.73,
+    "min_notional": 5.0,
+    "tf": "15m",
+    "positionSide": "",
+    "veto": []
+  },
+  "nav_snapshot": {
+    "nav_usd": 4994.6519450900005,
+    "gross_usd": 1340.8549585120002,
+    "symbol_gross_usd": {
+      "SOLUSDT": 952.55,
+      "ETHUSDT": 47.74584,
+      "LTCUSDT": 120.24702,
+      "LINKUSDT": 210.11585000000002,
+      "WIFUSDT": 10.196248511999999
+    }
+  },
+  "thresholds": {
+    "max_gross_exposure_pct": 40,
+    "max_trade_nav_pct": 5
+  }
+}

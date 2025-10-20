@@ -1,0 +1,33 @@
+{
+  "symbol": "LTCUSDT",
+  "side": "SELL",
+  "positionSide": "SHORT",
+  "reason": "symbol_cap",
+  "gross_usd": 10.0,
+  "price": 94.29,
+  "ts": 1760890284.5464664,
+  "intent": {
+    "timestamp": "2025-10-19T16:11:15+00:00",
+    "symbol": "LTCUSDT",
+    "timeframe": "15m",
+    "signal": "SELL",
+    "reduceOnly": false,
+    "price": 94.29,
+    "capital_per_trade": 5.0,
+    "leverage": 2.0,
+    "cap_usd": 5.0,
+    "gross_usd": 10.0,
+    "min_notional": 5.0,
+    "tf": "15m",
+    "positionSide": "",
+    "veto": []
+  },
+  "nav_snapshot": {
+    "nav_usd": 0.0,
+    "gross_usd": 0.0
+  },
+  "thresholds": {
+    "max_gross_exposure_pct": 0.0,
+    "max_trade_nav_pct": 0.0
+  }
+}
