@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import time
 from copy import deepcopy
 
 # --- Ensure repo root is importable & files are read from repo root ---
@@ -12,20 +14,24 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 print(f"[sync] PYTHONPATH bootstrapped: {REPO_ROOT}", flush=True)
 
-FORCED_ENV = "prod"
-
-
-def _force_env_to_prod() -> str:
-    """Ensure Firestore writes always use the prod namespace."""
-    previous = os.environ.get("ENV", "unset")
-    os.environ["ENV"] = FORCED_ENV
-    print(f"[sync] ENV forced to prod (was {previous})", flush=True)
-    return FORCED_ENV
+LOGGER = logging.getLogger("sync_state")
+_ENV_DEFAULT = "prod"
+_ENV = (os.environ.get("HEDGE_ENV") or os.environ.get("ENV") or _ENV_DEFAULT).strip() or _ENV_DEFAULT
+os.environ["ENV"] = _ENV
+print(f"[sync] ENV resolved: {_ENV}", flush=True)
 
 
 def _dry_run_mode() -> str:
     """Return DRY_RUN flag as string (default 0) for consistent logging."""
     return os.getenv("DRY_RUN", "0")
+
+
+def _firestore_enabled() -> bool:
+    return os.getenv("FIRESTORE_ENABLED", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
 
 
 def _repo_root_log() -> None:
@@ -35,10 +41,10 @@ def _repo_root_log() -> None:
 
 def _log_startup_summary() -> Dict[str, Any]:
     testnet = os.getenv("BINANCE_TESTNET", "0").lower() in ("1", "true", "yes")
-    env = os.getenv("ENV", "prod")
+    env = _get_env()
     dry_run = _dry_run_mode()
     base = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
-    fs_enabled = bool(int(os.getenv("FIRESTORE_ENABLED", "0") or 0))
+    fs_enabled = _firestore_enabled()
     prefix = "testnet" if testnet else "live"
     print(
         f"[{prefix}] ENV={env} DRY_RUN={dry_run} testnet={testnet} base={base} FIRESTORE={'ON' if fs_enabled else 'OFF'}",
@@ -82,19 +88,18 @@ def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
 import importlib.util
 
 try:
-    import utils.firestore_client as fc  # type: ignore
-    with_firestore = fc.with_firestore
+    from utils.firestore_client import get_db, write_doc, publish_heartbeat
 except Exception as e:
-    # fallback explicit loader in case Supervisor pythonpath differs
-    import importlib.util
     _utils_path = os.path.join(REPO_ROOT, "utils", "firestore_client.py")
     if os.path.exists(_utils_path):
         spec = importlib.util.spec_from_file_location("firestore_client", _utils_path)
         if spec and spec.loader:
             fc = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(fc)  # type: ignore[attr-defined]
-            with_firestore = fc.with_firestore
-            print("[sync] Fallback importloader success", flush=True)
+            get_db = fc.get_db  # type: ignore[attr-defined]
+            write_doc = fc.write_doc  # type: ignore[attr-defined]
+            publish_heartbeat = fc.publish_heartbeat  # type: ignore[attr-defined]
+            print("[sync] Fallback firestore_client importloader success", flush=True)
         else:
             raise RuntimeError(f"Cannot import firestore_client: loader missing (spec={spec})")
     else:
@@ -125,7 +130,6 @@ except Exception:
 #  NAV_CUTOFF_SECAGO=86400                       # or relative cutoff in seconds
 #  SYNC_INTERVAL_SEC=20
 #
-import time
 from datetime import datetime, timedelta, timezone
 try:  # Python 3.9+
     from zoneinfo import ZoneInfo  # type: ignore
@@ -141,8 +145,7 @@ from execution.drawdown_tracker import (
 )
 from execution.exchange_utils import get_income_history
 
-# ---------------- Firestore import (repo-root on sys.path now) ---------------
-# with_firestore provided by guarded import block above.
+# ---------------- Firestore helpers (imported via guarded loader above) -----
 
 # ------------------------------- Files ---------------------------------------
 LOGS_DIR = os.path.join(REPO_ROOT, "logs")
@@ -159,6 +162,7 @@ MAX_POINTS: int = 500  # dashboard series cap
 
 _FIRESTORE_FAIL_COUNT = 0
 _FAILURE_THRESHOLD = 5
+_LAST_SUCCESS_TS: Optional[float] = None
 
 _STABLE_ASSETS = {"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP"}
 
@@ -990,9 +994,17 @@ def _exposure_from_positions(items: List[Dict[str, Any]]) -> Dict[str, float]:
 
 
 def _get_env() -> str:
-    if os.environ.get("ENV") != FORCED_ENV:
-        os.environ["ENV"] = FORCED_ENV
-    return FORCED_ENV
+    global _ENV
+    env = (
+        os.environ.get("HEDGE_ENV")
+        or os.environ.get("ENV")
+        or _ENV_DEFAULT
+    )
+    env = (env or _ENV_DEFAULT).strip() or _ENV_DEFAULT
+    if env != _ENV:
+        _ENV = env
+        os.environ["ENV"] = _ENV
+    return _ENV
 
 
 def _nav_doc_ref(db):
@@ -1016,15 +1028,6 @@ def _lb_doc_ref(db):
         .document(_get_env())
         .collection("state")
         .document("leaderboard")
-    )
-
-
-def _health_doc_ref(db):
-    return (
-        db.collection("hedge")
-        .document(_get_env())
-        .collection("telemetry")
-        .document("health")
     )
 
 
@@ -1095,15 +1098,33 @@ def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _publish_health(db, ok: bool, last_error: str) -> None:
+    status = "ok" if ok else "degraded"
     payload = {
         "firestore_ok": bool(ok),
         "last_error": str(last_error or ""),
         "ts": time.time(),
     }
     try:
-        _health_doc_ref(db).set(payload, merge=True)
+        write_doc(
+            db,
+            f"hedge/{_get_env()}/telemetry/health",
+            payload,
+            require=False,
+        )
     except Exception as exc:
-        print(f"[sync] WARN telemetry_write_failed: {exc}", flush=True)
+        LOGGER.warning("[sync] telemetry_write_failed path=telemetry/health error=%s", exc)
+    try:
+        publish_heartbeat(
+            db,
+            _get_env(),
+            "sync_state",
+            status,
+            error_count=_FIRESTORE_FAIL_COUNT,
+            last_success_ts=_LAST_SUCCESS_TS,
+            extra={"last_error": str(last_error or "")},
+        )
+    except Exception as exc:
+        LOGGER.warning("[sync] heartbeat_publish_failed error=%s", exc)
 
 
 # ------------------------------ Public API ----------------------------------
@@ -1224,13 +1245,15 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     Read files -> filter/compute -> upsert Firestore once.
     Returns (nav_payload, positions_payload, leaderboard_payload).
     """
-    global _FIRESTORE_FAIL_COUNT
+    global _FIRESTORE_FAIL_COUNT, _LAST_SUCCESS_TS
+    db = None
     try:
-        with with_firestore() as db:
-            result = _sync_once_with_db(db)
-            _publish_health(db, True, "")
-            _FIRESTORE_FAIL_COUNT = 0
-            return result
+        db = get_db(strict=True)
+        result = _sync_once_with_db(db)
+        _LAST_SUCCESS_TS = time.time()
+        _publish_health(db, True, "")
+        _FIRESTORE_FAIL_COUNT = 0
+        return result
     except Exception as exc:
         _FIRESTORE_FAIL_COUNT += 1
         print(
@@ -1240,8 +1263,9 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
         if _FIRESTORE_FAIL_COUNT >= _FAILURE_THRESHOLD:
             print("[sync] ERROR firestore_degraded", flush=True)
         try:
-            with with_firestore() as db:
-                _publish_health(db, False, str(exc))
+            if db is None:
+                db = get_db(strict=False)
+            _publish_health(db, False, str(exc))
         except Exception:
             pass
         raise
@@ -1277,16 +1301,21 @@ def main_loop() -> None:
 
 
 def run() -> None:
-    env = _force_env_to_prod()
+    env = _get_env()
+    os.environ["ENV"] = env
     _repo_root_log()
     dry_run = _dry_run_mode()
+    if not _firestore_enabled():
+        msg = "Firestore disabled via FIRESTORE_ENABLED=0; sync_state requires write access"
+        print(f"[sync] {msg}", flush=True)
+        raise RuntimeError(msg)
     try:
         flags = _log_startup_summary()
     except Exception as exc:
         print(f"[live] startup summary logging failed: {exc}", flush=True)
         flags = {
             "env": env,
-            "fs_enabled": bool(int(os.getenv("FIRESTORE_ENABLED", "0") or 0)),
+            "fs_enabled": _firestore_enabled(),
             "prefix": "live",
         }
     _publish_startup_heartbeat(flags)

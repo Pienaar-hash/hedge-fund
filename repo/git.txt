@@ -1,0 +1,37 @@
+## main...origin/main
+ M execution/nav.py
+ M execution/risk_limits.py
+ M execution/sync_daemon.py
+ M execution/sync_state.py
+ M logs/cache/coingecko_cache.json
+ M logs/cache/peak_state.json
+ M logs/polymarket.json
+ M logs/spot_state.json
+ M logs/treasury.json
+ M tests/test_firestore_client.py
+ M tests/test_nav_age.py
+ M utils/firestore_client.py
+ M venv/bin/activate
+?? .codex_session.json
+?? apply
+?? codex
+?? exit
+?? patch
+?? py/
+?? repo/
+?? review
+?? status
+?? test
+?? tests/test_nav_fail_closed.py
+?? venv/bin/distro
+?? venv/bin/openai
+?? venv/bin/tqdm
+?? venv/lib/python3.10/site-packages/distro-1.9.0.dist-info/
+?? venv/lib/python3.10/site-packages/distro/
+?? venv/lib/python3.10/site-packages/jiter-0.11.1.dist-info/
+?? venv/lib/python3.10/site-packages/jiter/
+?? venv/lib/python3.10/site-packages/openai-2.5.0.dist-info/
+?? venv/lib/python3.10/site-packages/openai/
+?? venv/lib/python3.10/site-packages/tqdm-4.67.1.dist-info/
+?? venv/lib/python3.10/site-packages/tqdm/
+7cb2af8de2257b29f02935f82440e9b1e0de1c1c

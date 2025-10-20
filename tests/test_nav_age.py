@@ -11,11 +11,12 @@ def test_nav_age_selects_newest(tmp_path, monkeypatch):
     newer = tmp_path / "nav_confirmed.json"
 
     older.write_text(json.dumps({"ts": time.time() - 120}))
-    newer.write_text(json.dumps({"ts": time.time()}))
+    newer.write_text(json.dumps({"ts": time.time(), "sources_ok": True}))
 
     os.utime(older, (time.time() - 120, time.time() - 120))
     os.utime(newer, None)
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         risk_limits,
         "_NAV_SNAPSHOT_PATHS",
@@ -23,6 +24,7 @@ def test_nav_age_selects_newest(tmp_path, monkeypatch):
         raising=False,
     )
 
-    age = risk_limits.get_nav_age()
+    age, sources_ok = risk_limits.get_nav_freshness_snapshot()
     assert age is not None
     assert age < 5, f"Expected fresh age, got {age}"
+    assert sources_ok is True

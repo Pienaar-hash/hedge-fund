@@ -8,7 +8,7 @@ import sys
 import time
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Dict, TYPE_CHECKING, Callable
+from typing import Any, Dict, Optional, TYPE_CHECKING, Callable
 
 service_account: Any
 firestore: Any
@@ -251,18 +251,24 @@ def _validate_creds(info: Dict[str, Any]) -> None:
         raise RuntimeError(f"Firebase creds missing fields: {', '.join(missing)}")
 
 
-@lru_cache(maxsize=1)
-def get_db() -> FirestoreClient:
+def _firestore_env_enabled() -> bool:
+    flag = os.environ.get("FIRESTORE_ENABLED", "1").strip().lower()
+    return flag not in {"0", "false", "no"}
+
+
+@lru_cache(maxsize=2)
+def _get_db_cached(strict_flag: bool) -> FirestoreClient:
     global _ADC_WARNED
-    if os.environ.get("FIRESTORE_ENABLED", "1") == "0":
+    env_enabled = _firestore_env_enabled()
+    if not env_enabled and not strict_flag:
         return _noop_db()
     if firestore is None or service_account is None:
+        message = "client unavailable; install google-cloud-firestore"
+        if strict_flag:
+            raise RuntimeError(f"Firestore {message}")
         if not _ADC_WARNED:
             _ADC_WARNED = True
-            print(
-                "[firestore] WARN client unavailable; install google-cloud-firestore",
-                file=sys.stderr,
-            )
+            print(f"[firestore] WARN {message}", file=sys.stderr)
         return _noop_db()
     try:
         info = _load_creds_dict()
@@ -279,6 +285,10 @@ def get_db() -> FirestoreClient:
                 return _ClientWrapper(firestore.Client())
             except Exception as inner:
                 fallback_exc = inner
+        if strict_flag:
+            raise RuntimeError(
+                f"Firestore client initialization failed: {fallback_exc}"
+            ) from fallback_exc
         if not _ADC_WARNED:
             _ADC_WARNED = True
             print(
@@ -286,6 +296,21 @@ def get_db() -> FirestoreClient:
                 file=sys.stderr,
             )
         return _noop_db()
+
+
+def get_db(strict: Optional[bool] = None) -> FirestoreClient:
+    """
+    Return a Firestore client, requiring availability unless explicitly disabled.
+    - strict=None (default): strict follows FIRESTORE_ENABLED (defaults to True).
+    - strict=True: raise if dependencies or credentials are missing.
+    - strict=False: return a no-op client when unavailable.
+    """
+    env_enabled = _firestore_env_enabled()
+    strict_flag = env_enabled if strict is None else bool(strict)
+    db = _get_db_cached(strict_flag)
+    if strict_flag and _is_noop_client(db):
+        raise RuntimeError("Firestore unavailable: client initialization returned no-op")
+    return db
 
 
 @contextmanager
@@ -298,3 +323,66 @@ def with_firestore():
             "Firestore unavailable: credentials missing or client not installed"
         )
     yield db
+
+
+def write_doc(
+    db: Any,
+    path: str,
+    data: Dict[str, Any],
+    *,
+    require: bool = True,
+) -> bool:
+    """
+    Write a Firestore document. Returns True on success.
+    When require=True and the write cannot be completed, raise an error.
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("Firestore path must be a non-empty string")
+    parts = [segment for segment in path.split("/") if segment]
+    if len(parts) % 2 != 0:
+        raise ValueError(f"Invalid Firestore document path: {path}")
+    if db is None or _is_noop_client(db):
+        if require:
+            raise RuntimeError(f"Firestore unavailable for required write: {path}")
+        return False
+    ref = db
+    try:
+        while parts:
+            collection_name, doc_name = parts[:2]
+            parts = parts[2:]
+            ref = ref.collection(collection_name).document(doc_name)
+        ref.set(data)
+        return True
+    except Exception as exc:
+        if require:
+            raise
+        _LOG.warning("Firestore write failed path=%s err=%s", path, exc)
+        return False
+
+
+def publish_heartbeat(
+    db: Any,
+    env: str,
+    service: str,
+    status: str,
+    *,
+    error_count: int = 0,
+    last_success_ts: Optional[float] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Publish a structured heartbeat document under hedge/{env}/health/{service}.
+    Returns True when the write succeeds, False otherwise (never raises).
+    """
+    payload: Dict[str, Any] = {
+        "ts": time.time(),
+        "env": env,
+        "service": service,
+        "status": status,
+        "error_count": int(error_count),
+        "last_success_ts": last_success_ts,
+    }
+    if extra:
+        payload.update(extra)
+    path = f"hedge/{env}/health/{service}"
+    return write_doc(db, path, payload, require=False)
