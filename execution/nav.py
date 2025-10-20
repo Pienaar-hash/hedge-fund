@@ -28,8 +28,12 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
     """Compute USD-M futures wallet NAV and provide detail."""
     balances_ok = False
     positions_ok = False
-    bal = get_balances() or {}
-    balances_ok = True
+    try:
+        bal = get_balances() or {}
+        balances_ok = True
+    except Exception as exc:
+        LOGGER.warning("[nav] balances_fetch_failed: %s", exc)
+        bal = {}
     # Support both dict-of-balances and list-of-dicts returns
     wallet = 0.0
     if isinstance(bal, dict):
@@ -55,10 +59,15 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
                 continue
         detail["unrealized_pnl"] = unreal
         wallet += unreal
-    except Exception:
-        pass
-    if balances_ok and positions_ok:
-        _persist_confirmed_nav(wallet, detail)
+    except Exception as exc:
+        LOGGER.warning("[nav] positions_fetch_failed: %s", exc)
+    detail["balances_ok"] = bool(balances_ok)
+    detail["positions_ok"] = bool(positions_ok)
+    source_health = {
+        "balances_ok": balances_ok,
+        "positions_ok": positions_ok,
+    }
+    _persist_confirmed_nav(wallet, detail=detail, source_health=source_health)
     return wallet, detail
 
 
@@ -333,7 +342,11 @@ def write_nav(nav_value: float) -> None:
     LOGGER.info("[nav] write nav=%.2f ts=%.3f path=%s", nav_float, ts, _NAV_LOG_PATH)
 
 
-def _persist_confirmed_nav(nav_value: float, detail: Dict[str, Any] | None = None) -> None:
+def _persist_confirmed_nav(
+    nav_value: float,
+    detail: Dict[str, Any] | None = None,
+    source_health: Dict[str, Any] | None = None,
+) -> None:
     try:
         nav_float = float(nav_value)
     except Exception:
@@ -344,17 +357,34 @@ def _persist_confirmed_nav(nav_value: float, detail: Dict[str, Any] | None = Non
         "ts": time.time(),
         "nav": nav_float,
     }
+    record["nav_usd"] = nav_float
+    health: Dict[str, bool] = {}
+    if isinstance(source_health, dict):
+        health = {str(key): bool(val) for key, val in source_health.items()}
+    sources_ok = all(health.values()) if health else True
+    record["sources_ok"] = sources_ok
+    if health:
+        record["source_health"] = health
+        record["stale_flags"] = {key: not val for key, val in health.items()}
     if isinstance(detail, dict) and detail:
         record["detail"] = detail
     try:
         os.makedirs(os.path.dirname(_NAV_CACHE_PATH), exist_ok=True)
-    except Exception:
+    except Exception as exc:
+        LOGGER.error("[nav] snapshot_mkdir_failed: %s", exc)
         return
     try:
         with open(_NAV_CACHE_PATH, "w", encoding="utf-8") as handle:
             json.dump(record, handle, sort_keys=True)
-    except Exception:
-        pass
+        LOGGER.info(
+            "[nav] snapshot ts=%.0f nav_usd=%.2f sources_ok=%s path=%s",
+            record["ts"],
+            nav_float,
+            sources_ok,
+            _NAV_CACHE_PATH,
+        )
+    except Exception as exc:
+        LOGGER.error("[nav] snapshot_write_failed: %s", exc)
 
 
 def get_confirmed_nav() -> Dict[str, Any]:
@@ -363,22 +393,49 @@ def get_confirmed_nav() -> Dict[str, Any]:
         return {}
     out: Dict[str, Any] = {}
     ts_val = cached.get("ts")
-    nav_val = cached.get("nav")
     try:
         ts_float = float(ts_val)
         if math.isfinite(ts_float) and ts_float > 0:
             out["ts"] = ts_float
     except Exception:
         pass
+    nav_val = cached.get("nav")
     try:
-        nav_float = float(nav_val)
-        if math.isfinite(nav_float):
-            out["nav"] = nav_float
+        nav_candidate = float(nav_val)
+        if math.isfinite(nav_candidate):
+            out["nav"] = nav_candidate
+    except Exception:
+        pass
+    nav_usd_val = cached.get("nav_usd", nav_val)
+    try:
+        nav_usd_candidate = float(nav_usd_val)
+        if math.isfinite(nav_usd_candidate):
+            out["nav_usd"] = nav_usd_candidate
+            if "nav" not in out:
+                out["nav"] = nav_usd_candidate
     except Exception:
         pass
     detail = cached.get("detail")
     if isinstance(detail, dict):
         out["detail"] = detail
+    health = cached.get("source_health")
+    if isinstance(health, dict):
+        sanitized_health = {str(key): bool(val) for key, val in health.items()}
+        out["source_health"] = sanitized_health
+        if "sources_ok" not in out:
+            out["sources_ok"] = all(sanitized_health.values())
+    sources_ok_val = cached.get("sources_ok")
+    if "sources_ok" not in out:
+        if isinstance(sources_ok_val, bool):
+            out["sources_ok"] = sources_ok_val
+        elif sources_ok_val is not None:
+            try:
+                out["sources_ok"] = bool(sources_ok_val)
+            except Exception:
+                pass
+    stale_flags = cached.get("stale_flags")
+    if isinstance(stale_flags, dict):
+        out["stale_flags"] = {str(key): bool(val) for key, val in stale_flags.items()}
     return out
 
 

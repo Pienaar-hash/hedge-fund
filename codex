@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""
+OpenAI Codex Sprint Assistant (GPT-5 Local)
+────────────────────────────────────────────
+An upgraded REPL for hardening sprints.
+Accepts patch prompts (Prompt A/B/C...), applies them via git,
+runs compile/tests/lint/mypy, and summarizes results.
+"""
+
+import os, subprocess, tempfile, textwrap, sys, readline
+from openai import OpenAI
+
+MODEL = os.getenv("CODEX_MODEL", "gpt-5")
+client = OpenAI()
+
+BANNER = """
+╭──────────────────────────────────────────╮
+│   Codex Sprint Assistant — GPT-5 Local   │
+│   API key + venv active (hedge-fund)     │
+╰──────────────────────────────────────────╯
+Type 'help' for commands. Paste full Prompt blocks directly.
+"""
+
+def run(cmd, check=False, silent=False):
+    """Run a shell command and return stdout."""
+    try:
+        res = subprocess.run(
+            cmd, shell=True, text=True,
+            capture_output=True, check=check
+        )
+        if not silent:
+            if res.stdout.strip():
+                print(res.stdout.strip())
+            if res.stderr.strip():
+                print(res.stderr.strip())
+        return res
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Command failed: {cmd}\n{e.stderr}")
+        return e
+
+def apply_patch(patch_text):
+    """Apply unified diff using git apply --3way."""
+    with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+        tmp.write(patch_text)
+        tmp.flush()
+        path = tmp.name
+    print(f"🩹 Applying patch via git apply --3way …")
+    res = run(f"git apply --3way {path}")
+    if res.returncode == 0:
+        print("✅ Patch applied successfully.")
+    else:
+        print("⚠️  Patch may need manual merge.")
+    os.unlink(path)
+
+def generate_patch(prompt_block):
+    """Send prompt block to GPT-5 and return diff text."""
+    print("🤖 Generating patch with GPT-5 …")
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": "You are a precise code patch generator. Output only unified diffs."},
+            {"role": "user", "content": prompt_block},
+        ],
+    )
+    diff = resp.choices[0].message.content
+    print(diff)
+    if diff and diff.strip().startswith("diff"):
+        apply_patch(diff)
+    else:
+        print("⚠️  No valid diff detected.")
+    return diff
+
+def quick_test():
+    """Run sanity suite: compile + pytest + lint + mypy."""
+    print("🧪 Running quick test suite …")
+    run("python -m py_compile $(git ls-files '*.py')", silent=True)
+    run("pytest -q || true")
+    run("ruff check . || true")
+    run("mypy --ignore-missing-imports . || true")
+    print("🏁  Tests/lint complete.\n")
+
+def repl():
+    print(BANNER)
+    buffer = ""
+    while True:
+        try:
+            line = input("› ").rstrip()
+            if line in {"exit", "quit"}:
+                break
+            elif line in {"help", "?"}:
+                print("Commands:\n"
+                      "  review     – run git status review\n"
+                      "  patch      – enter multi-line patch mode (paste Prompt blocks)\n"
+                      "  test       – run compile/tests/lint/mypy\n"
+                      "  status     – show git status\n"
+                      "  chat <msg> – freeform GPT-5 chat\n"
+                      "  exit       – quit\n")
+            elif line == "status":
+                run("git status -sb")
+            elif line == "review":
+                out = run("git status -sb", silent=True).stdout
+                msg = f"Perform structured repo review:\n\n{out}"
+                resp = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": msg}],
+                )
+                print(resp.choices[0].message.content)
+            elif line == "test":
+                quick_test()
+            elif line.startswith("chat "):
+                msg = line[5:]
+                resp = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": msg}],
+                )
+                print(resp.choices[0].message.content.strip())
+            elif line == "patch":
+                print("📝 Paste your full Prompt block. End with a single '.' on its own line.")
+                lines = []
+                while True:
+                    sub = input()
+                    if sub.strip() == ".":
+                        break
+                    lines.append(sub)
+                prompt_block = "\n".join(lines)
+                generate_patch(prompt_block)
+            else:
+                # direct one-liner prompt
+                resp = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": line}],
+                )
+                print(resp.choices[0].message.content.strip())
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            print()
+            continue
+        except Exception as e:
+            print(f"⚠️  Error: {e}")
+
+if __name__ == "__main__":
+    repl()

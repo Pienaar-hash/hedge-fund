@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Dict, List, Tuple, Optional, Any
+import json
 import logging
 import os
 import time
@@ -47,12 +48,50 @@ _NAV_SNAPSHOT_PATHS: List[str] = [
     "cache/peak_state.json",
 ]
 
+DEFAULT_NAV_FRESHNESS_SECONDS = int(os.environ.get("NAV_FRESHNESS_SECONDS", "90"))
+DEFAULT_FAIL_CLOSED_ON_NAV_STALE = os.environ.get("FAIL_CLOSED_ON_NAV_STALE", "1") != "0"
 
-def get_nav_age() -> Optional[float]:
-    """Compute NAV age using freshest available snapshot source."""
+
+def get_nav_freshness_snapshot() -> Tuple[Optional[float], bool]:
+    """
+    Return (age_seconds, sources_ok) using the confirmed NAV snapshot.
+    Falls back to legacy mtime heuristics when the snapshot is absent.
+    """
     now = time.time()
-    newest_mtime = 0.0
+    snapshot_candidates = [
+        "logs/cache/nav_confirmed.json",
+        "cache/nav_confirmed.json",
+    ]
     try:
+        for path in snapshot_candidates:
+            if not os.path.exists(path):
+                continue
+            age: Optional[float] = None
+            sources_ok = True
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle) or {}
+                ts_val = payload.get("ts")
+                try:
+                    ts_float = float(ts_val)
+                    if ts_float > 0.0:
+                        age = max(0.0, now - ts_float)
+                except Exception:
+                    age = None
+                sources_ok = bool(payload.get("sources_ok", True))
+            except Exception as exc:
+                LOGGER.error("[risk] nav_snapshot_read_failed: %s", exc)
+                payload = {}
+                sources_ok = False
+            if age is None:
+                try:
+                    age = max(0.0, now - os.path.getmtime(path))
+                except Exception:
+                    age = None
+            if age is not None:
+                return age, sources_ok
+
+        newest_mtime = 0.0
         for rel_path in _NAV_SNAPSHOT_PATHS:
             if not os.path.exists(rel_path):
                 continue
@@ -61,30 +100,151 @@ def get_nav_age() -> Optional[float]:
             except Exception:
                 continue
         if newest_mtime > 0.0:
-            return max(0.0, now - newest_mtime)
+            return max(0.0, now - newest_mtime), True
         fallback = _nav_get_nav_age()
-        return float(fallback) if fallback is not None else None
+        if fallback is not None:
+            try:
+                return max(0.0, float(fallback)), True
+            except Exception:
+                return None, False
+        return None, False
     except Exception as exc:
-        LOGGER.error("[risk] get_nav_age_failed: %s", exc)
-        return None
+        LOGGER.error("[risk] get_nav_freshness_snapshot_failed: %s", exc)
+        return None, False
 
 
-def is_nav_fresh(nav_age: Optional[float] = None, threshold_s: Optional[float] = 90) -> bool:
-    """Return True if NAV data is fresh."""
-    if nav_age is None:
-        nav_age = get_nav_age()
-    try:
-        threshold = float(threshold_s) if threshold_s is not None else 0.0
-    except Exception:
-        threshold = 0.0
-    if threshold <= 0.0:
-        threshold = 90.0
-    if nav_age is None:
-        LOGGER.warning("[risk] nav_age=n/a -> treating as stale")
+def get_nav_age() -> Optional[float]:
+    """Backward-compatible helper returning only the NAV age."""
+    age, _ = get_nav_freshness_snapshot()
+    return age
+
+
+def is_nav_fresh(nav_dict: Optional[Dict[str, Any]] = None, threshold_s: Optional[int] = None) -> bool:
+    """Return True if NAV data is fresh; threshold defaults to mandatory failsafe."""
+    threshold = DEFAULT_NAV_FRESHNESS_SECONDS
+    if threshold_s is not None:
+        try:
+            threshold = int(threshold_s)
+        except Exception:
+            threshold = DEFAULT_NAV_FRESHNESS_SECONDS
+    if threshold <= 0:
+        threshold = DEFAULT_NAV_FRESHNESS_SECONDS
+
+    age = None
+    sources_ok = None
+    if isinstance(nav_dict, dict):
+        age = nav_dict.get("age")
+        sources_ok = nav_dict.get("sources_ok")
+    snap_age, snap_sources_ok = get_nav_freshness_snapshot()
+    if age is None:
+        age = snap_age
+    if sources_ok is None:
+        sources_ok = snap_sources_ok
+
+    if age is None:
+        LOGGER.warning("[risk] nav_age=n/a -> stale (no snapshot)")
         return False
-    fresh = nav_age < threshold
-    LOGGER.info("[risk] nav_age=%.1fs threshold=%.1fs fresh=%s", nav_age, threshold, fresh)
+
+    sources_ok_bool = bool(sources_ok)
+    fresh = (age < threshold) and sources_ok_bool
+    LOGGER.info(
+        "[risk] nav_age=%.1fs threshold=%ss sources_ok=%s fresh=%s",
+        age,
+        threshold,
+        sources_ok_bool,
+        fresh,
+    )
     return fresh
+
+
+def enforce_nav_freshness_or_veto(risk_ctx: Dict[str, Any], nav_dict: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
+    """
+    Returns True if NAV meets freshness guardrails; logs veto and returns False when stale.
+    `risk_ctx` can provide symbol/strategy/signal_ts/qty/detail/context for veto emission.
+    """
+    threshold_raw = cfg.get("nav_freshness_seconds")
+    try:
+        threshold = int(threshold_raw)
+    except Exception:
+        try:
+            threshold = int(float(threshold_raw or 0))
+        except Exception:
+            threshold = DEFAULT_NAV_FRESHNESS_SECONDS
+    if threshold <= 0:
+        threshold = DEFAULT_NAV_FRESHNESS_SECONDS
+
+    fail_closed_cfg = cfg.get("fail_closed_on_nav_stale")
+    fail_closed = (
+        bool(fail_closed_cfg)
+        if fail_closed_cfg is not None
+        else DEFAULT_FAIL_CLOSED_ON_NAV_STALE
+    )
+
+    age = nav_dict.get("age")
+    sources_ok = nav_dict.get("sources_ok")
+    if age is None or sources_ok is None:
+        snap_age, snap_sources_ok = get_nav_freshness_snapshot()
+        if age is None:
+            age = snap_age
+        if sources_ok is None:
+            sources_ok = snap_sources_ok
+
+    if age is None:
+        LOGGER.warning("[risk] nav_age=n/a -> stale (no snapshot)")
+        fresh = False
+    else:
+        sources_ok_bool = bool(sources_ok)
+        fresh = (age < threshold) and sources_ok_bool
+        LOGGER.info(
+            "[risk] nav_age=%.1fs threshold=%ss sources_ok=%s fresh=%s",
+            age,
+            threshold,
+            sources_ok_bool,
+            fresh,
+        )
+
+    if fresh:
+        return True
+
+    detail_payload = dict(risk_ctx.get("detail") or {})
+    if not detail_payload:
+        detail_payload = {"thresholds": {"nav_freshness_seconds": threshold}}
+    thresholds_payload = detail_payload.setdefault("thresholds", {})
+    if "nav_freshness_seconds" not in thresholds_payload:
+        thresholds_payload["nav_freshness_seconds"] = threshold
+    reasons_payload = detail_payload.setdefault("reasons", [])
+    if "nav_stale" not in reasons_payload:
+        reasons_payload.append("nav_stale")
+    observations_payload = detail_payload.setdefault("observations", {})
+    if age is not None:
+        try:
+            observations_payload.setdefault("nav_age_s", int(max(0.0, float(age))))
+        except Exception:
+            observations_payload.setdefault("nav_age_s", None)
+    observations_payload.setdefault(
+        "sources_ok",
+        bool(sources_ok) if sources_ok is not None else None,
+    )
+
+    context_payload = dict(risk_ctx.get("context") or {})
+    if age is not None and "nav_age" not in context_payload:
+        context_payload["nav_age"] = age
+    context_payload.setdefault("nav_freshness_seconds", threshold)
+    context_payload.setdefault(
+        "sources_ok",
+        bool(sources_ok) if sources_ok is not None else None,
+    )
+
+    _emit_veto(
+        risk_ctx.get("symbol"),
+        "nav_stale",
+        detail=detail_payload,
+        context=context_payload,
+        strategy=risk_ctx.get("strategy"),
+        signal_ts=risk_ctx.get("signal_ts"),
+        qty=risk_ctx.get("qty"),
+    )
+    return not fail_closed
 
 REASONS = {
     "kill_switch_triggered": "kill_switch",
@@ -469,12 +629,20 @@ def check_order(
 
     nav_threshold_raw = g_cfg.get("nav_freshness_seconds")
     try:
-        nav_threshold_s = float(nav_threshold_raw or 0.0)
+        nav_threshold_s = int(float(nav_threshold_raw or 0))
     except Exception:
-        nav_threshold_s = 0.0
-    nav_fail_closed = bool(g_cfg.get("fail_closed_on_nav_stale", False))
+        nav_threshold_s = 0
+    if nav_threshold_s <= 0:
+        nav_threshold_s = DEFAULT_NAV_FRESHNESS_SECONDS
 
-    nav_age = get_nav_age()
+    nav_fail_closed_cfg = g_cfg.get("fail_closed_on_nav_stale")
+    nav_fail_closed = (
+        bool(nav_fail_closed_cfg)
+        if nav_fail_closed_cfg is not None
+        else DEFAULT_FAIL_CLOSED_ON_NAV_STALE
+    )
+
+    nav_age, nav_sources_ok = get_nav_freshness_snapshot()
     nav_age_s: Optional[int] = None
     if isinstance(nav_age, (int, float)):
         try:
@@ -483,75 +651,78 @@ def check_order(
             nav_age_s = None
     if nav_age_s is not None:
         details["nav_age_s"] = nav_age_s
+    else:
+        details.setdefault("nav_age_s", None)
 
-    nav_status_known = nav_threshold_s > 0.0
-    nav_fresh_threshold = nav_threshold_s if nav_status_known else None
-    nav_fresh = {
-        "fresh": bool(is_nav_fresh(nav_age, nav_fresh_threshold)),
-        "age": nav_age,
+    if nav_sources_ok is not None:
+        details["nav_sources_ok"] = bool(nav_sources_ok)
+    else:
+        details.setdefault("nav_sources_ok", None)
+
+    thresholds.setdefault("nav_freshness_seconds", float(nav_threshold_s))
+
+    qty_req = None
+    try:
+        if price not in (None, 0, 0.0) and float(price or 0.0) != 0.0:
+            qty_req = float(requested_notional) / float(price)
+    except Exception:
+        qty_req = None
+
+    try:
+        nav_f = float(nav)
+    except Exception:
+        nav_f = 0.0
+    try:
+        current_gross_f = float(current_gross_notional)
+    except Exception:
+        current_gross_f = 0.0
+    try:
+        now_f = float(now)
+    except Exception:
+        now_f = time.time()
+
+    nav_observations: Dict[str, Any] = {
+        "nav_age_s": nav_age_s,
+        "sources_ok": bool(nav_sources_ok) if nav_sources_ok is not None else None,
     }
 
-    age_for_log = (
-        f"{float(nav_age):.1f}s" if isinstance(nav_age, (int, float)) else "unknown"
-    )
-    if nav_status_known or nav_age is not None:
-        if nav_fresh["fresh"]:
-            LOGGER.info("[risk] nav_ok (age=%s, fresh=%s)", age_for_log, nav_fresh["fresh"])
-        else:
-            log_msg = "[risk] veto nav_stale (age=%s)" if nav_fail_closed else "[risk] nav_stale (age=%s) (fail-open)"
-            LOGGER.warning(log_msg, age_for_log)
+    nav_context = {
+        "nav": nav_f,
+        "requested_notional": float(requested_notional),
+        "current_gross_notional": current_gross_f,
+        "now": now_f,
+        "nav_freshness_seconds": nav_threshold_s,
+        "sources_ok": bool(nav_sources_ok) if nav_sources_ok is not None else None,
+    }
+    if nav_age is not None:
+        nav_context["nav_age"] = nav_age
 
-    if nav_status_known and not nav_fresh["fresh"] and nav_fail_closed:
+    nav_detail_payload: Dict[str, Any] = {
+        "reasons": ["nav_stale"],
+        "thresholds": {"nav_freshness_seconds": nav_threshold_s},
+        "observations": nav_observations,
+    }
+
+    nav_guard_cfg = {
+        "nav_freshness_seconds": nav_threshold_s,
+        "fail_closed_on_nav_stale": nav_fail_closed,
+    }
+
+    nav_ok = enforce_nav_freshness_or_veto(
+        {
+            "symbol": sym,
+            "strategy": strategy_name,
+            "signal_ts": signal_ts,
+            "qty": qty_req,
+            "detail": nav_detail_payload,
+            "context": nav_context,
+        },
+        {"age": nav_age, "sources_ok": nav_sources_ok},
+        nav_guard_cfg,
+    )
+
+    if not nav_ok and nav_fail_closed:
         reasons.append("nav_stale")
-        thresholds.setdefault("nav_freshness_seconds", float(nav_threshold_s))
-        if nav_age_s is None:
-            details.setdefault("nav_age_s", None)
-        qty_req = None
-        try:
-            if price not in (None, 0, 0.0) and float(price or 0.0) != 0.0:
-                qty_req = float(requested_notional) / float(price)
-        except Exception:
-            qty_req = None
-        try:
-            nav_f = float(nav)
-        except Exception:
-            nav_f = 0.0
-        try:
-            current_gross_f = float(current_gross_notional)
-        except Exception:
-            current_gross_f = 0.0
-        try:
-            now_f = float(now)
-        except Exception:
-            now_f = time.time()
-        context = {
-            "nav": nav_f,
-            "requested_notional": float(requested_notional),
-            "current_gross_notional": current_gross_f,
-            "now": now_f,
-            "nav_age_s": nav_age_s,
-            "nav_freshness_seconds": nav_threshold_s,
-        }
-        detail_payload: Dict[str, Any] = {
-            "reasons": list(reasons),
-            "thresholds": thresholds,
-        }
-        extra = {
-            k: v
-            for k, v in details.items()
-            if k not in ("reasons", "thresholds")
-        }
-        if extra:
-            detail_payload["observations"] = extra
-        _emit_veto(
-            symbol,
-            "nav_stale",
-            detail=detail_payload,
-            context=context,
-            strategy=strategy_name,
-            signal_ts=signal_ts,
-            qty=qty_req,
-        )
         return False, details
 
     # Block duplicate exposure if a live position already exists
