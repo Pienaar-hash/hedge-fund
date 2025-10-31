@@ -29,6 +29,7 @@ from dashboard.dashboard_utils import (  # noqa: E402
     get_env_badge,
 )
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
+from dashboard.router_health_tab import render_router_health_tab  # noqa: E402
 from scripts.doctor import collect_doctor_snapshot  # noqa: E402
 try:
     from execution.signal_generator import generate_intents
@@ -1150,8 +1151,8 @@ def main():
     reserve_zar = reserve_usdt * float(zar_rate) if zar_rate and reserve_usdt else None
 
     # ---- Tabs layout --------------------------------------------------------------
-    tab_overview, tab_positions, tab_execution, tab_leader, tab_signals, tab_ml, tab_doctor = st.tabs(
-        ["Overview", "Positions", "Execution", "Leaderboard", "Signals", "ML", "Doctor"]
+    tab_overview, tab_positions, tab_execution, tab_router, tab_leader, tab_signals, tab_ml, tab_doctor = st.tabs(
+        ["Overview", "Positions", "Execution", "Router Health", "Leaderboard", "Signals", "ML", "Doctor"]
     )
 
     # --------------------------- Overview Tab ------------------------------------
@@ -1442,6 +1443,12 @@ def main():
 
         if not telemetry_health and not fallback_entries:
             telemetry_section.warning("Telemetry unavailable; no Firestore data and heartbeat log empty.")
+
+    # --------------------------- Router Health Tab --------------------------------
+    with tab_router:
+        st.subheader("Router Health")
+        render_router_health_tab()
+
     # --------------------------- Leaderboard Tab ---------------------------------
     with tab_leader:
         st.subheader("Leaderboard")
