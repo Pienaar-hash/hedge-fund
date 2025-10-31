@@ -1,20 +1,25 @@
 {
-  "nav_usdt": 6197.53859258,
+  "nav_usdt": 8572.76509194,
   "breakdown": {
     "source": "exchange+treasury",
-    "futures_wallet_usdt": 2395.99061193,
-    "unrealized_pnl": -0.06801934999999999,
+    "futures_wallet_usdt": 2399.67377935,
+    "unrealized_pnl": 2.13381259,
+    "balances_ok": true,
+    "positions_ok": true,
+    "sources_ok": true,
     "treasury": {
       "BTC": {
         "qty": 0.035,
-        "px": 108617.6,
-        "val_usdt": 3801.6160000000004
+        "px": 109126.4,
+        "val_usdt": 3819.424
+      },
+      "XAUT": {
+        "qty": 0.59,
+        "px": 3985.65,
+        "val_usdt": 2351.5335
       }
     },
-    "treasury_missing_prices": {
-      "XAUT": "400 Client Error: Bad Request for url: https://fapi.binance.com/fapi/v1/ticker/price?symbol=XAUTUSDT :: {\"code\":-1121,\"msg\":\"Invalid symbol.\"}"
-    },
-    "treasury_total_usdt": 3801.6160000000004
+    "treasury_total_usdt": 6170.9575
   },
-  "ts": "2025-10-19T16:56:01.357732+00:00"
+  "ts": "2025-10-31T16:53:33.058277+00:00"
 }

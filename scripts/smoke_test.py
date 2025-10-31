@@ -30,8 +30,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Firestore freshness smoke test")
     parser.add_argument(
         "--env",
-        default=os.getenv("ENV", "prod"),
-        help="Firestore environment namespace (default ENV or prod)",
+        default=os.getenv("ENV", "dev"),
+        help="Firestore environment namespace (default ENV or dev)",
     )
     parser.add_argument(
         "--max-age-seconds",

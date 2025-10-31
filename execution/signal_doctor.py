@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from .risk_limits import RiskState, check_order
 from .universe_resolver import symbol_tier, is_listed_on_futures
+from .nav import is_nav_fresh
 
 try:
     from .exchange_utils import get_price, get_symbol_filters
@@ -50,6 +51,57 @@ def _load_cfg() -> Dict[str, Any]:
         return json.load(open("config/risk_limits.json"))
     except Exception:
         return {"global": {}, "per_symbol": {}}
+
+
+def evaluate_signal(signal: str, symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Fast heuristic to vet signals before execution."""
+
+    def _to_float(value: Any) -> float | None:
+        try:
+            if value in (None, "", [], {}):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    reasons: List[str] = []
+    base_conf = _to_float(payload.get("confidence")) or 0.6
+    base_conf = max(0.0, min(1.0, base_conf))
+
+    recent_fail = int(float(payload.get("recent_fail_streak", 0) or 0))
+    fail_threshold = int(float(payload.get("fail_streak_limit", 3) or 3))
+    if fail_threshold > 0 and recent_fail >= fail_threshold:
+        reasons.append("recent_fail_streak")
+
+    nav_threshold = (
+        _to_float(payload.get("nav_threshold_s"))
+        or _to_float(payload.get("nav_stale_threshold_s"))
+        or 180.0
+    )
+    if nav_threshold and nav_threshold > 0 and not is_nav_fresh(nav_threshold):
+        reasons.append("nav_stale")
+
+    spread_bps = _to_float(payload.get("spread_bps"))
+    spread_cap = _to_float(payload.get("max_spread_bps")) or 7.5
+    if spread_bps is not None and spread_cap > 0 and spread_bps > spread_cap:
+        reasons.append("wide_spread")
+
+    funding_bps = _to_float(payload.get("funding_rate_bps"))
+    funding_cap = _to_float(payload.get("max_funding_bps"))
+    if funding_cap is None:
+        funding_cap = 20.0
+    if funding_bps is not None and abs(funding_bps) > abs(funding_cap):
+        reasons.append("funding_window")
+
+    age_ms = _to_float(payload.get("latency_ms")) or _to_float(payload.get("age_ms"))
+    max_latency_ms = _to_float(payload.get("max_latency_ms")) or 15_000.0
+    if age_ms is not None and age_ms > max_latency_ms:
+        reasons.append("stale_signal")
+
+    ok = len(reasons) == 0
+    confidence = base_conf if ok else max(0.05, min(base_conf, 0.2))
+
+    return {"ok": ok, "reasons": reasons, "confidence": float(confidence)}
 
 
 def _nav_snapshot_fallback() -> float:
@@ -165,11 +217,15 @@ def diagnose_symbols(env: str, testnet: bool, symbols: List[str]) -> int:
 
 def main(argv: List[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Signal doctor: diagnostics for whitelist symbols")
-    p.add_argument("--env", default=os.getenv("ENV", "prod"))
+    p.add_argument("--env", default=os.getenv("ENV", "dev"))
     p.add_argument("--testnet", type=int, default=int(os.getenv("BINANCE_TESTNET", "0")))
     p.add_argument("--symbols", type=str, default=",".join(WL_DEFAULT))
     p.add_argument("--once", action="store_true", help="Run once and exit")
     args = p.parse_args(argv)
+    if str(args.env).lower() == "prod":
+        allow = os.getenv("ALLOW_PROD_WRITE", "0").strip().lower()
+        if allow not in {"1", "true", "yes"}:
+            raise RuntimeError("signal_doctor refuses to run with ENV=prod without ALLOW_PROD_WRITE=1")
     syms = [s.strip().upper() for s in str(args.symbols).split(",") if s.strip()]
     rc = diagnose_symbols(args.env, bool(args.testnet), syms)
     return int(rc)

@@ -8,6 +8,7 @@ import os
 repo_root = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, repo_root)
 
+import argparse
 import json
 import logging
 import subprocess
@@ -16,13 +17,14 @@ import socket
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
+from pathlib import Path
 
 try:
     from binance.um_futures import UMFutures
 except Exception:  # pragma: no cover - optional dependency
     UMFutures = None
 
-from execution.log_utils import get_logger, log_event, safe_dump
+from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
 
 import requests
 from utils.firestore_client import with_firestore
@@ -51,6 +53,28 @@ _HEARTBEAT_INTERVAL = 60.0
 _LAST_HEARTBEAT = 0.0
 _LAST_SIGNAL_PULL = 0.0
 _LAST_QUEUE_DEPTH = 0
+SIGNAL_METRICS_PATH = Path("logs/execution/signal_metrics.jsonl")
+ORDER_METRICS_PATH = Path("logs/execution/order_metrics.jsonl")
+_INTENT_REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+
+def mk_id(prefix: str) -> str:
+    base = prefix.strip("_") or "id"
+    return f"{base}_{uuid.uuid4().hex[:10]}"
+
+
+def _append_signal_metrics(record: Mapping[str, Any]) -> None:
+    try:
+        append_jsonl(SIGNAL_METRICS_PATH, record)
+    except Exception as exc:
+        LOG.debug("[metrics] signal_metrics_append_failed: %s", exc)
+
+
+def _append_order_metrics(record: Mapping[str, Any]) -> None:
+    try:
+        append_jsonl(ORDER_METRICS_PATH, record)
+    except Exception as exc:
+        LOG.debug("[metrics] order_metrics_append_failed: %s", exc)
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (
@@ -65,10 +89,14 @@ from execution.exchange_utils import (
 )
 try:
     from execution.order_router import route_order as _route_order
+    from execution.order_router import route_intent as _route_intent
 except Exception:
     _route_order = None  # type: ignore[assignment]
+    _route_intent = None  # type: ignore[assignment]
 from execution.risk_limits import RiskState, check_order, RiskGate
+from execution.risk_autotune import RiskAutotuner
 from execution.nav import compute_nav_pair, compute_treasury_only, PortfolioSnapshot
+from execution import size_model
 from execution.utils import (
     load_json,
     write_nav_snapshots_pair,
@@ -78,13 +106,28 @@ from execution.utils import (
 )
 
 from execution.signal_generator import generate_intents, normalize_intent as generator_normalize_intent
+from execution import signal_doctor
 try:
     from execution.signal_screener import run_once as run_screener_once
 except ImportError:  # pragma: no cover - optional dependency
     run_screener_once = None
 
 # ---- Firestore publisher handle (revisions differ) ----
-ENV = os.getenv("ENV", "prod")
+def _resolve_env(default: str = "dev") -> str:
+    raw = (os.getenv("ENV") or os.getenv("ENVIRONMENT") or "").strip()
+    if not raw:
+        return default
+    return raw
+
+
+ENV = _resolve_env()
+if ENV.lower() == "prod":
+    allow_prod = os.getenv("ALLOW_PROD_WRITE", "0").strip().lower()
+    if allow_prod not in {"1", "true", "yes"}:
+        raise RuntimeError(
+            "Refusing to run executor_live with ENV=prod. "
+            "Set ALLOW_PROD_WRITE=1 to override explicitly."
+        )
 _FS_PUB_INTERVAL = int(os.getenv("FS_PUB_INTERVAL", "60") or 60)
 _PUB: Any
 try:
@@ -101,28 +144,8 @@ try:
     except TypeError:
         _PUB = StatePublisher(interval_s=_FS_PUB_INTERVAL)
         setattr(_PUB, "env", ENV)
-except Exception:
-
-    class _Publisher:
-        def __init__(self, interval_s: int = 60, env: str = ENV):
-            self.interval_s = interval_s
-            self.env = env
-
-    def publish_intent_audit(intent: Dict[Any, Any]) -> None:
-        pass
-
-    def publish_order_audit(symbol: str, event: Dict[Any, Any]) -> None:
-        pass
-
-    def publish_close_audit(
-        symbol: str, position_side: str, event: Dict[Any, Any]
-    ) -> None:
-        pass
-
-    def publish_nav_value(nav: float, min_interval_s: int = 60, max_points: int = 20000) -> None:
-        return None
-
-    _PUB = _Publisher(interval_s=_FS_PUB_INTERVAL)
+except Exception as exc:
+    raise RuntimeError("execution.state_publish is required for executor_live") from exc
 
 # ---- risk limits config ----
 _RISK_CFG_PATH = os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
@@ -202,7 +225,7 @@ def _now_iso() -> str:
 def _startup_flags() -> Dict[str, Any]:
     testnet = is_testnet()
     dry_run = os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
-    env = os.getenv("ENV", "prod")
+    env = ENV
     base = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
     fs_enabled = bool(int(os.getenv("FIRESTORE_ENABLED", "0") or 0))
     return {
@@ -267,7 +290,7 @@ EXTERNAL_SIGNAL = _truthy_env("EXTERNAL_SIGNAL", "0")
 
 LOG.info(
     "[executor] starting loop ENV=%s DRY_RUN=%s commit=%s signal_source=generate_intents unified=True",
-    os.getenv("ENV", "dev"),
+    ENV,
     DRY_RUN,
     _git_commit(),
 )
@@ -277,7 +300,7 @@ try:
 except Exception as exc:
     LOG.exception("[live] startup summary logging failed: %s", exc)
     _startup_flags_snapshot = {
-        "env": os.getenv("ENV", "prod"),
+        "env": ENV,
         "fs_enabled": bool(int(os.getenv("FIRESTORE_ENABLED", "0") or 0)),
         "prefix": "live",
     }
@@ -433,7 +456,7 @@ def _emit_position_snapshots(symbol: str) -> None:
         _record_structured_event(LOG_POSITION, "position_snapshot", payload)
 
 
-def _maybe_emit_heartbeat() -> None:
+def _maybe_emit_heartbeat(autotuner: Optional[RiskAutotuner] = None) -> None:
     global _LAST_HEARTBEAT
     now = time.time()
     if (now - _LAST_HEARTBEAT) < _HEARTBEAT_INTERVAL:
@@ -452,6 +475,15 @@ def _maybe_emit_heartbeat() -> None:
         payload["lag_secs"] = lag
     if _LAST_QUEUE_DEPTH is not None:
         payload["queue_depth"] = _LAST_QUEUE_DEPTH
+    if autotuner is not None:
+        try:
+            summary = autotuner.on_heartbeat(_RISK_STATE)
+            adjustments = summary.get("adjustments") if isinstance(summary, Mapping) else None
+            if adjustments:
+                LOG.info("[risk] autotune adjustments=%s", adjustments)
+                payload["risk_autotune"] = adjustments
+        except Exception as exc:
+            LOG.warning("[risk] autotune heartbeat failed: %s", exc)
     _record_structured_event(LOG_HEART, "heartbeat", payload)
 
 
@@ -698,6 +730,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     sig = str(intent.get("signal", "")).upper()
     side = "BUY" if sig == "BUY" else "SELL"
     pos_side = intent.get("positionSide") or ("LONG" if side == "BUY" else "SHORT")
+    attempt_id = str(intent.get("attempt_id") or mk_id("sig"))
+    intent_id = str(intent.get("intent_id") or mk_id("ord"))
+    intent["attempt_id"] = attempt_id
+    intent["intent_id"] = intent_id
     cap = float(intent.get("capital_per_trade", 0) or 0)
     lev = float(intent.get("leverage", 1) or 1)
     gross_target = float(intent.get("gross_usd") or (cap * lev))
@@ -709,6 +745,16 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     except Exception:
         price_guess = 0.0
     reduce_only = bool(intent.get("reduceOnly", False))
+    generated_at = intent.get("generated_at") or intent.get("signal_ts")
+    decision_latency_ms: Optional[float] = None
+    if generated_at is not None:
+        try:
+            gen_val = float(generated_at)
+            if gen_val > 1e12:
+                gen_val = gen_val / 1000.0
+            decision_latency_ms = max(0.0, (time.time() - gen_val) * 1000.0)
+        except Exception:
+            decision_latency_ms = None
     try:
         _PORTFOLIO_SNAPSHOT.refresh()
     except Exception:
@@ -866,6 +912,8 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     attempt_payload = {
         "symbol": symbol,
         "side": side,
+        "attempt_id": attempt_id,
+        "intent_id": intent_id,
         "qty": _estimate_intent_qty(intent, gross_target, price_guess),
         "strategy": (
             intent.get("strategy")
@@ -886,6 +934,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         "reduce_only": reduce_only,
         "price_hint": price_guess,
     }
+    attempt_payload["decision_latency_ms"] = decision_latency_ms
     try:
         attempt_payload["confidence"] = float(intent.get("confidence", 1.0) or 1.0)
     except Exception:
@@ -1308,10 +1357,34 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
 
     resp: Dict[str, Any] = {}
     router_error: Optional[str] = None
+    router_metrics: Optional[Dict[str, Any]] = None
 
     if force_direct_send:
         try:
             resp = send_order(**payload)
+            router_metrics = {
+                "attempt_id": attempt_id,
+                "venue": "binance_futures",
+                "route": intent.get("route", "market"),
+                "prices": {
+                    "mark": price_hint,
+                    "submitted": _meta_float(payload.get("price"), price_hint),
+                    "avg_fill": _meta_float(resp.get("avgPrice"), price_hint),
+                },
+                "qty": {
+                    "contracts": _meta_float(resp.get("executedQty"), 0.0),
+                    "notional_usd": None,
+                },
+                "timing_ms": {
+                    "decision": decision_latency_ms,
+                    "submit": None,
+                    "ack": None,
+                    "fill": None,
+                },
+                "result": {"status": resp.get("status"), "retries": 0, "cancelled": False},
+                "fees_usd": None,
+                "slippage_bps": None,
+            }
         except Exception as exc:
             router_error = str(exc)
             LOG.error("[executor] flip open send_failed %s %s", symbol, exc)
@@ -1334,7 +1407,42 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         except Exception:
             pass
 
-    if _route_order is not None and not force_direct_send:
+    if _route_intent is not None and not force_direct_send:
+        router_ctx = {
+            "payload": payload,
+            "price": price_hint,
+            "positionSide": pos_side,
+            "reduceOnly": reduce_only,
+        }
+        router_payload = dict(intent)
+        router_payload.update(
+            {
+                "symbol": symbol,
+                "side": side,
+                "positionSide": pos_side,
+                "reduceOnly": reduce_only,
+                "quantity": payload.get("quantity"),
+                "type": payload.get("type"),
+                "price": payload.get("price", price_hint),
+                "router_ctx": router_ctx,
+                "dry_run": DRY_RUN,
+                "timing": {"decision": decision_latency_ms},
+            }
+        )
+        try:
+            result, router_metrics = _route_intent(router_payload, attempt_id)
+        except Exception as exc:
+            router_error = str(exc)
+        else:
+            if result.get("accepted"):
+                resp = result.get("raw") or {}
+                if result.get("price") is not None:
+                    resp.setdefault("avgPrice", result.get("price"))
+                if result.get("qty") is not None:
+                    resp.setdefault("executedQty", str(result.get("qty")))
+            else:
+                router_error = str(result.get("reason") or "router_reject")
+    elif _route_order is not None and not force_direct_send:
         router_intent = {
             **intent,
             "symbol": symbol,
@@ -1433,6 +1541,30 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             except Exception:
                 pass
             raise
+        else:
+            router_metrics = router_metrics or {
+                "attempt_id": attempt_id,
+                "venue": "binance_futures",
+                "route": intent.get("route", "market"),
+                "prices": {
+                    "mark": price_hint,
+                    "submitted": _meta_float(payload.get("price"), price_hint),
+                    "avg_fill": _meta_float(resp.get("avgPrice"), price_hint),
+                },
+                "qty": {
+                    "contracts": _meta_float(resp.get("executedQty"), 0.0),
+                    "notional_usd": None,
+                },
+                "timing_ms": {
+                    "decision": decision_latency_ms,
+                    "submit": None,
+                    "ack": None,
+                    "fill": None,
+                },
+                "result": {"status": resp.get("status"), "retries": 0, "cancelled": False},
+                "fees_usd": None,
+                "slippage_bps": None,
+            }
 
     try:
         exchange_name = "binance_testnet" if is_testnet() else "binance"
@@ -1451,6 +1583,86 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         or norm_qty
     )
     latency_ms = max(0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0)
+    if router_metrics is None:
+        router_metrics = {
+            "attempt_id": attempt_id,
+            "venue": "binance_futures",
+            "route": intent.get("route", "market"),
+            "prices": {
+                "mark": price_hint,
+                "submitted": _meta_float(payload.get("price"), price_hint),
+                "avg_fill": _meta_float(resp.get("avgPrice"), price_hint),
+            },
+            "qty": {
+                "contracts": _meta_float(qty_exec, 0.0),
+                "notional_usd": None,
+            },
+            "timing_ms": {
+                "decision": decision_latency_ms,
+                "submit": None,
+                "ack": latency_ms,
+                "fill": None,
+            },
+            "result": {"status": resp.get("status"), "retries": 0, "cancelled": False},
+            "fees_usd": None,
+            "slippage_bps": None,
+        }
+    prices_section = router_metrics.setdefault(
+        "prices",
+        {"mark": price_hint, "submitted": _meta_float(payload.get("price"), price_hint), "avg_fill": None},
+    )
+    qty_section = router_metrics.setdefault("qty", {"contracts": _meta_float(qty_exec, 0.0), "notional_usd": None})
+    timing_section = router_metrics.setdefault(
+        "timing_ms",
+        {"decision": decision_latency_ms, "submit": None, "ack": latency_ms, "fill": None},
+    )
+    result_section = router_metrics.setdefault(
+        "result", {"status": resp.get("status"), "retries": 0, "cancelled": False}
+    )
+    avg_fill_float = _meta_float(resp.get("avgPrice"), _meta_float(prices_section.get("avg_fill"), price_exec))
+    prices_section["avg_fill"] = avg_fill_float
+    prices_section.setdefault("mark", _meta_float(prices_section.get("mark"), price_hint))
+    prices_section.setdefault("submitted", _meta_float(prices_section.get("submitted"), price_hint))
+    qty_float = _meta_float(qty_exec, _meta_float(qty_section.get("contracts"), 0.0))
+    qty_section["contracts"] = qty_float
+    if avg_fill_float is not None and qty_float is not None:
+        try:
+            qty_section["notional_usd"] = float(avg_fill_float) * float(qty_float)
+        except Exception:
+            pass
+    timing_section.setdefault("decision", decision_latency_ms)
+    timing_section.setdefault("submit", None)
+    timing_section["ack"] = latency_ms
+    timing_section.setdefault("fill", None)
+    result_section["status"] = resp.get("status")
+    result_section.setdefault("retries", 0)
+    result_section.setdefault("cancelled", False)
+    router_metrics["fees_usd"] = router_metrics.get("fees_usd") or _meta_float(resp.get("commission"), None)
+    if router_metrics.get("slippage_bps") is None:
+        mark_val = _meta_float(prices_section.get("mark"), price_hint)
+        fill_val = avg_fill_float
+        if mark_val not in (None, 0):
+            try:
+                slip = ((fill_val - mark_val) / mark_val) * 10_000.0 if fill_val is not None else None
+                if slip is not None and side == "SELL":
+                    slip *= -1.0
+                router_metrics["slippage_bps"] = slip
+            except Exception:
+                router_metrics["slippage_bps"] = None
+    router_metrics["attempt_id"] = attempt_id
+    router_metrics["intent_id"] = intent_id
+    router_metrics["symbol"] = symbol
+    router_metrics["side"] = side
+    router_metrics["ts"] = time.time()
+    _append_order_metrics(router_metrics)
+    _INTENT_REGISTRY[intent_id] = {
+        "order_id": resp.get("orderId"),
+        "symbol": symbol,
+        "side": side,
+        "attempt_id": attempt_id,
+        "avg_fill": avg_fill_float,
+        "qty": qty_float,
+    }
     execution_payload = {
         "symbol": symbol,
         "side": side,
@@ -1516,6 +1728,21 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
             except Exception:
                 pass
+            close_record = {
+                "ts": time.time(),
+                "intent_id": intent_id,
+                "attempt_id": attempt_id,
+                "symbol": symbol,
+                "side": side,
+                "event": "position_close",
+                "pnl_at_close_usd": (
+                    intent.get("pnl_usd")
+                    or intent.get("realized_pnl_usd")
+                    or intent.get("pnl")
+                ),
+            }
+            _append_order_metrics(close_record)
+            _INTENT_REGISTRY.pop(intent_id, None)
 
 
 
@@ -1649,7 +1876,7 @@ def _loop_once(i: int) -> None:
         _LAST_QUEUE_DEPTH = len(intents_raw)
         attempted = len(intents_raw)
         emitted = 0
-        for raw_intent in intents_raw:
+        for idx, raw_intent in enumerate(intents_raw):
             intent = _normalize_intent(raw_intent)
             symbol = cast(Optional[str], intent.get("symbol"))
             if not symbol:
@@ -1661,10 +1888,48 @@ def _loop_once(i: int) -> None:
                 _publish_veto_exec(symbol, veto_reasons, intent)
                 continue
 
+            attempt_id = mk_id("sig")
+            generated_at = intent.get("generated_at") or intent.get("signal_ts")
+            latency_ms: Optional[float] = None
+            if generated_at is not None:
+                try:
+                    gen = float(generated_at)
+                    if gen > 1e12:
+                        gen = gen / 1000.0
+                    latency_ms = max(0.0, (time.time() - gen) * 1000.0)
+                except Exception:
+                    latency_ms = None
+            doctor_verdict = signal_doctor.evaluate_signal(
+                str(intent.get("signal", "")),
+                symbol,
+                intent,
+            )
+            signal_metrics_record: Dict[str, Any] = {
+                "ts": time.time(),
+                "attempt_id": attempt_id,
+                "symbol": symbol,
+                "signal": str(intent.get("signal")),
+                "doctor": doctor_verdict,
+                "queue_depth": max(0, len(intents_raw) - idx),
+                "latency_ms": latency_ms,
+            }
+            _append_signal_metrics(signal_metrics_record)
+
+            if not doctor_verdict.get("ok", False):
+                LOG.info(
+                    "[signal] veto attempt=%s symbol=%s reasons=%s",
+                    attempt_id,
+                    symbol,
+                    ",".join(doctor_verdict.get("reasons", [])),
+                )
+                continue
+
             emitted += 1
             try:
                 _publish_intent_audit(symbol, intent)
-                _send_order(intent)
+                intent_with_attempt = dict(intent)
+                intent_with_attempt["attempt_id"] = attempt_id
+                _send_order(intent_with_attempt)
             except Exception as exc:
                 LOG.error("[executor] failed to send intent %s %s", symbol, exc)
         LOG.info("[screener] attempted=%d emitted=%d", attempted, emitted)
@@ -1672,7 +1937,27 @@ def _loop_once(i: int) -> None:
     _pub_tick()
 
 
-def main() -> None:
+def main(argv: Optional[Sequence[str]] | None = None) -> None:
+    args_list = list(argv) if argv is not None else sys.argv[1:]
+    parser = argparse.ArgumentParser(description="Hedge live executor")
+    parser.add_argument(
+        "--risk-autotune",
+        action="store_true",
+        default=_truthy_env("RISK_AUTOTUNE", "0"),
+        help="Enable adaptive risk tuning and persist counters to disk",
+    )
+    parsed = parser.parse_args(args_list)
+    autotune_enabled = bool(parsed.risk_autotune)
+    autotuner: Optional[RiskAutotuner] = None
+    if autotune_enabled:
+        autotuner = RiskAutotuner(_RISK_GATE)
+        try:
+            autotuner.restore_state(_RISK_STATE)
+        except Exception as exc:
+            LOG.warning("[risk] autotune restore failed: %s", exc)
+        else:
+            LOG.info("[risk] autotune enabled (state restored)")
+
     _sync_dry_run()
     LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
     try:
@@ -1694,7 +1979,7 @@ def main() -> None:
     i = 0
     while True:
         _loop_once(i)
-        _maybe_emit_heartbeat()
+        _maybe_emit_heartbeat(autotuner)
         _maybe_run_internal_screener()
         i += 1
         if MAX_LOOPS and i >= MAX_LOOPS:

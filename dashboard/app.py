@@ -29,13 +29,12 @@ from dashboard.dashboard_utils import (  # noqa: E402
     get_env_badge,
 )
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
-from dashboard.router_health_tab import render_router_health_tab  # noqa: E402
+from dashboard.router_health import load_router_health, RouterHealthData  # noqa: E402
 from scripts.doctor import collect_doctor_snapshot  # noqa: E402
 try:
-    from execution.signal_generator import generate_intents
-except Exception:  # pragma: no cover - optional dependency
-    def generate_intents(*_args, **_kwargs):
-        return []
+    import altair as alt  # type: ignore
+except Exception:  # pragma: no cover
+    alt = None  # type: ignore
 try:
     from execution.utils import get_coingecko_prices
 except Exception:  # pragma: no cover
@@ -75,7 +74,7 @@ LOG.setLevel(logging.INFO)
 def main():
 
     st.set_page_config(page_title="Hedge — Portfolio Dashboard", layout="wide")
-    ENV = os.getenv("ENV", "prod")
+    ENV = os.getenv("ENV", "dev")
     TESTNET = str(os.getenv("BINANCE_TESTNET", "0")).strip().lower() in ("1", "true", "yes", "on")
     REFRESH_SEC = int(os.getenv("DASHBOARD_REFRESH_SEC", "60"))
     # log-tail behavior
@@ -398,6 +397,7 @@ def main():
                 out.append(obj)
         return out
 
+    @st.cache_data(ttl=30, show_spinner=False)
     def load_local_nav_doc() -> Dict[str, Any]:
         path = PROJECT_ROOT / "logs" / "nav_log.json"
         data = load_json(str(path), [])
@@ -588,6 +588,49 @@ def main():
             LOG.warning("[dash] leaderboard Firestore fetch failed: %s", exc)
         return load_local_leaderboard(), "local"
 
+    DOCTOR_CACHE_PATH = PROJECT_ROOT / "logs" / "cache" / "doctor.json"
+    SIGNAL_METRICS_PATH = PROJECT_ROOT / "logs" / "execution" / "signal_metrics.jsonl"
+    ML_CACHE_PATH = PROJECT_ROOT / "logs" / "cache" / "ml_predictions.json"
+
+    @st.cache_data(ttl=30, show_spinner=False)
+    def cached_doctor_snapshot() -> Dict[str, Any]:
+        if DOCTOR_CACHE_PATH.exists():
+            try:
+                with DOCTOR_CACHE_PATH.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception as exc:
+                LOG.debug("[dash] doctor cache read failed: %s", exc)
+        try:
+            snapshot = collect_doctor_snapshot() or {}
+        except Exception as exc:
+            LOG.warning("[dash] doctor snapshot fallback failed: %s", exc)
+            snapshot = {}
+        try:
+            DOCTOR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with DOCTOR_CACHE_PATH.open("w", encoding="utf-8") as handle:
+                json.dump(snapshot, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        except Exception:
+            pass
+        return snapshot
+
+    @st.cache_data(ttl=20, show_spinner=False)
+    def cached_signal_metrics(limit: int = 400) -> List[Dict[str, Any]]:
+        return read_jsonl_tail(SIGNAL_METRICS_PATH, limit)
+
+    @st.cache_data(ttl=60, show_spinner=False)
+    def cached_ml_predictions() -> Dict[str, Any]:
+        if ML_CACHE_PATH.exists():
+            try:
+                with ML_CACHE_PATH.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception as exc:
+                LOG.debug("[dash] ml cache read failed: %s", exc)
+        return {}
+
     def load_trades(limit: int, db=None) -> pd.DataFrame:
         if db is None:
             return load_local_trade_log(limit)
@@ -668,13 +711,6 @@ def main():
         rows.sort(key=lambda row: row.get("ts") or 0.0, reverse=True)
         return pd.DataFrame(rows[:limit])
 
-    def _status_cell(value: float, vetoed: bool) -> str:
-        if vetoed:
-            return "vetoed"
-        if value and value > 0:
-            return "live"
-        return "pending"
-
     def _safe_float(value: Any) -> float:
         try:
             return float(value)
@@ -682,47 +718,41 @@ def main():
             return 0.0
 
     def load_signals_table(limit: int = 100) -> pd.DataFrame:
-        rows: List[Dict[str, Any]] = []
-        now = time.time()
-        try:
-            intents = generate_intents(now)
-        except Exception as exc:
-            LOG.debug("[dash] generate_intents unavailable: %s", exc, exc_info=True)
-            intents = []
-
-        if intents:
-            for intent in intents:
-                if not isinstance(intent, dict):
-                    continue
-                ts_raw = intent.get("timestamp") or intent.get("t") or intent.get("ts") or intent.get("time")
-                ts_val = _to_epoch_seconds(ts_raw) or now
-                if not is_recent(ts_val, 24 * 3600):
-                    continue
-                veto_field = intent.get("veto") or []
-                if isinstance(veto_field, (list, tuple, set)):
-                    veto_display = ", ".join(str(item) for item in veto_field if item)
-                elif veto_field in (None, ""):
-                    veto_display = ""
-                else:
-                    veto_display = str(veto_field)
-                gross_val = _safe_float(intent.get("gross_usd"))
-                rows.append(
-                    {
-                        "ts": ts_val,
-                        "symbol": intent.get("symbol"),
-                        "tf": intent.get("timeframe") or intent.get("tf"),
-                        "signal": intent.get("signal"),
-                        "price": _safe_float(intent.get("price")),
-                        "cap": _safe_float(intent.get("capital_per_trade")),
-                        "gross_usd": gross_val,
-                        "lev": _safe_float(intent.get("leverage")),
-                        "reduceOnly": bool(intent.get("reduceOnly")),
-                        "veto": veto_display,
-                        "status": _status_cell(gross_val, bool(veto_display)),
-                    }
-                )
-            rows.sort(key=lambda row: row.get("ts") or 0.0, reverse=True)
-            return pd.DataFrame(rows[:limit])
+        metrics_rows = cached_signal_metrics(800)
+        cutoff = time.time() - 24 * 3600
+        table_rows: List[Dict[str, Any]] = []
+        for row in reversed(metrics_rows):
+            if not isinstance(row, dict):
+                continue
+            ts_val = _to_epoch_seconds(row.get("ts") or row.get("time"))
+            if ts_val is None or ts_val < cutoff:
+                continue
+            doctor = row.get("doctor") if isinstance(row.get("doctor"), dict) else {}
+            reasons_raw = doctor.get("reasons") if isinstance(doctor, dict) else None
+            if isinstance(reasons_raw, (list, tuple, set)):
+                reasons = ", ".join(str(item) for item in reasons_raw if item)
+            elif isinstance(reasons_raw, str):
+                reasons = reasons_raw
+            else:
+                reasons = ""
+            confidence = _safe_float(doctor.get("confidence")) if isinstance(doctor, dict) else None
+            status = "Emitted" if isinstance(doctor, dict) and doctor.get("ok") else "Vetoed"
+            table_rows.append(
+                {
+                    "ts": ts_val,
+                    "symbol": row.get("symbol"),
+                    "signal": row.get("signal"),
+                    "queue_depth": row.get("queue_depth"),
+                    "latency_ms": _safe_float(row.get("latency_ms")),
+                    "doctor_confidence": confidence,
+                    "doctor_status": status,
+                    "doctor_reasons": reasons,
+                }
+            )
+        if table_rows:
+            df = pd.DataFrame(table_rows)
+            df.sort_values("ts", ascending=False, inplace=True, ignore_index=True)
+            return df.head(limit)
 
         # Fallback: parse screener tail log
         lines: List[str] = []
@@ -756,27 +786,26 @@ def main():
             ts_val = _to_epoch_seconds(payload.get("timestamp") or payload.get("t") or payload.get("time"))
             if not is_recent(ts_val, 24 * 3600):
                 continue
-            gross_val = _safe_float(payload.get("gross_usd"))
             veto_display = payload.get("veto") or payload.get("reason") or ""
             if isinstance(veto_display, (list, tuple, set)):
                 veto_display = ", ".join(str(item) for item in veto_display if item)
-            rows.append(
+            table_rows.append(
                 {
                     "ts": ts_val,
                     "symbol": payload.get("symbol"),
-                    "tf": payload.get("timeframe") or payload.get("tf"),
                     "signal": payload.get("signal"),
-                    "price": _safe_float(payload.get("price")),
-                    "cap": _safe_float(payload.get("capital_per_trade")),
-                    "gross_usd": gross_val,
-                    "lev": _safe_float(payload.get("leverage")),
-                    "reduceOnly": bool(payload.get("reduceOnly")),
-                    "veto": veto_display,
-                    "status": _status_cell(gross_val, bool(veto_display)),
+                    "queue_depth": payload.get("queue_depth"),
+                    "latency_ms": _safe_float(payload.get("latency_ms")),
+                    "doctor_confidence": None,
+                    "doctor_status": "Emitted" if not veto_display else "Vetoed",
+                    "doctor_reasons": veto_display,
                 }
             )
-        rows.sort(key=lambda row: row.get("ts") or 0.0, reverse=True)
-        return pd.DataFrame(rows[:limit])
+        if table_rows:
+            df = pd.DataFrame(table_rows)
+            df.sort_values("ts", ascending=False, inplace=True, ignore_index=True)
+            return df.head(limit)
+        return pd.DataFrame(columns=["ts", "symbol", "signal", "doctor_status"])
 
     # --------------------------- Load Firestore ----------------------------------
     status = st.empty()
@@ -794,7 +823,7 @@ def main():
     pos_doc, pos_source = load_positions_state()
     lb_doc, lb_source = load_leaderboard_state()
 
-    doctor_snapshot = collect_doctor_snapshot() or {}
+    doctor_snapshot = cached_doctor_snapshot() or {}
     if not isinstance(doctor_snapshot, dict):
         doctor_snapshot = {}
 
@@ -1151,8 +1180,28 @@ def main():
     reserve_zar = reserve_usdt * float(zar_rate) if zar_rate and reserve_usdt else None
 
     # ---- Tabs layout --------------------------------------------------------------
-    tab_overview, tab_positions, tab_execution, tab_router, tab_leader, tab_signals, tab_ml, tab_doctor = st.tabs(
-        ["Overview", "Positions", "Execution", "Router Health", "Leaderboard", "Signals", "ML", "Doctor"]
+    (
+        tab_overview,
+        tab_positions,
+        tab_execution,
+        tab_router,
+        tab_leader,
+        tab_signals,
+        tab_ml_insights,
+        tab_ml_models,
+        tab_doctor,
+    ) = st.tabs(
+        [
+            "Overview",
+            "Positions",
+            "Execution",
+            "Router Health",
+            "Leaderboard",
+            "Signals",
+            "ML Insights",
+            "ML Models",
+            "Doctor",
+        ]
     )
 
     # --------------------------- Overview Tab ------------------------------------
@@ -1214,7 +1263,39 @@ def main():
         if nav_df.empty:
             st.info("No NAV points yet. Run executor + sync_state to populate.")
         else:
-            st.line_chart(nav_df["equity"], use_container_width=True)
+            plot_df = nav_df.copy()
+            equity_series = pd.to_numeric(plot_df.get("equity"), errors="coerce")
+            equity_series = equity_series.fillna(method="ffill")
+            peak = equity_series.cummax()
+            denom = peak.replace(0, pd.NA)
+            drawdown_pct = ((equity_series - denom) / denom).fillna(0.0) * 100.0
+            plot_df = plot_df.assign(equity=equity_series, drawdown_pct=drawdown_pct)
+            plot_df_reset = plot_df.reset_index(names="time")
+            if alt is not None:
+                nav_chart = (
+                    alt.layer(
+                        alt.Chart(plot_df_reset)
+                        .mark_line(color="#1f77b4")
+                        .encode(
+                            x=alt.X("time:T", title="Time"),
+                            y=alt.Y("equity:Q", title="Equity (USDT)", axis=alt.Axis(titleColor="#1f77b4")),
+                        ),
+                        alt.Chart(plot_df_reset)
+                        .mark_line(color="#d62728")
+                        .encode(
+                            x=alt.X("time:T", title="Time"),
+                            y=alt.Y(
+                                "drawdown_pct:Q",
+                                title="Drawdown (%)",
+                                axis=alt.Axis(titleColor="#d62728", orient="right"),
+                            ),
+                        ),
+                    ).resolve_scale(y="independent")
+                )
+                st.altair_chart(nav_chart, use_container_width=True)
+            else:
+                st.line_chart(plot_df["equity"], use_container_width=True)
+                st.line_chart(plot_df[["drawdown_pct"]], use_container_width=True)
 
     # --------------------------- Positions Tab -----------------------------------
     with tab_positions:
@@ -1447,7 +1528,67 @@ def main():
     # --------------------------- Router Health Tab --------------------------------
     with tab_router:
         st.subheader("Router Health")
-        render_router_health_tab()
+        try:
+            router_health = load_router_health(window=300)
+        except Exception as exc:
+            LOG.warning("[dash] router health load failed: %s", exc)
+            st.error(f"Router health unavailable: {exc}")
+            router_health = RouterHealthData(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {
+                "count": 0,
+                "win_rate": 0.0,
+                "avg_pnl": 0.0,
+                "cum_pnl": 0.0,
+            })
+
+        summary = router_health.summary
+        metrics = st.columns(4)
+        metrics[0].metric("Trades", summary.get("count", 0))
+        metrics[1].metric("Win %", f"{summary.get('win_rate', 0.0):.1f}%")
+        metrics[2].metric("Avg PnL", f"{summary.get('avg_pnl', 0.0):.2f} USDT")
+        metrics[3].metric("Cum PnL", f"{summary.get('cum_pnl', 0.0):.2f} USDT")
+
+        st.markdown("### PnL & Hit Rate")
+        if router_health.pnl_curve.empty:
+            st.info("No router executions recorded yet.")
+        else:
+            curve_df = router_health.pnl_curve.copy()
+            curve_df["hit_pct"] = curve_df["hit_rate"] * 100.0
+            if alt is not None:
+                chart = (
+                    alt.layer(
+                        alt.Chart(curve_df)
+                        .mark_line(color="#1f77b4")
+                        .encode(
+                            x=alt.X("time:T", title="Time"),
+                            y=alt.Y("cum_pnl:Q", title="Cumulative PnL (USDT)", axis=alt.Axis(titleColor="#1f77b4")),
+                        ),
+                        alt.Chart(curve_df)
+                        .mark_line(color="#ff7f0e")
+                        .encode(
+                            x=alt.X("time:T", title="Time"),
+                            y=alt.Y(
+                                "hit_pct:Q",
+                                title="Hit Rate (%)",
+                                axis=alt.Axis(titleColor="#ff7f0e", orient="right"),
+                            ),
+                        ),
+                    ).resolve_scale(y="independent")
+                )
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                plot_df = curve_df.set_index("time")[ ["cum_pnl", "hit_pct"] ]
+                st.line_chart(plot_df, use_container_width=True)
+
+        st.markdown("### Per-Symbol Performance")
+        if router_health.per_symbol.empty:
+            st.info("No per-symbol performance data yet.")
+        else:
+            display_df = router_health.per_symbol.copy()
+            display_df["win_rate"] = display_df["win_rate"].apply(lambda v: f"{v:.1f}%")
+            display_df["avg_pnl"] = display_df["avg_pnl"].apply(lambda v: f"{v:.2f}")
+            display_df["cum_pnl"] = display_df["cum_pnl"].apply(lambda v: f"{v:.2f}")
+            display_df["sharpe"] = display_df["sharpe"].apply(lambda v: f"{v:.2f}")
+            st.dataframe(display_df, use_container_width=True, height=420)
 
     # --------------------------- Leaderboard Tab ---------------------------------
     with tab_leader:
@@ -1516,8 +1657,36 @@ def main():
             st.caption(signal_attempts_summary(tail_lines))
             st.code("\n".join(compact), language="text")
 
-    # --------------------------- ML Tab -----------------------------------------
-    with tab_ml:
+    # --------------------------- ML Insights Tab --------------------------------
+    with tab_ml_insights:
+        st.subheader("Live ML Insights")
+        ml_payload = cached_ml_predictions() or {}
+        predictions = ml_payload.get("predictions") if isinstance(ml_payload, dict) else None
+        if not predictions:
+            st.info("No ML predictions cached yet. Ensure the ML screener is running.")
+        else:
+            df_preds = pd.DataFrame(predictions)
+            if not df_preds.empty:
+                if "score" in df_preds.columns:
+                    df_preds = df_preds.sort_values("score", ascending=False)
+                if "score" in df_preds.columns:
+                    df_preds["score"] = df_preds["score"].apply(lambda val: f"{float(val):.3f}")
+                if "updated_at" in df_preds.columns:
+                    df_preds["updated_at"] = df_preds["updated_at"].apply(
+                        lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        if isinstance(ts, (int, float))
+                        else ts
+                    )
+                st.dataframe(df_preds, use_container_width=True, height=360)
+            else:
+                st.info("ML predictions file exists but contains no data.")
+        generated_at = ml_payload.get("generated_at") if isinstance(ml_payload, dict) else None
+        if isinstance(generated_at, (int, float)):
+            ts_str = datetime.fromtimestamp(generated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            st.caption(f"Last updated: {ts_str} UTC")
+
+    # --------------------------- ML Models Tab ----------------------------------
+    with tab_ml_models:
         st.header("ML — Models & Evaluation")
         try:
             meta_dir = Path("models")

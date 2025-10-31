@@ -4,7 +4,7 @@ import json
 import math
 import os
 from statistics import pstdev
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from execution.exchange_utils import get_klines, get_price
 
@@ -26,10 +26,15 @@ def _load_cached_klines(symbol: str, interval: str) -> List[List[float]]:
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
         if isinstance(payload, list):
-            # Expect list of [openTime, open, high, low, close, volume, ...]
-            return [
-                row for row in payload if isinstance(row, (list, tuple)) and len(row) >= 5
-            ]
+            normalized: List[List[float]] = []
+            for row in payload:
+                if not isinstance(row, (list, tuple)) or len(row) < 5:
+                    continue
+                try:
+                    normalized.append([float(val) for val in row[:6]])
+                except Exception:
+                    continue
+            return normalized
     except Exception:
         return []
     return []
@@ -96,7 +101,7 @@ def atr(
     return sum(true_ranges[-lookback:]) / float(len(true_ranges[-lookback:]))
 
 
-def _closing_prices(rows: Iterable[Iterable[Any]]) -> List[float]:
+def _closing_prices(rows: Iterable[Sequence[Any]]) -> List[float]:
     closes: List[float] = []
     for row in rows:
         try:
@@ -192,7 +197,6 @@ def suggest_gross_usd(
     risk_cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Suggest a gross notional sized to a volatility budget and correlation caps."""
-    out: Dict[str, Any] = {}
     symbol_upper = str(symbol).upper()
     nav = float(nav_usd or 0.0)
     if nav <= 0.0:

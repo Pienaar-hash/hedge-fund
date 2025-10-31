@@ -119,8 +119,13 @@ def run(env: str) -> Tuple[bool, Dict[str, Any]]:
 
 def main(argv: List[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Firestore doctor: counts and mixing detector")
-    ap.add_argument("--env", default=os.getenv("ENV", "prod"))
+    ap.add_argument("--env", default=os.getenv("ENV", "dev"))
     args = ap.parse_args(argv)
+    if str(args.env).lower() == "prod":
+        allow = os.getenv("ALLOW_PROD_WRITE", "0").strip().lower()
+        if allow not in {"1", "true", "yes"}:
+            print("Refusing fs_doctor in prod without ALLOW_PROD_WRITE=1", file=sys.stderr)
+            return 3
     ok, info = run(args.env)
     print({"ok": ok, **info})
     # Exit non-zero if mixing detected or collections missing when TELEGRAM enabled (prod only)

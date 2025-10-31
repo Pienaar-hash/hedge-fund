@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Tuple
 
 from execution import exchange_utils as ex
 from execution.log_utils import get_logger, log_event, safe_dump
 
-__all__ = ["route_order"]
+__all__ = ["route_order", "route_intent"]
+
 
 _LOG = logging.getLogger("order_router")
 LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
@@ -46,6 +47,17 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _slippage_bps(side: str, mark_px: float | None, fill_px: float | None) -> float | None:
+    if mark_px is None or fill_px is None:
+        return None
+    if mark_px == 0:
+        return None
+    diff = (fill_px - mark_px) / mark_px * 10_000.0
+    if side.upper() == "SELL":
+        diff *= -1.0
+    return diff
 
 
 def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run: bool) -> Dict[str, Any]:
@@ -197,3 +209,101 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     }
     log_event(LOG_ORDERS, "order_ack", safe_dump(result))
     return result
+
+
+def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Route an order intent and emit routing metrics."""
+    router_ctx = dict(intent.get("router_ctx") or {})
+    dry_run = bool(intent.get("dry_run", False))
+    timing = dict(intent.get("timing") or {})
+
+    base_intent: Dict[str, Any] = {
+        key: value
+        for key, value in intent.items()
+        if key not in {"router_ctx", "dry_run", "timing", "attempt_id", "intent_id"}
+    }
+
+    retry_count = int(intent.get("retry_count", 0) or 0)
+    mark_px = (
+        _to_float(intent.get("mark_price"))
+        or _to_float(router_ctx.get("mark_price"))
+        or _to_float(router_ctx.get("price"))
+        or _to_float(base_intent.get("price"))
+    )
+    submit_px = _to_float(base_intent.get("price")) or _to_float(router_ctx.get("price"))
+
+    try:
+        exchange_response = route_order(base_intent, router_ctx, dry_run)
+    except Exception:
+        router_metrics: Dict[str, Any] = {
+            "attempt_id": attempt_id,
+            "venue": "binance_futures",
+            "route": base_intent.get("route", "market"),
+            "prices": {"mark": mark_px, "submitted": submit_px, "avg_fill": None},
+            "qty": {"contracts": _to_float(base_intent.get("quantity")), "notional_usd": None},
+            "timing_ms": {
+                "decision": _to_float(timing.get("decision")),
+                "submit": _to_float(timing.get("submit")),
+                "ack": None,
+                "fill": None,
+            },
+            "result": {"status": "rejected", "retries": retry_count, "cancelled": False},
+            "fees_usd": None,
+            "slippage_bps": None,
+        }
+        raise
+
+    side = str(base_intent.get("side") or base_intent.get("signal") or "").upper()
+    if not side:
+        try:
+            side = _normalize_side(base_intent)
+        except ValueError:
+            side = "BUY"
+
+    avg_fill = exchange_response.get("price")
+    qty_val = exchange_response.get("qty")
+    if qty_val is None:
+        qty_val = _to_float(base_intent.get("quantity"))
+    qty_float = _to_float(qty_val)
+
+    notional = None
+    ref_price = mark_px or submit_px or _to_float(avg_fill)
+    if ref_price is not None and qty_float is not None:
+        notional = ref_price * qty_float
+
+    raw = exchange_response.get("raw") or {}
+    raw_status = str(raw.get("status") or "").lower()
+    if raw_status in ("", "new"):
+        status = "filled" if exchange_response.get("accepted") else "rejected"
+    elif "partial" in raw_status:
+        status = "partial"
+    elif "cancel" in raw_status:
+        status = "rejected"
+    else:
+        status = raw_status
+
+    cancelled = "cancel" in raw_status
+    fees = _to_float(raw.get("commission")) or _to_float(raw.get("cumQuote"))
+
+    slippage = _slippage_bps(side, mark_px, _to_float(avg_fill))
+    router_metrics = {
+        "attempt_id": attempt_id,
+        "venue": "binance_futures",
+        "route": base_intent.get("route", "market"),
+        "prices": {"mark": mark_px, "submitted": submit_px, "avg_fill": _to_float(avg_fill)},
+        "qty": {"contracts": qty_float, "notional_usd": notional},
+        "timing_ms": {
+            "decision": _to_float(timing.get("decision")),
+            "submit": _to_float(timing.get("submit")),
+            "ack": exchange_response.get("latency_ms"),
+            "fill": _to_float(timing.get("fill")),
+        },
+        "result": {
+            "status": status,
+            "retries": retry_count,
+            "cancelled": bool(cancelled),
+        },
+        "fees_usd": fees,
+        "slippage_bps": slippage,
+    }
+    return exchange_response, router_metrics

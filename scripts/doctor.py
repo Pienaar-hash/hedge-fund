@@ -11,12 +11,15 @@ from datetime import datetime, timezone
 
 import requests
 
+from utils.firestore_client import get_db as get_firestore_db
+
 ANSI_GREEN = "\033[92m"
 ANSI_RED = "\033[91m"
 
 # --- Load screener pieces
-import execution.signal_screener as sc
-from execution.nav import get_nav_age, is_nav_fresh
+import execution.signal_screener as sc  # noqa: E402
+from execution.nav import get_nav_age, is_nav_fresh  # noqa: E402
+from execution.log_utils import AggWindow  # noqa: E402
 
 try:
     from execution.utils import load_json as utils_load_json
@@ -313,6 +316,79 @@ def _collect_heartbeats() -> Dict[str, Any]:
     }
 
 
+def collect_router_health(limit: int = 200) -> Dict[str, Any]:
+    order_path = Path("logs/execution/order_metrics.jsonl")
+    signal_path = Path("logs/execution/signal_metrics.jsonl")
+    slip_window = AggWindow(capacity=max(1, limit))
+    decision_window = AggWindow(capacity=max(1, limit))
+
+    if order_path.exists():
+        try:
+            with order_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                lines = handle.readlines()[-limit:]
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                if row.get("event") == "position_close":
+                    continue
+                slip_window.add(row.get("slippage_bps"))
+                timing = row.get("timing_ms") or {}
+                decision_window.add(timing.get("decision"))
+        except Exception as exc:
+            print(f"[doctor] router_metrics_read_failed: {exc}")
+
+    attempted = emitted = vetoed = 0
+    if signal_path.exists():
+        try:
+            with signal_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                lines = handle.readlines()[-limit:]
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                attempted += 1
+                doctor = row.get("doctor") or {}
+                ok = bool(doctor.get("ok"))
+                if ok:
+                    emitted += 1
+                else:
+                    vetoed += 1
+        except Exception as exc:
+            print(f"[doctor] signal_metrics_read_failed: {exc}")
+
+    slip_stats = slip_window.snapshot()
+    decision_stats = decision_window.snapshot()
+    summary = {
+        "slippage_p50": slip_stats.get("p50", 0.0),
+        "slippage_p95": slip_stats.get("p95", 0.0),
+        "decision_p50_ms": decision_stats.get("p50", 0.0),
+        "decision_p95_ms": decision_stats.get("p95", 0.0),
+        "attempted": attempted,
+        "emitted": emitted,
+        "vetoed": vetoed,
+    }
+    print(
+        "[doctor] Router: "
+        f"slip_p50={summary['slippage_p50']:.2f}bps slip_p95={summary['slippage_p95']:.2f}bps "
+        f"decision_p50={summary['decision_p50_ms']:.0f}ms decision_p95={summary['decision_p95_ms']:.0f}ms "
+        f"attempted={attempted} emitted={emitted} vetoed={vetoed}"
+    )
+    return summary
+
+
 def _drawdown_state() -> Dict[str, Any]:
     payload = safe_load("logs/cache/peak_state.json", default={}) or {}
     dd_pct = _safe_float(payload.get("dd_pct"))
@@ -465,7 +541,6 @@ def main():
     snapshot = collect_doctor_snapshot()
     nav_info = snapshot["nav"]
     positions_info = snapshot["positions"]
-    firestore_info = snapshot["firestore"]
     heartbeat_info = snapshot["heartbeats"]
     reserves_info = snapshot["reserves"]
     nav_freshness = snapshot["nav_freshness"]
@@ -480,6 +555,7 @@ def main():
     nav_display = (
         f"{nav_info['value']:,.2f} USD" if isinstance(nav_info["value"], (int, float)) else "n/a"
     )
+    nav_value = nav_info["value"] if isinstance(nav_info.get("value"), (int, float)) else None
     nav_line = f"[doctor] NAV check: {nav_display}"
     if nav_info["source"] and nav_info["source"] != "n/a":
         nav_line += f" (source={nav_info['source']})"
@@ -535,23 +611,58 @@ def main():
     else:
         print("[doctor] ZAR conversion data unavailable")
 
-    if firestore_info["enabled"]:
-        fs_status = firestore_info["status"].upper()
-        print(f"[doctor] Firestore: {fs_status} (last publish {firestore_info['age']} ago)")
+    from datetime import datetime, timezone
+    fs_status = "STALE"
+    fs_age = None
+    db = None
+    try:
+        db = get_firestore_db(strict=False)
+    except Exception as exc:
+        fs_status = f"ERROR ({exc})"
     else:
-        print("[doctor] Firestore: disabled")
+        if db is None or getattr(db, "_is_noop", False):
+            fs_status = "UNAVAILABLE"
+        else:
+            env = os.getenv("ENV", "dev")
+            try:
+                doc_ref = db.collection("hedge").document(env).collection("health").document("sync_state")
+                doc = doc_ref.get()
+                if doc.exists:
+                    update_time = getattr(doc, "update_time", None)
+                    if update_time is not None:
+                        fs_age = (datetime.now(timezone.utc) - update_time).total_seconds()
+                        if fs_age < 120:
+                            fs_status = "OK"
+                        elif fs_age < 600:
+                            fs_status = "STALE"
+                        else:
+                            fs_status = "DOWN"
+                    else:
+                        fs_status = "UNKNOWN"
+                else:
+                    fs_status = "MISSING"
+            except Exception as exc:
+                fs_status = f"ERROR ({exc})"
+
+    print(f"[doctor] Firestore: {fs_status} (age={fs_age or 'n/a'}s)")
 
     hb_status = heartbeat_info["status"]
     print(f"[doctor] Heartbeat: {heartbeat_info['display']} ({hb_status})")
+
+    router_stats = collect_router_health()
 
     summary_parts = [
         f"NAV: {nav_display}",
         f"NAV Freshness: {nav_status}",
         f"Drawdown: {dd_pct:.2f}%",
         f"Positions: {positions_info['count']}",
-        f"Firestore: {firestore_info['status'].upper() if firestore_info['enabled'] else 'disabled'}",
+        f"Firestore: {fs_status}",
         f"Reserves: {total_display}",
         f"Heartbeat: {hb_status}",
+        (
+            f"Router slip50={router_stats['slippage_p50']:.2f}bps "
+            f"slip95={router_stats['slippage_p95']:.2f}bps"
+        ),
     ]
     if zar_rate and isinstance(nav_zar, (int, float)):
         zar_summary = f"ZAR≈R{nav_zar:,.0f}"
@@ -575,12 +686,11 @@ def main():
             f"Drawdown: {dd_pct:.2f}%",
             f"Drawdown: {_colorize(f'{dd_pct:.2f}%', dd_color, True)}",
         )
-        if firestore_info["enabled"]:
-            color = ANSI_GREEN if firestore_info["status"] == "OK" else ANSI_RED
-            colored_summary = colored_summary.replace(
-                f"Firestore: {firestore_info['status'].upper()}",
-                f"Firestore: {_colorize(firestore_info['status'].upper(), color, True)}",
-            )
+        fs_color = ANSI_GREEN if fs_status == "OK" else ANSI_RED
+        colored_summary = colored_summary.replace(
+            f"Firestore: {fs_status}",
+            f"Firestore: {_colorize(fs_status, fs_color, True)}",
+        )
         if isinstance(reserves_info["total"], (int, float)):
             colored_summary = colored_summary.replace(
                 f"Reserves: {total_display}",
@@ -603,4 +713,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["collect_doctor_snapshot"]
+__all__ = ["collect_doctor_snapshot", "collect_router_health"]

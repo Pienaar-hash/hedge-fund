@@ -23,8 +23,8 @@
       "LINK": 3
     },
     "max_open_positions": 1,
-    "max_gross_exposure_pct": 40,
-    "max_symbol_exposure_pct": 20,
+    "max_gross_exposure_pct": 200,
+    "max_symbol_exposure_pct": 50,
     "min_gross_usd_per_order": 10,
     "target_gross_usd_per_order": 18,
     "min_gross_nav_pct": 0.5,
@@ -52,7 +52,7 @@
     }
   },
   "risk": {
-    "daily_loss_limit_pct": 2,
+    "daily_loss_limit_pct": 5.0,
     "cooldown_minutes_after_stop": 60,
     "max_trades_per_symbol_per_hour": 6,
     "drawdown_alert_pct": 10

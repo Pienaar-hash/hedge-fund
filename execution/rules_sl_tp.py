@@ -38,7 +38,7 @@ def compute_sl_tp(
     atr_mult: float = 0.0,
     fixed_sl_pct: float = 0.0,
     fixed_tp_pct: float = 0.0,
-    trail: Optional[Dict] = None,
+    trail: Optional[Dict[str, float]] = None,
 ) -> Tuple[float, float]:
     """
     Returns (sl_px, tp_px). No tick-size rounding here.
@@ -73,7 +73,7 @@ def should_exit(
     sl_px: float,
     tp_px: float,
     max_bars: int,
-    trail: Optional[Dict] = None,
+    trail: Optional[Dict[str, float]] = None,
 ) -> bool:
     """
     Evaluate exit conditions on a chronological sequence of prices.

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Dict, List, Tuple, Optional, Any
+import math
+from typing import Dict, List, Tuple, Optional, Any, Mapping, Sequence
 import json
 import logging
 import os
@@ -15,9 +16,9 @@ from execution.nav import (
 )
 from execution.utils import load_json, get_live_positions
 from execution.exchange_utils import get_balances
+from execution.log_utils import get_logger, log_event, safe_dump
 
 LOGGER = logging.getLogger("risk_limits")
-from execution.log_utils import get_logger, log_event, safe_dump
 
 
 _GLOBAL_KEYS = {
@@ -406,7 +407,9 @@ class RiskState:
     Extended with lightweight fields/methods to support risk checks in `check_order`.
     """
 
-    def __init__(self) -> None:
+    _MAX_STORED_EVENTS = 256
+
+    def __init__(self, snapshot: Mapping[str, Any] | None = None) -> None:
         self.open_notional: float = 0.0
         self.open_positions: int = 0
         self.portfolio_drawdown_pct: float = 0.0
@@ -417,6 +420,8 @@ class RiskState:
         self._order_attempt_ts: List[float] = []
         # Optional daily PnL percent (negative means loss)
         self.daily_pnl_pct: float = 0.0
+        if snapshot:
+            self.apply_snapshot(snapshot)
 
     # --- Optional helpers used by check_order ---
     def note_fill(self, symbol: str, ts: float) -> None:
@@ -442,6 +447,79 @@ class RiskState:
         kept = [t for t in self._order_attempt_ts if t >= cutoff]
         self._order_attempt_ts = kept
         return len(kept)
+
+    # --- Persistence helpers -------------------------------------------------
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a JSON-serialisable snapshot of runtime counters."""
+        return {
+            "open_notional": float(self.open_notional),
+            "open_positions": int(self.open_positions),
+            "portfolio_drawdown_pct": float(self.portfolio_drawdown_pct),
+            "daily_pnl_pct": float(self.daily_pnl_pct),
+            "last_fill_by_symbol": dict(self._last_fill_by_symbol),
+            "error_timestamps": list(self._error_timestamps)[-self._MAX_STORED_EVENTS :],
+            "order_attempt_ts": list(self._order_attempt_ts)[-self._MAX_STORED_EVENTS :],
+        }
+
+    def apply_snapshot(self, snapshot: Mapping[str, Any] | None) -> None:
+        """Restore counters from a previous snapshot."""
+        if not isinstance(snapshot, Mapping):
+            return
+
+        def _coerce_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        def _maybe_float(value: Any) -> Optional[float]:
+            try:
+                numeric = float(value)
+            except Exception:
+                return None
+            if not math.isfinite(numeric):
+                return None
+            return numeric
+
+        self.open_notional = _coerce_float(snapshot.get("open_notional"), self.open_notional)
+        self.open_positions = int(_coerce_float(snapshot.get("open_positions"), self.open_positions))
+        self.portfolio_drawdown_pct = _coerce_float(
+            snapshot.get("portfolio_drawdown_pct"), self.portfolio_drawdown_pct
+        )
+        self.daily_pnl_pct = _coerce_float(snapshot.get("daily_pnl_pct"), self.daily_pnl_pct)
+
+        last_fill = snapshot.get("last_fill_by_symbol")
+        if isinstance(last_fill, Mapping):
+            restored: Dict[str, float] = {}
+            for key, value in last_fill.items():
+                sym = str(key).upper()
+                restored[sym] = _coerce_float(value, 0.0)
+            self._last_fill_by_symbol = restored
+
+        errors = snapshot.get("error_timestamps")
+        if isinstance(errors, Sequence):
+            restored_errors = []
+            for ts in errors:
+                numeric = _maybe_float(ts)
+                if numeric is None:
+                    continue
+                restored_errors.append(numeric)
+            self._error_timestamps = restored_errors[-self._MAX_STORED_EVENTS :]
+
+        attempts = snapshot.get("order_attempt_ts")
+        if isinstance(attempts, Sequence):
+            restored_attempts = []
+            for ts in attempts:
+                numeric = _maybe_float(ts)
+                if numeric is None:
+                    continue
+                restored_attempts.append(numeric)
+            self._order_attempt_ts = restored_attempts[-self._MAX_STORED_EVENTS :]
+
+    @classmethod
+    def from_snapshot(cls, snapshot: Mapping[str, Any] | None) -> "RiskState":
+        """Factory helper used by tests/new services."""
+        return cls(snapshot=snapshot)
 
 
 def _can_open_position_legacy(
@@ -1183,9 +1261,15 @@ class RiskGate:
 
     def _daily_loss_pct(self) -> float:
         snapshot = _drawdown_snapshot()
-        dd_pct = snapshot.get("dd_pct", 0.0)
-        if dd_pct and dd_pct > 0.0:
-            return float(dd_pct)
+        dd_pct_raw = snapshot.get("dd_pct")
+        if dd_pct_raw is not None:
+            try:
+                dd_pct_val = float(dd_pct_raw)
+            except Exception:
+                dd_pct_val = 0.0
+            if dd_pct_val <= 0.0:
+                return 0.0
+            return dd_pct_val
         peak = snapshot.get("peak", 0.0)
         if peak <= 0:
             return 0.0

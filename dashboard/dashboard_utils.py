@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 import requests
 
+from utils.firestore_client import get_db as _get_firestore_db
+
 # Optional Streamlit caching if running under Streamlit; safe no-op otherwise
 try:
     import streamlit as st
@@ -24,28 +26,20 @@ except Exception:  # pragma: no cover
     st = _Dummy()
 
 # ---------------------------- Firestore --------------------------------------
-_DB = None
 
 @st.cache_resource(show_spinner=False)
 def get_firestore_connection():
-    """Return a cached Firestore client using FIREBASE_CREDS_PATH if provided.
+    """Return a cached Firestore client via utils.firestore_client.
 
-    Expects GOOGLE Cloud Firestore library to be available. If credentials
-    are not provided, it will try Application Default Credentials.
+    Returns None when Firestore is unavailable or disabled.
     """
-    global _DB
-    if _DB is not None:
-        return _DB
     try:
-        from google.cloud import firestore  # type: ignore
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError("google-cloud-firestore not installed: pip install google-cloud-firestore") from e
-
-    creds_path = os.getenv("FIREBASE_CREDS_PATH")
-    if creds_path and os.path.exists(creds_path):
-        os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", creds_path)
-    _DB = firestore.Client()
-    return _DB
+        db = _get_firestore_db(strict=False)
+    except Exception:
+        return None
+    if getattr(db, "_is_noop", False):
+        return None
+    return db
 
 
 def _doc_path(env: str, name: str) -> Tuple[str, str, str, str]:
@@ -54,12 +48,14 @@ def _doc_path(env: str, name: str) -> Tuple[str, str, str, str]:
 
 
 @st.cache_data(ttl=5, show_spinner=False)
-def fetch_state_document(name: str, env: str = "prod") -> Dict[str, Any]:
+def fetch_state_document(name: str, env: str = "dev") -> Dict[str, Any]:
     """Load a state document from Firestore. Returns {} if not found.
 
     Path: hedge/{env}/state/{name}
     """
     db = get_firestore_connection()
+    if db is None:
+        return {}
     c1, d1, c2, d2 = _doc_path(env, name)
     snap = (
         db.collection(c1).document(d1).collection(c2).document(d2).get()
@@ -68,9 +64,11 @@ def fetch_state_document(name: str, env: str = "prod") -> Dict[str, Any]:
 
 
 @st.cache_data(ttl=5, show_spinner=False)
-def fetch_telemetry_health(env: str = "prod") -> Dict[str, Any]:
+def fetch_telemetry_health(env: str = "dev") -> Dict[str, Any]:
     """Return sync_state telemetry health document (hedge/{env}/telemetry/health)."""
     db = get_firestore_connection()
+    if db is None:
+        return {}
     snap = (
         db.collection("hedge")
         .document(env)

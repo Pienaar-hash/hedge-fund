@@ -1,8 +1,14 @@
 {
+  "global": {
+    "daily_loss_limit_pct": 5.0,
+    "cooldown_minutes_after_stop": 30,
+    "max_trades_per_symbol_per_hour": 10,
+    "drawdown_alert_pct": 3.0,
+    "max_gross_exposure_pct": 200,
+    "max_symbol_exposure_pct": 50,
+    "max_nav_drawdown_pct": 10
+  },
   "max_leverage": 4,
-  "max_symbol_exposure_pct": 0.15,
-  "max_nav_drawdown_pct": 0.20,
-  "daily_loss_limit_pct": 0.10,
   "nav_freshness_seconds": 90,
   "fail_closed_on_nav_stale": true,
   "reset_timezone": "UTC",

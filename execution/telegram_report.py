@@ -188,9 +188,13 @@ def run(env: str, dry_run: bool = True) -> Tuple[bool, Dict[str, Any]]:
 
 def main(argv: List[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Telegram mini-report: NAV PNG + AI note")
-    ap.add_argument("--env", default=os.getenv("ENV", "prod"))
+    ap.add_argument("--env", default=os.getenv("ENV", "dev"))
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    if str(args.env).lower() == "prod":
+        allow = os.getenv("ALLOW_PROD_WRITE", "0").strip().lower()
+        if allow not in {"1", "true", "yes"}:
+            raise RuntimeError("telegram_report refuses to run with ENV=prod without ALLOW_PROD_WRITE=1")
     ok, info = run(args.env, dry_run=bool(args.dry_run))
     print({"ok": ok, **info})
     return 0 if ok else 2

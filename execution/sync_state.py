@@ -85,10 +85,10 @@ def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
         )
 
 # --- Force package import path when launched via Supervisor ---
-import importlib.util
+import importlib.util  # noqa: E402
 
 try:
-    from utils.firestore_client import get_db, write_doc, publish_heartbeat
+    from utils.firestore_client import get_db, write_doc, publish_heartbeat  # noqa: E402
 except Exception as e:
     _utils_path = os.path.join(REPO_ROOT, "utils", "firestore_client.py")
     if os.path.exists(_utils_path):
@@ -104,6 +104,8 @@ except Exception as e:
             raise RuntimeError(f"Cannot import firestore_client: loader missing (spec={spec})")
     else:
         raise RuntimeError(f"Cannot import firestore_client: {e}")
+
+get_db(strict=True)  # permanent strict Firestore initialization on daemon start
 
 # Make relative file reads (nav_log.json, etc.) deterministic under Supervisor
 try:
@@ -130,20 +132,20 @@ except Exception:
 #  NAV_CUTOFF_SECAGO=86400                       # or relative cutoff in seconds
 #  SYNC_INTERVAL_SEC=20
 #
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone  # noqa: E402
 try:  # Python 3.9+
     from zoneinfo import ZoneInfo  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     ZoneInfo = None  # type: ignore
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple  # noqa: E402
 
-from execution.drawdown_tracker import (
+from execution.drawdown_tracker import (  # noqa: E402
     compute_intraday_drawdown,
     load_peak_state,
     mirror_peak_state_to_firestore,
     save_peak_state,
 )
-from execution.exchange_utils import get_income_history
+from execution.exchange_utils import get_income_history  # noqa: E402
 
 # ---------------- Firestore helpers (imported via guarded loader above) -----
 
@@ -1290,6 +1292,16 @@ def main_loop() -> None:
         flush=True,
     )
     try:
+        try:
+            publish_heartbeat(service="sync_state", ok=True)
+            print("[firestore] initial heartbeat write ok", flush=True)
+        except Exception as e:
+            import traceback
+
+            print(
+                f"[firestore] heartbeat write failed: {e}\n{traceback.format_exc()}",
+                flush=True,
+            )
         while True:
             try:
                 sync_once()

@@ -6,7 +6,7 @@ import os
 import threading
 import time
 import logging
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, cast
 
 from execution.exchange_utils import get_balances, get_positions, get_price
 from execution.reserves import load_reserves, value_reserves_usd
@@ -17,16 +17,22 @@ _NAV_WRITER_DEFAULT_INTERVAL = float(os.environ.get("NAV_WRITER_INTERVAL_SEC", "
 
 LOGGER = logging.getLogger("nav")
 
+JSONDict = Dict[str, Any]
+JSONList = List[JSONDict]
 
-def _load_json(path: str) -> Dict:
+
+def _load_json(path: str) -> JSONDict:
     try:
         with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+            loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                return cast(JSONDict, dict(loaded))
     except Exception:
-        return {}
+        pass
+    return {}
 
 
-def _futures_nav_usdt() -> Tuple[float, Dict]:
+def _futures_nav_usdt() -> Tuple[float, JSONDict]:
     """Compute USD-M futures wallet NAV and provide detail."""
     balances_ok = False
     positions_ok = False
@@ -48,7 +54,7 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
                     break
             except Exception:
                 continue
-    detail: Dict[str, Any] = {"futures_wallet_usdt": wallet}
+    detail: JSONDict = {"futures_wallet_usdt": wallet}
     # Include unrealized PnL if present via positions
     try:
         positions = get_positions() or []
@@ -86,7 +92,7 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
 _STABLES = {"USDT", "USDC", "BUSD"}
 
 
-def _treasury_nav_usdt(treasury_path: str = "config/treasury.json") -> Tuple[float, Dict]:
+def _treasury_nav_usdt(treasury_path: str = "config/treasury.json") -> Tuple[float, JSONDict]:
     treasury = _load_json(treasury_path)
     if not treasury:
         return 0.0, {"treasury": {}}
@@ -123,13 +129,13 @@ def _treasury_nav_usdt(treasury_path: str = "config/treasury.json") -> Tuple[flo
             "val_usdt": value,
         }
 
-    breakdown: Dict[str, Any] = {"treasury": holdings, "total_treasury_usdt": total}
+    breakdown: JSONDict = {"treasury": holdings, "total_treasury_usdt": total}
     if missing:
         breakdown["missing_prices"] = missing
     return total, breakdown
 
 
-def _reserves_nav_usd() -> Tuple[float, Dict]:
+def _reserves_nav_usd() -> Tuple[float, JSONDict]:
     """Load off-exchange reserves and value them in USD."""
     try:
         reserves = load_reserves()
@@ -154,7 +160,7 @@ def _reserves_nav_usd() -> Tuple[float, Dict]:
     return float(total), reserves_detail
 
 
-def _nav_sources(cfg: Dict) -> Tuple[str, str, bool, Any]:
+def _nav_sources(cfg: JSONDict) -> Tuple[str, str, bool, Any]:
     nav_cfg = cfg.get("nav") or {}
     trading_source = nav_cfg.get("trading_source") or nav_cfg.get("source") or "exchange"
     reporting_source = nav_cfg.get("reporting_source") or trading_source
@@ -163,15 +169,18 @@ def _nav_sources(cfg: Dict) -> Tuple[str, str, bool, Any]:
     return str(trading_source), str(reporting_source), include_treasury, manual
 
 
-def compute_trading_nav(cfg: Dict) -> Tuple[float, Dict]:
+def compute_trading_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
     trading_source, _, _, manual = _nav_sources(cfg)
     if trading_source == "manual":
         if manual is not None:
             return float(manual), {"source": "manual"}
-        return 0.0, {"source": "manual_unset"}
+        capital, detail = _fallback_capital(cfg)
+        # Align nav pair fallback with capital base when manual override absent
+        detail["source"] = "capital_base"
+        return capital, detail
 
     fut_nav, fut_detail = _futures_nav_usdt()
-    detail = dict(fut_detail)
+    detail: JSONDict = dict(fut_detail)
     sources_ok = bool(detail.get("sources_ok"))
     if sources_ok and fut_nav > 0:
         detail["source"] = "exchange"
@@ -194,14 +203,14 @@ def compute_trading_nav(cfg: Dict) -> Tuple[float, Dict]:
     return 0.0, detail
 
 
-def compute_nav_summary(cfg: Dict | None = None) -> Dict[str, Any]:
+def compute_nav_summary(cfg: JSONDict | None = None) -> JSONDict:
     cfg = cfg or _load_json("config/strategy_config.json")
 
     futures_nav, futures_detail = _futures_nav_usdt()
     treasury_nav, treasury_detail = _treasury_nav_usdt()
     reserves_nav, reserves_detail = _reserves_nav_usd()
 
-    summary = {
+    summary: JSONDict = {
         "futures_nav": float(futures_nav),
         "treasury_nav": float(treasury_nav),
         "reserves_nav": float(reserves_nav),
@@ -215,7 +224,13 @@ def compute_nav_summary(cfg: Dict | None = None) -> Dict[str, Any]:
     return summary
 
 
-def compute_reporting_nav(cfg: Dict) -> Tuple[float, Dict]:
+def _fallback_capital(cfg: JSONDict) -> Tuple[float, JSONDict]:
+    """Fallback NAV when no positions or manual override exist."""
+    base = float(cfg.get("capital_base_usdt", 0.0))
+    return base, {"source": "fallback_capital"}
+
+
+def compute_reporting_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
     _, reporting_source, include_treasury, manual = _nav_sources(cfg)
     if reporting_source == "manual":
         if manual is not None:
@@ -224,7 +239,7 @@ def compute_reporting_nav(cfg: Dict) -> Tuple[float, Dict]:
 
     summary = compute_nav_summary(cfg)
     fut_detail = summary["details"].get("futures", {})
-    detail: Dict[str, Any] = {"source": "exchange", **fut_detail}
+    detail: JSONDict = {"source": "exchange", **fut_detail}
     total_nav = float(summary["futures_nav"])
 
     if include_treasury:
@@ -273,13 +288,13 @@ def compute_reporting_nav(cfg: Dict) -> Tuple[float, Dict]:
     return 0.0, detail
 
 
-def compute_nav_pair(cfg: Dict) -> Tuple[Tuple[float, Dict], Tuple[float, Dict]]:
+def compute_nav_pair(cfg: JSONDict) -> Tuple[Tuple[float, JSONDict], Tuple[float, JSONDict]]:
     trading = compute_trading_nav(cfg)
     reporting = compute_reporting_nav(cfg)
     return trading, reporting
 
 
-def compute_treasury_only() -> Tuple[float, Dict]:
+def compute_treasury_only() -> Tuple[float, JSONDict]:
     try:
         total, breakdown = _treasury_nav_usdt()
         return float(total), breakdown
@@ -287,7 +302,7 @@ def compute_treasury_only() -> Tuple[float, Dict]:
         return 0.0, {"treasury": {}, "error": str(exc)}
 
 
-def compute_nav(cfg: Dict) -> Tuple[float, Dict]:
+def compute_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
     # Backwards-compatible proxy for callers expecting single NAV
     return compute_trading_nav(cfg)
 

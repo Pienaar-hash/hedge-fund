@@ -18,7 +18,7 @@ from dashboard.dashboard_utils import fetch_state_document
 _UNITS_FMT = "{:.6f}"
 _USD_FMT = "{:,.2f}"
 ROOT_DIR = Path(__file__).resolve().parents[1]
-ENV = os.getenv("ENV", "prod")
+ENV = os.getenv("ENV", "dev")
 LOG_DIR = ROOT_DIR / "logs"
 EXEC_LOG_DIR = LOG_DIR / "execution"
 NAV_LOG_PATH = LOG_DIR / "nav_log.json"

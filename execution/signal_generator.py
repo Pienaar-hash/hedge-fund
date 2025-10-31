@@ -3,9 +3,11 @@ from __future__ import annotations
 import importlib
 import math
 import logging
+import time
 from collections import OrderedDict, defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Optional
 from datetime import datetime
 
 from execution.utils import load_json
@@ -22,6 +24,17 @@ _DEFAULT_REG_ENTRY: Dict[str, Any] = {
     "confidence": 1.0,
     "capacity_usd": float("inf"),
 }
+
+try:
+    from execution.ml.predict import predict_live as _predict_live
+except Exception:  # pragma: no cover - optional dependency
+    _predict_live = None  # type: ignore[assignment]
+
+_ML_REFRESH_INTERVAL = 180.0
+_ML_EXECUTOR: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(max_workers=1) if _predict_live else None
+_ML_FUTURE: Optional[Future] = None
+_ML_CACHE_TS: float = 0.0
+_ML_SCORES: Dict[str, float] = {}
 
 
 def _load_registry() -> Dict[str, Dict[str, Any]]:
@@ -123,11 +136,58 @@ def _module_intents(mod: Any, now: float, universe: Sequence[str], cfg: Mapping[
     return []
 
 
+def _update_ml_predictions(now: float, cfg: Mapping[str, Any]) -> None:
+    global _ML_FUTURE, _ML_CACHE_TS, _ML_SCORES
+
+    if _predict_live is None or _ML_EXECUTOR is None:
+        return
+    ml_cfg = cfg.get("ml") if isinstance(cfg, Mapping) else None
+    if not isinstance(ml_cfg, Mapping) or not ml_cfg.get("enabled", False):
+        return
+
+    if _ML_FUTURE is not None and _ML_FUTURE.done():
+        try:
+            result = _ML_FUTURE.result()
+        except Exception as exc:
+            _LOG.debug("ml future failed: %s", exc)
+            _ML_FUTURE = None
+        else:
+            if isinstance(result, Mapping):
+                predictions = result.get("predictions", [])
+                scores: Dict[str, float] = {}
+                if isinstance(predictions, list):
+                    for item in predictions:
+                        if not isinstance(item, Mapping):
+                            continue
+                        sym = str(item.get("symbol") or "").upper()
+                        score = item.get("score")
+                        try:
+                            value = float(score)
+                        except Exception:
+                            continue
+                        if sym:
+                            scores[sym] = value
+                _ML_SCORES = scores
+                _ML_CACHE_TS = now
+            _ML_FUTURE = None
+
+    if (_ML_CACHE_TS and (now - _ML_CACHE_TS) < _ML_REFRESH_INTERVAL) or _ML_FUTURE is not None:
+        return
+
+    try:
+        _ML_FUTURE = _ML_EXECUTOR.submit(_predict_live, dict(cfg))
+    except Exception as exc:
+        _LOG.debug("ml predict submit failed: %s", exc)
+        _ML_FUTURE = None
+
+
 def generate_intents(now: float, universe: Sequence[str] | None = None, cfg: Mapping[str, Any] | None = None) -> List[Mapping[str, Any]]:
     """Load strategy modules and emit deduplicated intents."""
     universe = universe or []
     if cfg is None:
         cfg = load_json("config/strategy_config.json") or {}
+
+    _update_ml_predictions(now, cfg)
 
     registry = _load_registry()
     emitted: List[Mapping[str, Any]] = []
@@ -212,6 +272,20 @@ def generate_intents(now: float, universe: Sequence[str] | None = None, cfg: Map
                     }
                 )
                 normalized["metadata"] = meta
+                ml_score = _ML_SCORES.get(normalized["symbol"])
+                if ml_score is not None:
+                    meta["ml_score"] = float(ml_score)
+                    normalized["metadata"] = meta
+                    normalized["ml_score"] = float(ml_score)
+            if not isinstance(normalized.get("params"), Mapping):
+                normalized["params"] = dict(normalized.get("params") or {})
+            else:
+                normalized["params"] = dict(normalized["params"])
+            if "symbol" in normalized:
+                normalized["symbol"] = str(normalized["symbol"]).upper()
+            normalized["generated_at"] = float(
+                normalized.get("generated_at") or time.time()
+            )
             key = _intent_key(normalized)
             if key is None:
                 continue

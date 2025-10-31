@@ -6,13 +6,15 @@ import dataclasses
 import datetime as _dt
 import gzip
 import json
+import math
 import os
 import shutil
 import socket
 import tempfile
 import threading
+from collections import deque
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping
+from typing import Any, Deque, List, Mapping, MutableMapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _HOSTNAME = socket.gethostname()
@@ -115,6 +117,15 @@ def get_logger(
     return JsonlLogger(target, max_bytes=max_bytes, backup_count=backup_count)
 
 
+def append_jsonl(path: Path, record: Mapping[str, Any] | None) -> None:
+    """Append a JSON serializable record to a JSONL file, creating parents if needed."""
+    payload = safe_dump(record or {})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(payload, ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{line}\n")
+
+
 def log_event(logger: JsonlLogger, event_type: str, payload: Mapping[str, Any] | None) -> None:
     event: MutableMapping[str, Any] = safe_dump(payload or {})
     event.update(
@@ -166,6 +177,67 @@ def safe_dump(obj: Any) -> MutableMapping[str, Any]:
     if hasattr(obj, "__dict__"):
         return safe_dump(vars(obj))
     return {"value": coerce(obj)}
+
+
+def percentile(values: Sequence[float], p: float) -> float:
+    """Compute the percentile for a sequence of floats with linear interpolation."""
+    if not values:
+        return 0.0
+    if not math.isfinite(p):
+        raise ValueError("percentile requires finite p value")
+    pct = max(0.0, min(100.0, float(p)))
+    ordered = sorted(float(v) for v in values if v is not None)
+    if not ordered:
+        return 0.0
+    if pct == 0.0:
+        return ordered[0]
+    if pct == 100.0:
+        return ordered[-1]
+    rank = (len(ordered) - 1) * (pct / 100.0)
+    lower = int(math.floor(rank))
+    upper = int(math.ceil(rank))
+    if lower == upper:
+        return ordered[lower]
+    weight = rank - lower
+    return (1.0 - weight) * ordered[lower] + weight * ordered[upper]
+
+
+class AggWindow:
+    """Fixed-size rolling window to compute percentile aggregates."""
+
+    def __init__(self, capacity: int = 200) -> None:
+        if capacity <= 0:
+            raise ValueError("AggWindow capacity must be positive")
+        self._capacity = int(capacity)
+        self._values: Deque[float] = deque(maxlen=self._capacity)
+        self._lock = threading.Lock()
+
+    def add(self, value: float | None) -> None:
+        if value is None:
+            return
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(numeric):
+            return
+        with self._lock:
+            self._values.append(numeric)
+
+    def snapshot(self) -> Mapping[str, float]:
+        with self._lock:
+            data: List[float] = list(self._values)
+        if not data:
+            return {"count": 0, "p50": 0.0, "p95": 0.0}
+        return {
+            "count": len(data),
+            "p50": percentile(data, 50.0),
+            "p95": percentile(data, 95.0),
+        }
+
+    def values(self) -> List[float]:
+        with self._lock:
+            return list(self._values)
 
 
 if __name__ == "__main__":

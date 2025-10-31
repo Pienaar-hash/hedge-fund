@@ -3,8 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import traceback
 import os
-import sys
 import time
 from contextlib import contextmanager
 from functools import lru_cache
@@ -28,8 +28,8 @@ else:
     FirestoreClient = Any
 
 _LOG = logging.getLogger("firestore")
-_ADC_WARNED = False
 REQUIRED_FIELDS = ("project_id", "client_email", "private_key")
+_FORCE_STRICT_INIT = True
 
 
 def _sleep(seconds: float) -> None:
@@ -258,43 +258,29 @@ def _firestore_env_enabled() -> bool:
 
 @lru_cache(maxsize=2)
 def _get_db_cached(strict_flag: bool) -> FirestoreClient:
-    global _ADC_WARNED
     env_enabled = _firestore_env_enabled()
-    if not env_enabled and not strict_flag:
+    if not env_enabled:
+        if strict_flag:
+            raise RuntimeError("Firestore disabled via FIRESTORE_ENABLED flag")
+        _LOG.info("[firestore] disabled via FIRESTORE_ENABLED=0 -> using noop client")
         return _noop_db()
     if firestore is None or service_account is None:
-        message = "client unavailable; install google-cloud-firestore"
         if strict_flag:
-            raise RuntimeError(f"Firestore {message}")
-        if not _ADC_WARNED:
-            _ADC_WARNED = True
-            print(f"[firestore] WARN {message}", file=sys.stderr)
+            raise RuntimeError("Firestore client unavailable; install google-cloud-firestore")
+        _LOG.warning("[firestore] client libraries unavailable -> noop client")
         return _noop_db()
     try:
         info = _load_creds_dict()
         _validate_creds(info)
-        project_id = os.environ.get("FIREBASE_PROJECT_ID") or info.get("project_id")
+        _LOG.info("[firestore] initializing strict Firestore client")
         creds = service_account.Credentials.from_service_account_info(info)
-        client = firestore.Client(credentials=creds, project=project_id)
+        client = firestore.Client(credentials=creds, project=creds.project_id)
+        _LOG.info(f"[firestore] Firestore client initialized for project {creds.project_id}")
         return _ClientWrapper(client)
     except Exception as exc:
-        fallback_exc = exc
-        gac = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        if gac and os.path.exists(gac):
-            try:
-                return _ClientWrapper(firestore.Client())
-            except Exception as inner:
-                fallback_exc = inner
+        _LOG.error(f"[firestore] Firestore init failed: {exc}\n{traceback.format_exc()}")
         if strict_flag:
-            raise RuntimeError(
-                f"Firestore client initialization failed: {fallback_exc}"
-            ) from fallback_exc
-        if not _ADC_WARNED:
-            _ADC_WARNED = True
-            print(
-                f"[firestore] WARN ADC unavailable; running in no-op mode: {fallback_exc}",
-                file=sys.stderr,
-            )
+            raise
         return _noop_db()
 
 
@@ -306,7 +292,12 @@ def get_db(strict: Optional[bool] = None) -> FirestoreClient:
     - strict=False: return a no-op client when unavailable.
     """
     env_enabled = _firestore_env_enabled()
-    strict_flag = env_enabled if strict is None else bool(strict)
+    if _FORCE_STRICT_INIT and strict is False:
+        strict_flag = False
+    elif _FORCE_STRICT_INIT:
+        strict_flag = True
+    else:
+        strict_flag = env_enabled if strict is None else bool(strict)
     db = _get_db_cached(strict_flag)
     if strict_flag and _is_noop_client(db):
         raise RuntimeError("Firestore unavailable: client initialization returned no-op")

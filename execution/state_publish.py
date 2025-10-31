@@ -15,6 +15,8 @@ import pathlib
 import time
 from typing import Any, Dict, List, Optional
 
+from utils.firestore_client import get_db
+
 # ----- robust .env load -----
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 try:
@@ -24,11 +26,19 @@ try:
 except Exception:
     pass
 
-ENV = os.getenv("ENV", "prod")
+def _resolve_env(default: str = "dev") -> str:
+    value = (os.getenv("ENV") or os.getenv("ENVIRONMENT") or "").strip()
+    return value or default
+
+
+ENV = _resolve_env()
+if ENV.lower() == "prod":
+    allow_prod = os.getenv("ALLOW_PROD_WRITE", "0").strip().lower()
+    if allow_prod not in {"1", "true", "yes"}:
+        raise RuntimeError(
+            "Refusing to publish state with ENV=prod. Set ALLOW_PROD_WRITE=1 to override explicitly."
+        )
 FS_ROOT = f"hedge/{ENV}/state"
-CREDS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or str(
-    ROOT_DIR / "config/firebase_creds.json"
-)
 LOG_DIR = ROOT_DIR / "logs"
 EXEC_LOG_DIR = LOG_DIR / "execution"
 _EXEC_STATS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
@@ -231,15 +241,7 @@ def _firestore_enabled() -> bool:
 def _fs_client():
     if not _firestore_enabled():
         raise RuntimeError("firestore_disabled")
-    from google.cloud import firestore
-
-    if os.path.exists(CREDS_PATH):
-        from google.oauth2 import service_account
-
-        info = json.load(open(CREDS_PATH))
-        creds = service_account.Credentials.from_service_account_file(CREDS_PATH)
-        return firestore.Client(project=info.get("project_id"), credentials=creds)
-    return firestore.Client()
+    return get_db()
 
 
 # ----- Exchange helpers (import late so .env is loaded) -----

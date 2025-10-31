@@ -8,6 +8,7 @@ import math
 import os
 import sys
 import time
+import random
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, getcontext, localcontext
@@ -99,6 +100,10 @@ _SEC = os.getenv("BINANCE_API_SECRET", "").encode()
 _S = requests.Session()
 _S.headers["X-MBX-APIKEY"] = _KEY
 
+_MAX_BACKOFF_ATTEMPTS = int(os.getenv("BINANCE_MAX_RETRIES", "5") or 5)
+_BACKOFF_INITIAL = float(os.getenv("BINANCE_BACKOFF_INITIAL", "0.25") or 0.25)
+_BACKOFF_MAX = float(os.getenv("BINANCE_BACKOFF_MAX", "3.0") or 3.0)
+
 TIME_OFFSET_MS: Optional[int] = None
 LAST_TIME_SYNC: float = 0.0
 _TIME_SYNC_INTERVAL = 600  # seconds
@@ -175,33 +180,50 @@ def _req(
     if method in ("POST", "PUT"):
         headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-    r = _S.request(method, url, data=data, timeout=timeout, headers=headers)
-    try:
-        r.raise_for_status()
-        return r
-    except Exception as e:
-        detail = ""
+    attempt = 0
+    backoff = _BACKOFF_INITIAL
+    while True:
+        attempt += 1
         try:
-            detail = " :: " + r.text
-        except Exception:
-            pass
-        # Breadcrumb on auth-ish errors
-        if r.status_code in (400, 401):
+            r = _S.request(method, url, data=data, timeout=timeout, headers=headers)
+            r.raise_for_status()
+            return r
+        except requests.HTTPError as exc:
+            resp = exc.response or r
+            status = resp.status_code if resp is not None else None
+            detail = ""
             try:
-                code = r.json().get("code")
+                detail = " :: " + (resp.text if resp is not None else "")
             except Exception:
-                code = "?"
-            _LOG.error(
-                "[executor] AUTH_ERR code=%s testnet=%s key=%s… sec_len=%s url=%s",
-                code,
-                is_testnet(),
-                (_KEY[:6] if _KEY else "NONE"),
-                len(_SEC),
-                url,
-            )
-        raise requests.HTTPError(
-            f"{e}{detail}", response=getattr(e, "response", None)
-        ) from None
+                pass
+            if status in (400, 401):
+                try:
+                    code = resp.json().get("code") if resp is not None else "?"
+                except Exception:
+                    code = "?"
+                _LOG.error(
+                    "[executor] AUTH_ERR code=%s testnet=%s key=%s… sec_len=%s url=%s",
+                    code,
+                    is_testnet(),
+                    (_KEY[:6] if _KEY else "NONE"),
+                    len(_SEC),
+                    url,
+                )
+            if status is None or status >= 500 or status in (418, 429):
+                if attempt < _MAX_BACKOFF_ATTEMPTS:
+                    sleep_for = min(_BACKOFF_MAX, backoff)
+                    jitter = random.random() * 0.1 * sleep_for
+                    time.sleep(sleep_for + jitter)
+                    backoff = min(_BACKOFF_MAX, backoff * 2.0)
+                    continue
+            raise requests.HTTPError(f"{exc}{detail}", response=exc.response) from None
+        except requests.RequestException:
+            if attempt >= _MAX_BACKOFF_ATTEMPTS:
+                raise
+            sleep_for = min(_BACKOFF_MAX, backoff)
+            jitter = random.random() * 0.1 * sleep_for
+            time.sleep(sleep_for + jitter)
+            backoff = min(_BACKOFF_MAX, backoff * 2.0)
 
 
 # --- debug helpers (no need to import private vars) ---

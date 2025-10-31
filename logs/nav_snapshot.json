@@ -1,9 +1,12 @@
 {
-  "nav_usdt": 2395.9225925799997,
+  "nav_usdt": 2401.8075919400003,
   "breakdown": {
-    "source": "exchange",
-    "futures_wallet_usdt": 2395.99061193,
-    "unrealized_pnl": -0.06801934999999999
+    "futures_wallet_usdt": 2399.67377935,
+    "unrealized_pnl": 2.13381259,
+    "balances_ok": true,
+    "positions_ok": true,
+    "sources_ok": true,
+    "source": "exchange"
   },
-  "ts": "2025-10-19T16:56:01.358298+00:00"
+  "ts": "2025-10-31T16:53:33.059030+00:00"
 }

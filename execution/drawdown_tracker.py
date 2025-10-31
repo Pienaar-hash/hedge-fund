@@ -4,13 +4,8 @@ import json
 import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import Any, Dict, Optional
-
-try:  # Python 3.9+
-    from zoneinfo import ZoneInfo  # type: ignore
-except Exception:  # pragma: no cover - fallback on older environments
-    ZoneInfo = None  # type: ignore
 
 PEAK_STATE_PATH = os.path.join("logs", "cache", "peak_state.json")
 
@@ -36,10 +31,12 @@ def _as_float(value: Any) -> float:
         return 0.0
 
 
-def _resolve_timezone(name: str | None) -> timezone | ZoneInfo:
+def _resolve_timezone(name: str | None) -> tzinfo:
     if not name or str(name).upper() == "UTC":
         return timezone.utc
-    if ZoneInfo is None:
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
         return timezone.utc
     try:
         return ZoneInfo(str(name))
@@ -140,7 +137,11 @@ def mirror_peak_state_to_firestore(
     if getattr(db, "_is_noop", False):
         return
     try:
-        env_name = env or os.getenv("ENV", "prod")
+        env_name = env or os.getenv("ENV", "dev")
+        if str(env_name).lower() == "prod":
+            allow = os.getenv("ALLOW_PROD_WRITE", "0").strip().lower()
+            if allow not in {"1", "true", "yes"}:
+                raise RuntimeError("drawdown_tracker refuses to write with ENV=prod without ALLOW_PROD_WRITE=1")
         doc = (
             db.collection("hedge")
             .document(env_name)

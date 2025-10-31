@@ -1,18 +1,18 @@
 {
   "symbol": "LTCUSDT",
-  "side": "SELL",
-  "positionSide": "SHORT",
-  "reason": "daily_loss_limit",
-  "gross_usd": 20.0,
-  "price": 95.39,
-  "ts": 1760971290.052254,
+  "side": "BUY",
+  "positionSide": "LONG",
+  "reason": "cooldown",
+  "gross_usd": 120.086127462,
+  "price": 94.39,
+  "ts": 1761932411.8419707,
   "intent": {
-    "timestamp": "2025-10-20T14:30:18+00:00",
+    "timestamp": "2025-10-31T17:40:00+00:00",
     "symbol": "LTCUSDT",
     "timeframe": "15m",
-    "signal": "SELL",
+    "signal": "BUY",
     "reduceOnly": false,
-    "price": 95.39,
+    "price": 94.39,
     "capital_per_trade": 10.0,
     "leverage": 2.0,
     "cap_usd": 10.0,
@@ -23,15 +23,11 @@
     "veto": []
   },
   "nav_snapshot": {
-    "nav_usd": 2393.41061364,
-    "gross_usd": 42.582891556999996,
-    "symbol_gross_usd": {
-      "LINKUSDT": 21.846549999999997,
-      "WIFUSDT": 20.736341557
-    }
+    "nav_usd": 2401.72254924,
+    "gross_usd": 0.0
   },
   "thresholds": {
-    "max_gross_exposure_pct": 0.0,
+    "max_gross_exposure_pct": 200,
     "max_trade_nav_pct": 0.0
   }
 }
