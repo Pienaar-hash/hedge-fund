@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
@@ -177,6 +178,62 @@ def load_treasury_cache(payload: Any | None = None, path: str | None = None) -> 
         "updated_at": payload.get("updated_at"),
         "raw": payload,
     }
+
+
+def load_recent_logs(kind: str, limit: int = 200) -> Any:
+    """
+    Render the tail of logs/<kind>_log.json inside Streamlit.
+
+    Falls back to a text area when the payload cannot be parsed as a tabular list.
+    Automatically schedules a refresh every 15 seconds (no-op if st_autorefresh unavailable).
+    """
+    if not _HAVE_ST:
+        raise RuntimeError("Streamlit context required for load_recent_logs")
+
+    try:
+        from streamlit_extras.st_autorefresh import st_autorefresh  # type: ignore
+
+        st_autorefresh(interval=15_000, key=f"log-refresh-{kind}")
+    except Exception:  # pragma: no cover - optional dependency
+        pass
+
+    base_dir = Path(__file__).resolve().parents[1]
+    path = base_dir / "logs" / f"{kind}_log.json"
+    if not path.exists():
+        st.warning(f"log file not found: {path}")
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = None
+
+    if isinstance(payload, list) and payload:
+        rows = payload[-limit:]
+        try:
+            df = pd.DataFrame(rows)
+        except ValueError:
+            df = pd.DataFrame({"value": rows})
+        if df.empty:
+            st.info("No recent entries.")
+            return df
+        st.dataframe(df, use_container_width=True, height=min(600, 60 + len(df) * 28))
+        return df
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        st.error(f"Unable to read log file: {exc}")
+        return None
+
+    lines = text.splitlines()
+    tail = "\n".join(lines[-limit:]) if lines else ""
+    st.text_area(
+        f"{kind} log tail",
+        tail or "(empty)",
+        height=320,
+    )
+    return tail
 
 
 def compute_total_nav_cached() -> Tuple[Dict[str, Any], float]:
