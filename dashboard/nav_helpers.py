@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from pandas.io.formats.style import Styler
@@ -20,6 +21,28 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 ENV = os.getenv("ENV", "prod")
 LOG_DIR = ROOT_DIR / "logs"
 EXEC_LOG_DIR = LOG_DIR / "execution"
+NAV_LOG_PATH = LOG_DIR / "nav_log.json"
+NAV_CONFIRMED_PATH = LOG_DIR / "cache" / "nav_confirmed.json"
+
+
+def _load_json_file(path: Path) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(num):
+        return None
+    return num
 
 
 def _default_exec_stats() -> Dict[str, Any]:
@@ -276,6 +299,98 @@ def heartbeat_badge(age_seconds: Optional[float]) -> str:
     return f'<span style="{base_style}background:{color};">{text}</span>'
 
 
+def build_nav_dataframe() -> Tuple[pd.DataFrame, float, str]:
+    """
+    Return a consolidated NAV DataFrame from confirmed snapshot + nav log.
+
+    Returns:
+        df: columns (ts, datetime, nav_usd, source, fresh)
+        latest_nav: latest numeric NAV selected
+        label: optional fallback message (e.g., "using cached NAV")
+    """
+
+    entries: List[Dict[str, Any]] = []
+
+    nav_log = _load_json_file(NAV_LOG_PATH)
+    if isinstance(nav_log, list):
+        for record in nav_log:
+            if not isinstance(record, dict):
+                continue
+            ts = _parse_timestamp(record)
+            nav_val = _coerce_float(
+                record.get("nav_usd")
+                or record.get("nav")
+                or record.get("equity")
+                or record.get("total_equity")
+            )
+            if ts is None or nav_val is None:
+                continue
+            entries.append(
+                {
+                    "ts": ts,
+                    "nav_usd": nav_val,
+                    "source": "nav_log",
+                    "fresh": False,
+                }
+            )
+
+    confirmed = _load_json_file(NAV_CONFIRMED_PATH)
+    if isinstance(confirmed, dict):
+        ts = _parse_timestamp(confirmed)
+        nav_val = _coerce_float(
+            confirmed.get("nav_usd")
+            or confirmed.get("nav")
+            or confirmed.get("total_nav")
+            or confirmed.get("total_equity")
+        )
+        if ts is None:
+            ts = time.time()
+        if nav_val is not None:
+            entries.append(
+                {
+                    "ts": ts,
+                    "nav_usd": nav_val,
+                    "source": "confirmed_nav",
+                    "fresh": bool(confirmed.get("sources_ok", False)),
+                }
+            )
+
+    if entries:
+        df = pd.DataFrame(entries)
+        df = df.sort_values("ts").drop_duplicates(subset="ts", keep="last").reset_index(drop=True)
+        df["nav_usd"] = pd.to_numeric(df["nav_usd"], errors="coerce")
+        df = df[df["nav_usd"].notna()]
+    else:
+        df = pd.DataFrame(columns=["ts", "nav_usd", "source", "fresh"])
+
+    if df.empty:
+        fallback_ts = time.time()
+        df = pd.DataFrame(
+            [
+                {
+                    "ts": fallback_ts,
+                    "nav_usd": 0.0,
+                    "source": "placeholder",
+                    "fresh": False,
+                }
+            ]
+        )
+        latest_nav = 0.0
+        label = "using cached NAV"
+    else:
+        df = df.sort_values("ts").reset_index(drop=True)
+        latest = df.iloc[-1]
+        latest_nav = float(latest["nav_usd"])
+        label = ""
+        if latest.get("source") != "confirmed_nav" or not bool(latest.get("fresh")):
+            label = "using cached NAV"
+
+    df["datetime"] = pd.to_datetime(df["ts"], unit="s", utc=True)
+    df = df[["ts", "datetime", "nav_usd", "source", "fresh"]]
+
+    return df, latest_nav, label
+
+
 def treasury_table_from_summary(summary: Dict[str, Any]) -> pd.DataFrame:
     """Return a DataFrame of treasury assets from compute_nav_summary output.
 
@@ -361,4 +476,5 @@ __all__ = [
     "signal_attempts_summary",
     "load_exec_stats",
     "heartbeat_badge",
+    "build_nav_dataframe",
 ]

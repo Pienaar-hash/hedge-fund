@@ -4,6 +4,7 @@ import json
 import time
 import subprocess
 import logging
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path and PROJECT_ROOT.is_dir():
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # Local helpers
-from dashboard.dashboard_utils import (
+from dashboard.dashboard_utils import (  # noqa: E402
     get_firestore_connection,
     fetch_state_document,
     fetch_telemetry_health,
@@ -27,8 +28,8 @@ from dashboard.dashboard_utils import (
     get_env_float,
     get_env_badge,
 )
-from dashboard.nav_helpers import signal_attempts_summary
-from scripts.doctor import collect_doctor_snapshot
+from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
+from scripts.doctor import collect_doctor_snapshot  # noqa: E402
 try:
     from execution.signal_generator import generate_intents
 except Exception:  # pragma: no cover - optional dependency
@@ -83,6 +84,7 @@ def main():
 
     LATENCY_CACHE_PATH = Path(os.getenv("EXEC_LATENCY_CACHE", "logs/execution/replay_cache.json"))
     LOG_PATH = Path(os.getenv("EXECUTOR_LOG", "logs/screener_tail.log"))
+    HEARTBEAT_LOG_PATH = Path(os.getenv("SYNC_HEARTBEAT_LOG", "logs/execution/sync_heartbeats.jsonl"))
 
     # Optional auto-refresh
     try:
@@ -257,6 +259,76 @@ def main():
             return (time.time() - float(ts)) <= window_sec
         except Exception:
             return False
+
+    def load_recent_heartbeats(limit: int = 2) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
+        entries: deque[Dict[str, Any]] = deque(maxlen=limit)
+        if not HEARTBEAT_LOG_PATH.exists():
+            return []
+        try:
+            with HEARTBEAT_LOG_PATH.open("r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(payload, dict):
+                        entries.append(dict(payload))
+        except Exception as exc:
+            LOG.debug("[dash] heartbeat log read failed: %s", exc, exc_info=True)
+            return []
+        return list(entries)
+
+    def telemetry_health_card(env: str = ENV, firestore_available: bool = True) -> Tuple[Dict[str, Any], Optional[str], Optional[float]]:
+        if not firestore_available:
+            st.metric("Firestore", "🔴 Down", delta="unknown")
+            return {}, "firestore_unavailable", None
+        try:
+            meta = fetch_telemetry_health(env)
+            if not isinstance(meta, dict):
+                meta = {}
+            error: Optional[str] = None
+        except Exception as exc:
+            meta = {}
+            error = str(exc)
+        else:
+            error = None
+
+        ts_val = _to_epoch_seconds(meta.get("ts") or meta.get("updated_at"))
+        age_seconds: Optional[float] = None
+        if ts_val is not None:
+            try:
+                age_seconds = max(0.0, time.time() - float(ts_val))
+            except Exception:
+                age_seconds = None
+
+        status_icon = "🔴"
+        status_label = "Down"
+        if error:
+            status_icon = "🔴"
+            status_label = "Down"
+        else:
+            ok = bool(meta.get("firestore_ok"))
+            if age_seconds is not None and age_seconds <= 60 and ok:
+                status_icon = "🟢"
+                status_label = "Fresh"
+            elif ok:
+                status_icon = "🟡"
+                status_label = "Stale"
+            elif not meta:
+                status_icon = "⚪"
+                status_label = "Unknown"
+            else:
+                status_icon = "🔴"
+                status_label = "Down"
+
+        delta_text = f"{int(age_seconds)}s ago" if age_seconds is not None else "unknown"
+        st.metric("Firestore", f"{status_icon} {status_label}", delta=delta_text)
+        return meta, error, age_seconds
 
     def nav_freshness_info() -> Dict[str, Any]:
         record: Dict[str, Any] = {}
@@ -709,9 +781,12 @@ def main():
     status = st.empty()
     status.info("Loading data…")
 
+    firestore_error: Optional[str] = None
     try:
         db = get_firestore_connection()
-    except Exception:
+    except Exception as exc:
+        firestore_error = str(exc)
+        LOG.warning("[dash] firestore connection failed: %s", exc)
         db = None
 
     nav_doc, nav_source = load_nav_state()
@@ -760,15 +835,6 @@ def main():
     df_tr = load_trades(200, db)
     df_rb = load_risk_blocks(200, db)
     df_sig = load_signals_table(150)
-    if db is not None:
-        try:
-            telemetry_health = fetch_telemetry_health(ENV)
-        except Exception as exc:
-            LOG.debug("[dash] telemetry health fetch failed: %s", exc, exc_info=True)
-            telemetry_health = {"error": str(exc)}
-    else:
-        telemetry_health = {}
-
     # ---- Top navigation header ---------------------------------------------------
     env_label, env_color = get_env_badge(TESTNET)
     badge_icon = "🟠" if TESTNET else "🟢"
@@ -848,17 +914,6 @@ def main():
 
     if isinstance(total_nav_value, (int, float)):
         kpis["total_equity"] = total_nav_value
-
-    nav_delta: Optional[float] = None
-    nav_delta_pct: Optional[float] = None
-    if nav_value is not None and not nav_df.empty:
-        cutoff = pd.Timestamp(nav_df.index[-1]) - pd.Timedelta(hours=24)
-        past_slice = nav_df[nav_df.index <= cutoff]
-        if not past_slice.empty:
-            past_val = float(past_slice["equity"].iloc[-1])
-            nav_delta = nav_value - past_val
-            if past_val:
-                nav_delta_pct = (nav_delta / past_val) * 100.0
 
     prev_nav_value = None
     if isinstance(nav_df, pd.DataFrame) and nav_df.shape[0] >= 2:
@@ -1195,6 +1250,16 @@ def main():
     with tab_execution:
         st.subheader("Execution Health")
 
+        telemetry_health, telemetry_fetch_error, telemetry_age = telemetry_health_card(
+            ENV, firestore_available=(db is not None)
+        )
+        telemetry_error = telemetry_fetch_error or firestore_error
+        telemetry_fallback: List[Dict[str, Any]] = []
+        if telemetry_error or not telemetry_health or (telemetry_age is not None and telemetry_age > 60):
+            telemetry_fallback = load_recent_heartbeats()
+        if not telemetry_fallback and not telemetry_health:
+            telemetry_fallback = load_recent_heartbeats()
+
         heartbeats = exec_stats.get("last_heartbeats") or {}
         now_ts = time.time()
         hb_rows: List[Tuple[str, Optional[float]]] = []
@@ -1290,14 +1355,54 @@ def main():
                 st.warning("Risk blocks may be stale (>30m)")
             st.dataframe(df_rb, use_container_width=True, height=220)
 
+        telemetry_section = st.container()
+        telemetry_section.markdown("#### Backend Telemetry")
+        fallback_entries = telemetry_fallback or []
+        latest_ts = _to_epoch_seconds(telemetry_health.get("ts") or telemetry_health.get("updated_at"))
+        fallback_ts_values = [
+            _to_epoch_seconds(entry.get("ts") or entry.get("time")) for entry in fallback_entries
+        ]
+        fallback_ts_values = [ts for ts in fallback_ts_values if ts is not None]
+        if fallback_ts_values:
+            fallback_latest = max(fallback_ts_values)
+            if latest_ts is None or fallback_latest > latest_ts:
+                latest_ts = fallback_latest
+        age_seconds: Optional[float] = None
+        if latest_ts is not None:
+            try:
+                age_seconds = max(0.0, time.time() - float(latest_ts))
+            except Exception:
+                age_seconds = None
+        status_icon = "🔴"
+        status_text = "DOWN"
+        if age_seconds is not None:
+            age_text = f"{int(age_seconds)} s"
+            if age_seconds <= 60:
+                status_icon = "🟢"
+                status_text = f"Fresh (age {age_text})"
+            else:
+                status_icon = "🟡"
+                status_text = f"STALE (age {age_text})"
+        else:
+            detail = telemetry_error or firestore_error
+            if detail:
+                clean_detail = str(detail).splitlines()[0]
+                if len(clean_detail) > 80:
+                    clean_detail = clean_detail[:77] + "..."
+                status_text = f"DOWN ({clean_detail})"
+        telemetry_section.markdown(f"**Status:** {status_icon} {status_text}")
+
         if telemetry_health:
-            st.markdown("#### Backend Telemetry")
             health_ok = bool(telemetry_health.get("firestore_ok"))
             ts_val = _to_epoch_seconds(telemetry_health.get("ts") or telemetry_health.get("updated_at"))
             updated_str = human_age(ts_val) if ts_val else "unknown"
             uptime = telemetry_health.get("uptime") or telemetry_health.get("rolling_uptime_pct") or telemetry_health.get("uptime_pct")
-            uptime_display = f"{float(uptime):.2f}%" if isinstance(uptime, (int, float, str)) else "n/a"
-            st.write(
+            try:
+                uptime_value = float(uptime)
+                uptime_display = f"{uptime_value:.2f}%"
+            except Exception:
+                uptime_display = "n/a"
+            telemetry_section.write(
                 {
                     "firestore_ok": health_ok,
                     "uptime": uptime_display,
@@ -1305,6 +1410,38 @@ def main():
                     "last_error": telemetry_health.get("last_error") or "none",
                 }
             )
+
+        if fallback_entries:
+            now_ts = time.time()
+            fallback_rows: List[Dict[str, Any]] = []
+            for entry in reversed(fallback_entries):
+                entry_ts = _to_epoch_seconds(entry.get("ts") or entry.get("time"))
+                age_display = "n/a"
+                if entry_ts is not None:
+                    try:
+                        age_val = max(0.0, now_ts - float(entry_ts))
+                        age_display = f"{int(age_val)} s"
+                    except Exception:
+                        age_display = "n/a"
+                lag = entry.get("lag_secs")
+                try:
+                    lag_display = f"{float(lag):.1f}"
+                except Exception:
+                    lag_display = "n/a"
+                fallback_rows.append(
+                    {
+                        "service": entry.get("service"),
+                        "timestamp": entry.get("ts") or entry.get("time"),
+                        "age": age_display,
+                        "lag_s": lag_display,
+                        "host": entry.get("hostname"),
+                    }
+                )
+            telemetry_section.caption("Heartbeat fallback (sync_heartbeats.jsonl)")
+            telemetry_section.table(pd.DataFrame(fallback_rows))
+
+        if not telemetry_health and not fallback_entries:
+            telemetry_section.warning("Telemetry unavailable; no Firestore data and heartbeat log empty.")
     # --------------------------- Leaderboard Tab ---------------------------------
     with tab_leader:
         st.subheader("Leaderboard")
@@ -1566,7 +1703,6 @@ def main():
                                     qty_val = float(qty) if qty is not None else None
                                 except Exception:
                                     qty_val = None
-                                px = data.get("px")
                                 val = data.get("val_usdt")
                                 usd_val = None
                                 try:
@@ -1632,8 +1768,6 @@ def main():
             # Veto reasons dominated in last 24h (from risk collection)
             veto_counts = {}
             try:
-                from dashboard.dashboard_utils import get_firestore_connection
-
                 db = get_firestore_connection()
                 docs = list(
                     db.collection("hedge")
