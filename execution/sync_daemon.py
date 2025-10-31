@@ -5,11 +5,13 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict
 
 from execution.log_utils import get_logger, log_event
 from execution.exchange_utils import get_positions  # fallback if no local positions
-from execution.sync_state import sync_leaderboard, sync_nav, sync_positions
+from execution.state_publish import normalize_positions
 from utils.firestore_client import get_db, publish_heartbeat
 
 LOGGER = logging.getLogger("sync_daemon")
@@ -35,6 +37,10 @@ _LAST_HEARTBEAT = 0.0
 _LATENCY_MA_MS: float | None = None
 _ERROR_COUNT = 0
 _LAST_SUCCESS_TS: float | None = None
+MAX_NAV_POINTS = int(os.getenv("SYNC_NAV_MAX_POINTS", "720"))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_ENV_PATH = _REPO_ROOT / ".env"
+_PROD_GUARD_WARNED = False
 
 
 def load_json_safe(path, default):
@@ -43,6 +49,160 @@ def load_json_safe(path, default):
             return json.load(f)
     except Exception:
         return default
+
+
+def _truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+@lru_cache(maxsize=1)
+def _allow_prod_sync() -> bool:
+    raw = os.getenv("ALLOW_PROD_SYNC")
+    if raw is not None:
+        return _truthy(raw)
+    try:
+        text = _ENV_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        if key.strip() == "ALLOW_PROD_SYNC":
+            return _truthy(val)
+    return False
+
+
+def _firestore_allowed(env: str) -> bool:
+    global _PROD_GUARD_WARNED
+    env_key = (env or "").strip().lower()
+    if env_key != "prod":
+        return True
+    allowed = _allow_prod_sync()
+    if not allowed and not _PROD_GUARD_WARNED:
+        LOGGER.warning(
+            "[sync] firestore_guard env=%s skip_write (ALLOW_PROD_SYNC not enabled)",
+            env,
+        )
+        _PROD_GUARD_WARNED = True
+    return allowed
+
+
+def _can_write(db, env: str) -> bool:
+    if db is None or getattr(db, "_is_noop", False):
+        return False
+    return _firestore_allowed(env)
+
+
+def _state_doc(db, env: str, doc_name: str):
+    return (
+        db.collection("hedge")
+        .document(env)
+        .collection("state")
+        .document(doc_name)
+    )
+
+
+def sync_nav(db, data: Dict[str, Any], env: str) -> Dict[str, Any]:
+    nav_block = data.get("nav") or {}
+    series = nav_block.get("series") or []
+    if not isinstance(series, list):
+        series = []
+    peak = float(nav_block.get("peak") or nav_block.get("peak_equity") or 0.0)
+    updated_at = nav_block.get("updated_at") or now_iso()
+    payload = {
+        "series": series[-MAX_NAV_POINTS:],
+        "peak_equity": peak,
+        "updated_at": updated_at,
+    }
+    if not _can_write(db, env):
+        LOGGER.info(
+            "[sync] nav_sync_skip env=%s rows=%d allowed=%s",
+            env,
+            len(payload["series"]),
+            _firestore_allowed(env),
+        )
+        return payload
+    doc = _state_doc(db, env, "nav")
+    try:
+        doc.set(payload, merge=True)
+        LOGGER.info(
+            "[sync] nav_sync rows=%d peak=%.2f env=%s",
+            len(payload["series"]),
+            peak,
+            env,
+        )
+    except Exception as exc:
+        LOGGER.warning("[sync] nav_sync_failed env=%s error=%s", env, exc)
+        raise
+    return payload
+
+
+def sync_positions(db, data: Dict[str, Any], env: str) -> Dict[str, Any]:
+    payload = data.get("positions") or {}
+    rows_raw = payload.get("rows") or []
+    if not isinstance(rows_raw, list):
+        rows_raw = []
+    normalized = normalize_positions(rows_raw)
+    doc_payload: Dict[str, Any] = {
+        "rows": normalized,
+        "updated_at": payload.get("updated_at") or now_iso(),
+        "row_count": len(normalized),
+    }
+    if not _can_write(db, env):
+        LOGGER.info(
+            "[sync] positions_sync_skip env=%s rows=%d allowed=%s",
+            env,
+            len(normalized),
+            _firestore_allowed(env),
+        )
+        return doc_payload
+    doc = _state_doc(db, env, "positions")
+    try:
+        doc.set(doc_payload, merge=True)
+        LOGGER.info(
+            "[sync] positions_sync rows=%d env=%s",
+            len(normalized),
+            env,
+        )
+    except Exception as exc:
+        LOGGER.warning("[sync] positions_sync_failed env=%s error=%s", env, exc)
+        raise
+    return doc_payload
+
+
+def sync_leaderboard(db, data: Dict[str, Any], env: str) -> Dict[str, Any]:
+    payload = data.get("leaderboard") or {}
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+    doc_payload = {
+        "rows": rows,
+        "updated_at": payload.get("updated_at") or now_iso(),
+    }
+    if not _can_write(db, env):
+        LOGGER.info(
+            "[sync] leaderboard_sync_skip env=%s rows=%d allowed=%s",
+            env,
+            len(rows),
+            _firestore_allowed(env),
+        )
+        return doc_payload
+    doc = _state_doc(db, env, "leaderboard")
+    try:
+        doc.set(doc_payload, merge=True)
+        LOGGER.info(
+            "[sync] leaderboard_sync rows=%d env=%s",
+            len(rows),
+            env,
+        )
+    except Exception as exc:
+        LOGGER.warning("[sync] leaderboard_sync_failed env=%s error=%s", env, exc)
+        raise
+    return doc_payload
 
 
 def _current_env() -> str:
@@ -109,8 +269,13 @@ def build_data_payload():
         "updated_at": now_iso(),
     }
 
+    leaderboard_payload = {
+        "rows": leaderboard if isinstance(leaderboard, list) else [],
+        "updated_at": now_iso(),
+    }
+
     return {
-        "leaderboard": leaderboard,
+        "leaderboard": leaderboard_payload,
         "nav": nav,
         "positions": positions_payload,
     }
@@ -126,13 +291,13 @@ def run_once(db, env):
     sync_nav(db, data, env)
     sync_positions(db, data, env)
     rows = data.get("positions", {}).get("rows") or []
-    leaderboard_rows = data.get("leaderboard") or []
+    leaderboard_rows = data.get("leaderboard", {}).get("rows") or []
     nav_series = data.get("nav", {}).get("series") or []
     work_items = len(rows) + len(leaderboard_rows) + len(nav_series)
     return work_items
 
 
-def _maybe_emit_heartbeat(work_items: int) -> None:
+def _maybe_emit_heartbeat(work_items: int, ok: bool) -> None:
     global _LAST_HEARTBEAT, _LATENCY_MA_MS
     now = time.time()
     if (now - _LAST_HEARTBEAT) < HEARTBEAT_INTERVAL:
@@ -141,9 +306,13 @@ def _maybe_emit_heartbeat(work_items: int) -> None:
     payload = {
         "service": "sync_daemon",
         "ts": datetime.now(timezone.utc).isoformat(),
-        "ok": True,
+        "epoch_ts": now,
+        "ok": bool(ok),
+        "sync_ok": bool(ok),
         "work_items": int(work_items),
         "latency_ms": _LATENCY_MA_MS,
+        "interval_s": HEARTBEAT_INTERVAL,
+        "next_due_ts": now + HEARTBEAT_INTERVAL,
     }
     try:
         log_event(LOG_HEART, "heartbeat", payload)
@@ -164,6 +333,9 @@ def _publish_daemon_heartbeat(
     }
     if error is not None:
         extra["last_error"] = str(error)
+    if not _firestore_allowed(env):
+        LOGGER.info("[sync] heartbeat_skip env=%s (prod guard active)", env)
+        return
     try:
         publish_heartbeat(
             db,
@@ -180,8 +352,8 @@ def _publish_daemon_heartbeat(
 
 def main() -> None:
     global _ERROR_COUNT, _LAST_SUCCESS_TS, _LATENCY_MA_MS
-    db = get_db(strict=True)
     env = _current_env()
+    db = get_db(strict=_firestore_allowed(env))
     while True:
         start = time.perf_counter()
         status = "ok"
@@ -204,7 +376,7 @@ def main() -> None:
             _LATENCY_MA_MS = latency_ms
         else:
             _LATENCY_MA_MS = (_LATENCY_MA_MS * 0.8) + (latency_ms * 0.2)
-        _maybe_emit_heartbeat(work_items)
+        _maybe_emit_heartbeat(work_items, status == "ok")
         _publish_daemon_heartbeat(db, env, status, work_items, error)
         time.sleep(INTERVAL)
 

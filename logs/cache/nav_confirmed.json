@@ -1,1 +1,1 @@
-{"detail": {"futures_wallet_usdt": 2395.99051535, "unrealized_pnl": -2.57990171}, "nav": 2393.41061364, "ts": 1760971289.7564695}
+{"detail": {"balances_ok": true, "futures_wallet_usdt": 1000.0, "positions_ok": true, "sources_ok": true, "unrealized_pnl": 0.0}, "nav": 1000.0, "nav_usd": 1000.0, "source_health": {"balances_ok": true, "positions_ok": true}, "sources_ok": true, "stale_flags": {"balances_ok": false, "positions_ok": false}, "ts": 1761903111.124301}

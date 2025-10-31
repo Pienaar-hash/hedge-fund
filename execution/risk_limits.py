@@ -10,6 +10,7 @@ from execution.drawdown_tracker import load_peak_state
 from execution.nav import (
     compute_trading_nav,
     compute_gross_exposure_usd,
+    get_confirmed_nav,
     get_nav_age as _nav_get_nav_age,
 )
 from execution.utils import load_json, get_live_positions
@@ -24,6 +25,7 @@ _GLOBAL_KEYS = {
     "cooldown_minutes_after_stop",
     "max_trades_per_symbol_per_hour",
     "drawdown_alert_pct",
+    "max_nav_drawdown_pct",
     "max_gross_exposure_pct",
     "max_portfolio_gross_nav_pct",
     "max_symbol_exposure_pct",
@@ -50,6 +52,7 @@ _NAV_SNAPSHOT_PATHS: List[str] = [
 
 DEFAULT_NAV_FRESHNESS_SECONDS = int(os.environ.get("NAV_FRESHNESS_SECONDS", "90"))
 DEFAULT_FAIL_CLOSED_ON_NAV_STALE = os.environ.get("FAIL_CLOSED_ON_NAV_STALE", "1") != "0"
+PEAK_STATE_MAX_AGE_SEC = int(os.environ.get("PEAK_STATE_MAX_AGE_SEC", str(24 * 3600)))
 
 
 def get_nav_freshness_snapshot() -> Tuple[Optional[float], bool]:
@@ -345,17 +348,43 @@ def _drawdown_snapshot() -> Dict[str, float]:
     state = load_peak_state()
     if not isinstance(state, dict):
         state = {}
+    confirmed = get_confirmed_nav()
+    nav_cache = confirmed if isinstance(confirmed, dict) else {}
+    cached_nav = _as_float(nav_cache.get("nav") or nav_cache.get("nav_usd"))
+    cache_ts = _as_float(nav_cache.get("ts"))
+
     dd_pct = _as_float(state.get("dd_pct"))
     dd_abs = _as_float(state.get("dd_abs"))
     peak = _as_float(state.get("peak") or state.get("peak_equity"))
-    nav = _as_float(state.get("nav") or state.get("nav_usd"))
+    nav = _as_float(state.get("nav") or state.get("nav_usd") or cached_nav)
     realized = _as_float(state.get("realized_pnl_today"))
+
+    if nav <= 0.0 and cached_nav > 0.0:
+        nav = cached_nav
+    if peak <= 0.0 and cached_nav > 0.0:
+        peak = cached_nav
+    if peak > 0.0 and (dd_pct <= 0.0 or dd_abs <= 0.0):
+        dd_abs = max(0.0, peak - max(nav, 0.0))
+        dd_pct = (dd_abs / peak) * 100.0 if peak > 0 else 0.0
+
+    state_ts = _as_float(state.get("ts"))
+    stale_age = None
+    if state_ts > 0.0:
+        stale_age = max(0.0, time.time() - state_ts)
+        if stale_age > PEAK_STATE_MAX_AGE_SEC:
+            LOGGER.warning(
+                "[risk] drawdown_state_stale age=%.0fs limit=%ss",
+                stale_age,
+                PEAK_STATE_MAX_AGE_SEC,
+            )
     return {
         "dd_pct": dd_pct,
         "dd_abs": dd_abs,
         "peak": peak,
         "nav": nav,
         "realized_today": realized,
+        "nav_cache_ts": cache_ts,
+        "peak_state_age": stale_age,
     }
 
 getcontext().prec = 28
@@ -721,9 +750,12 @@ def check_order(
         nav_guard_cfg,
     )
 
-    if not nav_ok and nav_fail_closed:
-        reasons.append("nav_stale")
-        return False, details
+    if not nav_ok:
+        if nav_fail_closed:
+            reasons.append("nav_stale")
+        else:
+            warnings = details.setdefault("warnings", [])
+            warnings.append("nav_stale")
 
     # Block duplicate exposure if a live position already exists
     try:
@@ -779,6 +811,37 @@ def check_order(
     if dd_nav_snapshot:
         details["drawdown_nav"] = dd_nav_snapshot
 
+    daily_pnl_state = getattr(state, "daily_pnl_pct", 0.0)
+    try:
+        daily_pnl_state = float(daily_pnl_state)
+    except Exception:
+        daily_pnl_state = 0.0
+    if daily_pnl_state:
+        details.setdefault("daily_pnl_pct_state", daily_pnl_state)
+        if daily_pnl_state < 0.0:
+            fallback_dd = abs(daily_pnl_state)
+            if fallback_dd > dd_pct:
+                dd_pct = fallback_dd
+                details["drawdown_pct"] = dd_pct
+
+    try:
+        max_nav_drawdown_pct = float(g_cfg.get("max_nav_drawdown_pct", 0.0) or 0.0)
+    except Exception:
+        max_nav_drawdown_pct = 0.0
+    if max_nav_drawdown_pct > 0.0 and dd_pct >= max_nav_drawdown_pct:
+        reasons.append("nav_drawdown_limit")
+        thresholds.setdefault("max_nav_drawdown_pct", max_nav_drawdown_pct)
+        thresholds.setdefault("observed_drawdown_pct", dd_pct)
+        thresholds.setdefault("drawdown_nav", dd_nav_snapshot)
+        thresholds.setdefault("drawdown_peak", dd_peak)
+        LOGGER.warning(
+            "[risk] drawdown_exceeded dd=%.1f%% limit=%.1f%% peak=%.2f nav=%.2f",
+            dd_pct,
+            max_nav_drawdown_pct,
+            dd_peak,
+            dd_nav_snapshot,
+        )
+
     # Daily loss limit (portfolio) sourced from drawdown tracker.
     try:
         day_lim = float(g_cfg.get("daily_loss_limit_pct", 0.0) or 0.0)
@@ -786,7 +849,7 @@ def check_order(
         day_lim = 0.0
     if day_lim > 0.0:
         if dd_pct >= day_lim:
-            reasons.append("daily_loss_limit")
+            reasons.append("day_loss_limit")
             thresholds.setdefault("daily_loss_limit_pct", day_lim)
             thresholds.setdefault("observed_daily_drawdown_pct", dd_pct)
             thresholds.setdefault("drawdown_peak", dd_peak)
