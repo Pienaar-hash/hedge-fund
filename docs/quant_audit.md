@@ -1,49 +1,24 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-diff --git a/docs/quant_audit.md b/docs/quant_audit.md
-new file mode 100644
-index 0000000000000000000000000000000000000000..dfe6a14a65c5c875e9dae1c9b4d52f7a45e36bcf
---- /dev/null
-+++ b/docs/quant_audit.md
-@@ -0,0 +1,40 @@
-+# Quant Audit — Hedge Fund Stack
-+
-+## Executive Summary
-+- The production risk gate currently continues trading on fallback capital values whenever live NAV data is unavailable, which can materially understate leverage and drawdown after exchange outages. Tighten the fail-closed path so capital-dependent guards halt order flow until fresh balances and positions arrive.
-+- Daily loss protections rely on a manually maintained `peak_state.json` file instead of realized PnL, leaving the program blind to intraday drawdowns and increasing the probability of breaching investor mandates. Wire the risk state to live PnL snapshots and rework peak tracking to survive restarts automatically.
-+- Strategy sizing, research, and machine-learning components remain static and shallow relative to market dynamics (fixed $5 notional clips, no volatility targeting, and single split validation). Introduce volatility-aware allocators, walk-forward testing, and intent-level performance filters before scaling capital.
-+
-+## Detailed Findings
-+
-+### 1. NAV-driven risk controls fail open when data is stale
-+**Observation.** `RiskGate._portfolio_nav` falls back to `capital_base_usdt` when live wallet calls fail, so subsequent gross exposure and trade size checks use a static config value instead of verifiable equity.【F:execution/risk_limits.py†L441-L475】 The upstream NAV helper similarly drops to the same fallback whenever the futures wallet returns zero or errors.【F:execution/nav.py†L109-L121】 In aggregate, a Binance outage would preserve the last configured capital (often far above reality after losses) and allow new positions to open.
-+
-+**Recommendation.** Fail closed whenever balances or positions cannot be refreshed (set nav to zero, trip a circuit breaker, and surface telemetry). Persist the last confirmed NAV with timestamps and require freshness before admitting new orders. Couple the guard with an alerting channel so humans know trading stopped.
-+
-+### 2. Daily loss checks depend on manual peak files
-+**Observation.** The per-day loss limiter reads `RiskState.daily_pnl_pct`, but the canonical `RiskGate` recomputes that value from `peak_state.json`, a local file updated only by the Firestore sync pipeline.【F:execution/risk_limits.py†L264-L275】【F:execution/risk_limits.py†L523-L538】 The sync process reconstructs peak equity by combining the Firestore document and the same file, so a cold restart or file corruption resets the peak and allows fresh trading without honoring prior drawdowns.【F:execution/sync_state.py†L380-L414】 There is no linkage to realized PnL or exchange-reported daily loss, leaving the control vulnerable to drift.
-+
-+**Recommendation.** Replace the file-based peak estimator with an exchange-derived realized PnL feed (wallet `cumRealizedPnl` or trade ledger). Persist peak equity in a durable datastore with monotonic updates and reload it on startup. Feed the intraday realized/mark-to-market drawdown directly into `RiskState` so the risk gate can enforce loss limits even if auxiliary services lag.
-+
-+### 3. Position sizing ignores volatility and cross-strategy concentration
-+**Observation.** The global config drives every strategy to trade roughly $5–$18 gross notional per order with static leverage maps and tight gross exposure caps, regardless of recent volatility or correlation.【F:config/strategy_config.json†L13-L37】 The live momentum module likewise ranks signals without scaling by realized risk, then emits trades without accounting for slippage, borrow, or cross-asset correlation.【F:strategies/momentum.py†L29-L103】 Because multiple symbols are enabled, these static clips can overshoot the configured gross limits as volatility spikes, while also starving high-sharpe regimes when risk is low.
-+
-+**Recommendation.** Introduce a volatility-targeted allocator that scales clip size by recent ATR or variance and enforces portfolio-level risk budgets per asset class. Layer in correlation-aware throttles so simultaneous longs on highly correlated alts share the same gross cap. Backfill execution cost models (slippage, fees) when computing expected edge so marginal trades can be filtered before routing.
-+
-+### 4. Machine-learning pipeline lacks robustness checks
-+**Observation.** Training uses a single chronological split with a basic logistic regression, storing the resulting model immediately after a lone ROC-AUC calculation.【F:execution/ml/train.py†L38-L90】 Feature engineering feeds from overlapping lookbacks and drops rows with NaNs wholesale, effectively shrinking the sample without testing stability under different periods.【F:execution/ml/features.py†L24-L42】 There is no walk-forward validation, probability calibration, or monitoring of live hit rate post-deployment.
-+
-+**Recommendation.** Move to rolling walk-forward or cross-validation splits that respect time ordering, add probability calibration, and record out-of-sample hit rate plus feature drift metrics in the model registry. Require a minimum lift over baseline and statistical confidence before refreshing the live model, and set up retraining alarms when performance decays.
-+
-+### 5. Signal routing lacks performance or capacity gates
-+**Observation.** The signal generator simply loads a hard-coded list of modules, deduplicates by `(symbol, timeframe, side, candle_close)`, and forwards every surviving intent downstream.【F:execution/signal_generator.py†L11-L109】 There is no weighting by historical PnL, risk score, or order book liquidity, nor any suppression after consecutive failures. Static module lists also make it hard to sandbox new strategies safely.
-+
-+**Recommendation.** Introduce a registry that tags each strategy with capacity limits, confidence scores, and kill-switch states. Feed live performance analytics into the generator so underperforming or volatile modules self-throttle. Support per-intent metadata (expected edge, required liquidity) so the risk gate can blend sizing decisions with signal quality before firing orders.
-+
-+## Next Steps
-+1. Implement fail-closed NAV freshness checks in the risk gate and executor loop, including telemetry and operator runbooks.
-+2. Build a resilient drawdown tracker sourced from exchange PnL and wire it through `RiskState` so daily loss stops trip deterministically.
-+3. Launch a research sprint on volatility-aware sizing and correlation budgeting, then backtest and phase into production behind feature flags.
-+4. Expand the ML pipeline with walk-forward evaluation, calibrated probabilities, and performance monitoring hooks.
-+5. Refactor the signal generator to consume a strategy registry that enforces capacity, sandboxing, and auto-suspension rules. 
-EOF
-)
+# Quant Infrastructure Audit — Hedge Fund Stack
+
+## Executive Summary
+- The NAV pipeline still depends on ad-hoc writers: `_futures_nav_usdt` only refreshes the confirmed snapshot when both balances and positions return cleanly, yet the only periodic writer is an optional helper (`run_nav_writer`) that nothing schedules by default, while `sync_daemon` refuses to run if `nav_log.json` ages past its freshness threshold.【F:execution/nav.py†L29-L83】【F:execution/nav.py†L390-L448】【F:execution/sync_daemon.py†L221-L288】
+- Daily loss and drawdown guardrails draw exclusively from `logs/cache/peak_state.json`; the loader just logs staleness and keeps using whatever is on disk, so the veto logic can compare against days-old peaks or realized PnL without any hard fail-safe.【F:execution/drawdown_tracker.py†L50-L127】【F:execution/risk_limits.py†L492-L538】【F:execution/risk_limits.py†L799-L857】
+- Firestore publishing lacks strong environment safety: the CLI tools default to the production collection path and spin up fresh clients per call, while `execution/hedge_sync.py` can continuously overwrite NAV/position documents with placeholder zeroes if someone runs it locally.【F:execution/state_publish.py†L27-L35】【F:execution/state_publish.py†L300-L343】【F:execution/hedge_sync.py†L13-L27】
+
+## Detailed Findings
+
+### 1. NAV freshness hinges on manual caretaking
+**Observation.** `_futures_nav_usdt` only calls `_persist_confirmed_nav` when both balance and position RPCs succeed, otherwise it logs a warning and relies on `_mark_nav_unhealthy` to flag the cache stale.【F:execution/nav.py†L29-L83】 Keeping `logs/nav_log.json` current is delegated to `run_nav_writer`, a helper loop that must be invoked separately, but nothing in the codebase actually spawns it; the only consumer is the executor’s opportunistic `write_nav_snapshots_pair` call. If that writer isn’t running, `sync_daemon.run_once` raises as soon as the nav log exceeds `SYNC_NAV_MAX_AGE_SEC`, stalling every Firestore sync cycle.【F:execution/nav.py†L390-L448】【F:execution/sync_daemon.py†L221-L288】
+
+**Recommendation.** Promote `run_nav_writer` (or an equivalent scheduler inside the executor) into a supervised process so the nav cache stays fresh even when trading pauses. Additionally, persist the last good NAV alongside explicit source health and make the sync daemon degrade gracefully (e.g., emit heartbeats with `stale=true`) instead of throwing and halting writes outright.
+
+### 2. Drawdown and daily loss stops trust a stale file
+**Observation.** Both `load_peak_state` and `compute_intraday_drawdown` rebuild portfolio peaks from a single JSON file, merely defaulting to previous values when inputs are missing.【F:execution/drawdown_tracker.py†L50-L127】 `_drawdown_snapshot` surfaces `peak_state_age` but only logs when it exceeds `PEAK_STATE_MAX_AGE_SEC`; the function still returns the stale numbers, and the veto path compares that drawdown against `daily_loss_limit_pct` and `max_nav_drawdown_pct` without additional freshness checks.【F:execution/risk_limits.py†L492-L538】【F:execution/risk_limits.py†L799-L857】 If the sync process stops updating `peak_state.json`, the risk gate will happily enforce limits against a stale baseline or, worse, a zeroed file.
+
+**Recommendation.** Treat an out-of-date `peak_state` as a hard failure: stop trading, surface an alert, and fall back to exchange-reported realized PnL or NAV history to rebuild the peak on the fly. Persist the computed drawdown state to a durable store (e.g., Firestore) and have the risk layer demand freshness before evaluating loss thresholds.
+
+### 3. Firestore tooling can clobber production telemetry
+**Observation.** `execution/state_publish.py` derives `FS_ROOT` from `ENV` at import time with a default of `prod`, and every publish call instantiates a new Firestore client pointed at that path.【F:execution/state_publish.py†L27-L35】【F:execution/state_publish.py†L300-L343】 Running the script locally without overriding `ENV` or `FIRESTORE_ENABLED` will push whatever the terminal sees straight into production collections. Separately, `execution/hedge_sync.py` loops forever writing empty nav series and empty position lists via the shared sync helpers, so a misplaced run can wipe telemetry in whichever environment the credentials target.【F:execution/hedge_sync.py†L13-L27】
+
+**Recommendation.** Centralise Firestore access through `utils.firestore_client.get_db()` so publishers reuse clients, enforce retries, and honour an explicit environment parameter. Ship the CLI tools with `ENV=dev` defaults (and guard rails that refuse to hit prod unless an allow-list flag is set), and either delete `hedge_sync.py` or make it a dry-run utility that cannot reach production collections without explicit confirmation.
+
