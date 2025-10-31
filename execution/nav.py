@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 import time
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from execution.exchange_utils import get_balances, get_positions, get_price
 from execution.reserves import load_reserves, value_reserves_usd
 
 _NAV_CACHE_PATH = "logs/cache/nav_confirmed.json"
 _NAV_LOG_PATH = "logs/nav_log.json"
+_NAV_WRITER_DEFAULT_INTERVAL = float(os.environ.get("NAV_WRITER_INTERVAL_SEC", "60"))
 
 LOGGER = logging.getLogger("nav")
 
@@ -46,7 +48,7 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
                     break
             except Exception:
                 continue
-    detail = {"futures_wallet_usdt": wallet}
+    detail: Dict[str, Any] = {"futures_wallet_usdt": wallet}
     # Include unrealized PnL if present via positions
     try:
         positions = get_positions() or []
@@ -67,7 +69,17 @@ def _futures_nav_usdt() -> Tuple[float, Dict]:
         "balances_ok": balances_ok,
         "positions_ok": positions_ok,
     }
-    _persist_confirmed_nav(wallet, detail=detail, source_health=source_health)
+    sources_ok = all(source_health.values())
+    detail["sources_ok"] = sources_ok
+    if sources_ok:
+        _persist_confirmed_nav(wallet, detail=detail, source_health=source_health)
+    else:
+        LOGGER.warning(
+            "[nav] snapshot_mark_unhealthy balances_ok=%s positions_ok=%s",
+            balances_ok,
+            positions_ok,
+        )
+        _mark_nav_unhealthy(detail=detail, source_health=source_health)
     return wallet, detail
 
 
@@ -151,22 +163,35 @@ def _nav_sources(cfg: Dict) -> Tuple[str, str, bool, Any]:
     return str(trading_source), str(reporting_source), include_treasury, manual
 
 
-def _fallback_capital(cfg: Dict) -> Tuple[float, Dict]:
-    fallback = float(cfg.get("capital_base_usdt", 0.0) or 0.0)
-    return fallback, {"source": "capital_base"}
-
-
 def compute_trading_nav(cfg: Dict) -> Tuple[float, Dict]:
     trading_source, _, _, manual = _nav_sources(cfg)
     if trading_source == "manual":
         if manual is not None:
             return float(manual), {"source": "manual"}
-        return _fallback_capital(cfg)
+        return 0.0, {"source": "manual_unset"}
 
     fut_nav, fut_detail = _futures_nav_usdt()
-    if fut_nav > 0:
-        return float(fut_nav), {"source": "exchange", **fut_detail}
-    return _fallback_capital(cfg)
+    detail = dict(fut_detail)
+    sources_ok = bool(detail.get("sources_ok"))
+    if sources_ok and fut_nav > 0:
+        detail["source"] = "exchange"
+        return float(fut_nav), detail
+
+    confirmed = get_confirmed_nav()
+    confirmed_nav = float(confirmed.get("nav") or 0.0) if confirmed else 0.0
+    if confirmed_nav > 0:
+        cache_detail = {
+            "source": "exchange_cache",
+            "confirmed_ts": confirmed.get("ts"),
+            "sources_ok": confirmed.get("sources_ok"),
+            "stale_flags": confirmed.get("stale_flags"),
+        }
+        cache_detail = {k: v for k, v in cache_detail.items() if v is not None}
+        cache_detail.update(detail)
+        return confirmed_nav, cache_detail
+
+    detail["source"] = "unavailable"
+    return 0.0, detail
 
 
 def compute_nav_summary(cfg: Dict | None = None) -> Dict[str, Any]:
@@ -231,7 +256,21 @@ def compute_reporting_nav(cfg: Dict) -> Tuple[float, Dict]:
 
     if total_nav > 0:
         return total_nav, detail
-    return _fallback_capital(cfg)
+    confirmed = get_confirmed_nav()
+    confirmed_nav = float(confirmed.get("nav") or 0.0) if confirmed else 0.0
+    if confirmed_nav > 0:
+        detail.update(
+            {
+                "source": "exchange_cache",
+                "confirmed_ts": confirmed.get("ts"),
+                "sources_ok": confirmed.get("sources_ok"),
+            }
+        )
+        if confirmed.get("stale_flags"):
+            detail["stale_flags"] = confirmed["stale_flags"]
+        return confirmed_nav, detail
+    detail["source"] = "unavailable"
+    return 0.0, detail
 
 
 def compute_nav_pair(cfg: Dict) -> Tuple[Tuple[float, Dict], Tuple[float, Dict]]:
@@ -342,6 +381,73 @@ def write_nav(nav_value: float) -> None:
     LOGGER.info("[nav] write nav=%.2f ts=%.3f path=%s", nav_float, ts, _NAV_LOG_PATH)
 
 
+def _load_strategy_cfg(existing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if isinstance(existing, dict) and existing:
+        return dict(existing)
+    return _load_json("config/strategy_config.json")
+
+
+def run_nav_writer(
+    interval_s: float | int = _NAV_WRITER_DEFAULT_INTERVAL,
+    cfg: Optional[Dict[str, Any]] = None,
+    stop_event: Optional["threading.Event"] = None,
+) -> None:
+    """Continuously record NAV to the log on a timer."""
+
+    try:
+        interval = max(float(interval_s), 5.0)
+    except Exception:
+        interval = _NAV_WRITER_DEFAULT_INTERVAL
+    LOGGER.info("[nav] nav_writer_start interval=%.1fs", interval)
+    cfg_data = _load_strategy_cfg(cfg)
+
+    while True:
+        start_ts = time.time()
+        try:
+            nav_val, detail = compute_trading_nav(cfg_data)
+            if not math.isfinite(float(nav_val)) or float(nav_val) <= 0.0:
+                fallback = get_confirmed_nav()
+                nav_val = float(fallback.get("nav") or fallback.get("nav_usd") or 0.0)
+            if float(nav_val) > 0.0:
+                write_nav(float(nav_val))
+            else:
+                LOGGER.warning(
+                    "[nav] nav_writer_skip nav<=0 source=%s",
+                    (detail or {}).get("source"),
+                )
+        except Exception as exc:
+            LOGGER.warning("[nav] nav_writer_iteration_failed: %s", exc)
+
+        if stop_event and stop_event.is_set():
+            LOGGER.info("[nav] nav_writer_stop signal_received")
+            break
+
+        remaining = max(0.0, interval - (time.time() - start_ts))
+        if stop_event:
+            if stop_event.wait(remaining):
+                LOGGER.info("[nav] nav_writer_stop signal_received")
+                break
+        else:
+            time.sleep(remaining)
+
+
+def start_nav_writer(
+    interval_s: float | int = _NAV_WRITER_DEFAULT_INTERVAL,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Tuple[threading.Thread, "threading.Event"]:
+    """Spawn a daemon thread that runs the NAV writer loop."""
+
+    stop_event: "threading.Event" = threading.Event()
+    thread = threading.Thread(
+        target=run_nav_writer,
+        args=(interval_s, cfg, stop_event),
+        name="nav-writer",
+        daemon=True,
+    )
+    thread.start()
+    return thread, stop_event
+
+
 def _persist_confirmed_nav(
     nav_value: float,
     detail: Dict[str, Any] | None = None,
@@ -385,6 +491,52 @@ def _persist_confirmed_nav(
         )
     except Exception as exc:
         LOGGER.error("[nav] snapshot_write_failed: %s", exc)
+
+
+def _mark_nav_unhealthy(
+    *,
+    detail: Optional[Dict[str, Any]] = None,
+    source_health: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Mark the confirmed NAV snapshot as stale without overwriting last good value."""
+    try:
+        existing = _load_json(_NAV_CACHE_PATH)
+        record: Dict[str, Any] = dict(existing if isinstance(existing, dict) else {})
+    except Exception:
+        record = {}
+
+    stale_ts = time.time()
+    nav_val: float
+    try:
+        nav_val = float(record.get("nav") or record.get("nav_usd") or 0.0)
+    except Exception:
+        nav_val = 0.0
+    record["nav"] = nav_val
+    record["nav_usd"] = nav_val
+    record["sources_ok"] = False
+    if isinstance(source_health, dict):
+        sanitized = {str(key): bool(val) for key, val in source_health.items()}
+    record["source_health"] = sanitized
+    record["stale_flags"] = {key: not val for key, val in sanitized.items()}
+    if isinstance(detail, dict) and detail:
+        detail_payload = dict(detail)
+        detail_payload["sources_ok"] = False
+        record["detail"] = detail_payload
+    record["ts"] = stale_ts
+    record["stale_ts"] = stale_ts
+    try:
+        os.makedirs(os.path.dirname(_NAV_CACHE_PATH), exist_ok=True)
+    except Exception as exc:
+        LOGGER.error("[nav] snapshot_mkdir_failed: %s", exc)
+        return
+    try:
+        with open(_NAV_CACHE_PATH, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, sort_keys=True)
+        LOGGER.warning(
+            "[nav] snapshot_marked_stale ts=%.0f path=%s", stale_ts, _NAV_CACHE_PATH
+        )
+    except Exception as exc:
+        LOGGER.error("[nav] snapshot_mark_stale_failed: %s", exc)
 
 
 def get_confirmed_nav() -> Dict[str, Any]:
@@ -436,6 +588,12 @@ def get_confirmed_nav() -> Dict[str, Any]:
     stale_flags = cached.get("stale_flags")
     if isinstance(stale_flags, dict):
         out["stale_flags"] = {str(key): bool(val) for key, val in stale_flags.items()}
+    stale_ts = cached.get("stale_ts") or cached.get("last_failure_ts")
+    if stale_ts is not None:
+        try:
+            out["stale_ts"] = float(stale_ts)
+        except Exception:
+            pass
     return out
 
 
@@ -480,7 +638,8 @@ class PortfolioSnapshot:
             nav_val, _ = compute_trading_nav(self.cfg)
             self._nav = float(nav_val or 0.0)
         except Exception:
-            self._nav = float(self.cfg.get("capital_base_usdt", 0.0) or 0.0)
+            confirmed = get_confirmed_nav()
+            self._nav = float((confirmed or {}).get("nav") or 0.0)
         self._symbol_gross = compute_symbol_gross_usd()
         self._gross = float(sum(self._symbol_gross.values()))
         self._stale = False
@@ -513,4 +672,6 @@ __all__ = [
     "is_nav_fresh",
     "PortfolioSnapshot",
     "write_nav",
+    "run_nav_writer",
+    "start_nav_writer",
 ]
