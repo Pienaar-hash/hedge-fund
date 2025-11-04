@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import requests
 
 from utils.firestore_client import get_db as get_firestore_db
+from dashboard.router_health import _load_order_events
 
 ANSI_GREEN = "\033[92m"
 ANSI_RED = "\033[91m"
@@ -320,8 +321,23 @@ def collect_router_health(limit: int = 200) -> Dict[str, Any]:
     order_path = Path("logs/execution/order_metrics.jsonl")
     signal_path = Path("logs/execution/signal_metrics.jsonl")
     slip_window = AggWindow(capacity=max(1, limit))
-    decision_window = AggWindow(capacity=max(1, limit))
+    latency_window = AggWindow(capacity=max(1, limit))
 
+    ack_events, fill_events, _ = _load_order_events(limit)
+
+    def _identifier(record: Mapping[str, Any]) -> str:
+        order_id = record.get("orderId") or record.get("order_id")
+        client_id = record.get("clientOrderId") or record.get("client_order_id")
+        if order_id:
+            return str(order_id)
+        if client_id:
+            return str(client_id)
+        return f"anon_{id(record)}"
+
+    ack_ids = {_identifier(ack) for ack in ack_events}
+    fill_ids: set[str] = set()
+
+    metrics_map: Dict[str, Dict[str, Any]] = {}
     if order_path.exists():
         try:
             with order_path.open("r", encoding="utf-8", errors="ignore") as handle:
@@ -336,13 +352,33 @@ def collect_router_health(limit: int = 200) -> Dict[str, Any]:
                     continue
                 if not isinstance(row, dict):
                     continue
-                if row.get("event") == "position_close":
-                    continue
-                slip_window.add(row.get("slippage_bps"))
-                timing = row.get("timing_ms") or {}
-                decision_window.add(timing.get("decision"))
+                attempt = row.get("attempt_id") or row.get("attemptId")
+                if attempt:
+                    metrics_map[str(attempt)] = row
         except Exception as exc:
             print(f"[doctor] router_metrics_read_failed: {exc}")
+
+    for fill in fill_events:
+        identifier = fill.get("identifier") or _identifier(fill)
+        fill_ids.add(identifier)
+        latency_val = fill.get("latency_ms")
+        if latency_val is not None:
+            latency_window.add(latency_val)
+        attempt_id = str(fill.get("attempt_id") or "")
+        metrics = metrics_map.get(attempt_id)
+        if metrics:
+            prices = metrics.get("prices") or {}
+            mark = _safe_float(prices.get("mark"))
+            fill_price = _safe_float(fill.get("avg_price"))
+            if mark not in (None, 0) and fill_price not in (None, 0):
+                slip = ((fill_price - mark) / mark) * 10_000.0
+                if str(fill.get("side") or "").upper() == "SELL":
+                    slip *= -1.0
+                slip_window.add(slip)
+
+    ack_count = len(ack_ids)
+    fill_count = len(fill_ids)
+    fill_rate_pct = (fill_count / ack_count * 100.0) if ack_count else 0.0
 
     attempted = emitted = vetoed = 0
     if signal_path.exists():
@@ -370,21 +406,24 @@ def collect_router_health(limit: int = 200) -> Dict[str, Any]:
             print(f"[doctor] signal_metrics_read_failed: {exc}")
 
     slip_stats = slip_window.snapshot()
-    decision_stats = decision_window.snapshot()
+    latency_stats = latency_window.snapshot()
     summary = {
         "slippage_p50": slip_stats.get("p50", 0.0),
         "slippage_p95": slip_stats.get("p95", 0.0),
-        "decision_p50_ms": decision_stats.get("p50", 0.0),
-        "decision_p95_ms": decision_stats.get("p95", 0.0),
+        "latency_p50_ms": latency_stats.get("p50", 0.0),
+        "latency_p95_ms": latency_stats.get("p95", 0.0),
         "attempted": attempted,
         "emitted": emitted,
         "vetoed": vetoed,
+        "ack_count": ack_count,
+        "fill_count": fill_count,
+        "fill_rate_pct": fill_rate_pct,
     }
     print(
         "[doctor] Router: "
         f"slip_p50={summary['slippage_p50']:.2f}bps slip_p95={summary['slippage_p95']:.2f}bps "
-        f"decision_p50={summary['decision_p50_ms']:.0f}ms decision_p95={summary['decision_p95_ms']:.0f}ms "
-        f"attempted={attempted} emitted={emitted} vetoed={vetoed}"
+        f"lat_p50={summary['latency_p50_ms']:.0f}ms lat_p95={summary['latency_p95_ms']:.0f}ms "
+        f"fill_rate={summary['fill_rate_pct']:.1f}% attempted={attempted} emitted={emitted} vetoed={vetoed}"
     )
     return summary
 

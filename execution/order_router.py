@@ -7,11 +7,13 @@ from typing import Any, Dict, Mapping, Tuple
 from execution import exchange_utils as ex
 from execution.log_utils import get_logger, log_event, safe_dump
 
-__all__ = ["route_order", "route_intent"]
+__all__ = ["route_order", "route_intent", "is_ack_ok"]
 
 
 _LOG = logging.getLogger("order_router")
 LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
+
+_ACK_OK_STATUSES = {"NEW", "PARTIALLY_FILLED"}
 
 
 def _truthy(value: Any) -> bool:
@@ -60,6 +62,24 @@ def _slippage_bps(side: str, mark_px: float | None, fill_px: float | None) -> fl
     return diff
 
 
+def _normalize_status(status: Any) -> str:
+    if not status:
+        return "UNKNOWN"
+    try:
+        normalized = str(status).upper()
+        if normalized == "CANCELLED":  # handle alternative spelling
+            return "CANCELED"
+        return normalized
+    except Exception:
+        return "UNKNOWN"
+
+
+def is_ack_ok(status: Any) -> bool:
+    """Return True when an ACK status represents an accepted order."""
+    normalized = _normalize_status(status)
+    return normalized in _ACK_OK_STATUSES
+
+
 def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run: bool) -> Dict[str, Any]:
     """
     Normalize the intent payload and dispatch via exchange utils.
@@ -68,14 +88,15 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         accepted: bool
         reason: str | None
         order_id: Any
-        price: float | None
-        qty: float | None
+        status: str
+        price: float | None (only present when exchange reported executedQty > 0)
+        qty: float | None (only present when exchange reported executedQty > 0)
         raw: Dict[str, Any] (optional raw exchange response)
         request_id: str | None
+        client_order_id: str | None
+        transact_time: Any | None
         latency_ms: float | None
         exchange_filters_used: Dict[str, Any]
-        rounded_qty: float | None
-        rounded_price: float | None
 
     Raises:
         Exception: Propagated exchange error after logging.
@@ -179,35 +200,38 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         raise
 
     order_id = resp.get("orderId")
-    avg_price = resp.get("avgPrice") or price
-    executed_qty = resp.get("executedQty") or resp.get("origQty") or qty
+    status = _normalize_status(resp.get("status"))
+    executed_qty = resp.get("executedQty")
+    avg_price = resp.get("avgPrice")
     reason = "dry_run" if resp.get("dryRun") else None
     request_id = (
         resp.get("clientOrderId")
         or payload.get("newClientOrderId")
         or payload.get("clientOrderId")
     )
-    rounded_qty = _to_float(payload.get("quantity"))
-    if rounded_qty is None:
-        rounded_qty = _to_float(executed_qty)
-    rounded_price = _to_float(payload.get("price"))
-    if rounded_price is None:
-        rounded_price = _to_float(avg_price)
+    executed_qty_float = _to_float(executed_qty)
+    if executed_qty_float is not None and executed_qty_float <= 0.0:
+        executed_qty_float = None
+    avg_price_float = _to_float(avg_price)
+    if avg_price_float is not None and avg_price_float <= 0.0:
+        avg_price_float = None
+
+    accepted = is_ack_ok(status) or bool(resp.get("dryRun"))
 
     result: Dict[str, Any] = {
-        "accepted": True,
+        "accepted": accepted,
         "reason": reason,
         "order_id": order_id,
-        "price": _to_float(avg_price),
-        "qty": _to_float(executed_qty),
+        "status": status,
+        "price": avg_price_float,
+        "qty": executed_qty_float,
         "raw": resp,
         "request_id": request_id,
         "latency_ms": latency_ms,
         "exchange_filters_used": filters_snapshot,
-        "rounded_qty": rounded_qty,
-        "rounded_price": rounded_price,
+        "client_order_id": request_id,
+        "transact_time": resp.get("transactTime"),
     }
-    log_event(LOG_ORDERS, "order_ack", safe_dump(result))
     return result
 
 
@@ -272,17 +296,10 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
         notional = ref_price * qty_float
 
     raw = exchange_response.get("raw") or {}
-    raw_status = str(raw.get("status") or "").lower()
-    if raw_status in ("", "new"):
-        status = "filled" if exchange_response.get("accepted") else "rejected"
-    elif "partial" in raw_status:
-        status = "partial"
-    elif "cancel" in raw_status:
-        status = "rejected"
-    else:
-        status = raw_status
+    raw_status = _normalize_status(raw.get("status"))
+    status = raw_status if raw_status != "UNKNOWN" else ("ACCEPTED" if exchange_response.get("accepted") else "REJECTED")
 
-    cancelled = "cancel" in raw_status
+    cancelled = raw_status in {"CANCELED", "CANCELLED"}
     fees = _to_float(raw.get("commission")) or _to_float(raw.get("cumQuote"))
 
     slippage = _slippage_bps(side, mark_px, _to_float(avg_fill))

@@ -15,9 +15,10 @@ import subprocess
 import time
 import socket
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
 
 try:
     from binance.um_futures import UMFutures
@@ -25,6 +26,8 @@ except Exception:  # pragma: no cover - optional dependency
     UMFutures = None
 
 from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
+from execution.events import now_utc, write_event
+from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 
 import requests
 from utils.firestore_client import with_firestore
@@ -56,6 +59,10 @@ _LAST_QUEUE_DEPTH = 0
 SIGNAL_METRICS_PATH = Path("logs/execution/signal_metrics.jsonl")
 ORDER_METRICS_PATH = Path("logs/execution/order_metrics.jsonl")
 _INTENT_REGISTRY: Dict[str, Dict[str, Any]] = {}
+_POSITION_TRACKER = PositionTracker()
+_FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)
+_FILL_POLL_TIMEOUT = float(os.getenv("ORDER_FILL_POLL_TIMEOUT", "8.0") or 8.0)
+_FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 
 
 def mk_id(prefix: str) -> str:
@@ -78,6 +85,7 @@ def _append_order_metrics(record: Mapping[str, Any]) -> None:
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (
+    _req,
     _is_dual_side,
     build_order_payload,
     get_balances,
@@ -379,6 +387,356 @@ def _record_structured_event(logger_obj: Any, event_type: str, payload: Mapping[
         log_event(logger_obj, event_type, sanitized)
     except Exception as exc:
         LOG.debug("structured_log_failed event=%s err=%s", event_type, exc)
+
+
+@dataclass
+class OrderAckInfo:
+    symbol: str
+    side: str
+    order_type: str
+    request_qty: Optional[float]
+    position_side: Optional[str]
+    reduce_only: bool
+    order_id: Optional[int]
+    client_order_id: Optional[str]
+    status: str
+    latency_ms: Optional[float]
+    attempt_id: Optional[str] = None
+    intent_id: Optional[str] = None
+    ts_ack: str = ""
+
+
+@dataclass
+class FillSummary:
+    executed_qty: float
+    avg_price: Optional[float]
+    status: str
+    fee_total: float
+    fee_asset: Optional[str]
+    trade_ids: List[Any]
+    ts_fill_first: Optional[str]
+    ts_fill_last: Optional[str]
+    latency_ms: Optional[float] = None
+
+
+def _normalize_status(status: Any) -> str:
+    if not status:
+        return "UNKNOWN"
+    try:
+        value = str(status).upper()
+    except Exception:
+        return "UNKNOWN"
+    if value == "CANCELLED":
+        return "CANCELED"
+    return value
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ms_to_iso(value: Any) -> Optional[str]:
+    try:
+        if value is None:
+            return None
+        val = float(value)
+    except (TypeError, ValueError):
+        return None
+    if val <= 0:
+        return None
+    if val > 1e12:
+        val /= 1000.0
+    try:
+        return datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _iso_to_ts(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _fetch_order_status(symbol: str, order_id: Optional[int], client_order_id: Optional[str]) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"symbol": symbol}
+    if order_id:
+        params["orderId"] = int(order_id)
+    elif client_order_id:
+        params["origClientOrderId"] = client_order_id
+    else:
+        return {}
+    try:
+        resp = _req("GET", "/fapi/v1/order", signed=True, params=params, timeout=6.0)
+        return resp.json() or {}
+    except Exception as exc:
+        LOG.debug("[fills] order_status_fetch_failed symbol=%s order_id=%s err=%s", symbol, order_id, exc)
+        return {}
+
+
+def _fetch_order_trades(symbol: str, order_id: Optional[int]) -> List[Dict[str, Any]]:
+    params: Dict[str, Any] = {"symbol": symbol}
+    if order_id:
+        params["orderId"] = int(order_id)
+    try:
+        resp = _req("GET", "/fapi/v1/userTrades", signed=True, params=params, timeout=6.0)
+        data = resp.json() or []
+        if not isinstance(data, list):
+            return []
+        return data
+    except Exception as exc:
+        LOG.debug("[fills] order_trades_fetch_failed symbol=%s order_id=%s err=%s", symbol, order_id, exc)
+        return []
+
+
+def _emit_order_ack(
+    symbol: str,
+    side: str,
+    order_type: str,
+    request_qty: Optional[float],
+    position_side: Optional[str],
+    reduce_only: bool,
+    resp: Mapping[str, Any],
+    *,
+    latency_ms: Optional[float],
+    attempt_id: Optional[str],
+    intent_id: Optional[str],
+) -> Optional[OrderAckInfo]:
+    status = _normalize_status(resp.get("status"))
+    order_id_raw = resp.get("orderId")
+    try:
+        order_id = int(order_id_raw) if order_id_raw is not None else None
+    except (TypeError, ValueError):
+        order_id = None
+    client_order_id = resp.get("clientOrderId") or resp.get("orderId")
+    if not order_id and not client_order_id:
+        return None
+    ts_ack = now_utc()
+
+    ack = OrderAckInfo(
+        symbol=symbol,
+        side=str(side).upper(),
+        order_type=str(order_type).upper(),
+        request_qty=_to_float(request_qty),
+        position_side=position_side,
+        reduce_only=bool(reduce_only),
+        order_id=order_id,
+        client_order_id=str(client_order_id) if client_order_id is not None else None,
+        status=status,
+        latency_ms=_to_float(latency_ms),
+        attempt_id=attempt_id,
+        intent_id=intent_id,
+        ts_ack=ts_ack,
+    )
+    payload: Dict[str, Any] = {
+        "symbol": ack.symbol,
+        "side": ack.side,
+        "ts_ack": ts_ack,
+        "orderId": ack.order_id,
+        "clientOrderId": ack.client_order_id,
+        "request_qty": ack.request_qty,
+        "order_type": ack.order_type,
+        "status": ack.status,
+    }
+    if ack.position_side:
+        payload["positionSide"] = ack.position_side
+    if ack.reduce_only:
+        payload["reduceOnly"] = True
+    if ack.latency_ms is not None:
+        payload["latency_ms"] = ack.latency_ms
+    if attempt_id:
+        payload["attempt_id"] = attempt_id
+    if intent_id:
+        payload["intent_id"] = intent_id
+    try:
+        write_event("order_ack", payload)
+    except Exception as exc:
+        LOG.debug("[events] ack_write_failed %s %s", payload.get("orderId"), exc)
+    return ack
+
+
+def _should_emit_close(ack: OrderAckInfo, close_results: List[PnlCloseResult]) -> bool:
+    if not close_results:
+        return False
+    if ack.reduce_only:
+        return True
+    pos_before = close_results[0].position_before
+    pos_after = close_results[-1].position_after
+    if abs(pos_after) < 1e-8:
+        return True
+    if pos_before == 0.0:
+        return False
+    return pos_before * pos_after <= 0.0
+
+
+def _confirm_order_fill(ack: OrderAckInfo) -> Optional[FillSummary]:
+    if not ack.order_id and not ack.client_order_id:
+        return None
+    start = time.time()
+    seen_trade_ids: set[str] = set()
+    executed_qty = 0.0
+    cum_quote = 0.0
+    fee_total = 0.0
+    fee_asset: Optional[str] = None
+    ts_first: Optional[str] = None
+    ts_last: Optional[str] = None
+    status = ack.status
+    last_summary: Optional[FillSummary] = None
+    fill_latency_ms: Optional[float] = None
+
+    while (time.time() - start) <= _FILL_POLL_TIMEOUT:
+        status_resp = _fetch_order_status(ack.symbol, ack.order_id, ack.client_order_id)
+        if status_resp:
+            status = _normalize_status(status_resp.get("status"))
+
+        trades = _fetch_order_trades(ack.symbol, ack.order_id)
+        new_trades: List[Dict[str, Any]] = []
+        for trade in trades:
+            trade_id = trade.get("id")
+            if trade_id is None:
+                continue
+            trade_id_str = str(trade_id)
+            if trade_id_str in seen_trade_ids:
+                continue
+            seen_trade_ids.add(trade_id_str)
+            new_trades.append(trade)
+            qty = _to_float(trade.get("qty")) or 0.0
+            price = _to_float(trade.get("price")) or 0.0
+            executed_qty += qty
+            cum_quote += qty * price
+            commission = _to_float(trade.get("commission")) or 0.0
+            fee_total += commission
+            fee_asset = fee_asset or trade.get("commissionAsset") or trade.get("marginAsset") or "USDT"
+            trade_ts = _ms_to_iso(trade.get("time"))
+            now_iso = now_utc()
+            if trade_ts:
+                if ts_first is None or trade_ts < ts_first:
+                    ts_first = trade_ts
+                if ts_last is None or trade_ts > ts_last:
+                    ts_last = trade_ts
+            else:
+                if ts_first is None:
+                    ts_first = now_iso
+                ts_last = now_iso
+
+        if new_trades:
+            avg_price = (cum_quote / executed_qty) if executed_qty else None
+            fill_payload: Dict[str, Any] = {
+                "symbol": ack.symbol,
+                "side": ack.side,
+                "ts_fill_first": ts_first or now_utc(),
+                "ts_fill_last": ts_last or now_utc(),
+                "orderId": ack.order_id,
+                "clientOrderId": ack.client_order_id,
+                "executedQty": executed_qty,
+                "avgPrice": avg_price,
+                "fee_total": fee_total,
+                "feeAsset": fee_asset or "USDT",
+                "tradeIds": sorted(seen_trade_ids),
+                "status": status,
+            }
+            if ack.position_side:
+                fill_payload["positionSide"] = ack.position_side
+            if ack.reduce_only:
+                fill_payload["reduceOnly"] = True
+            if ack.attempt_id:
+                fill_payload["attempt_id"] = ack.attempt_id
+            if ack.intent_id:
+                fill_payload["intent_id"] = ack.intent_id
+            try:
+                write_event("order_fill", fill_payload)
+            except Exception as exc:
+                LOG.debug("[events] fill_write_failed %s %s", ack.order_id, exc)
+
+            close_results: List[PnlCloseResult] = []
+            for trade in new_trades:
+                qty = _to_float(trade.get("qty")) or 0.0
+                if qty <= 0:
+                    continue
+                price = _to_float(trade.get("price")) or 0.0
+                commission = _to_float(trade.get("commission")) or 0.0
+                fill_obj = PnlFill(
+                    symbol=ack.symbol,
+                    side=ack.side,
+                    qty=qty,
+                    price=price,
+                    fee=commission,
+                    position_side=ack.position_side,
+                    reduce_only=ack.reduce_only,
+                )
+                close_res = _POSITION_TRACKER.apply_fill(fill_obj)
+                if close_res:
+                    close_results.append(close_res)
+
+            if _should_emit_close(ack, close_results):
+                total_realized = sum(r.realized_pnl for r in close_results)
+                total_fees = sum(r.fees for r in close_results)
+                pos_before = close_results[0].position_before if close_results else 0.0
+                pos_after = close_results[-1].position_after if close_results else 0.0
+                closed_qty = sum(r.closed_qty for r in close_results)
+                close_payload: Dict[str, Any] = {
+                    "symbol": ack.symbol,
+                    "ts_close": ts_last or now_utc(),
+                    "orderId": ack.order_id,
+                    "clientOrderId": ack.client_order_id,
+                    "realizedPnlUsd": total_realized,
+                    "fees_total": total_fees,
+                    "position_size_before": pos_before,
+                    "position_size_after": pos_after,
+                }
+                if ack.position_side:
+                    close_payload["positionSide"] = ack.position_side
+                if closed_qty > 0:
+                    close_payload["closed_qty"] = closed_qty
+                if ack.attempt_id:
+                    close_payload["attempt_id"] = ack.attempt_id
+                if ack.intent_id:
+                    close_payload["intent_id"] = ack.intent_id
+                try:
+                    write_event("order_close", close_payload)
+                except Exception as exc:
+                    LOG.debug("[events] close_write_failed %s %s", ack.order_id, exc)
+
+            if ts_last:
+                ack_ts = _iso_to_ts(ack.ts_ack)
+                fill_ts = _iso_to_ts(ts_last)
+                if ack_ts is not None and fill_ts is not None:
+                    fill_latency_ms = max(0.0, (fill_ts - ack_ts) * 1000.0)
+
+            last_summary = FillSummary(
+                executed_qty=executed_qty,
+                avg_price=avg_price,
+                status=status,
+                fee_total=fee_total,
+                fee_asset=fee_asset,
+                trade_ids=sorted(seen_trade_ids),
+                ts_fill_first=ts_first,
+                ts_fill_last=ts_last,
+                latency_ms=fill_latency_ms,
+            )
+
+        if status in _FILL_FINAL_STATUSES:
+            break
+        if not new_trades:
+            time.sleep(_FILL_POLL_INTERVAL)
+
+    return last_summary
 
 
 def _nav_snapshot() -> Dict[str, Any]:
@@ -1072,40 +1430,45 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             except Exception:
                 pass
             if reduce_resp:
-                try:
-                    exchange_name = "binance_testnet" if is_testnet() else "binance"
-                except Exception:
-                    exchange_name = "binance"
-                reduce_price = (
-                    reduce_resp.get("avgPrice")
-                    or reduce_resp.get("price")
-                    or reduce_payload.get("price")
-                )
-                reduce_qty = (
-                    reduce_resp.get("executedQty")
-                    or reduce_resp.get("origQty")
-                    or reduce_payload.get("quantity")
-                )
                 reduce_latency_ms = max(
                     0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0
                 )
-                reduce_log_payload = {
-                    "symbol": symbol,
-                    "side": reduce_signal,
-                    "client_order_id": reduce_resp.get("clientOrderId")
-                    or reduce_resp.get("orderId"),
-                    "exchange": exchange_name,
-                    "price": reduce_price,
-                    "qty": reduce_qty,
-                    "order_type": reduce_payload.get("type"),
-                    "reduce_only": True,
-                    "latency_ms": reduce_latency_ms,
-                    "status": reduce_resp.get("status"),
-                    "context": "flip_reduce",
-                    "run_id": RUN_ID,
-                    "hostname": HOSTNAME,
-                }
-                _record_structured_event(LOG_ORDERS, "order_executed", reduce_log_payload)
+                reduce_ack = _emit_order_ack(
+                    symbol=symbol,
+                    side=reduce_signal,
+                    order_type=reduce_payload.get("type") or "MARKET",
+                    request_qty=_to_float(reduce_payload.get("quantity")),
+                    position_side=opp_side,
+                    reduce_only=True,
+                    resp=reduce_resp,
+                    latency_ms=reduce_latency_ms,
+                    attempt_id=f"{attempt_id}_reduce",
+                    intent_id=intent_id,
+                )
+                reduce_fill: Optional[FillSummary] = None
+                if reduce_ack and not reduce_resp.get("dryRun"):
+                    reduce_fill = _confirm_order_fill(reduce_ack)
+                if reduce_ack:
+                    LOG.info(
+                        "[executor] FLIP_ACK id=%s status=%s qty=%s",
+                        reduce_ack.order_id or reduce_ack.client_order_id,
+                        reduce_ack.status,
+                        reduce_ack.request_qty,
+                    )
+                if reduce_fill:
+                    LOG.info(
+                        "[executor] FLIP_FILL id=%s status=%s avgPrice=%s qty=%s",
+                        reduce_ack.order_id if reduce_ack else reduce_resp.get("orderId"),
+                        reduce_fill.status,
+                        reduce_fill.avg_price,
+                        reduce_fill.executed_qty,
+                    )
+                    if reduce_fill.executed_qty:
+                        try:
+                            _RISK_STATE.note_fill(symbol, time.time())
+                        except Exception:
+                            pass
+                        _emit_position_snapshots(symbol)
 
             try:
                 positions = list(get_positions() or [])
@@ -1436,10 +1799,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         else:
             if result.get("accepted"):
                 resp = result.get("raw") or {}
-                if result.get("price") is not None:
-                    resp.setdefault("avgPrice", result.get("price"))
-                if result.get("qty") is not None:
-                    resp.setdefault("executedQty", str(result.get("qty")))
             else:
                 router_error = str(result.get("reason") or "router_reject")
     elif _route_order is not None and not force_direct_send:
@@ -1466,10 +1825,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         else:
             if result.get("accepted"):
                 resp = result.get("raw") or {}
-                if result.get("price") is not None:
-                    resp.setdefault("avgPrice", result.get("price"))
-                if result.get("qty") is not None:
-                    resp.setdefault("executedQty", str(result.get("qty")))
             else:
                 router_error = str(result.get("reason") or "router_reject")
 
@@ -1549,10 +1904,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "prices": {
                     "mark": price_hint,
                     "submitted": _meta_float(payload.get("price"), price_hint),
-                    "avg_fill": _meta_float(resp.get("avgPrice"), price_hint),
+                    "avg_fill": _to_float(resp.get("avgPrice")),
                 },
                 "qty": {
-                    "contracts": _meta_float(resp.get("executedQty"), 0.0),
+                    "contracts": _to_float(resp.get("executedQty")),
                     "notional_usd": None,
                 },
                 "timing_ms": {
@@ -1566,23 +1921,39 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "slippage_bps": None,
             }
 
-    try:
-        exchange_name = "binance_testnet" if is_testnet() else "binance"
-    except Exception:
-        exchange_name = "binance"
-    price_exec = (
-        resp.get("avgPrice")
-        or resp.get("price")
-        or payload.get("price")
-        or norm_price
-    )
-    qty_exec = (
-        resp.get("executedQty")
-        or resp.get("origQty")
-        or payload.get("quantity")
-        or norm_qty
-    )
     latency_ms = max(0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0)
+
+    ack_info: Optional[OrderAckInfo] = None
+    fill_summary: Optional[FillSummary] = None
+    request_qty_val = _to_float(payload.get("quantity")) or _to_float(norm_qty)
+    if resp:
+        ack_info = _emit_order_ack(
+            symbol=symbol,
+            side=side,
+            order_type=payload.get("type") or intent.get("type") or "MARKET",
+            request_qty=request_qty_val,
+            position_side=pos_side,
+            reduce_only=reduce_only,
+            resp=resp,
+            latency_ms=latency_ms,
+            attempt_id=attempt_id,
+            intent_id=intent_id,
+        )
+        if ack_info and not resp.get("dryRun"):
+            fill_summary = _confirm_order_fill(ack_info)
+
+    avg_fill_price = (
+        fill_summary.avg_price if fill_summary and fill_summary.avg_price is not None else _to_float(resp.get("avgPrice"))
+    )
+    executed_qty_val = (
+        fill_summary.executed_qty
+        if fill_summary and fill_summary.executed_qty is not None
+        else _to_float(resp.get("executedQty"))
+    )
+    status_value = fill_summary.status if fill_summary else _normalize_status(resp.get("status"))
+    fees_total = fill_summary.fee_total if fill_summary else _to_float(resp.get("commission"))
+    fill_latency_ms = fill_summary.latency_ms if fill_summary else None
+
     if router_metrics is None:
         router_metrics = {
             "attempt_id": attempt_id,
@@ -1591,56 +1962,64 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             "prices": {
                 "mark": price_hint,
                 "submitted": _meta_float(payload.get("price"), price_hint),
-                "avg_fill": _meta_float(resp.get("avgPrice"), price_hint),
+                "avg_fill": avg_fill_price,
             },
             "qty": {
-                "contracts": _meta_float(qty_exec, 0.0),
+                "contracts": executed_qty_val if executed_qty_val is not None else _meta_float(payload.get("quantity"), norm_qty),
                 "notional_usd": None,
             },
             "timing_ms": {
                 "decision": decision_latency_ms,
                 "submit": None,
                 "ack": latency_ms,
-                "fill": None,
+                "fill": fill_latency_ms,
             },
-            "result": {"status": resp.get("status"), "retries": 0, "cancelled": False},
-            "fees_usd": None,
+            "result": {
+                "status": status_value,
+                "retries": 0,
+                "cancelled": status_value in {"CANCELED", "EXPIRED"},
+            },
+            "fees_usd": fees_total,
             "slippage_bps": None,
         }
     prices_section = router_metrics.setdefault(
         "prices",
         {"mark": price_hint, "submitted": _meta_float(payload.get("price"), price_hint), "avg_fill": None},
     )
-    qty_section = router_metrics.setdefault("qty", {"contracts": _meta_float(qty_exec, 0.0), "notional_usd": None})
+    qty_section = router_metrics.setdefault(
+        "qty", {"contracts": _meta_float(payload.get("quantity"), norm_qty), "notional_usd": None}
+    )
     timing_section = router_metrics.setdefault(
         "timing_ms",
-        {"decision": decision_latency_ms, "submit": None, "ack": latency_ms, "fill": None},
+        {"decision": decision_latency_ms, "submit": None, "ack": latency_ms, "fill": fill_latency_ms},
     )
     result_section = router_metrics.setdefault(
-        "result", {"status": resp.get("status"), "retries": 0, "cancelled": False}
+        "result",
+        {"status": status_value, "retries": 0, "cancelled": status_value in {"CANCELED", "EXPIRED"}},
     )
-    avg_fill_float = _meta_float(resp.get("avgPrice"), _meta_float(prices_section.get("avg_fill"), price_exec))
-    prices_section["avg_fill"] = avg_fill_float
+    if avg_fill_price is not None:
+        prices_section["avg_fill"] = avg_fill_price
     prices_section.setdefault("mark", _meta_float(prices_section.get("mark"), price_hint))
     prices_section.setdefault("submitted", _meta_float(prices_section.get("submitted"), price_hint))
-    qty_float = _meta_float(qty_exec, _meta_float(qty_section.get("contracts"), 0.0))
-    qty_section["contracts"] = qty_float
-    if avg_fill_float is not None and qty_float is not None:
+    if executed_qty_val is not None:
+        qty_section["contracts"] = executed_qty_val
+    if prices_section.get("avg_fill") is not None and qty_section.get("contracts") is not None:
         try:
-            qty_section["notional_usd"] = float(avg_fill_float) * float(qty_float)
+            qty_section["notional_usd"] = float(prices_section["avg_fill"]) * float(qty_section["contracts"])
         except Exception:
             pass
-    timing_section.setdefault("decision", decision_latency_ms)
-    timing_section.setdefault("submit", None)
     timing_section["ack"] = latency_ms
-    timing_section.setdefault("fill", None)
-    result_section["status"] = resp.get("status")
-    result_section.setdefault("retries", 0)
-    result_section.setdefault("cancelled", False)
-    router_metrics["fees_usd"] = router_metrics.get("fees_usd") or _meta_float(resp.get("commission"), None)
-    if router_metrics.get("slippage_bps") is None:
+    if fill_latency_ms is not None:
+        timing_section["fill"] = fill_latency_ms
+    result_section["status"] = status_value
+    result_section["cancelled"] = status_value in {"CANCELED", "EXPIRED"}
+    if fees_total is not None:
+        router_metrics["fees_usd"] = fees_total
+    elif router_metrics.get("fees_usd") is None:
+        router_metrics["fees_usd"] = None
+    if router_metrics.get("slippage_bps") is None and prices_section.get("avg_fill") is not None:
         mark_val = _meta_float(prices_section.get("mark"), price_hint)
-        fill_val = avg_fill_float
+        fill_val = _meta_float(prices_section.get("avg_fill"), price_hint)
         if mark_val not in (None, 0):
             try:
                 slip = ((fill_val - mark_val) / mark_val) * 10_000.0 if fill_val is not None else None
@@ -1656,66 +2035,65 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     router_metrics["ts"] = time.time()
     _append_order_metrics(router_metrics)
     _INTENT_REGISTRY[intent_id] = {
-        "order_id": resp.get("orderId"),
+        "order_id": ack_info.order_id if ack_info else resp.get("orderId"),
         "symbol": symbol,
         "side": side,
         "attempt_id": attempt_id,
-        "avg_fill": avg_fill_float,
-        "qty": qty_float,
+        "avg_fill": prices_section.get("avg_fill"),
+        "qty": qty_section.get("contracts"),
     }
-    execution_payload = {
-        "symbol": symbol,
-        "side": side,
-        "client_order_id": resp.get("clientOrderId") or resp.get("orderId"),
-        "exchange": exchange_name,
-        "price": price_exec,
-        "qty": qty_exec,
-        "order_type": resp.get("type") or payload.get("type"),
-        "reduce_only": reduce_only,
-        "latency_ms": latency_ms,
-        "status": resp.get("status"),
-        "run_id": RUN_ID,
-        "hostname": HOSTNAME,
-    }
-    _record_structured_event(LOG_ORDERS, "order_executed", execution_payload)
 
-    oid = resp.get("orderId")
-    avg = resp.get("avgPrice", "0.00")
-    qty = resp.get("executedQty", resp.get("origQty", "0"))
-    st = resp.get("status")
-    LOG.info("[executor] ORDER_REQ 200 id=%s avgPrice=%s qty=%s", oid, avg, qty)
-    try:
-        publish_order_audit(
-            symbol,
-            {
-                "phase": "response",
-                "side": side,
-                "positionSide": pos_side,
-                "status": st,
-                "orderId": oid,
-                "avgPrice": avg,
-                "qty": qty,
-                "normalized": normalized_ctx,
-                "payload": payload_view,
-            },
+    if ack_info:
+        LOG.info(
+            "[executor] ORDER_ACK id=%s status=%s qty_req=%s",
+            ack_info.order_id or ack_info.client_order_id,
+            ack_info.status,
+            ack_info.request_qty,
         )
+    else:
+        LOG.info("[executor] ORDER_ACK missing response symbol=%s", symbol)
+    if fill_summary:
+        LOG.info(
+            "[executor] ORDER_FILL id=%s status=%s avgPrice=%s qty=%s",
+            ack_info.order_id if ack_info else resp.get("orderId"),
+            fill_summary.status,
+            fill_summary.avg_price,
+            fill_summary.executed_qty,
+        )
+
+    audit_payload = {
+        "phase": "response",
+        "side": side,
+        "positionSide": pos_side,
+        "status": status_value,
+        "orderId": ack_info.order_id if ack_info else resp.get("orderId"),
+        "avgPrice": avg_fill_price,
+        "qty": executed_qty_val,
+        "normalized": normalized_ctx,
+        "payload": payload_view,
+    }
+    if fill_summary:
+        audit_payload["fill"] = {
+            "executedQty": fill_summary.executed_qty,
+            "avgPrice": fill_summary.avg_price,
+            "fee_total": fill_summary.fee_total,
+            "feeAsset": fill_summary.fee_asset,
+            "ts_fill_first": fill_summary.ts_fill_first,
+            "ts_fill_last": fill_summary.ts_fill_last,
+        }
+    try:
+        publish_order_audit(symbol, audit_payload)
     except Exception:
         pass
 
-    if st == "FILLED":
-        LOG.info(
-            "[executor] ORDER_FILL id=%s status=%s avgPrice=%s qty=%s",
-            oid,
-            st,
-            avg,
-            qty,
-        )
+    executed_qty_float = executed_qty_val or 0.0
+    if executed_qty_float > 0:
         try:
             _RISK_STATE.note_fill(symbol, time.time())
         except Exception:
             pass
         _emit_position_snapshots(symbol)
-        if (
+        if fill_summary and (
             reduce_only
             or (side == "SELL" and pos_side == "LONG")
             or (side == "BUY" and pos_side == "SHORT")
@@ -1724,7 +2102,12 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 publish_close_audit(
                     symbol,
                     pos_side,
-                    {"orderId": oid, "avgPrice": avg, "qty": qty, "status": st},
+                    {
+                        "orderId": ack_info.order_id if ack_info else resp.get("orderId"),
+                        "avgPrice": fill_summary.avg_price,
+                        "qty": fill_summary.executed_qty,
+                        "status": fill_summary.status,
+                    },
                 )
             except Exception:
                 pass
@@ -1740,6 +2123,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     or intent.get("realized_pnl_usd")
                     or intent.get("pnl")
                 ),
+                "order_status": fill_summary.status,
             }
             _append_order_metrics(close_record)
             _INTENT_REGISTRY.pop(intent_id, None)

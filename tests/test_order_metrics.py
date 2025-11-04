@@ -44,7 +44,7 @@ def test_route_intent_metrics_buy(monkeypatch: pytest.MonkeyPatch) -> None:
     expected_slippage = ((100.5 - 100.0) / 100.0) * 10_000
     assert _approx_equal(metrics["slippage_bps"], expected_slippage)
     assert metrics["timing_ms"]["decision"] == pytest.approx(150.0)
-    assert metrics["result"]["status"] == "filled"
+    assert metrics["result"]["status"] == "FILLED"
 
 
 def test_route_intent_metrics_sell_slippage(monkeypatch: pytest.MonkeyPatch) -> None:

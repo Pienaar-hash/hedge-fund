@@ -1,18 +1,18 @@
 {
   "symbol": "LINKUSDT",
-  "side": "BUY",
-  "positionSide": "LONG",
-  "reason": "cooldown",
-  "gross_usd": 120.086127462,
-  "price": 16.877,
-  "ts": 1761932407.0157378,
+  "side": "SELL",
+  "positionSide": "SHORT",
+  "reason": "bucket_cap",
+  "gross_usd": 20.0,
+  "price": 15.085,
+  "ts": 1762259364.6120112,
   "intent": {
-    "timestamp": "2025-10-31T17:40:00+00:00",
+    "timestamp": "2025-11-04T12:29:20+00:00",
     "symbol": "LINKUSDT",
     "timeframe": "15m",
-    "signal": "BUY",
+    "signal": "SELL",
     "reduceOnly": false,
-    "price": 16.877,
+    "price": 15.085,
     "capital_per_trade": 6.666666666666667,
     "leverage": 3.0,
     "cap_usd": 6.666666666666667,
@@ -20,14 +20,22 @@
     "min_notional": 20.0,
     "tf": "15m",
     "positionSide": "",
-    "veto": []
+    "veto": [],
+    "attempt_id": "sig_e5fe1d938e",
+    "intent_id": "ord_f71764bf43"
   },
   "nav_snapshot": {
-    "nav_usd": 2401.72254924,
-    "gross_usd": 0.0
+    "nav_usd": 2318.73806094,
+    "gross_usd": 1154.0934749002,
+    "symbol_gross_usd": {
+      "SUIUSDT": 212.740757042,
+      "LTCUSDT": 688.4052899999999,
+      "LINKUSDT": 137.1604278582,
+      "WIFUSDT": 115.78699999999999
+    }
   },
   "thresholds": {
-    "max_gross_exposure_pct": 200,
-    "max_trade_nav_pct": 0.0
+    "bucket": "alts",
+    "bucket_cap": 463.74761218800006
   }
 }

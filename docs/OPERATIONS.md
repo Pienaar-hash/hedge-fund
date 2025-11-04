@@ -1,38 +1,27 @@
-# Ops Commands (cheat sheet)
+# OPERATIONS.md — GPT Hedge v5.6 Runbook
 
-**Credentials**
-```bash
-read -s -p "Binance API key: " BINANCE_API_KEY; echo
-read -s -p "Binance API secret: " BINANCE_API_SECRET; echo
-BINANCE_API_KEY="$BINANCE_API_KEY" BINANCE_API_SECRET="$BINANCE_API_SECRET" bash scripts/write_keys_env.sh
-set -a; source ./.env; set +a
-```
+## Core Commands
 
-**Auth doctor**
-```bash
-ENV=prod PYTHONPATH=. ./venv/bin/python scripts/binance_auth_doctor.py
-```
+| Task | Command |
+|------|----------|
+| **Long-run executor** | `ENV=prod PYTHONPATH=. python -m execution.executor_live` |
+| **One-shot intent + sync** | `ENV=prod PYTHONPATH=. ONE_SHOT=1 python -m execution.executor_live` |
+| **Dashboard (Streamlit)** | `streamlit run dashboard/app.py --server.port=8501` |
+| **Router doctor (audit)** | `ENV=prod PYTHONPATH=. python scripts/doctor.py --router` |
+| **Backfill missing fills / PnL** | `python3 scripts/backfill_fills_pnl.py --apply` |
+| **Telegram mini-report (dry-run)** | `ENV=prod PYTHONPATH=. python -m execution.telegram_report --dry-run` |
 
-**Warmup & logs**
-```bash
-EXECUTOR_MAX_SEC=45 bash scripts/exec_once_timeout.sh || true
-bash scripts/quick_watch.sh
-```
+---
 
-**Go-live**
-```bash
-bash scripts/go_live_now.sh
-```
+## Supervisor Process Map
+| Process | Purpose |
+|----------|----------|
+| `executor` | Core trading loop (ACK/FILL split) |
+| `sync_state` | Publishes NAV + Firestore updates |
+| `dashboard` | Streamlit front-end |
+| `doctor` | Router health + telemetry |
+| `leaderboard_sync` | Optional investor feed |
 
-**Revert after event**
+**Restart after patches:**
 ```bash
-EVENT_GUARD=0 bash scripts/go_live_now.sh
-```
-
-**ML retrain**
-```bash
-crontab -e
-10 2 * * * cd /ABS/PATH/TO/hedge-fund && /bin/bash scripts/ml_retrain_cron.sh >> models/cron.log 2>&1
-/bin/bash scripts/ml_retrain_now.sh
-/bin/bash scripts/ml_health.sh
-```
+sudo supervisorctl restart hedge:executor hedge:sync_state hedge:dashboard hedge:doctor

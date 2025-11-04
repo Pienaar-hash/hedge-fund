@@ -1,25 +1,25 @@
 {
-  "nav_usdt": 8572.76509194,
+  "nav_usdt": 8312.12229377,
   "breakdown": {
     "source": "exchange+treasury",
-    "futures_wallet_usdt": 2399.67377935,
-    "unrealized_pnl": 2.13381259,
+    "futures_wallet_usdt": 2315.95050623,
+    "unrealized_pnl": 5.86918754,
     "balances_ok": true,
     "positions_ok": true,
     "sources_ok": true,
     "treasury": {
       "BTC": {
         "qty": 0.035,
-        "px": 109126.4,
-        "val_usdt": 3819.424
+        "px": 103900.1,
+        "val_usdt": 3636.5035000000007
       },
       "XAUT": {
         "qty": 0.59,
-        "px": 3985.65,
-        "val_usdt": 2351.5335
+        "px": 3989.49,
+        "val_usdt": 2353.7990999999997
       }
     },
-    "treasury_total_usdt": 6170.9575
+    "treasury_total_usdt": 5990.302600000001
   },
-  "ts": "2025-10-31T16:53:33.058277+00:00"
+  "ts": "2025-11-04T12:35:01.341585+00:00"
 }

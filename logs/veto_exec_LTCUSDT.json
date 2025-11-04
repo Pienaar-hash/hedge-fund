@@ -1,18 +1,18 @@
 {
   "symbol": "LTCUSDT",
-  "side": "BUY",
-  "positionSide": "LONG",
-  "reason": "cooldown",
-  "gross_usd": 120.086127462,
-  "price": 94.39,
-  "ts": 1761932411.8419707,
+  "side": "SELL",
+  "positionSide": "SHORT",
+  "reason": "bucket_cap",
+  "gross_usd": 20.0,
+  "price": 87.44,
+  "ts": 1762255315.647548,
   "intent": {
-    "timestamp": "2025-10-31T17:40:00+00:00",
+    "timestamp": "2025-11-04T11:21:48+00:00",
     "symbol": "LTCUSDT",
     "timeframe": "15m",
-    "signal": "BUY",
+    "signal": "SELL",
     "reduceOnly": false,
-    "price": 94.39,
+    "price": 87.44,
     "capital_per_trade": 10.0,
     "leverage": 2.0,
     "cap_usd": 10.0,
@@ -20,14 +20,22 @@
     "min_notional": 20.0,
     "tf": "15m",
     "positionSide": "",
-    "veto": []
+    "veto": [],
+    "attempt_id": "sig_059d40bd24",
+    "intent_id": "ord_1847bd3a4a"
   },
   "nav_snapshot": {
-    "nav_usd": 2401.72254924,
-    "gross_usd": 0.0
+    "nav_usd": 2307.84232774,
+    "gross_usd": 1180.57841949877,
+    "symbol_gross_usd": {
+      "SUIUSDT": 213.28318000000002,
+      "LTCUSDT": 694.3502479427699,
+      "LINKUSDT": 138.156970194,
+      "WIFUSDT": 134.788021362
+    }
   },
   "thresholds": {
-    "max_gross_exposure_pct": 200,
-    "max_trade_nav_pct": 0.0
+    "bucket": "majors",
+    "bucket_cap": 692.352698322
   }
 }

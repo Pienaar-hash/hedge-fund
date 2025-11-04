@@ -62,6 +62,27 @@ def _ensure_keys() -> None:
 _ensure_keys()
 
 
+def _normalize_status(value: Any) -> str:
+    if not value:
+        return "UNKNOWN"
+    try:
+        text = str(value).upper()
+    except Exception:
+        return "UNKNOWN"
+    if text == "CANCELLED":
+        return "CANCELED"
+    return text
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_timestamp(record: Dict[str, Any]) -> Optional[float]:
     candidates = (
         record.get("ts"),
@@ -174,8 +195,9 @@ def _compute_exec_stats() -> Dict[str, Any]:
     try:
         cutoff = now_ts - 86400.0
         attempted = 0
-        executed = 0
-        successful = 0
+        ack_ids: set[str] = set()
+        fill_ids: set[str] = set()
+        successful_ids: set[str] = set()
         veto_counter: Counter[str] = Counter()
 
         attempt_path = EXEC_LOG_DIR / "orders_attempted.jsonl"
@@ -183,19 +205,55 @@ def _compute_exec_stats() -> Dict[str, Any]:
             attempted += 1
 
         executed_path = EXEC_LOG_DIR / "orders_executed.jsonl"
+        legacy_counter = 0
         for record in _iter_recent_records(executed_path, cutoff) or []:
-            executed += 1
-            status = str(record.get("status") or record.get("order_status") or "").upper()
-            if status in {"FILLED", "SUCCESS"}:
-                successful += 1
+            if not isinstance(record, dict):
+                continue
+            event_type = str(record.get("event_type") or record.get("event") or "").lower()
+            order_id = record.get("orderId") or record.get("order_id")
+            client_id = record.get("clientOrderId") or record.get("client_order_id")
+            identifier: str
+            if order_id or client_id:
+                identifier = str(order_id or client_id)
+            else:
+                legacy_counter += 1
+                identifier = f"legacy_{legacy_counter}"
+            if event_type == "order_ack":
+                ack_ids.add(identifier)
+                continue
+            if event_type == "order_fill":
+                fill_ids.add(identifier)
+                status = _normalize_status(record.get("status"))
+                executed_qty = (
+                    _safe_float(record.get("executedQty"))
+                    or _safe_float(record.get("qty"))
+                )
+                if executed_qty and executed_qty > 0 and status in {"FILLED", "PARTIALLY_FILLED"}:
+                    successful_ids.add(identifier)
+                continue
+            if event_type == "order_close":
+                continue
+            # Legacy fallback: treat as executed fill (and ack) entry
+            ack_ids.add(identifier)
+            fill_ids.add(identifier)
+            status = _normalize_status(record.get("status"))
+            executed_qty = (
+                _safe_float(record.get("executedQty"))
+                or _safe_float(record.get("qty"))
+            )
+            if executed_qty and executed_qty > 0 and status in {"FILLED", "SUCCESS"}:
+                successful_ids.add(identifier)
 
         veto_path = EXEC_LOG_DIR / "risk_vetoes.jsonl"
         for record in _iter_recent_records(veto_path, cutoff) or []:
             reason = record.get("veto_reason") or record.get("reason") or "unknown"
             veto_counter[str(reason)] += 1
 
+        executed = len(fill_ids)
+        successful = len(successful_ids)
+        ack_count = len(ack_ids) if ack_ids else executed
         fill_rate = 0.0
-        denominator = attempted if attempted > 0 else (executed if executed > 0 else 0)
+        denominator = attempted if attempted > 0 else (ack_count if ack_count > 0 else executed)
         numerator = successful if attempted > 0 else successful
         if denominator > 0:
             fill_rate = float(numerator) / float(denominator)

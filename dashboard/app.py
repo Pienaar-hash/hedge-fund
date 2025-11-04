@@ -60,6 +60,15 @@ try:
 except Exception:  # pragma: no cover
     load_reserves = None  # type: ignore[assignment]
     value_reserves_usd = None  # type: ignore[assignment]
+try:
+    from ml.telemetry import aggregate_history as telemetry_aggregate, load_history as telemetry_load
+except Exception:  # pragma: no cover
+    telemetry_aggregate = None  # type: ignore[assignment]
+    telemetry_load = None  # type: ignore[assignment]
+try:
+    from research.rl_sizer import LOG_DIR as RL_LOG_DIR
+except Exception:  # pragma: no cover
+    RL_LOG_DIR = Path("logs/research/rl_runs")
 
 # Read-only exchange helpers
 
@@ -1189,6 +1198,8 @@ def main():
         tab_signals,
         tab_ml_insights,
         tab_ml_models,
+        tab_ml_confidence,
+        tab_rl_pilot,
         tab_doctor,
     ) = st.tabs(
         [
@@ -1200,6 +1211,8 @@ def main():
             "Signals",
             "ML Insights",
             "ML Models",
+            "ML Confidence",
+            "RL Pilot",
             "Doctor",
         ]
     )
@@ -1533,26 +1546,54 @@ def main():
         except Exception as exc:
             LOG.warning("[dash] router health load failed: %s", exc)
             st.error(f"Router health unavailable: {exc}")
-            router_health = RouterHealthData(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {
-                "count": 0,
-                "win_rate": 0.0,
-                "avg_pnl": 0.0,
-                "cum_pnl": 0.0,
-            })
+            router_health = RouterHealthData(
+                pd.DataFrame(),
+                pd.DataFrame(),
+                pd.DataFrame(columns=["time", "cum_pnl", "hit_rate", "confidence_weighted_cum_pnl", "rolling_sharpe"]),
+                {
+                    "count": 0,
+                    "win_rate": 0.0,
+                    "avg_pnl": 0.0,
+                    "cum_pnl": 0.0,
+                    "fill_rate_pct": 0.0,
+                    "fees_total": 0.0,
+                    "realized_pnl": 0.0,
+                    "avg_confidence": None,
+                    "confidence_weighted_cum_pnl": 0.0,
+                    "normalized_sharpe": 0.0,
+                    "volatility_scale": 1.0,
+                    "rolling_sharpe_last": 0.0,
+                },
+                {},
+            )
 
         summary = router_health.summary
-        metrics = st.columns(4)
+        metrics = st.columns(6)
         metrics[0].metric("Trades", summary.get("count", 0))
         metrics[1].metric("Win %", f"{summary.get('win_rate', 0.0):.1f}%")
         metrics[2].metric("Avg PnL", f"{summary.get('avg_pnl', 0.0):.2f} USDT")
         metrics[3].metric("Cum PnL", f"{summary.get('cum_pnl', 0.0):.2f} USDT")
+        metrics[4].metric("Conf-Weighted PnL", f"{summary.get('confidence_weighted_cum_pnl', 0.0):.2f} USDT")
+        metrics[5].metric("Rolling Sharpe", f"{summary.get('rolling_sharpe_last', 0.0):.2f}")
 
-        st.markdown("### PnL & Hit Rate")
+        detail_metrics = st.columns(3)
+        avg_conf = summary.get("avg_confidence")
+        avg_conf_display = f"{float(avg_conf) * 100.0:.1f}%" if isinstance(avg_conf, (int, float)) else "n/a"
+        detail_metrics[0].metric("Avg Confidence", avg_conf_display)
+        fill_rate = summary.get("fill_rate_pct")
+        fill_display = f"{float(fill_rate):.1f}%" if isinstance(fill_rate, (int, float)) else "n/a"
+        detail_metrics[1].metric("Fill Rate", fill_display)
+        vol_scale = summary.get("volatility_scale")
+        vol_display = f"{float(vol_scale):.2f}×" if isinstance(vol_scale, (int, float)) else "n/a"
+        detail_metrics[2].metric("Volatility Scale", vol_display)
+
+        st.markdown("### PnL & Confidence-Weighted Curve")
         if router_health.pnl_curve.empty:
             st.info("No router executions recorded yet.")
         else:
             curve_df = router_health.pnl_curve.copy()
-            curve_df["hit_pct"] = curve_df["hit_rate"] * 100.0
+            if "confidence_weighted_cum_pnl" not in curve_df:
+                curve_df["confidence_weighted_cum_pnl"] = curve_df["cum_pnl"]
             if alt is not None:
                 chart = (
                     alt.layer(
@@ -1563,7 +1604,56 @@ def main():
                             y=alt.Y("cum_pnl:Q", title="Cumulative PnL (USDT)", axis=alt.Axis(titleColor="#1f77b4")),
                         ),
                         alt.Chart(curve_df)
-                        .mark_line(color="#ff7f0e")
+                        .mark_line(color="#2ca02c")
+                        .encode(
+                            x=alt.X("time:T", title="Time"),
+                            y=alt.Y(
+                                "confidence_weighted_cum_pnl:Q",
+                                title="Conf-Weighted PnL (USDT)",
+                                axis=alt.Axis(titleColor="#2ca02c"),
+                            ),
+                        ),
+                    )
+                )
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                plot_df = curve_df.set_index("time")[["cum_pnl", "confidence_weighted_cum_pnl"]]
+                st.line_chart(plot_df, use_container_width=True)
+
+        st.markdown("### Rolling Sharpe & Confidence")
+        if router_health.pnl_curve.empty:
+            st.info("Rolling Sharpe unavailable; collect more executions.")
+        else:
+            rolling_df = router_health.pnl_curve[["time", "rolling_sharpe", "hit_rate"]].copy()
+            rolling_df["hit_pct"] = rolling_df["hit_rate"] * 100.0
+            confidence_overlay = (router_health.overlays or {}).get("confidence") if router_health.overlays else None
+            if confidence_overlay is not None and not confidence_overlay.empty:
+                conf_df = confidence_overlay.copy()
+                conf_df["confidence_pct"] = conf_df["rolling_confidence"] * 100.0
+                rolling_df = pd.merge(rolling_df, conf_df[["time", "confidence_pct"]], on="time", how="left")
+            if "confidence_pct" not in rolling_df.columns:
+                rolling_df["confidence_pct"] = float("nan")
+            if alt is not None:
+                chart = (
+                    alt.layer(
+                        alt.Chart(rolling_df)
+                        .mark_line(color="#d62728")
+                        .encode(
+                            x=alt.X("time:T", title="Time"),
+                            y=alt.Y("rolling_sharpe:Q", title="Rolling Sharpe", axis=alt.Axis(titleColor="#d62728")),
+                        ),
+                        alt.Chart(rolling_df)
+                        .mark_line(color="#2ca02c")
+                        .encode(
+                            x=alt.X("time:T", title="Time"),
+                            y=alt.Y(
+                                "confidence_pct:Q",
+                                title="Confidence (%)",
+                                axis=alt.Axis(titleColor="#2ca02c", orient="right"),
+                            ),
+                        ),
+                        alt.Chart(rolling_df)
+                        .mark_line(color="#ff7f0e", strokeDash=[4, 4])
                         .encode(
                             x=alt.X("time:T", title="Time"),
                             y=alt.Y(
@@ -1576,7 +1666,7 @@ def main():
                 )
                 st.altair_chart(chart, use_container_width=True)
             else:
-                plot_df = curve_df.set_index("time")[ ["cum_pnl", "hit_pct"] ]
+                plot_df = rolling_df.set_index("time")[["rolling_sharpe", "confidence_pct", "hit_pct"]]
                 st.line_chart(plot_df, use_container_width=True)
 
         st.markdown("### Per-Symbol Performance")
@@ -1584,10 +1674,25 @@ def main():
             st.info("No per-symbol performance data yet.")
         else:
             display_df = router_health.per_symbol.copy()
-            display_df["win_rate"] = display_df["win_rate"].apply(lambda v: f"{v:.1f}%")
-            display_df["avg_pnl"] = display_df["avg_pnl"].apply(lambda v: f"{v:.2f}")
-            display_df["cum_pnl"] = display_df["cum_pnl"].apply(lambda v: f"{v:.2f}")
-            display_df["sharpe"] = display_df["sharpe"].apply(lambda v: f"{v:.2f}")
+            if "win_rate" in display_df.columns:
+                display_df["win_rate"] = display_df["win_rate"].apply(lambda v: f"{v:.1f}%")
+            for col in ("avg_pnl", "cum_pnl", "confidence_weighted_pnl", "fees_total", "realized_pnl"):
+                if col in display_df.columns:
+                    display_df[col] = display_df[col].apply(lambda v: f"{float(v):.2f}")
+            if "sharpe" in display_df.columns:
+                display_df["sharpe"] = display_df["sharpe"].apply(lambda v: f"{float(v):.2f}")
+            if "normalized_sharpe" in display_df.columns:
+                display_df["normalized_sharpe"] = display_df["normalized_sharpe"].apply(lambda v: f"{float(v):.2f}")
+            if "volatility_scale" in display_df.columns:
+                display_df["volatility_scale"] = display_df["volatility_scale"].apply(lambda v: f"{float(v):.2f}×")
+            if "avg_confidence" in display_df.columns:
+                display_df["avg_confidence"] = display_df["avg_confidence"].apply(
+                    lambda v: f"{float(v) * 100.0:.1f}%" if pd.notna(v) else "n/a"
+                )
+            if "fill_rate_pct" in display_df.columns:
+                display_df["fill_rate_pct"] = display_df["fill_rate_pct"].apply(
+                    lambda v: f"{float(v):.1f}%" if v is not None else "n/a"
+                )
             st.dataframe(display_df, use_container_width=True, height=420)
 
     # --------------------------- Leaderboard Tab ---------------------------------
@@ -1789,6 +1894,148 @@ def main():
                         st.write(f"- {entry.get('symbol')}: {entry.get('error')}")
         except Exception as exc:
             st.error(f"ML tab error: {exc}")
+
+    # --------------------------- ML Confidence Tab ----------------------------
+    with tab_ml_confidence:
+        st.subheader("Model Confidence Telemetry")
+        if telemetry_load is None or telemetry_aggregate is None:
+            st.warning("Telemetry module unavailable; ensure ml.telemetry is installed.")
+        else:
+            telemetry_history = telemetry_load(limit=200)
+            if not telemetry_history:
+                st.info("No telemetry points recorded yet. Call ml.telemetry.record_confidence from your models.")
+            else:
+                aggregate = telemetry_aggregate(telemetry_history)
+                metrics_cols = st.columns(3)
+                avg_conf = aggregate.get("avg_confidence")
+                latest_conf = aggregate.get("latest_confidence")
+                metrics_cols[0].metric(
+                    "Average Confidence",
+                    f"{avg_conf * 100.0:.1f}%" if isinstance(avg_conf, (int, float)) else "n/a",
+                )
+                metrics_cols[1].metric(
+                    "Latest Confidence",
+                    f"{latest_conf * 100.0:.1f}%" if isinstance(latest_conf, (int, float)) else "n/a",
+                )
+                metrics_cols[2].metric("Samples", aggregate.get("count", 0))
+
+                telemetry_df = pd.DataFrame(
+                    {
+                        "time": [point.ts for point in telemetry_history],
+                        "confidence": [point.confidence for point in telemetry_history],
+                        "model": [point.model for point in telemetry_history],
+                    }
+                ).sort_values("time")
+                telemetry_df["rolling_confidence"] = telemetry_df["confidence"].rolling(window=20, min_periods=1).mean()
+                telemetry_df["time"] = pd.to_datetime(telemetry_df["time"])
+
+                st.markdown("### Confidence Trend")
+                if alt is not None:
+                    chart = (
+                        alt.layer(
+                            alt.Chart(telemetry_df)
+                            .mark_line(color="#1f77b4")
+                            .encode(
+                                x=alt.X("time:T", title="Time"),
+                                y=alt.Y("confidence:Q", title="Confidence", axis=alt.Axis(format=".2%")),
+                                color="model:N",
+                            ),
+                            alt.Chart(telemetry_df)
+                            .mark_line(color="#ff7f0e", strokeDash=[4, 4])
+                            .encode(
+                                x=alt.X("time:T", title="Time"),
+                                y=alt.Y(
+                                    "rolling_confidence:Q",
+                                    title="Rolling Confidence",
+                                    axis=alt.Axis(format=".2%", titleColor="#ff7f0e"),
+                                ),
+                            ),
+                        )
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    plot_df = telemetry_df.set_index("time")[["confidence", "rolling_confidence"]]
+                    st.line_chart(plot_df, use_container_width=True)
+
+                top_features = aggregate.get("top_features") or []
+                if top_features:
+                    st.markdown("### Top Feature Attributions (abs sum)")
+                    feat_df = pd.DataFrame(top_features, columns=["feature", "importance"])
+                    feat_df["importance"] = feat_df["importance"].apply(lambda v: f"{float(v):.3f}")
+                    st.table(feat_df)
+
+                latest_point = telemetry_history[-1]
+                if latest_point.metadata:
+                    st.caption("Latest metadata payload")
+                    st.json(latest_point.metadata)
+
+    # --------------------------- RL Pilot Tab ---------------------------------
+    with tab_rl_pilot:
+        st.subheader("RL Sizer Pilot")
+        rl_log_path = RL_LOG_DIR / "episodes.jsonl"
+        if not rl_log_path.exists():
+            st.info("No RL pilot runs logged yet. Execute `python -m research.rl_sizer.runner` to generate episodes.")
+        else:
+            try:
+                with rl_log_path.open("r", encoding="utf-8") as handle:
+                    lines = [line.strip() for line in handle if line.strip()]
+                episodes = [json.loads(line) for line in lines[-200:]]
+            except Exception as exc:
+                st.error(f"Failed to load RL pilot log: {exc}")
+                episodes = []
+
+            if not episodes:
+                st.info("RL pilot log is empty. Run the dry-run trainer to populate metrics.")
+            else:
+                df_runs = pd.DataFrame(episodes)
+                df_runs["episode"] = range(len(df_runs))
+                df_runs = df_runs.sort_values("episode")
+                metrics_cols = st.columns(4)
+                metrics_cols[0].metric("Episodes", len(df_runs))
+                metrics_cols[1].metric(
+                    "Avg Normalized Sharpe",
+                    f"{df_runs['normalized_sharpe'].mean():.2f}"
+                    if "normalized_sharpe" in df_runs
+                    else "n/a",
+                )
+                metrics_cols[2].metric(
+                    "Best Reward",
+                    f"{df_runs['total_reward'].max():.3f}"
+                    if "total_reward" in df_runs
+                    else "n/a",
+                )
+                metrics_cols[3].metric(
+                    "Final Equity (median)",
+                    f"{df_runs['equity_final'].median():.3f}"
+                    if "equity_final" in df_runs
+                    else "n/a",
+                )
+
+                st.markdown("### Episode Trajectories")
+                df_runs["episode_index"] = df_runs.index
+                if alt is not None and "normalized_sharpe" in df_runs:
+                    chart = (
+                        alt.Chart(df_runs)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("episode_index:Q", title="Episode"),
+                            y=alt.Y("normalized_sharpe:Q", title="Normalized Sharpe"),
+                        )
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+                elif "normalized_sharpe" in df_runs:
+                    st.line_chart(df_runs.set_index("episode_index")["normalized_sharpe"], use_container_width=True)
+
+                st.markdown("### Recent Episodes")
+                display_cols = [
+                    col
+                    for col in ["episode_index", "normalized_sharpe", "total_reward", "equity_final", "avg_position"]
+                    if col in df_runs.columns
+                ]
+                if display_cols:
+                    st.dataframe(df_runs[display_cols].tail(50), use_container_width=True, height=260)
+                else:
+                    st.json(episodes[-5:])
 
     # --------------------------- Doctor Tab --------------------------------------
     with tab_doctor:

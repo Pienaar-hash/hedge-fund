@@ -11,6 +11,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from execution.log_utils import safe_dump
 from execution.risk_limits import RiskGate, RiskState
+from execution.metrics_normalizer import NormalizedMetrics, compute_normalized_metrics
 
 LOG = logging.getLogger("risk.autotune")
 
@@ -106,7 +107,8 @@ class RiskAutotuner:
         cache = _read_json(DOCTOR_CACHE_PATH)
         if isinstance(cache, Mapping):
             # Allow cron cache to supply a direct confidence value
-            nav_freshness = cache.get("nav_freshness") if isinstance(cache.get("nav_freshness"), Mapping) else {}
+            nav_freshness_obj = cache.get("nav_freshness")
+            nav_freshness = nav_freshness_obj if isinstance(nav_freshness_obj, Mapping) else {}
             conf = _to_float(nav_freshness.get("confidence"))
             if conf is not None:
                 return max(0.0, min(1.0, conf))
@@ -138,6 +140,37 @@ class RiskAutotuner:
         p95 = float(slips_sorted[p95_idx])
         return {"median": median, "p95": p95, "count": len(slips_sorted)}
 
+    def _performance_snapshot(self) -> NormalizedMetrics:
+        rows = _tail_jsonl(ORDER_METRICS_PATH, self._order_history)
+        pnl_series: list[float] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            pnl_pct = _to_float(row.get("pnl_pct") or row.get("return_pct"))
+            if pnl_pct is not None:
+                pnl_series.append(pnl_pct)
+                continue
+            pnl_val = _to_float(
+                row.get("pnl_usd")
+                or row.get("pnl_at_close_usd")
+                or row.get("realized_pnl_usd")
+                or row.get("realizedPnlUsd")
+            )
+            if pnl_val is None:
+                continue
+            notional = _to_float(row.get("notional_usd") or row.get("gross_notional") or row.get("position_notional"))
+            if notional is None or abs(notional) <= 1e-9:
+                pnl_series.append(pnl_val)
+            else:
+                pnl_series.append(pnl_val / notional)
+        return compute_normalized_metrics(
+            pnl_series,
+            target_vol=0.02,
+            annualization=252,
+            min_observations=3,
+            window=len(pnl_series),
+        )
+
     def _apply_adjustments(self, gate: RiskGate, adjustments: Mapping[str, Any]) -> None:
         if not adjustments:
             return
@@ -152,11 +185,26 @@ class RiskAutotuner:
             gate_cfg[key] = value
             gate.risk[key] = value
 
-    def _compute_adjustments(self, conf: float, slip_stats: Mapping[str, Any]) -> Dict[str, Any]:
+    def _compute_adjustments(
+        self,
+        conf: float,
+        slip_stats: Mapping[str, Any],
+        perf: NormalizedMetrics,
+    ) -> Dict[str, Any]:
         adjustments: Dict[str, Any] = {}
         base_daily = _to_float(self._base_risk.get("daily_loss_limit_pct")) or 5.0
-        scale = max(0.4, min(1.0, conf))
-        tuned_daily = round(base_daily * scale, 3)
+        risk_scale = max(0.45, min(1.05, 0.45 + conf * 0.55))
+        perf_scale = 1.0
+        norm_sharpe = perf.normalized_sharpe
+        if math.isfinite(norm_sharpe):
+            if norm_sharpe < 0:
+                perf_scale -= min(0.35, abs(norm_sharpe) * 0.25)
+            elif norm_sharpe > 1.0:
+                perf_scale += min(0.3, (norm_sharpe - 1.0) * 0.12)
+            elif norm_sharpe > 0.3:
+                perf_scale += min(0.15, (norm_sharpe - 0.3) * 0.1)
+        combined_scale = max(0.4, min(1.2, risk_scale * perf_scale))
+        tuned_daily = round(base_daily * combined_scale, 3)
         current_daily = _to_float(self._gate.risk.get("daily_loss_limit_pct")) or base_daily
         if abs(tuned_daily - current_daily) >= 0.05:
             adjustments["daily_loss_limit_pct"] = tuned_daily
@@ -165,20 +213,20 @@ class RiskAutotuner:
         burst_max = int(float(base_burst.get("max_orders", 4) or 4))
         tuned_burst = burst_max
         p95 = _to_float(slip_stats.get("p95")) or 0.0
-        if p95 > 3.0:
+        if p95 > 3.0 or perf.volatility_scale < 0.9:
             tuned_burst = max(1, burst_max - 1)
-        elif p95 < 1.0:
-            tuned_burst = burst_max
+        elif p95 < 1.0 and norm_sharpe > 0.8 and perf.volatility_scale > 1.05:
+            tuned_burst = min(burst_max + 1, burst_max + 2)
         current_burst = self._gate.risk.get("burst_limit") or {}
         if int(float(current_burst.get("max_orders", tuned_burst) or tuned_burst)) != tuned_burst:
             adjustments["burst_limit"] = {"max_orders": tuned_burst, "window_sec": int(base_burst.get("window_sec", 60) or 60)}
 
         base_cooldown = _to_float(self._base_risk.get("cooldown_minutes_after_stop")) or 30.0
         tuned_cooldown = base_cooldown
-        if p95 > 5.0:
+        if p95 > 5.0 or norm_sharpe < 0:
             tuned_cooldown = base_cooldown + 10.0
-        elif p95 < 1.5:
-            tuned_cooldown = base_cooldown
+        elif p95 < 1.0 and norm_sharpe > 1.0 and conf > 0.6:
+            tuned_cooldown = max(10.0, base_cooldown - 5.0)
         current_cd = _to_float(self._gate.risk.get("cooldown_minutes_after_stop")) or base_cooldown
         if abs(tuned_cooldown - current_cd) >= 1.0:
             adjustments["cooldown_minutes_after_stop"] = round(tuned_cooldown, 2)
@@ -190,24 +238,39 @@ class RiskAutotuner:
         with self._lock:
             conf = self._doctor_confidence()
             slip_stats = self._slippage_snapshot()
-            adjustments = self._compute_adjustments(conf, slip_stats)
+            perf_stats = self._performance_snapshot()
+            adjustments = self._compute_adjustments(conf, slip_stats, perf_stats)
+            perf_payload = {
+                "raw_sharpe": perf_stats.raw_sharpe,
+                "normalized_sharpe": perf_stats.normalized_sharpe,
+                "volatility_scale": perf_stats.volatility_scale,
+                "realized_vol": perf_stats.realized_vol,
+                "sample_size": perf_stats.sample_size,
+            }
             if adjustments:
                 self._apply_adjustments(self._gate, adjustments)
                 self._last_adjust_ts = time.time()
                 summary = {
                     "confidence": conf,
                     "slippage": slip_stats,
+                    "performance": perf_payload,
                     "adjustments": adjustments,
                     "ts": self._last_adjust_ts,
                 }
                 self._last_adjust_summary = summary
                 LOG.info("[risk] autotune adjustments=%s", summary)
             else:
-                LOG.debug("[risk] autotune no adjustments (conf=%.3f slip=%s)", conf, slip_stats)
+                LOG.debug(
+                    "[risk] autotune no adjustments (conf=%.3f slip=%s perf=%s)",
+                    conf,
+                    slip_stats,
+                    perf_payload,
+                )
             self.persist_state(state)
             return {
                 "confidence": conf,
                 "slippage": slip_stats,
+                "performance": perf_payload,
                 "adjustments": adjustments,
                 "state_path": str(self._cache_path),
             }
@@ -215,4 +278,3 @@ class RiskAutotuner:
     @property
     def last_adjustment(self) -> Dict[str, Any]:
         return self._last_adjust_summary
-
