@@ -9,3 +9,5 @@ configs/firebase_creds.json
 .env
 config/firebase_creds.json
 config/firebase_creds.old.json
+logs/*.json
+logs/**/*.jsonl
