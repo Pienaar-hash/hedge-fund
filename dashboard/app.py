@@ -1,13 +1,15 @@
+import asyncio
 import os
 import sys
 import json
 import time
 import subprocess
 import logging
+import math
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -28,9 +30,17 @@ from dashboard.dashboard_utils import (  # noqa: E402
     get_env_float,
     get_env_badge,
 )
+from dashboard.async_cache import gather_once  # noqa: E402
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
 from dashboard.router_health import load_router_health, RouterHealthData  # noqa: E402
 from scripts.doctor import collect_doctor_snapshot  # noqa: E402
+from research.correlation_matrix import DEFAULT_OUTPUT_PATH as CORRELATION_CACHE_PATH  # noqa: E402
+from execution.capital_allocator import DEFAULT_OUTPUT_PATH as CAPITAL_ALLOC_CACHE_PATH  # noqa: E402
+from research.factor_fusion import (  # noqa: E402
+    FactorFusion,
+    FactorFusionConfig,
+    prepare_factor_frame,
+)
 try:
     import altair as alt  # type: ignore
 except Exception:  # pragma: no cover
@@ -600,9 +610,18 @@ def main():
     DOCTOR_CACHE_PATH = PROJECT_ROOT / "logs" / "cache" / "doctor.json"
     SIGNAL_METRICS_PATH = PROJECT_ROOT / "logs" / "execution" / "signal_metrics.jsonl"
     ML_CACHE_PATH = PROJECT_ROOT / "logs" / "cache" / "ml_predictions.json"
+    CORRELATION_JSON_PATH = PROJECT_ROOT / CORRELATION_CACHE_PATH
+    CAPITAL_ALLOC_JSON_PATH = PROJECT_ROOT / CAPITAL_ALLOC_CACHE_PATH
 
-    @st.cache_data(ttl=30, show_spinner=False)
-    def cached_doctor_snapshot() -> Dict[str, Any]:
+    def _persist_payload(path: Path, payload: Dict[str, Any]) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        except Exception:
+            pass
+
+    def _doctor_fetcher() -> Dict[str, Any]:
         if DOCTOR_CACHE_PATH.exists():
             try:
                 with DOCTOR_CACHE_PATH.open("r", encoding="utf-8") as handle:
@@ -616,13 +635,79 @@ def main():
         except Exception as exc:
             LOG.warning("[dash] doctor snapshot fallback failed: %s", exc)
             snapshot = {}
+        if isinstance(snapshot, dict):
+            _persist_payload(DOCTOR_CACHE_PATH, snapshot)
+        return snapshot if isinstance(snapshot, dict) else {}
+
+    def _router_fetcher() -> Dict[str, Any]:
         try:
-            DOCTOR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with DOCTOR_CACHE_PATH.open("w", encoding="utf-8") as handle:
-                json.dump(snapshot, handle, ensure_ascii=False, indent=2, sort_keys=True)
-        except Exception:
-            pass
-        return snapshot
+            health = load_router_health(window=180)
+        except Exception as exc:
+            LOG.debug("[dash] router health fetch failed: %s", exc)
+            return {}
+        summary = dict(health.summary)
+        per_symbol = health.per_symbol.head(25).to_dict(orient="records")
+        pnl_curve = health.pnl_curve.tail(120).to_dict(orient="records")
+        return {
+            "summary": summary,
+            "per_symbol": per_symbol,
+            "pnl_curve": pnl_curve,
+        }
+
+    def _telemetry_fetcher(limit: int = 240) -> Dict[str, Any]:
+        if telemetry_load is None:
+            return {}
+        try:
+            history = telemetry_load(limit=limit)
+        except Exception as exc:
+            LOG.debug("[dash] telemetry load failed: %s", exc)
+            return {}
+        mapped = [point.to_mapping() for point in history]
+        aggregate = telemetry_aggregate(history) if telemetry_aggregate else {}
+        return {"history": mapped, "aggregate": aggregate}
+
+    def _correlation_fetcher() -> Dict[str, Any]:
+        if CORRELATION_JSON_PATH.exists():
+            try:
+                with CORRELATION_JSON_PATH.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception as exc:
+                LOG.debug("[dash] correlation cache read failed: %s", exc)
+        return {}
+
+    def _capital_allocation_fetcher() -> Dict[str, Any]:
+        if CAPITAL_ALLOC_JSON_PATH.exists():
+            try:
+                with CAPITAL_ALLOC_JSON_PATH.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception as exc:
+                LOG.debug("[dash] capital allocation cache read failed: %s", exc)
+        return {}
+
+    ASYNC_FETCHERS: Dict[str, Callable[[], Any]] = {
+        "doctor": _doctor_fetcher,
+        "router_health": _router_fetcher,
+        "telemetry": _telemetry_fetcher,
+        "correlation": _correlation_fetcher,
+        "capital_allocation": _capital_allocation_fetcher,
+    }
+
+    @st.cache_data(ttl=20, show_spinner=False)
+    def load_async_entries() -> Dict[str, Dict[str, Any]]:
+        entries = asyncio.run(gather_once(ASYNC_FETCHERS))
+        return {
+            name: {
+                "payload": entry.payload,
+                "latency_ms": entry.latency_ms,
+                "ok": entry.ok,
+                "refreshed_at": entry.refreshed_at,
+            }
+            for name, entry in entries.items()
+        }
 
     @st.cache_data(ttl=20, show_spinner=False)
     def cached_signal_metrics(limit: int = 400) -> List[Dict[str, Any]]:
@@ -725,6 +810,15 @@ def main():
             return float(value)
         except Exception:
             return 0.0
+
+    def _to_optional_float(value: Any) -> Optional[float]:
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(num):
+            return None
+        return num
 
     def load_signals_table(limit: int = 100) -> pd.DataFrame:
         metrics_rows = cached_signal_metrics(800)
@@ -832,7 +926,11 @@ def main():
     pos_doc, pos_source = load_positions_state()
     lb_doc, lb_source = load_leaderboard_state()
 
-    doctor_snapshot = cached_doctor_snapshot() or {}
+    async_entries = load_async_entries()
+    doctor_snapshot = async_entries.get("doctor", {}).get("payload", {}) or {}
+    telemetry_async = async_entries.get("telemetry", {})
+    correlation_async = async_entries.get("correlation", {})
+    capital_async = async_entries.get("capital_allocation", {})
     if not isinstance(doctor_snapshot, dict):
         doctor_snapshot = {}
 
@@ -1201,6 +1299,8 @@ def main():
         tab_ml_confidence,
         tab_rl_pilot,
         tab_doctor,
+        tab_portfolio_corr,
+        tab_factor_fusion,
     ) = st.tabs(
         [
             "Overview",
@@ -1214,6 +1314,8 @@ def main():
             "ML Confidence",
             "RL Pilot",
             "Doctor",
+            "Portfolio Correlation",
+            "Factor Fusion",
         ]
     )
 
@@ -2226,6 +2328,188 @@ def main():
                 top = sorted(veto_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
                 st.write({"veto_top_24h": dict(top)})
 
+
+    # --------------------------- Portfolio Correlation Tab ----------------------
+    with tab_portfolio_corr:
+        st.subheader("Portfolio Correlation")
+        corr_payload = correlation_async.get("payload") if isinstance(correlation_async, dict) else {}
+        capital_payload = capital_async.get("payload") if isinstance(capital_async, dict) else {}
+        if not corr_payload:
+            st.info("No correlation snapshot available. Run `python -m research.correlation_matrix` to populate the cache.")
+        else:
+            asof = corr_payload.get("asof", "n/a")
+            window = corr_payload.get("window")
+            method = corr_payload.get("method")
+            refreshed = _to_optional_float(correlation_async.get("refreshed_at")) if isinstance(correlation_async, dict) else None
+            caption = f"Asof: {asof} · Window: {window} · Method: {method}"
+            if refreshed is not None:
+                caption += f" · Refreshed: {datetime.fromtimestamp(refreshed).isoformat()}"
+            st.caption(caption)
+            metrics_cols = st.columns(3)
+            avg_corr = _to_optional_float(corr_payload.get("average_abs_correlation"))
+            max_corr = _to_optional_float(corr_payload.get("max_correlation"))
+            min_corr = _to_optional_float(corr_payload.get("min_correlation"))
+            metrics_cols[0].metric("Avg |ρ|", f"{avg_corr:.3f}" if avg_corr is not None else "n/a")
+            metrics_cols[1].metric("Max ρ", f"{max_corr:.3f}" if max_corr is not None else "n/a")
+            metrics_cols[2].metric("Min ρ", f"{min_corr:.3f}" if min_corr is not None else "n/a")
+
+            matrix_payload = corr_payload.get("matrix") or {}
+            matrix_df = pd.DataFrame.from_dict(matrix_payload, orient="index")
+            if not matrix_df.empty:
+                matrix_df = matrix_df.reindex(sorted(matrix_df.index)).reindex(sorted(matrix_df.columns), axis=1)
+                st.markdown("### Correlation Matrix")
+                st.dataframe(matrix_df.round(2), use_container_width=True, height=360)
+                if alt is not None:
+                    melted = (
+                        matrix_df.reset_index(names="base")
+                        .melt(id_vars="base", var_name="paired", value_name="correlation")
+                    )
+                    heatmap = (
+                        alt.Chart(melted)
+                        .mark_rect()
+                        .encode(
+                            x=alt.X("paired:O", title="Strategy"),
+                            y=alt.Y("base:O", title="Strategy"),
+                            color=alt.Color("correlation:Q", scale=alt.Scale(scheme="redblue", domain=(-1, 1))),
+                            tooltip=["base", "paired", alt.Tooltip("correlation:Q", format=".3f")],
+                        )
+                    )
+                    st.altair_chart(heatmap, use_container_width=True)
+            else:
+                st.info("Correlation matrix empty — waiting for sufficient history.")
+
+        if capital_payload:
+            st.markdown("### Dynamic Capital Allocation")
+            weights = capital_payload.get("weights") or {}
+            if weights:
+                weight_df = (
+                    pd.DataFrame({"strategy": list(weights.keys()), "weight": [float(v) for v in weights.values()]})
+                    .sort_values("weight", ascending=False, ignore_index=True)
+                )
+                st.bar_chart(weight_df.set_index("strategy"), use_container_width=True)
+                st.dataframe(weight_df, use_container_width=True, height=220)
+            scores = capital_payload.get("scores") or {}
+            if scores:
+                score_df = (
+                    pd.DataFrame({"strategy": list(scores.keys()), "score": [float(v) for v in scores.values()]})
+                    .sort_values("score", ascending=False, ignore_index=True)
+                )
+                st.markdown("#### Allocation Scores")
+                st.dataframe(score_df, use_container_width=True, height=220)
+            metadata = capital_payload.get("metadata") or {}
+            if metadata:
+                avg_meta = _to_optional_float(metadata.get("average_abs_correlation"))
+                avg_meta_text = f"{avg_meta:.3f}" if avg_meta is not None else "n/a"
+                st.caption(
+                    f"Allocator metadata: avg |ρ|={avg_meta_text} · strategies={metadata.get('strategies', 'n/a')}"
+                )
+
+    # --------------------------- Factor Fusion Tab ------------------------------
+    with tab_factor_fusion:
+        st.subheader("Factor Fusion Diagnostics")
+        telemetry_payload = telemetry_async.get("payload") if isinstance(telemetry_async, dict) else {}
+        history_records = telemetry_payload.get("history") or []
+        if not history_records:
+            st.info("No telemetry records available. Factor fusion requires ML telemetry history.")
+        elif len(history_records) < 20:
+            st.info("Need at least 20 telemetry observations to fit the fusion layer.")
+        else:
+            features_list: List[Dict[str, Any]] = []
+            confidences: List[float] = []
+            timestamps: List[Optional[pd.Timestamp]] = []
+            targets: List[float] = []
+            prices: List[Optional[float]] = []
+            volumes: List[Optional[float]] = []
+            for record in history_records:
+                features = record.get("features") or {}
+                features_list.append({k: _safe_float(v) for k, v in features.items() if isinstance(v, (int, float))})
+                conf_val = _safe_float(record.get("confidence"))
+                confidences.append(conf_val if conf_val is not None else 0.0)
+                timestamps.append(
+                    pd.to_datetime(record.get("ts"), errors="coerce") if record.get("ts") else pd.NaT
+                )
+                price_candidate = record.get("price") or record.get("mark_price") or record.get("mark")
+                prices.append(_safe_float(price_candidate))
+                volumes.append(_safe_float(record.get("volume")))
+                target_val = (
+                    _safe_float(record.get("realized_pnl"))
+                    or _safe_float(record.get("future_return"))
+                    or _safe_float(record.get("pnl"))
+                )
+                if target_val is None:
+                    target_val = (conf_val if conf_val is not None else 0.0) - 0.5
+                targets.append(float(target_val))
+
+            feature_frame = pd.DataFrame(features_list).fillna(0.0)
+            feature_frame["ml_confidence"] = confidences
+            index = pd.Index(timestamps)
+            if index.isna().all():
+                index = pd.RangeIndex(len(feature_frame))
+            feature_frame.index = index
+
+            price_series = pd.Series(prices, index=index, dtype="float64")
+            volume_series = pd.Series(volumes, index=index, dtype="float64")
+            if price_series.notna().sum() >= 10:
+                ta_features = prepare_factor_frame(
+                    price_series.fillna(method="ffill").fillna(method="bfill"),
+                    ml_signal=feature_frame.get("ml_confidence"),
+                    volume=volume_series,
+                )
+                feature_frame = feature_frame.join(ta_features, how="left").fillna(0.0)
+
+            numeric_frame = feature_frame.select_dtypes(include=["number"]).fillna(0.0)
+            target_series = pd.Series(targets, index=index, dtype="float64").fillna(0.0)
+            if numeric_frame.empty:
+                st.warning("Telemetry features did not contain numeric values to blend.")
+            else:
+                fusion = FactorFusion(FactorFusionConfig(regularization=1e-2, positive_weights=False, clip_output=4.0))
+                try:
+                    fusion_result = fusion.fit(numeric_frame, target_series)
+                except ValueError as exc:
+                    st.warning(f"Unable to fit fusion layer: {exc}")
+                else:
+                    metrics_cols = st.columns(3)
+                    metrics_cols[0].metric("Information Coefficient", f"{fusion_result.ic:.3f}")
+                    metrics_cols[1].metric("Signal Sharpe", f"{fusion_result.signal_sharpe:.2f}")
+                    metrics_cols[2].metric("R²", f"{fusion_result.r_squared:.2f}")
+
+                    fusion_df = pd.DataFrame(
+                        {
+                            "Fused Alpha": fusion_result.fused_signal,
+                            "Target": target_series.reindex(fusion_result.fused_signal.index),
+                        }
+                    ).dropna().tail(200)
+                    if not fusion_df.empty:
+                        if alt is not None:
+                            plot_df = fusion_df.reset_index(names="time").melt(
+                                id_vars="time", var_name="series", value_name="value"
+                            )
+                            chart = (
+                                alt.Chart(plot_df)
+                                .mark_line()
+                                .encode(
+                                    x=alt.X("time:T", title="Time"),
+                                    y=alt.Y("value:Q", title="Value"),
+                                    color=alt.Color("series:N", title="Series"),
+                                )
+                            )
+                            st.altair_chart(chart, use_container_width=True)
+                        else:
+                            st.line_chart(fusion_df, use_container_width=True)
+
+                    st.markdown("### Factor Weights")
+                    weight_df = fusion_result.weights.reset_index()
+                    weight_df.columns = ["factor", "weight"]
+                    weight_df.sort_values("weight", ascending=False, inplace=True, ignore_index=True)
+                    st.dataframe(weight_df, use_container_width=True, height=260)
+
+                    aggregate = telemetry_payload.get("aggregate") or {}
+                    if aggregate:
+                        st.caption(
+                            f"Telemetry points={aggregate.get('count', 'n/a')} · Avg confidence={aggregate.get('avg_confidence', 'n/a'):.3f}"
+                            if isinstance(aggregate.get("avg_confidence"), (int, float))
+                            else f"Telemetry points={aggregate.get('count', 'n/a')}"
+                        )
 
     st.caption(
         "Flags: "

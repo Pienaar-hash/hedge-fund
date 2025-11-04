@@ -4,15 +4,15 @@
   "positionSide": "LONG",
   "reason": "bucket_cap",
   "gross_usd": 10.0,
-  "price": 0.4165,
-  "ts": 1762259367.6330209,
+  "price": 0.4064,
+  "ts": 1762267179.7019815,
   "intent": {
-    "timestamp": "2025-11-04T12:29:21+00:00",
+    "timestamp": "2025-11-04T14:39:33+00:00",
     "symbol": "WIFUSDT",
     "timeframe": "15m",
     "signal": "BUY",
     "reduceOnly": false,
-    "price": 0.4165,
+    "price": 0.4064,
     "capital_per_trade": 5.0,
     "leverage": 2.0,
     "cap_usd": 5.0,
@@ -21,21 +21,21 @@
     "tf": "15m",
     "positionSide": "",
     "veto": [],
-    "attempt_id": "sig_7216ebc8c7",
-    "intent_id": "ord_9a6e4b1d6d"
+    "attempt_id": "sig_7f8ded1624",
+    "intent_id": "ord_18e4bf3a4b"
   },
   "nav_snapshot": {
-    "nav_usd": 2318.58706277,
-    "gross_usd": 1154.3000730632002,
+    "nav_usd": 2323.71280907,
+    "gross_usd": 1201.34003397384,
     "symbol_gross_usd": {
-      "SUIUSDT": 212.75584,
-      "LTCUSDT": 688.4847,
-      "LINKUSDT": 137.2447330632,
-      "WIFUSDT": 115.8148
+      "SUIUSDT": 114.54159859199999,
+      "LTCUSDT": 717.62794973184,
+      "LINKUSDT": 136.39644,
+      "WIFUSDT": 232.77404565
     }
   },
   "thresholds": {
     "bucket": "alts",
-    "bucket_cap": 463.717412554
+    "bucket_cap": 464.742561814
   }
 }
