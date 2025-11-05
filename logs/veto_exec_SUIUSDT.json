@@ -1,18 +1,18 @@
 {
   "symbol": "SUIUSDT",
-  "side": "SELL",
-  "positionSide": "SHORT",
+  "side": "BUY",
+  "positionSide": "LONG",
   "reason": "bucket_cap",
   "gross_usd": 10.0,
-  "price": 2.0699,
-  "ts": 1762268136.0137708,
+  "price": 2.0286,
+  "ts": 1762357884.5095704,
   "intent": {
-    "timestamp": "2025-11-04T14:55:17+00:00",
+    "timestamp": "2025-11-05T15:51:04+00:00",
     "symbol": "SUIUSDT",
     "timeframe": "15m",
-    "signal": "SELL",
+    "signal": "BUY",
     "reduceOnly": false,
-    "price": 2.0699,
+    "price": 2.0286,
     "capital_per_trade": 5.0,
     "leverage": 2.0,
     "cap_usd": 5.0,
@@ -21,21 +21,20 @@
     "tf": "15m",
     "positionSide": "",
     "veto": [],
-    "attempt_id": "sig_90a0482ee4",
-    "intent_id": "ord_84a64992a9"
+    "attempt_id": "sig_c532b650d7",
+    "intent_id": "ord_75c2cdba8c"
   },
   "nav_snapshot": {
-    "nav_usd": 2340.6928288599997,
-    "gross_usd": 824.6894799932,
+    "nav_usd": 2402.3297994,
+    "gross_usd": 842.9095326539999,
     "symbol_gross_usd": {
-      "SUIUSDT": 114.70325999999999,
-      "LTCUSDT": 353.0348646942,
-      "LINKUSDT": 115.61315,
-      "WIFUSDT": 241.338205299
+      "LTCUSDT": 360.83331,
+      "LINKUSDT": 241.24159999999998,
+      "WIFUSDT": 240.834622654
     }
   },
   "thresholds": {
     "bucket": "alts",
-    "bucket_cap": 468.138565772
+    "bucket_cap": 480.46595988
   }
 }

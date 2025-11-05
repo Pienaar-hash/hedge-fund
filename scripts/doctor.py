@@ -6,12 +6,16 @@ import time
 import hmac
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 from datetime import datetime, timezone
 
 import requests
 
-from utils.firestore_client import get_db as get_firestore_db
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from execution.firestore_utils import get_db as get_firestore_db
 from dashboard.router_health import _load_order_events
 
 ANSI_GREEN = "\033[92m"
@@ -112,6 +116,78 @@ def _colorize(text: str, color_code: str, enable: bool) -> str:
     if not enable:
         return text
     return f"{color_code}{text}\033[0m"
+
+
+def _to_dt(value: Any) -> Optional[datetime]:
+    """Normalize Firestore values (iso str, epoch, timestamp) into UTC datetimes."""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, datetime):
+            return value.astimezone(timezone.utc)
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        if hasattr(value, "timestamp"):
+            ts = value.timestamp() if callable(value.timestamp) else value.timestamp
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        if hasattr(value, "seconds"):
+            seconds = float(getattr(value, "seconds", 0))
+            nanos = float(getattr(value, "nanos", 0))
+            return datetime.fromtimestamp(seconds + nanos / 1_000_000_000, tz=timezone.utc)
+        text = str(value).strip()
+        if not text:
+            return None
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _pick(doc: Mapping[str, Any], *paths: str) -> Any:
+    """Return the first non-None value from dotted paths inside mapping."""
+    for path in paths:
+        current: Any = doc
+        for segment in path.split("."):
+            if not isinstance(current, Mapping) or segment not in current:
+                current = None
+                break
+            current = current[segment]
+        if current is not None:
+            return current
+    return None
+
+
+def parse_heartbeats(doc: Mapping[str, Any]) -> Dict[str, Optional[datetime]]:
+    """Normalize heartbeat schemas into canonical datetimes."""
+    result = {"executor_live": None, "sync_state": None}
+    nested = _pick(doc, "heartbeat", "heartbeats", "hb")
+    if isinstance(nested, Mapping):
+        result["executor_live"] = _to_dt(nested.get("executor_live"))
+        result["sync_state"] = _to_dt(nested.get("sync_state"))
+    if not result["executor_live"]:
+        for key in ("executor_live_ts", "executor_live"):
+            candidate = doc.get(key)
+            parsed = _to_dt(candidate)
+            if parsed:
+                result["executor_live"] = parsed
+                break
+    if not result["sync_state"]:
+        for key in ("sync_state_ts", "sync_state"):
+            candidate = doc.get(key)
+            parsed = _to_dt(candidate)
+            if parsed:
+                result["sync_state"] = parsed
+                break
+    return result
+
+
+def age_minutes(dt: Optional[datetime]) -> Optional[float]:
+    if dt is None:
+        return None
+    try:
+        delta = datetime.now(timezone.utc) - dt
+        return max(0.0, delta.total_seconds() / 60.0)
+    except Exception:
+        return None
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -272,10 +348,30 @@ def _collect_firestore_status() -> Dict[str, Any]:
 
 def _collect_heartbeats() -> Dict[str, Any]:
     path = Path("logs/execution/sync_heartbeats.jsonl")
-    services = {
+    env = os.getenv("ENV", "prod")
+    services: Dict[str, Optional[datetime]] = {
         "executor": None,
         "sync_state": None,
     }
+    doc_source = None
+    try:
+        db = get_firestore_db(strict=False)
+        if db is not None and not getattr(db, "_is_noop", False):
+            doc_ref = (
+                db.collection("hedge")
+                .document(env)
+                .collection("telemetry")
+                .document("health")
+            )
+            snap = doc_ref.get(timeout=5.0)
+            if getattr(snap, "exists", False):
+                payload = snap.to_dict() or {}
+                parsed = parse_heartbeats(payload)
+                services["executor"] = parsed.get("executor_live") or services["executor"]
+                services["sync_state"] = parsed.get("sync_state") or services["sync_state"]
+                doc_source = "firestore"
+    except Exception as exc:
+        print(f"[doctor] heartbeat firestore read failed: {exc}")
     if path.exists():
         try:
             with path.open("r", encoding="utf-8", errors="ignore") as handle:
@@ -288,22 +384,37 @@ def _collect_heartbeats() -> Dict[str, Any]:
                 if not isinstance(payload, dict):
                     continue
                 svc = str(payload.get("service") or "").lower()
-                ts = _parse_iso(payload.get("ts"))
+                ts = _to_dt(
+                    payload.get("timestamp")
+                    or payload.get("ts_iso")
+                    or payload.get("updated_at")
+                    or payload.get("ts")
+                )
+                if ts is None:
+                    continue
                 if "executor" in svc:
-                    services["executor"] = ts
+                    current = services.get("executor")
+                    if current is None or ts > current:
+                        services["executor"] = ts
                 elif "sync" in svc:
-                    services["sync_state"] = ts
+                    current = services.get("sync_state")
+                    if current is None or ts > current:
+                        services["sync_state"] = ts
         except Exception as exc:
             print(f"[doctor] heartbeat parse failed: {exc}")
     display_parts = []
     stale = False
     service_details: Dict[str, Dict[str, Any]] = {}
     for label, ts in services.items():
-        age_str = _human_minutes(ts)
-        display_parts.append(f"{label}={age_str}")
-        mins = _mins_ago(ts)
-        if mins is None or mins > 5:
+        mins = age_minutes(ts)
+        if mins is None:
+            age_str = "n/a"
             stale = True
+        else:
+            age_str = f"{mins:.0f}m"
+            if mins >= 2:
+                stale = True
+        display_parts.append(f"{label}={age_str}")
         service_details[label] = {
             "ts": ts,
             "age_minutes": mins,
@@ -314,6 +425,7 @@ def _collect_heartbeats() -> Dict[str, Any]:
         "display": " ".join(display_parts) if display_parts else "n/a",
         "status": status,
         "services": service_details,
+        "source": doc_source or "fallback",
     }
 
 
@@ -587,6 +699,33 @@ def main():
     zar_rate = nav_freshness.get("zar_rate")
     zar_source = nav_freshness.get("zar_source")
 
+    env = os.getenv("ENV", "dev")
+    fs_status = "STALE"
+    fs_age = None
+    try:
+        db = get_firestore_db(strict=False)
+        if db is None or getattr(db, "_is_noop", False):
+            raise RuntimeError("Firestore offline (noop client)")
+        doc_ref = db.collection("hedge").document(env).collection("health").document("sync_state")
+        doc = doc_ref.get(timeout=5.0)
+        if doc.exists:
+            update_time = getattr(doc, "update_time", None)
+            if update_time is not None:
+                fs_age = (datetime.now(timezone.utc) - update_time).total_seconds()
+                if fs_age < 120:
+                    fs_status = "OK"
+                elif fs_age < 600:
+                    fs_status = "STALE"
+                else:
+                    fs_status = "DOWN"
+            else:
+                fs_status = "UNKNOWN"
+        else:
+            fs_status = "MISSING"
+    except Exception as exc:
+        print(json.dumps({"status": "offline", "reason": str(exc)}))
+        return
+
     payload = json.dumps(out, indent=2, sort_keys=False)
     print(payload)
 
@@ -649,39 +788,6 @@ def main():
         )
     else:
         print("[doctor] ZAR conversion data unavailable")
-
-    from datetime import datetime, timezone
-    fs_status = "STALE"
-    fs_age = None
-    db = None
-    try:
-        db = get_firestore_db(strict=False)
-    except Exception as exc:
-        fs_status = f"ERROR ({exc})"
-    else:
-        if db is None or getattr(db, "_is_noop", False):
-            fs_status = "UNAVAILABLE"
-        else:
-            env = os.getenv("ENV", "dev")
-            try:
-                doc_ref = db.collection("hedge").document(env).collection("health").document("sync_state")
-                doc = doc_ref.get()
-                if doc.exists:
-                    update_time = getattr(doc, "update_time", None)
-                    if update_time is not None:
-                        fs_age = (datetime.now(timezone.utc) - update_time).total_seconds()
-                        if fs_age < 120:
-                            fs_status = "OK"
-                        elif fs_age < 600:
-                            fs_status = "STALE"
-                        else:
-                            fs_status = "DOWN"
-                    else:
-                        fs_status = "UNKNOWN"
-                else:
-                    fs_status = "MISSING"
-            except Exception as exc:
-                fs_status = f"ERROR ({exc})"
 
     print(f"[doctor] Firestore: {fs_status} (age={fs_age or 'n/a'}s)")
 
@@ -749,7 +855,11 @@ def main():
     print(f"[doctor] summary {colored_summary}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # pragma: no cover - defensive CLI guard
+        print(f"[doctor] warning: {exc}", file=sys.stderr)
+        sys.exit(0)
 
 
 __all__ = ["collect_doctor_snapshot", "collect_router_health"]

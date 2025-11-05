@@ -4,8 +4,11 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from copy import deepcopy
+
+from execution.firestore_utils import publish_heartbeat as _simple_publish_heartbeat
 
 # --- Ensure repo root is importable & files are read from repo root ---
 # /root/hedge-fund/execution/sync_state.py -> repo_root=/root/hedge-fund
@@ -15,6 +18,11 @@ if REPO_ROOT not in sys.path:
 print(f"[sync] PYTHONPATH bootstrapped: {REPO_ROOT}", flush=True)
 
 LOGGER = logging.getLogger("sync_state")
+if not LOGGER.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOGGER.addHandler(handler)
+LOGGER.setLevel(logging.INFO)
 _ENV_DEFAULT = "prod"
 _ENV = (os.environ.get("HEDGE_ENV") or os.environ.get("ENV") or _ENV_DEFAULT).strip() or _ENV_DEFAULT
 os.environ["ENV"] = _ENV
@@ -37,6 +45,49 @@ def _firestore_enabled() -> bool:
 def _repo_root_log() -> None:
     """Log repo root resolution for clarity in supervisor output."""
     print(f"[sync] repo_root resolved: {REPO_ROOT}", flush=True)
+
+
+def _resolve_firestore_creds() -> str | None:
+    candidates = [
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+        os.getenv("FIREBASE_CREDS_PATH"),
+        "/root/hedge-fund/config/firebase_creds.json",
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
+            os.environ.setdefault("FIREBASE_CREDS_PATH", path)
+            LOGGER.info("[firestore] using credentials at %s", path)
+            return path
+    LOGGER.warning("[firestore] No Firestore credentials found; running offline")
+    return None
+
+
+def safe_publish_health(service: str = "sync_state", status: str = "ok", err: str = "") -> None:
+    key = _resolve_firestore_creds()
+    if not key:
+        return
+    try:
+        from google.cloud import firestore  # type: ignore
+    except Exception as exc:
+        LOGGER.warning("[firestore] google-cloud-firestore import failed: %s", exc)
+        return
+    try:
+        client = firestore.Client()
+        env = os.getenv("ENV", "prod")
+        path = f"hedge/{env}/telemetry/health"
+        payload = {
+            "service": service,
+            "status": status,
+            "firestore_ok": status == "ok",
+            "last_error": err,
+            "ts": time.time(),
+            "ts_iso": datetime.utcnow().isoformat(),
+        }
+        client.document(path).set(payload, merge=True)
+        LOGGER.info("[firestore] telemetry publish ok path=%s", path)
+    except Exception as exc:
+        LOGGER.exception("[firestore] telemetry publish failed: %s", exc)
 
 
 def _log_startup_summary() -> Dict[str, Any]:
@@ -75,7 +126,7 @@ def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
             }
         )
         print(
-            f"[firestore] heartbeat write ok path=hedge/{flags.get('env')}/health/sync_state",
+            f"[firestore] heartbeat write ok path=hedge/{flags.get('env')}/telemetry/health",
             flush=True,
         )
     except Exception as exc:
@@ -1033,6 +1084,15 @@ def _lb_doc_ref(db):
     )
 
 
+def _sync_state_doc_ref(db):
+    return (
+        db.collection("hedge")
+        .document(_get_env())
+        .collection("state")
+        .document("sync_state")
+    )
+
+
 def _maybe_fetch_nav_doc(db) -> Dict[str, Any]:
     try:
         snap = _nav_doc_ref(db).get()
@@ -1127,6 +1187,7 @@ def _publish_health(db, ok: bool, last_error: str) -> None:
         )
     except Exception as exc:
         LOGGER.warning("[sync] heartbeat_publish_failed error=%s", exc)
+    safe_publish_health(service="sync_state", status=status, err=str(last_error or ""))
 
 
 # ------------------------------ Public API ----------------------------------
@@ -1226,6 +1287,31 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
     pos_payload = _commit_positions(db, pos_snap)
     lb_payload = _commit_leaderboard(db, pos_snap)
 
+    try:
+        sync_state_payload = {
+            "nav": {
+                "total_equity": nav_payload.get("total_equity"),
+                "peak_equity": nav_payload.get("peak_equity"),
+                "drawdown_pct": nav_payload.get("drawdown_pct"),
+                "drawdown_abs": nav_payload.get("drawdown_abs"),
+                "updated_at": nav_payload.get("updated_at"),
+            },
+            "positions": {
+                "count": len(pos_payload.get("items") or []),
+                "gross_exposure": pos_payload.get("gross_exposure"),
+                "net_exposure": pos_payload.get("net_exposure"),
+                "updated_at": pos_payload.get("updated_at"),
+            },
+            "leaderboard": {
+                "items": (lb_payload.get("items") or [])[:10],
+                "updated_at": lb_payload.get("updated_at"),
+            },
+            "updated_at": _now_iso(),
+        }
+        _sync_state_doc_ref(db).set(sync_state_payload, merge=True)
+    except Exception as exc:
+        LOGGER.warning("[sync] sync_state_doc_write_failed error=%s", exc)
+
     # Console log
     try:
         updated_at = nav_payload.get("updated_at")
@@ -1276,6 +1362,11 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
 # --------------------------------- Runner -----------------------------------
 
 
+_HEARTBEAT_LOCK = threading.Lock()
+_HEARTBEAT_THREAD: Optional[threading.Thread] = None
+_HEARTBEAT_STOP: Optional[threading.Event] = None
+
+
 def _interval_seconds() -> int:
     try:
         return int(os.getenv("SYNC_INTERVAL_SEC", "20"))
@@ -1283,33 +1374,87 @@ def _interval_seconds() -> int:
         return 20
 
 
+def _heartbeat_worker(env: str, stop_event: threading.Event) -> None:
+    LOGGER.info("[heartbeat] thread starting (ENV=%s)", env)
+    while not stop_event.is_set():
+        try:
+            _simple_publish_heartbeat(service="sync_state", status="ok", env=env)
+            LOGGER.info("[heartbeat] sync_state published ok")
+        except Exception as exc:
+            LOGGER.warning("[heartbeat] sync_state failed: %s", exc, exc_info=True)
+        stop_event.wait(60)
+    LOGGER.info("[heartbeat] thread stopping (ENV=%s)", env)
+
+
+def _ensure_heartbeat_thread(env: str) -> None:
+    global _HEARTBEAT_THREAD, _HEARTBEAT_STOP
+    with _HEARTBEAT_LOCK:
+        if _HEARTBEAT_STOP is not None and _HEARTBEAT_STOP.is_set():
+            return
+        if _HEARTBEAT_THREAD is not None and _HEARTBEAT_THREAD.is_alive():
+            return
+        stop_event = threading.Event()
+        _HEARTBEAT_STOP = stop_event
+        thread = threading.Thread(
+            target=_heartbeat_worker,
+            args=(env, stop_event),
+            name="sync_state-heartbeat",
+            daemon=True,
+        )
+        _HEARTBEAT_THREAD = thread
+        thread.start()
+
+
+def _current_heartbeat_stop_event() -> Optional[threading.Event]:
+    with _HEARTBEAT_LOCK:
+        return _HEARTBEAT_STOP
+
+
+def _stop_heartbeat_thread() -> None:
+    global _HEARTBEAT_THREAD, _HEARTBEAT_STOP
+    with _HEARTBEAT_LOCK:
+        stop_event = _HEARTBEAT_STOP
+        thread = _HEARTBEAT_THREAD
+    if stop_event is not None:
+        stop_event.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=5.0)
+    with _HEARTBEAT_LOCK:
+        _HEARTBEAT_THREAD = None
+        _HEARTBEAT_STOP = None
+
+
 def main_loop() -> None:
     env = _get_env()
     dry_run = _dry_run_mode()
-    interval = _interval_seconds()
+    interval_seconds = _interval_seconds()
+    interval = max(float(interval_seconds), 1.0)
     print(
-        f"[sync] entering main_loop (ENV={env}, DRY_RUN={dry_run}, interval={interval}s, repo_root={REPO_ROOT})",
+        f"[sync] entering main_loop (ENV={env}, DRY_RUN={dry_run}, interval={interval_seconds}s, repo_root={REPO_ROOT})",
         flush=True,
     )
-    try:
-        try:
-            publish_heartbeat(service="sync_state", ok=True)
-            print("[firestore] initial heartbeat write ok", flush=True)
-        except Exception as e:
-            import traceback
+    _ensure_heartbeat_thread(env)
 
-            print(
-                f"[firestore] heartbeat write failed: {e}\n{traceback.format_exc()}",
-                flush=True,
-            )
+    try:
         while True:
+            start_ts = time.monotonic()
             try:
                 sync_once()
-            except Exception as e:
-                print(f"[sync] ERROR: {e}", flush=True)
-            time.sleep(interval)
+            except Exception as exc:
+                LOGGER.error("[sync_state] sync_once failed: %s", exc)
+            _ensure_heartbeat_thread(env)
+            elapsed = time.monotonic() - start_ts
+            sleep_for = max(0.0, interval - elapsed)
+            stop_event = _current_heartbeat_stop_event()
+            if stop_event is not None:
+                if stop_event.wait(timeout=sleep_for):
+                    break
+            elif sleep_for > 0.0:
+                time.sleep(sleep_for)
     except KeyboardInterrupt:
         raise
+    finally:
+        _stop_heartbeat_thread()
 
 
 def run() -> None:
@@ -1329,7 +1474,15 @@ def run() -> None:
             "env": env,
             "fs_enabled": _firestore_enabled(),
             "prefix": "live",
+            "testnet": False,
+            "dry_run": dry_run,
         }
+    LOGGER.info(
+        "[exutil] ENV context testnet=%s dry_run=%s",
+        flags.get("testnet"),
+        flags.get("dry_run"),
+    )
+    _ensure_heartbeat_thread(flags.get("env", "prod"))
     _publish_startup_heartbeat(flags)
     print(
         f"[sync] startup context: ENV={env}, DRY_RUN={dry_run}, repo_root={REPO_ROOT}",

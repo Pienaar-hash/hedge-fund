@@ -140,22 +140,69 @@ def compute_allocation(
         equal_weight = 1.0 / max(len(strategies), 1)
         weights = {name: equal_weight for name in strategies}
     else:
-        weights = {name: score / total_score for name, score in scores.items()}
+        weights = {name: max(0.0, score) / total_score for name, score in scores.items()}
 
-    if config.floor_weight > 0.0:
-        weights = {
-            name: (config.floor_weight if value > 0 else 0.0) if value < config.floor_weight else value
-            for name, value in weights.items()
-        }
+    min_active = max(1, config.min_strategies)
+    epsilon = max(1e-6, config.floor_weight if config.floor_weight > 0 else 1e-4)
+    active_names = [name for name, value in weights.items() if value > 0.0]
+    if len(active_names) < min_active:
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        for name, _score in ranked[:min_active]:
+            weights[name] = max(weights.get(name, 0.0), epsilon)
 
-    if 0.0 < config.cap_weight < 1.0:
-        weights = {name: min(config.cap_weight, value) for name, value in weights.items()}
+    def _apply_floor(current: Dict[str, float]) -> Dict[str, float]:
+        floor = config.floor_weight
+        if floor <= 0.0:
+            return current
+        adjusted = dict(current)
+        shortages: Dict[str, float] = {}
+        surplus: Dict[str, float] = {}
+        for name, value in adjusted.items():
+            if value <= 0.0:
+                continue
+            if value < floor:
+                shortages[name] = floor - value
+                adjusted[name] = floor
+            elif value > floor:
+                surplus[name] = value - floor
+        total_shortage = sum(shortages.values())
+        total_surplus = sum(surplus.values())
+        if total_shortage > 0.0 and total_surplus > 0.0:
+            for name in surplus:
+                share = surplus[name] / total_surplus
+                reduction = total_shortage * share
+                adjusted[name] = max(floor, adjusted[name] - reduction)
+        return adjusted
+
+    def _apply_cap(current: Dict[str, float]) -> Dict[str, float]:
+        cap = config.cap_weight
+        if not (0.0 < cap < 1.0):
+            return current
+        adjusted = dict(current)
+        excess: Dict[str, float] = {}
+        headroom: Dict[str, float] = {}
+        for name, value in adjusted.items():
+            if value > cap:
+                excess[name] = value - cap
+                adjusted[name] = cap
+            else:
+                headroom[name] = cap - value
+        total_excess = sum(excess.values())
+        total_headroom = sum(headroom.values())
+        if total_excess > 0.0 and total_headroom > 0.0:
+            for name in headroom:
+                share = headroom[name] / total_headroom
+                adjusted[name] += total_excess * share
+        return adjusted
+
+    weights = _apply_floor(weights)
+    weights = _apply_cap(weights)
 
     weight_sum = sum(weights.values())
     if weight_sum <= 0.0:
         weights = {name: 1.0 / len(weights) for name in weights} if weights else {}
     else:
-        weights = {name: value / weight_sum for name, value in weights.items()}
+        weights = {name: max(0.0, value) / weight_sum for name, value in weights.items()}
 
     metadata = {
         "average_abs_correlation": float(np.mean(np.abs(matrix.to_numpy(dtype=float) - np.eye(len(matrix))))),

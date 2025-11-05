@@ -6,6 +6,7 @@ import time
 import subprocess
 import logging
 import math
+import threading
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from dashboard.dashboard_utils import (  # noqa: E402
     fetch_mark_price_usdt,
     get_env_float,
     get_env_badge,
+    load_exec_snapshot,
 )
 from dashboard.async_cache import gather_once  # noqa: E402
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
@@ -90,10 +92,29 @@ if not LOG.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 LOG.setLevel(logging.INFO)
 
+
+def _dashboard_env() -> str:
+    return os.getenv("ENV", "prod")
+
+
+try:
+    import inspect
+
+    _ENV_LINES, _ENV_START = inspect.getsourcelines(_dashboard_env)
+    LOG.info(
+        "[runbook] dashboard ENV source: %s:%d-%d",
+        __file__,
+        _ENV_START,
+        _ENV_START + len(_ENV_LINES) - 1,
+    )
+except Exception:
+    pass
+
+
 def main():
 
     st.set_page_config(page_title="Hedge — Portfolio Dashboard", layout="wide")
-    ENV = os.getenv("ENV", "dev")
+    ENV = _dashboard_env()
     TESTNET = str(os.getenv("BINANCE_TESTNET", "0")).strip().lower() in ("1", "true", "yes", "on")
     REFRESH_SEC = int(os.getenv("DASHBOARD_REFRESH_SEC", "60"))
     # log-tail behavior
@@ -698,7 +719,43 @@ def main():
 
     @st.cache_data(ttl=20, show_spinner=False)
     def load_async_entries() -> Dict[str, Dict[str, Any]]:
-        entries = asyncio.run(gather_once(ASYNC_FETCHERS))
+        async def _runner() -> Dict[str, Any]:
+            return await gather_once(ASYNC_FETCHERS)
+
+        def _run_in_thread() -> Dict[str, Any]:
+            result: Dict[str, Any] = {}
+            error: Optional[BaseException] = None
+
+            def _target() -> None:
+                nonlocal result, error
+                loop = asyncio.new_event_loop()
+                try:
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(_runner())
+                except Exception as err:  # pragma: no cover - defensive
+                    error = err
+                finally:
+                    asyncio.set_event_loop(None)
+                    loop.close()
+
+            thread = threading.Thread(target=_target, name="dash-async-cache", daemon=True)
+            thread.start()
+            thread.join()
+            if error is not None:
+                raise error
+            return result
+
+        try:
+            entries = asyncio.run(_runner())
+        except RuntimeError as exc:
+            if "asyncio.run()" in str(exc) and "event loop" in str(exc).lower():
+                LOG.warning("[dash] falling back to threaded async cache gather: %s", exc)
+                entries = _run_in_thread()
+            else:
+                raise
+        except Exception as exc:
+            LOG.warning("[dash] async cache gather failed: %s", exc, exc_info=True)
+            entries = {}
         return {
             name: {
                 "payload": entry.payload,
@@ -955,6 +1012,10 @@ def main():
         positions_info = dict(positions_info)
         positions_info["count"] = len(positions_fs)
     leaderboard = (lb_doc or {}).get("items") or []
+
+    router_snapshot = load_exec_snapshot("router", ENV)
+    trades_snapshot = load_exec_snapshot("trades", ENV)
+    signals_snapshot = load_exec_snapshot("signals", ENV)
 
     status.success(
         f"Loaded · nav_source={nav_source} · positions_source={pos_source} · leaderboard_source={lb_source}"
@@ -1528,11 +1589,39 @@ def main():
             else:
                 st.info("No veto data in the last 24 hours.")
 
-            if not latency_summary:
-                st.caption(
-                    "Latency metrics unavailable. Generate a cache with "
-                    "`python scripts/replay_logs.py --since <iso> --json logs/execution/replay_cache.json`."
-                )
+        if not latency_summary:
+            st.caption(
+                "Latency metrics unavailable. Generate a cache with "
+                "`python scripts/replay_logs.py --since <iso> --json logs/execution/replay_cache.json`."
+            )
+
+        st.markdown("#### Router Snapshot (mirror)")
+        router_snapshot_items = router_snapshot.get("items") if isinstance(router_snapshot, dict) else []
+        router_items = [
+            dict(item)
+            for item in router_snapshot_items
+            if isinstance(item, dict) and item.get("kind") != "summary"
+        ]
+        if router_items:
+            st.dataframe(pd.DataFrame(router_items).head(50), use_container_width=True, height=220)
+        else:
+            st.info("No router executions recorded yet.")
+
+        st.markdown("#### Recent Trades (mirror)")
+        trade_snapshot_items = trades_snapshot.get("items") if isinstance(trades_snapshot, dict) else []
+        trade_items = [dict(item) for item in trade_snapshot_items if isinstance(item, dict)]
+        if trade_items:
+            st.dataframe(pd.DataFrame(trade_items).head(50), use_container_width=True, height=220)
+        else:
+            st.info("No mirrored trades available.")
+
+        st.markdown("#### Latest Signals (mirror)")
+        signal_snapshot_items = signals_snapshot.get("items") if isinstance(signals_snapshot, dict) else []
+        signal_items = [dict(item) for item in signal_snapshot_items if isinstance(item, dict)]
+        if signal_items:
+            st.dataframe(pd.DataFrame(signal_items).head(50), use_container_width=True, height=220)
+        else:
+            st.info("No mirrored signals available.")
 
         st.markdown("#### Trade Log (last 24h)")
         if df_tr.empty:
@@ -1644,7 +1733,11 @@ def main():
     with tab_router:
         st.subheader("Router Health")
         try:
-            router_health = load_router_health(window=300)
+            router_health = load_router_health(
+                window=300,
+                snapshot=router_snapshot,
+                trades_snapshot=trades_snapshot,
+            )
         except Exception as exc:
             LOG.warning("[dash] router health load failed: %s", exc)
             st.error(f"Router health unavailable: {exc}")

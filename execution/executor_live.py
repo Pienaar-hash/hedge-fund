@@ -58,6 +58,11 @@ _LAST_SIGNAL_PULL = 0.0
 _LAST_QUEUE_DEPTH = 0
 SIGNAL_METRICS_PATH = Path("logs/execution/signal_metrics.jsonl")
 ORDER_METRICS_PATH = Path("logs/execution/order_metrics.jsonl")
+LOGS_ROOT = Path(repo_root) / "logs"
+POSITIONS_CACHE_PATH = LOGS_ROOT / "positions.json"
+NAV_LOG_CACHE_PATH = LOGS_ROOT / "nav_log.json"
+SPOT_STATE_CACHE_PATH = LOGS_ROOT / "spot_state.json"
+NAV_LOG_MAX_POINTS = int(os.getenv("NAV_LOG_MAX_POINTS", "720") or 720)
 _INTENT_REGISTRY: Dict[str, Dict[str, Any]] = {}
 _POSITION_TRACKER = PositionTracker()
 _FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)
@@ -119,6 +124,15 @@ try:
     from execution.signal_screener import run_once as run_screener_once
 except ImportError:  # pragma: no cover - optional dependency
     run_screener_once = None
+try:
+    from execution.firestore_mirror import (
+        publish_exec_snapshot,
+        publish_signals_snapshot,
+    )
+except Exception:
+    publish_exec_snapshot = None  # type: ignore[assignment]
+    publish_signals_snapshot = None  # type: ignore[assignment]
+from execution.mirror_builders import build_mirror_payloads, build_signal_items_24h
 
 # ---- Firestore publisher handle (revisions differ) ----
 def _resolve_env(default: str = "dev") -> str:
@@ -2155,28 +2169,270 @@ def _compute_nav_snapshot() -> Optional[float]:
 
 def _collect_rows() -> List[Dict[str, Any]]:
     try:
-        raw: Iterable[Dict[str, Any]] = get_positions()
+        from execution.exchange_utils import get_account as _get_account_snapshot
+
+        account = _get_account_snapshot() or {}
+        raw_positions = account.get("positions") or []
     except Exception as exc:
-        LOG.error("[executor] get_positions error: %s", exc)
-        return []
+        LOG.error("[executor] account/positions fetch error: %s", exc)
+        raw_positions = []
     rows: List[Dict[str, Any]] = []
-    for payload in raw:
+    for payload in raw_positions:
         try:
+            qty_val = float(payload.get("positionAmt", payload.get("qty", 0)) or 0.0)
+            if abs(qty_val) <= 0.0:
+                continue
+            mark_val = _to_float(
+                payload.get("markPrice")
+                or payload.get("mark_price")
+                or payload.get("mark")
+            )
+            if mark_val is None:
+                try:
+                    mark_val = float(get_price(str(payload.get("symbol") or "") or ""))
+                except Exception:
+                    mark_val = None
             rows.append(
                 {
                     "symbol": payload.get("symbol"),
                     "positionSide": payload.get("positionSide", "BOTH"),
-                    "qty": float(payload.get("qty", payload.get("positionAmt", 0)) or 0.0),
+                    "qty": qty_val,
                     "entryPrice": float(payload.get("entryPrice") or 0.0),
                     "unrealized": float(
                         payload.get("unRealizedProfit", payload.get("unrealized", 0)) or 0.0
                     ),
                     "leverage": float(payload.get("leverage") or 0.0),
+                    "markPrice": mark_val,
                 }
             )
         except Exception:
             continue
     return rows
+
+
+def _json_default(value: Any) -> str:
+    try:
+        if isinstance(value, (datetime,)):
+            return value.isoformat()
+    except Exception:
+        pass
+    return str(value)
+
+
+def _write_json_cache(path: Path, payload: Any) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=_json_default)
+        path.write_text(serialized, encoding="utf-8")
+    except Exception as exc:
+        LOG.warning("[executor] cache_write_failed path=%s err=%s", path, exc)
+
+
+def _persist_positions_cache(rows: List[Dict[str, Any]]) -> None:
+    total_rows = len(rows)
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        size = _to_float(row.get("qty")) or 0.0
+        if abs(size) <= 0.0:
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        mark_price = _to_float(
+            row.get("markPrice") or row.get("mark_price") or row.get("mark")
+        )
+        if mark_price is None:
+            try:
+                mark_price = float(get_price(symbol))
+            except Exception:
+                mark_price = None
+        pnl_val = _to_float(
+            row.get("unrealized")
+            or row.get("unRealizedProfit")
+            or row.get("pnl")
+            or row.get("pnl_usd")
+        )
+        side = str(row.get("positionSide") or ("LONG" if size > 0 else "SHORT")).upper()
+        items.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "size": float(size),
+                "entry": _to_float(row.get("entryPrice")),
+                "mark": mark_price,
+                "pnl_usd": pnl_val,
+            }
+        )
+    payload = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "items": items,
+    }
+    _write_json_cache(POSITIONS_CACHE_PATH, payload)
+    LOG.info(
+        "[executor] positions.json updated n=%d len=%d",
+        total_rows,
+        len(items),
+    )
+
+
+def _persist_nav_log(nav_val: Optional[float], rows: List[Dict[str, Any]]) -> None:
+    if nav_val is None:
+        return
+    entry: Dict[str, Any] = {
+        "t": time.time(),
+        "nav": float(nav_val),
+    }
+    try:
+        unrealized_total = sum(float(row.get("unrealized") or 0.0) for row in rows)
+        entry["unrealized_pnl"] = unrealized_total
+    except Exception:
+        pass
+    try:
+        existing = json.loads(NAV_LOG_CACHE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(existing, list):
+            existing = []
+    except FileNotFoundError:
+        existing = []
+    except Exception:
+        existing = []
+    existing.append(entry)
+    if len(existing) > NAV_LOG_MAX_POINTS:
+        existing = existing[-NAV_LOG_MAX_POINTS:]
+    _write_json_cache(NAV_LOG_CACHE_PATH, existing)
+
+
+def _build_spot_state_payload() -> Optional[Dict[str, Any]]:
+    try:
+        balances = get_balances() or []
+    except Exception as exc:
+        LOG.debug("[executor] spot balances fetch failed: %s", exc)
+        return None
+
+    assets: List[Dict[str, Any]] = []
+    total_usd = 0.0
+    stable_set = {"USDT", "USDC", "BUSD", "FDUSD"}
+
+    def _parse_qty(value: Any) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return 0.0
+
+    if isinstance(balances, Mapping):
+        iterable = [
+            {
+                "asset": str(asset).upper(),
+                "balance": _parse_qty(amount),
+            }
+            for asset, amount in balances.items()
+        ]
+    else:
+        iterable = []
+        if isinstance(balances, list):
+            for entry in balances:
+                if not isinstance(entry, Mapping):
+                    continue
+                asset = str(
+                    entry.get("asset")
+                    or entry.get("coin")
+                    or entry.get("symbol")
+                    or entry.get("currency")
+                    or ""
+                ).upper()
+                if not asset:
+                    continue
+                qty = _parse_qty(
+                    entry.get("balance")
+                    or entry.get("availableBalance")
+                    or entry.get("walletBalance")
+                    or entry.get("free")
+                    or entry.get("qty")
+                    or 0.0
+                )
+                iterable.append({"asset": asset, "balance": qty})
+
+    for item in iterable:
+        asset = item.get("asset") or ""
+        qty = _parse_qty(item.get("balance"))
+        if not asset or abs(qty) < 1e-9:
+            continue
+        price: Optional[float]
+        if asset in stable_set:
+            price = 1.0
+        else:
+            try:
+                price = float(get_price(f"{asset}USDT"))
+            except Exception:
+                price = None
+        usd_val = qty * price if price is not None else None
+        if usd_val is not None:
+            total_usd += usd_val
+        assets.append(
+            {
+                "asset": asset,
+                "balance": qty,
+                "price_usdt": price,
+                "usd_value": usd_val,
+            }
+        )
+
+    payload = {
+        "source": "binance_testnet" if is_testnet() else "binance_futures",
+        "assets": assets,
+        "total_usd": float(total_usd),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return payload
+
+
+def _persist_spot_state() -> None:
+    payload = _build_spot_state_payload()
+    if payload is None:
+        return
+    _write_json_cache(SPOT_STATE_CACHE_PATH, payload)
+
+
+def _publish_mirror_updates() -> None:
+    if publish_exec_snapshot is None:
+        return
+    try:
+        payloads = build_mirror_payloads(LOGS_ROOT)
+        router_items = payloads.router
+        trade_items = payloads.trades
+        signal_items = build_signal_items_24h(LOGS_ROOT)
+        publish_exec_snapshot("router", router_items)
+        publish_exec_snapshot("trades", trade_items)
+        publish_exec_snapshot("signals", signal_items)
+        if publish_signals_snapshot is not None:
+            publish_signals_snapshot(signal_items)
+        LOG.info(
+            "[mirror] router=%d trades=%d signals=%d",
+            len(router_items),
+            len(trade_items),
+            len(signal_items),
+        )
+        signal_summary = next(
+            (item for item in signal_items if item.get("kind") == "signals_summary"),
+            None,
+        )
+        if signal_summary:
+            LOG.info(
+                "[mirror] signals_summary attempted=%s executed=%s vetoed=%s",
+                signal_summary.get("attempted"),
+                signal_summary.get("executed"),
+                signal_summary.get("vetoed"),
+            )
+    except Exception as exc:
+        LOG.warning("[mirror] failed: %s", exc)
+
+
+try:  # runbook logging
+    import inspect
+
+    _RUNBOOK_MIRROR_LINE = inspect.getsourcelines(_publish_mirror_updates)[1]
+    LOG.info("[runbook] mirror wired at: %s:%d", __file__, _RUNBOOK_MIRROR_LINE)
+except Exception:
+    pass
 
 
 
@@ -2185,6 +2441,12 @@ def _pub_tick() -> None:
     Try StatePublisher.{tick,run_once,step,publish,update}; if no such method,
     publish a minimal NAV+positions snapshot inline so the dashboard stays live.
     """
+    nav_val = _compute_nav_snapshot()
+    rows = _collect_rows()
+    _persist_positions_cache(rows)
+    _persist_nav_log(nav_val, rows)
+    _persist_spot_state()
+
     # Try common method names on the object first
     for meth in ("tick", "run_once", "step", "publish", "update"):
         m = getattr(_PUB, meth, None)
@@ -2197,9 +2459,6 @@ def _pub_tick() -> None:
 
     # Inline minimal publish (NAV + positions) — Firestore-first dashboard compatible
     try:
-        nav_val = _compute_nav_snapshot()
-        rows = _collect_rows()
-
         if hasattr(_PUB, "maybe_publish_positions"):
             try:
                 _PUB.maybe_publish_positions(rows)
@@ -2221,6 +2480,16 @@ def _pub_tick() -> None:
             print("[executor] Firestore publish ok", flush=True)
         except Exception as exc:
             LOG.error("[executor] Firestore publish error: %s", exc)
+
+        _publish_mirror_updates()
+        if _startup_flags_snapshot.get("fs_enabled"):
+            try:
+                from execution.firestore_utils import publish_router_health, publish_positions
+
+                publish_router_health()
+                publish_positions()
+            except Exception as exc:
+                LOG.warning("[firestore] router/positions publish failed: %s", exc)
     except Exception as exc:
         LOG.error("[executor] publisher fallback error: %s", exc)
 

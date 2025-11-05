@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ DEFAULT_HISTORY = 500
 SIGNAL_METRICS_PATH = Path("logs/execution/signal_metrics.jsonl")
 ORDER_METRICS_PATH = Path("logs/execution/order_metrics.jsonl")
 ORDER_EVENTS_PATH = Path("logs/execution/orders_executed.jsonl")
+LOG = logging.getLogger("dash.router")
 
 
 def _tail_jsonl(path: Path, limit: int) -> list[Mapping[str, Any]]:
@@ -212,11 +214,30 @@ def load_router_health(
     *,
     signal_path: Path | None = None,
     order_path: Path | None = None,
+    snapshot: Optional[Mapping[str, Any]] = None,
+    trades_snapshot: Optional[Mapping[str, Any]] = None,
 ) -> RouterHealthData:
     sig_path = signal_path or SIGNAL_METRICS_PATH
     ord_path = order_path or ORDER_METRICS_PATH
     signal_rows = _tail_jsonl(sig_path, window * 2)
     signal_meta = _join_signal_metadata(signal_rows)
+
+    snapshot_items: List[Dict[str, Any]] = []
+    snapshot_summary: Optional[Dict[str, Any]] = None
+    if snapshot and isinstance(snapshot.get("items"), list):
+        for item in snapshot.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("kind") == "summary" and snapshot_summary is None:
+                snapshot_summary = dict(item)
+            else:
+                snapshot_items.append(dict(item))
+
+    trades_snapshot_items: List[Dict[str, Any]] = []
+    if trades_snapshot and isinstance(trades_snapshot.get("items"), list):
+        for item in trades_snapshot.get("items", []):
+            if isinstance(item, dict):
+                trades_snapshot_items.append(dict(item))
 
     metrics_rows = _tail_jsonl(ord_path, window * 2)
     metrics_map: Dict[str, Dict[str, Any]] = {}
@@ -400,11 +421,29 @@ def load_router_health(
             "volatility_scale": overall_norm.volatility_scale,
             "rolling_sharpe_last": rolling_sharpe_last,
         }
+        if snapshot_summary:
+            summary["mirror_summary"] = snapshot_summary
         overlays = {
             "confidence": confidence_curve_df,
             "rolling_sharpe": pnl_curve_df[["time", "rolling_sharpe"]].copy(),
         }
+        if snapshot_items:
+            overlays["mirror_execs"] = pd.DataFrame(snapshot_items)
         return RouterHealthData(trades_df, per_symbol_df, pnl_curve_df, summary, overlays)
+
+
+    try:
+        import inspect
+
+        _ROUTER_LINES, _ROUTER_START = inspect.getsourcelines(load_router_health)
+        LOG.info(
+            "[runbook] router_health readers: %s:%d-%d",
+            __file__,
+            _ROUTER_START,
+            _ROUTER_START + len(_ROUTER_LINES) - 1,
+        )
+    except Exception:
+        pass
 
     # Fallback to legacy order_metrics-based data
     trades: list[Dict[str, Any]] = []
@@ -450,108 +489,115 @@ def load_router_health(
             "volatility_scale": 1.0,
             "rolling_sharpe_last": 0.0,
         }
+        if snapshot_summary:
+            summary["mirror_summary"] = snapshot_summary
         overlays = {
             "confidence": pd.DataFrame(columns=["time", "confidence", "rolling_confidence"]),
             "rolling_sharpe": pd.DataFrame(columns=["time", "rolling_sharpe"]),
         }
+        if snapshot_items:
+            overlays["mirror_execs"] = pd.DataFrame(snapshot_items)
+        if trades_snapshot_items:
+            trades_df = pd.DataFrame(trades_snapshot_items)
+            return RouterHealthData(trades_df, per_symbol_df, pnl_curve_df, summary, overlays)
         return RouterHealthData(trades_df, per_symbol_df, pnl_curve_df, summary, overlays)
-
-    trades_df = trades_df.sort_values("time", ascending=True).reset_index(drop=True)
-    trades_df["is_win"] = trades_df["pnl_usd"] > 0
-    trades_df["trade_index"] = trades_df.index + 1
-    trades_df["cum_pnl"] = trades_df["pnl_usd"].cumsum()
-    trades_df["cum_wins"] = trades_df["is_win"].cumsum()
-    trades_df["hit_rate"] = trades_df["cum_wins"] / trades_df["trade_index"]
-    if "doctor_confidence" not in trades_df.columns:
-        trades_df["doctor_confidence"] = pd.NA
-    trades_df["doctor_confidence"] = pd.to_numeric(trades_df["doctor_confidence"], errors="coerce")
-    trades_df["confidence_weighted_cum_pnl"] = confidence_weighted_cumsum(
-        trades_df["pnl_usd"].tolist(),
-        trades_df["doctor_confidence"].tolist(),
-    )
-
-    sharpe_window = min(30, max(3, len(trades_df) // 4 or 3))
-    rolling_sharpe_series = rolling_sharpe(trades_df["pnl_usd"], window=sharpe_window)
-    pnl_curve_df = trades_df[["time", "cum_pnl", "hit_rate"]].copy()
-    pnl_curve_df["confidence_weighted_cum_pnl"] = trades_df["confidence_weighted_cum_pnl"]
-    pnl_curve_df["rolling_sharpe"] = rolling_sharpe_series.fillna(0.0)
-
-    confidence_series = trades_df["doctor_confidence"].ffill().fillna(0.5)
-    confidence_curve_df = pd.DataFrame(
-        {
-            "time": trades_df["time"],
-            "confidence": trades_df["doctor_confidence"],
-            "rolling_confidence": confidence_series.rolling(
-                window=sharpe_window,
-                min_periods=1,
-            ).mean(),
-        }
-    )
-
-    per_symbol_records: list[Dict[str, Any]] = []
-    for symbol, frame in trades_df.groupby("symbol"):
-        count = int(len(frame))
-        wins = int(frame["is_win"].sum())
-        win_rate = (wins / count) * 100.0 if count else 0.0
-        avg_pnl = float(frame["pnl_usd"].mean()) if count else 0.0
-        cum_pnl = float(frame["pnl_usd"].sum())
-        std = float(frame["pnl_usd"].std(ddof=1)) if count > 1 else 0.0
-        sharpe = 0.0
-        if std > 0 and count > 1:
-            sharpe = (avg_pnl / std) * math.sqrt(count)
-        frame_conf = pd.to_numeric(frame.get("doctor_confidence"), errors="coerce")
-        conf_series = frame_conf.dropna()
-        avg_conf = float(conf_series.mean()) if not conf_series.empty else None
-        normalized = compute_normalized_metrics(
-            frame["pnl_usd"].to_numpy(dtype=float),
-            target_vol=1.0,
-            annualization=max(count, 2),
-            window=count,
+    else:
+        trades_df = trades_df.sort_values("time", ascending=True).reset_index(drop=True)
+        trades_df["is_win"] = trades_df["pnl_usd"] > 0
+        trades_df["trade_index"] = trades_df.index + 1
+        trades_df["cum_pnl"] = trades_df["pnl_usd"].cumsum()
+        trades_df["cum_wins"] = trades_df["is_win"].cumsum()
+        trades_df["hit_rate"] = trades_df["cum_wins"] / trades_df["trade_index"]
+        if "doctor_confidence" not in trades_df.columns:
+            trades_df["doctor_confidence"] = pd.NA
+        trades_df["doctor_confidence"] = pd.to_numeric(trades_df["doctor_confidence"], errors="coerce")
+        trades_df["confidence_weighted_cum_pnl"] = confidence_weighted_cumsum(
+            trades_df["pnl_usd"].tolist(),
+            trades_df["doctor_confidence"].tolist(),
         )
-        conf_weights = frame_conf.fillna(0.5)
-        confidence_weighted_pnl = float((frame["pnl_usd"] * conf_weights).sum())
-        per_symbol_records.append(
+
+        sharpe_window = min(30, max(3, len(trades_df) // 4 or 3))
+        rolling_sharpe_series = rolling_sharpe(trades_df["pnl_usd"], window=sharpe_window)
+        pnl_curve_df = trades_df[["time", "cum_pnl", "hit_rate"]].copy()
+        pnl_curve_df["confidence_weighted_cum_pnl"] = trades_df["confidence_weighted_cum_pnl"]
+        pnl_curve_df["rolling_sharpe"] = rolling_sharpe_series.fillna(0.0)
+
+        confidence_series = trades_df["doctor_confidence"].ffill().fillna(0.5)
+        confidence_curve_df = pd.DataFrame(
             {
-                "symbol": symbol,
-                "count": count,
-                "win_rate": win_rate,
-                "avg_pnl": avg_pnl,
-                "cum_pnl": cum_pnl,
-                "sharpe": sharpe,
-                "avg_confidence": avg_conf,
-                "confidence_weighted_pnl": confidence_weighted_pnl,
-                "normalized_sharpe": normalized.normalized_sharpe,
-                "volatility_scale": normalized.volatility_scale,
+                "time": trades_df["time"],
+                "confidence": trades_df["doctor_confidence"],
+                "rolling_confidence": confidence_series.rolling(
+                    window=sharpe_window,
+                    min_periods=1,
+                ).mean(),
             }
         )
 
-    per_symbol_df = pd.DataFrame.from_records(per_symbol_records)
-    overall_norm = compute_normalized_metrics(
-        trades_df["pnl_usd"].to_numpy(dtype=float),
-        target_vol=1.0,
-        annualization=max(len(trades_df), 2),
-        window=len(trades_df),
-    )
-    avg_confidence_series = trades_df["doctor_confidence"].dropna()
-    avg_conf = float(avg_confidence_series.mean()) if not avg_confidence_series.empty else None
-    latest_conf_weighted = float(trades_df["confidence_weighted_cum_pnl"].iloc[-1])
-    rolling_sharpe_last = float(pnl_curve_df["rolling_sharpe"].dropna().iloc[-1]) if not pnl_curve_df.empty else 0.0
-    summary = {
-        "count": int(len(trades_df)),
-        "win_rate": float(trades_df["is_win"].mean()) * 100.0 if not trades_df.empty else 0.0,
-        "avg_pnl": float(trades_df["pnl_usd"].mean()) if not trades_df.empty else 0.0,
-        "cum_pnl": float(trades_df["pnl_usd"].sum()),
-        "fill_rate_pct": 0.0,
-        "fees_total": 0.0,
-        "realized_pnl": float(trades_df["pnl_usd"].sum()),
-        "avg_confidence": avg_conf,
-        "confidence_weighted_cum_pnl": latest_conf_weighted,
-        "normalized_sharpe": overall_norm.normalized_sharpe,
-        "volatility_scale": overall_norm.volatility_scale,
-        "rolling_sharpe_last": rolling_sharpe_last,
-    }
-    overlays = {
-        "confidence": confidence_curve_df,
-        "rolling_sharpe": pnl_curve_df[["time", "rolling_sharpe"]].copy(),
-    }
-    return RouterHealthData(trades_df, per_symbol_df, pnl_curve_df, summary, overlays)
+        per_symbol_records: list[Dict[str, Any]] = []
+        for symbol, frame in trades_df.groupby("symbol"):
+            count = int(len(frame))
+            wins = int(frame["is_win"].sum())
+            win_rate = (wins / count) * 100.0 if count else 0.0
+            avg_pnl = float(frame["pnl_usd"].mean()) if count else 0.0
+            cum_pnl = float(frame["pnl_usd"].sum())
+            std = float(frame["pnl_usd"].std(ddof=1)) if count > 1 else 0.0
+            sharpe = 0.0
+            if std > 0 and count > 1:
+                sharpe = (avg_pnl / std) * math.sqrt(count)
+            frame_conf = pd.to_numeric(frame.get("doctor_confidence"), errors="coerce")
+            conf_series = frame_conf.dropna()
+            avg_conf = float(conf_series.mean()) if not conf_series.empty else None
+            normalized = compute_normalized_metrics(
+                frame["pnl_usd"].to_numpy(dtype=float),
+                target_vol=1.0,
+                annualization=max(count, 2),
+                window=count,
+            )
+            conf_weights = frame_conf.fillna(0.5)
+            confidence_weighted_pnl = float((frame["pnl_usd"] * conf_weights).sum())
+            per_symbol_records.append(
+                {
+                    "symbol": symbol,
+                    "count": count,
+                    "win_rate": win_rate,
+                    "avg_pnl": avg_pnl,
+                    "cum_pnl": cum_pnl,
+                    "sharpe": sharpe,
+                    "avg_confidence": avg_conf,
+                    "confidence_weighted_pnl": confidence_weighted_pnl,
+                    "normalized_sharpe": normalized.normalized_sharpe,
+                    "volatility_scale": normalized.volatility_scale,
+                }
+            )
+
+        per_symbol_df = pd.DataFrame.from_records(per_symbol_records)
+        overall_norm = compute_normalized_metrics(
+            trades_df["pnl_usd"].to_numpy(dtype=float),
+            target_vol=1.0,
+            annualization=max(len(trades_df), 2),
+            window=len(trades_df),
+        )
+        avg_confidence_series = trades_df["doctor_confidence"].dropna()
+        avg_conf = float(avg_confidence_series.mean()) if not avg_confidence_series.empty else None
+        latest_conf_weighted = float(trades_df["confidence_weighted_cum_pnl"].iloc[-1])
+        rolling_sharpe_last = float(pnl_curve_df["rolling_sharpe"].dropna().iloc[-1]) if not pnl_curve_df.empty else 0.0
+        summary = {
+            "count": int(len(trades_df)),
+            "win_rate": float(trades_df["is_win"].mean()) * 100.0 if not trades_df.empty else 0.0,
+            "avg_pnl": float(trades_df["pnl_usd"].mean()) if not trades_df.empty else 0.0,
+            "cum_pnl": float(trades_df["pnl_usd"].sum()),
+            "fill_rate_pct": 0.0,
+            "fees_total": 0.0,
+            "realized_pnl": float(trades_df["pnl_usd"].sum()),
+            "avg_confidence": avg_conf,
+            "confidence_weighted_cum_pnl": latest_conf_weighted,
+            "normalized_sharpe": overall_norm.normalized_sharpe,
+            "volatility_scale": overall_norm.volatility_scale,
+            "rolling_sharpe_last": rolling_sharpe_last,
+        }
+        overlays = {
+            "confidence": confidence_curve_df,
+            "rolling_sharpe": pnl_curve_df[["time", "rolling_sharpe"]].copy(),
+        }
+        return RouterHealthData(trades_df, per_symbol_df, pnl_curve_df, summary, overlays)

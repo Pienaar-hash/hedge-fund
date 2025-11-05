@@ -1,12 +1,17 @@
-import os
 import json
+import logging
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
 
 import pandas as pd
 import requests
 
 from utils.firestore_client import get_db as _get_firestore_db
+from execution.mirror_builders import build_mirror_payloads
+
+LOG = logging.getLogger("dash.utils")
 
 # Optional Streamlit caching if running under Streamlit; safe no-op otherwise
 try:
@@ -28,18 +33,27 @@ except Exception:  # pragma: no cover
 # ---------------------------- Firestore --------------------------------------
 
 @st.cache_resource(show_spinner=False)
-def get_firestore_connection():
+def _build_firestore_connection():
     """Return a cached Firestore client via utils.firestore_client.
 
-    Returns None when Firestore is unavailable or disabled.
+    Raises RuntimeError when Firestore is unavailable so Streamlit does not cache failures.
     """
     try:
         db = _get_firestore_db(strict=False)
     except Exception:
-        return None
+        raise
     if getattr(db, "_is_noop", False):
-        return None
+        raise RuntimeError("Firestore returned noop client")
     return db
+
+
+def get_firestore_connection():
+    """Best-effort Firestore client that retries initialization on subsequent calls."""
+    try:
+        return _build_firestore_connection()
+    except Exception as exc:
+        LOG.debug("[dash] firestore connection unavailable: %s", exc)
+        return None
 
 
 def _doc_path(env: str, name: str) -> Tuple[str, str, str, str]:
@@ -48,7 +62,7 @@ def _doc_path(env: str, name: str) -> Tuple[str, str, str, str]:
 
 
 @st.cache_data(ttl=5, show_spinner=False)
-def fetch_state_document(name: str, env: str = "dev") -> Dict[str, Any]:
+def fetch_state_document(name: str, env: str = "prod") -> Dict[str, Any]:
     """Load a state document from Firestore. Returns {} if not found.
 
     Path: hedge/{env}/state/{name}
@@ -57,29 +71,89 @@ def fetch_state_document(name: str, env: str = "dev") -> Dict[str, Any]:
     if db is None:
         return {}
     c1, d1, c2, d2 = _doc_path(env, name)
-    snap = (
-        db.collection(c1).document(d1).collection(c2).document(d2).get()
-    )
-    return snap.to_dict() or {}
+    try:
+        snap = (
+            db.collection(c1)
+            .document(d1)
+            .collection(c2)
+            .document(d2)
+            .get(timeout=3.0)
+        )
+        return snap.to_dict() or {}
+    except Exception as exc:
+        LOG.debug("[dash] state fetch failed %s/%s: %s", env, name, exc)
+        return {}
 
 
 @st.cache_data(ttl=5, show_spinner=False)
-def fetch_telemetry_health(env: str = "dev") -> Dict[str, Any]:
+def fetch_telemetry_health(env: str = "prod") -> Dict[str, Any]:
     """Return sync_state telemetry health document (hedge/{env}/telemetry/health)."""
     db = get_firestore_connection()
     if db is None:
         return {}
-    snap = (
-        db.collection("hedge")
-        .document(env)
-        .collection("telemetry")
-        .document("health")
-        .get()
-    )
-    if hasattr(snap, "to_dict"):
-        data = snap.to_dict() or {}
-        return data if isinstance(data, dict) else {}
+    try:
+        snap = (
+            db.collection("hedge")
+            .document(env)
+            .collection("telemetry")
+            .document("health")
+            .get(timeout=3.0)
+        )
+        if hasattr(snap, "to_dict"):
+            data = snap.to_dict() or {}
+            return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        LOG.debug("[dash] telemetry health fetch failed for %s: %s", env, exc)
     return {}
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def load_exec_snapshot(kind: str, env: str = "prod") -> Dict[str, Any]:
+    """Return router/trade/signal snapshot preferring Firestore mirror with local fallback."""
+    kind_norm = str(kind or "").strip().lower()
+    db = get_firestore_connection()
+    if db is not None and kind_norm:
+        try:
+            if kind_norm == "signals":
+                doc_ref = (
+                    db.collection("hedge")
+                    .document(env)
+                    .collection("signals")
+                    .document("latest")
+                )
+            else:
+                doc_ref = (
+                    db.collection("hedge")
+                    .document(env)
+                    .collection("executions")
+                    .document(kind_norm)
+                )
+            snap = doc_ref.get(timeout=3.0)
+            data = snap.to_dict() or {}
+            if isinstance(data, dict) and data.get("items"):
+                data.setdefault("source", "firestore")
+                return data
+        except Exception as exc:
+            LOG.debug("[dash] exec snapshot fetch failed (%s/%s): %s", env, kind_norm, exc)
+    try:
+        payloads = build_mirror_payloads(Path(__file__).resolve().parents[1] / "logs")
+    except Exception as exc:
+        LOG.debug("[dash] exec snapshot local fallback failed: %s", exc)
+        return {}
+    mapping = {
+        "router": payloads.router,
+        "trades": payloads.trades,
+        "signals": payloads.signals,
+    }
+    items = mapping.get(kind_norm or "router", [])
+    if not items:
+        return {}
+    return {
+        "items": items,
+        "count": len(items),
+        "ts_iso": datetime.now(timezone.utc).isoformat(),
+        "source": "local",
+    }
 
 
 def _to_float(value: Any) -> float:
@@ -176,6 +250,29 @@ def load_treasury_cache(payload: Any | None = None, path: str | None = None) -> 
         "updated_at": payload.get("updated_at"),
         "raw": payload,
     }
+
+
+def load_nav_snapshot(*, base_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Return the first available NAV snapshot for the dashboard doctor view."""
+
+    root = Path(base_dir) if base_dir is not None else Path(__file__).resolve().parents[1]
+    candidates = [
+        root / "logs" / "cache" / "nav_confirmed.json",
+        root / "logs" / "nav_snapshot.json",
+        root / "logs" / "nav_log.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            payload.setdefault("source", path.name)
+            return payload
+    return {}
 
 
 def load_recent_logs(kind: str, limit: int = 200) -> Any:
