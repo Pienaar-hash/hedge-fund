@@ -1029,6 +1029,11 @@ def main():
     nav_snapshot_live = get_nav_snapshot()
     treasury_snapshot_live = get_treasury()
 
+    # --- ZAR guard: declare upfront so early reads never crash ---
+    zar_rate: Optional[float] = None
+    zar_source: Optional[str] = None
+    nav_zar_value: Optional[float] = None
+
     treasury_latest_doc = fetch_treasury_latest(ENV)
     if not isinstance(treasury_latest_doc, dict):
         treasury_latest_doc = {}
@@ -1265,9 +1270,9 @@ def main():
     exchange_nav_display = format_currency(exchange_nav_value, "$")
     nav_zar_value = None
     nav_zar_text = "≈ R—"
-    zar_rate: Optional[float] = None
-    zar_source: Optional[str] = None
-    nav_zar_value = None
+    zar_rate = None
+    zar_source = None
+    # Resolve zar_rate late, but variables already exist so upstream guards won't crash
     if nav_freshness.get("zar_rate") is not None:
         try:
             zar_rate = float(nav_freshness.get("zar_rate") or 0.0)

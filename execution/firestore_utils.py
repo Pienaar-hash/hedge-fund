@@ -10,6 +10,8 @@ from utils.firestore_client import get_db, write_doc
 
 LOGGER = logging.getLogger("firestore")
 
+_STABLE_ASSETS = {"USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE"}
+
 
 def _env() -> str:
     return os.environ.get("ENV", os.environ.get("ENVIRONMENT", "prod"))
@@ -34,6 +36,21 @@ def _safe_load_json(path: str) -> Optional[Dict[str, Any]]:
 
 def _firestore_available(db: Any) -> bool:
     return db is not None and not getattr(db, "_is_noop", False)
+
+
+def _last_price_from_logs(asset: str) -> Optional[float]:
+    asset_code = str(asset or "").upper()
+    if not asset_code:
+        return None
+    try:
+        from execution.exchange_utils import get_last_known_price
+
+        price = get_last_known_price(asset_code)
+        if price is not None and price > 0:
+            return float(price)
+    except Exception:
+        return None
+    return None
 
 
 def _to_float(value: Any) -> float:
@@ -122,13 +139,14 @@ def _extract_router_metrics(payload: Optional[Dict[str, Any]]) -> Dict[str, floa
     return metrics
 
 
-def _format_treasury_asset(asset: str, balance: float, price: float, usd_value: float) -> Dict[str, float | str]:
-    return {
+def _format_treasury_asset(asset: str, balance: float, price: Optional[float], usd_value: float) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
         "asset": asset,
         "balance": float(balance),
-        "price_usdt": float(price),
         "usd_value": float(usd_value),
     }
+    payload["price_usdt"] = float(price) if price is not None else None
+    return payload
 
 
 def _normalize_treasury_payload(payload: Optional[Dict[str, Any]], source: str) -> Dict[str, Any]:
@@ -214,18 +232,33 @@ def _normalize_treasury_payload(payload: Optional[Dict[str, Any]], source: str) 
     total_usd = 0.0
     for asset, info in assets_acc.items():
         balance = float(info.get("balance") or 0.0)
-        price = float(info.get("price") or 0.0)
-        usd_value = float(info.get("usd_value") or 0.0)
+        raw_price = info.get("price")
+        price_hint = float(raw_price) if raw_price not in (None, "", "null") else 0.0
+        raw_usd = info.get("usd_value")
+        usd_hint = float(raw_usd) if raw_usd not in (None, "", "null") else 0.0
 
-        if balance and usd_value and price <= 0.0:
-            price = usd_value / balance if balance else 0.0
+        price: Optional[float] = None
+        if price_hint > 0:
+            price = price_hint
+        elif balance > 0 and usd_hint > 0:
+            derived = usd_hint / balance if balance else 0.0
+            if derived > 0:
+                price = derived
 
-        if price <= 0.0:
-            if asset in {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}:
-                price = 1.0
+        if price is None and asset in _STABLE_ASSETS:
+            price = 1.0
 
-        if usd_value <= 0.0:
-            usd_value = balance * price if balance else 0.0
+        if price is None:
+            fallback = _last_price_from_logs(asset)
+            if fallback is not None:
+                price = fallback
+
+        if price is None and (balance > 0 or usd_hint > 0):
+            LOGGER.warning("[treasury] missing_price asset=%s source=%s balance=%.8f", asset, source, balance)
+
+        usd_value = usd_hint if usd_hint > 0 else (balance * price if price is not None else 0.0)
+        if price is None:
+            usd_value = 0.0
 
         assets.append(_format_treasury_asset(asset, balance, price, usd_value))
         total_usd += usd_value
@@ -239,8 +272,13 @@ def _normalize_treasury_payload(payload: Optional[Dict[str, Any]], source: str) 
             except Exception:
                 continue
             if balance:
-                assets.append(_format_treasury_asset(str(key).upper(), balance, 0.0, balance))
-                total_usd += balance
+                asset_code = str(key).upper()
+                price = 1.0 if asset_code in _STABLE_ASSETS else _last_price_from_logs(asset_code)
+                if price is None and balance > 0:
+                    LOGGER.warning("[treasury] missing_price asset=%s source=%s balance=%.8f", asset_code, source, balance)
+                usd_value = balance * price if price is not None else 0.0
+                assets.append(_format_treasury_asset(asset_code, balance, price, usd_value))
+                total_usd += usd_value
 
     total = total_payload if total_payload > 0 else total_usd
     return {
@@ -294,9 +332,9 @@ def _read_treasury_sources(root: str) -> List[Dict[str, Any]]:
 
 def _select_canonical_treasury(
     sources: List[Dict[str, Any]], freshness_limit: float = 600.0
-) -> tuple[Dict[str, float], float, str, List[str]]:
+) -> tuple[Dict[str, Dict[str, Any]], float, str, List[str]]:
     """Select a single treasury source using freshness priority rules."""
-    assets: Dict[str, float] = {}
+    assets: Dict[str, Dict[str, Any]] = {}
     total_usd = 0.0
     source_used = "config/reserves.json"
     sources_seen: List[str] = []
@@ -328,9 +366,50 @@ def _select_canonical_treasury(
     payload = best_candidate.get("payload") if isinstance(best_candidate.get("payload"), dict) else {}
     source_used = label
 
+    def _resolve_price(
+        asset: str,
+        balance: float,
+        price_hint: Optional[float],
+        usd_hint: float,
+        *,
+        allow_live: bool = False,
+    ) -> tuple[Optional[float], float]:
+        price = price_hint if price_hint and price_hint > 0 else None
+
+        if price is None and balance > 0 and usd_hint > 0:
+            derived = usd_hint / balance if balance else 0.0
+            if derived > 0:
+                price = derived
+
+        if price is None and asset in _STABLE_ASSETS:
+            price = 1.0
+
+        if price is None and allow_live:
+            try:
+                from execution.exchange_utils import get_price
+
+                fetched = float(get_price(f"{asset}USDT") or 0.0)
+                if fetched > 0:
+                    price = fetched
+            except Exception as exc:
+                LOGGER.debug("[treasury] live_price_failed asset=%s source=%s error=%s", asset, source_used, exc)
+
+        if price is None:
+            fallback = _last_price_from_logs(asset)
+            if fallback is not None:
+                price = fallback
+
+        usd_value = usd_hint if usd_hint > 0 else (balance * price if price is not None else 0.0)
+
+        if price is None:
+            if balance > 0 or usd_hint > 0:
+                LOGGER.warning("[treasury] price_unavailable asset=%s source=%s balance=%.8f", asset, source_used, balance)
+            usd_value = 0.0
+
+        return price, usd_value
+
     if label == "config/reserves.json":
         config = payload
-        stable_set = {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}
         for symbol, qty in config.items():
             try:
                 amount = float(qty)
@@ -339,18 +418,12 @@ def _select_canonical_treasury(
             asset = str(symbol).upper()
             if not asset or amount == 0:
                 continue
-            price = 1.0 if asset in stable_set else 0.0
-            if price == 0.0:
-                try:
-                    from execution.exchange_utils import get_price
-
-                    price = float(get_price(f"{asset}USDT") or 0.0)
-                except Exception:
-                    price = 0.0
-            if price <= 0 and asset.endswith("USDT"):
-                price = 1.0
-            usd_value = amount * price if price > 0 else amount
-            assets[asset] = usd_value
+            price, usd_value = _resolve_price(asset, amount, None, 0.0, allow_live=True)
+            assets[asset] = {
+                "balance": amount,
+                "price": price,
+                "usd_value": usd_value,
+            }
             total_usd += usd_value
     else:
         normalized = _normalize_treasury_payload(payload, label)
@@ -361,12 +434,21 @@ def _select_canonical_treasury(
             if not asset:
                 continue
             balance = _to_float(entry.get("balance"))
-            usd_value = _to_float(entry.get("usd_value") or entry.get("usd"))
-            price = _to_float(entry.get("price_usdt") or entry.get("price"))
-            if usd_value <= 0 and balance and price > 0:
-                usd_value = balance * price
-            assets[asset] = usd_value if usd_value > 0 else balance
-            total_usd += assets[asset]
+            price_hint_raw = entry.get("price_usdt") or entry.get("price")
+            try:
+                price_hint = float(price_hint_raw) if price_hint_raw is not None else None
+            except Exception:
+                price_hint = None
+            if price_hint is not None and price_hint <= 0:
+                price_hint = None
+            usd_hint = _to_float(entry.get("usd_value") or entry.get("usd"))
+            price, usd_value = _resolve_price(asset, balance, price_hint, usd_hint)
+            assets[asset] = {
+                "balance": balance,
+                "price": price,
+                "usd_value": usd_value,
+            }
+            total_usd += usd_value
     return assets, float(total_usd), source_used, sources_seen
 
 
@@ -617,58 +699,47 @@ def publish_positions(payload: Optional[Dict[str, Any]] = None) -> None:
 
 
 def publish_treasury(payload: Optional[Dict[str, Any]] = None) -> None:
-    """Publish treasury holdings snapshot to Firestore."""
+    """Publish treasury holdings snapshot to Firestore using the on-disk cache."""
     env = _env()
     root = _repo_root()
+    treasury_path = os.path.join(root, "logs", "treasury.json")
 
-    sources = _read_treasury_sources(root)
-    if payload is not None and isinstance(payload, dict):
-        sources.insert(
-            0,
-            {
-                "label": "payload_provided",
-                "payload": payload,
-                "updated_at": None,
-                "freshness_seconds": None,
-            },
+    try:
+        with open(treasury_path, "r", encoding="utf-8") as handle:
+            treasury_data = json.load(handle)
+    except FileNotFoundError:
+        LOGGER.warning("[firestore] publish_treasury skipped (missing %s)", treasury_path)
+        return
+    except Exception as exc:
+        LOGGER.warning("[firestore] publish_treasury read failed: %s", exc)
+        return
+
+    if not isinstance(treasury_data, dict):
+        LOGGER.warning("[firestore] publish_treasury invalid payload type=%s", type(treasury_data).__name__)
+        return
+
+    assets = treasury_data.get("assets")
+    if not isinstance(assets, list):
+        LOGGER.warning("[firestore] publish_treasury assets missing or invalid")
+        assets = []
+
+    total_usd = treasury_data.get("total_usd")
+    try:
+        total_usd = float(total_usd)
+    except Exception:
+        total_usd = float(
+            sum(
+                _to_float(entry.get("usd_value") or entry.get("USD Value"))
+                for entry in assets
+                if isinstance(entry, dict)
+            )
         )
 
-    assets_map, total_usd, source_used, sources_seen = _select_canonical_treasury(sources)
-
-    def _price_for(asset: str) -> float:
-        if asset in {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}:
-            return 1.0
-        try:
-            from execution.exchange_utils import get_price
-
-            price = float(get_price(f"{asset}USDT") or 0.0)
-            if price <= 0 and asset.endswith("USDT"):
-                price = 1.0
-            return price
-        except Exception:
-            return 0.0
-
-    assets_list: List[Dict[str, Any]] = []
-    for asset, usd_value in assets_map.items():
-        if usd_value <= 0:
-            continue
-        price = _price_for(asset)
-        balance = usd_value / price if price > 0 else usd_value
-        assets_list.append(
-            {
-                "asset": asset,
-                "balance": float(balance),
-                "price_usdt": float(price),
-                "usd_value": float(usd_value),
-            }
-        )
-
-    assets_list.sort(key=lambda item: item.get("usd_value", 0.0), reverse=True)
     treasury_payload: Dict[str, Any] = {
-        "assets": assets_list,
+        "assets": assets,
         "total_usd": float(total_usd),
-        "source": source_used,
-        "sources_seen": sources_seen,
+        "source": "logs/treasury.json",
+        "sources_seen": ["logs/treasury.json"],
     }
 
     doc = {
@@ -681,4 +752,4 @@ def publish_treasury(payload: Optional[Dict[str, Any]] = None) -> None:
     if not _firestore_available(db):
         raise RuntimeError("Firestore unavailable")
     write_doc(db, f"hedge/{env}/treasury/latest", doc, require=False)
-    LOGGER.info("[firestore] treasury publish ok env=%s source=%s total=%.2f", env, source_used, total_usd)
+    LOGGER.info("[firestore] treasury publish ok env=%s source=%s total=%.2f", env, "logs/treasury.json", total_usd)

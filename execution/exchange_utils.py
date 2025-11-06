@@ -10,7 +10,7 @@ import os
 import sys
 import time
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlencode
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, getcontext, localcontext
 
@@ -104,6 +104,136 @@ def _coerce_float(value: Any) -> float:
             return float(str(value))
         except Exception:
             return 0.0
+
+
+_STABLE_ASSETS = {"USDT", "USDC", "DAI", "TUSD", "FDUSD", "USDE"}
+_STABLE_SYMBOLS = _STABLE_ASSETS | {f"{token}USDT" for token in _STABLE_ASSETS}
+_TREASURY_PRICE_CACHE: Dict[str, float] = {}
+_TREASURY_PRICE_MTIME: Optional[float] = None
+
+
+def _split_symbol(symbol: str) -> Tuple[str, str]:
+    sym = str(symbol or "").upper()
+    for quote in ("USDT", "USDC", "FDUSD", "BUSD", "DAI", "USD", "USDE"):
+        if sym.endswith(quote) and len(sym) > len(quote):
+            return sym[: -len(quote)], quote
+    return sym, ""
+
+
+def _treasury_prices_path() -> str:
+    return os.path.join(_repo_root(), "logs", "treasury.json")
+
+
+def _positive(value: Any) -> Optional[float]:
+    if value in (None, "", "null"):
+        return None
+    try:
+        num = float(value)
+    except Exception:
+        try:
+            num = float(str(value))
+        except Exception:
+            return None
+    return num if num > 0 else None
+
+
+def _load_last_known_prices() -> Dict[str, float]:
+    global _TREASURY_PRICE_CACHE, _TREASURY_PRICE_MTIME
+    path = _treasury_prices_path()
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        _TREASURY_PRICE_CACHE = {}
+        _TREASURY_PRICE_MTIME = None
+        return {}
+    except Exception:
+        return {}
+
+    if (
+        _TREASURY_PRICE_MTIME is not None
+        and stat.st_mtime == _TREASURY_PRICE_MTIME
+        and _TREASURY_PRICE_CACHE
+    ):
+        return _TREASURY_PRICE_CACHE
+
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        _TREASURY_PRICE_CACHE = {}
+        _TREASURY_PRICE_MTIME = stat.st_mtime
+        return {}
+
+    prices: Dict[str, float] = {}
+
+    def ingest_asset(asset: str, entry: Mapping[str, Any]) -> None:
+        asset_code = str(asset or "").upper()
+        if not asset_code:
+            return
+        price = (
+            _positive(entry.get("price_usdt"))
+            or _positive(entry.get("price"))
+            or _positive(entry.get("px"))
+        )
+        if price is None:
+            balance = _positive(
+                entry.get("balance")
+                or entry.get("qty")
+                or entry.get("Units")
+                or entry.get("units")
+                or entry.get("amount")
+            )
+            usd_value = _positive(
+                entry.get("usd_value")
+                or entry.get("val_usdt")
+                or entry.get("USD Value")
+                or entry.get("value_usd")
+                or entry.get("usd")
+            )
+            if balance and usd_value:
+                derived = usd_value / balance if balance else None
+                if derived and derived > 0:
+                    price = derived
+        if price is not None and price > 0:
+            prices[asset_code] = float(price)
+
+    assets_payload = payload.get("assets")
+    if isinstance(assets_payload, list):
+        for item in assets_payload:
+            if not isinstance(item, Mapping):
+                continue
+            asset_name = str(
+                item.get("asset")
+                or item.get("Asset")
+                or item.get("symbol")
+                or item.get("code")
+                or ""
+            ).upper()
+            ingest_asset(asset_name, item)
+
+    breakdown = payload.get("breakdown")
+    if isinstance(breakdown, Mapping):
+        treasury = breakdown.get("treasury")
+        if isinstance(treasury, Mapping):
+            for key, value in treasury.items():
+                if isinstance(value, Mapping):
+                    ingest_asset(key, value)
+
+    for key, value in payload.items():
+        if key in {"assets", "total_usd", "treasury_usdt", "treasury_total", "breakdown", "updated_at", "ts"}:
+            continue
+        if isinstance(value, Mapping):
+            ingest_asset(key, value)
+
+    _TREASURY_PRICE_CACHE = prices
+    _TREASURY_PRICE_MTIME = stat.st_mtime
+    return prices
+
+
+def get_last_known_price(asset: str) -> Optional[float]:
+    asset_code, _ = _split_symbol(asset)
+    if not asset_code:
+        return None
+    prices = _load_last_known_prices()
+    return prices.get(asset_code)
 
 
 def is_testnet() -> bool:
@@ -304,14 +434,15 @@ def get_price(symbol: str, venue: str = "auto", signed: bool = False) -> float:
             _LOG.info("[price] XAUT price source=coingecko value=%.2f", price)
             return price
         except Exception as exc:
-            _LOG.error("[price] coingecko_fallback_failed: %s", exc)
-            raise
+            _LOG.warning("[price] coingecko_fallback_failed symbol=%s error=%s", sym, exc)
 
-    if sym in {"USDC", "USDCUSDT", "USDT", "DAI", "TUSD", "FDUSD", "USDE"}:
+    if sym in _STABLE_SYMBOLS:
         return 1.0
 
-    if resolved_venue in ("spot", "coingecko"):
-        try:
+    price: Optional[float] = None
+
+    try:
+        if resolved_venue in ("spot", "coingecko"):
             resp = requests.get(
                 "https://api.binance.com/api/v3/ticker/price",
                 params={"symbol": sym},
@@ -319,12 +450,26 @@ def get_price(symbol: str, venue: str = "auto", signed: bool = False) -> float:
             )
             resp.raise_for_status()
             data = resp.json() or {}
-            return float(data["price"])
-        except Exception as exc:
-            raise requests.RequestException(f"spot_price_failed:{sym}") from exc
+            fetched = float(data["price"])
+            price = fetched
+        else:
+            r = _req("GET", "/fapi/v1/ticker/price", params={"symbol": sym}, signed=signed)
+            price = float(r.json()["price"])
+    except Exception as exc:
+        _LOG.warning("[price] fetch_failed symbol=%s venue=%s error=%s", sym, resolved_venue, exc)
 
-    r = _req("GET", "/fapi/v1/ticker/price", params={"symbol": sym}, signed=signed)
-    return float(r.json()["price"])
+    if price is None or price <= 0:
+        base_asset, _ = _split_symbol(sym)
+        fallback = get_last_known_price(base_asset)
+        if fallback is not None:
+            _LOG.warning(
+                "[price] using_last_known asset=%s symbol=%s price=%.6f", base_asset, sym, fallback
+            )
+            return float(fallback)
+        _LOG.warning("[price] missing_price symbol=%s asset=%s -> returning 0.0", sym, base_asset)
+        return 0.0
+
+    return float(price)
 
 
 _EXCHANGE_FILTERS_CACHE: Dict[str, Dict[str, Any]] | None = None
