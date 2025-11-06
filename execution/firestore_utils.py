@@ -38,6 +38,69 @@ def _firestore_available(db: Any) -> bool:
     return db is not None and not getattr(db, "_is_noop", False)
 
 
+def publish_health_if_needed(
+    payload: Dict[str, Any],
+    *,
+    env: Optional[str] = None,
+    service: Optional[str] = None,
+    db: Optional[Any] = None,
+) -> None:
+    """
+    Write a health payload to the new telemetry/health document while mirroring legacy paths.
+    """
+    body = dict(payload)
+    env_name = env or body.get("env") or _env()
+    service_name = service or body.get("service") or body.get("process") or "unknown"
+    now_ts = time.time()
+    now_iso = _utcnow_iso()
+    body.setdefault("env", env_name)
+    body.setdefault("service", service_name)
+    body.setdefault("process", service_name)
+    ts_val = body.get("ts")
+    if not isinstance(ts_val, (int, float)):
+        body["ts"] = now_ts
+    if not body.get("ts_iso"):
+        body["ts_iso"] = now_iso
+    body.setdefault("updated_at", body.get("ts_iso", now_iso))
+    body.setdefault("status", body.get("status") or "ok")
+
+    db_handle = db or get_db(strict=False)
+    if not _firestore_available(db_handle):
+        raise RuntimeError("Firestore unavailable")
+
+    telemetry_collection = db_handle.collection("hedge").document(env_name).collection("telemetry")
+
+    try:
+        telemetry_collection.document("health").set(body, merge=True)
+    except Exception as exc:
+        LOGGER.warning(
+            "[firestore] telemetry health write failed env=%s service=%s err=%s",
+            env_name,
+            service_name,
+            exc,
+        )
+
+    try:
+        telemetry_collection.document("heartbeats").set(body, merge=True)
+    except Exception as exc:
+        LOGGER.debug(
+            "[firestore] legacy heartbeat mirror failed env=%s service=%s err=%s",
+            env_name,
+            service_name,
+            exc,
+        )
+
+    try:
+        write_doc(db_handle, f"hedge/{env_name}/health/{service_name}", body, require=False)
+    except Exception as exc:
+        LOGGER.debug(
+            "[firestore] legacy health doc mirror failed env=%s service=%s err=%s",
+            env_name,
+            service_name,
+            exc,
+        )
+
+
 def _last_price_from_logs(asset: str) -> Optional[float]:
     asset_code = str(asset or "").upper()
     if not asset_code:
@@ -477,19 +540,16 @@ def publish_health(payload: Dict[str, Any]) -> None:
     """Publish health heartbeat to hedge/{ENV}/health."""
     env = payload.get("env") or _env()
     process = payload.get("process") or "unknown"
-    body = dict(payload)
-    now_ts = time.time()
-    body.setdefault("ts", now_ts)
-    body.setdefault("ts_iso", _utcnow_iso())
-    path = f"hedge/{env}/health/{process}"
     try:
-        db = get_db(strict=False)
-        if not _firestore_available(db):
-            raise RuntimeError("Firestore unavailable")
-        write_doc(db, path, body, require=False)
-        LOGGER.info("[firestore] heartbeat write ok path=%s", path)
+        publish_health_if_needed(payload, env=env, service=process)
+        LOGGER.info("[firestore] heartbeat write ok env=%s service=%s", env, process)
     except Exception as exc:
-        LOGGER.warning("[firestore] heartbeat write failed path=%s error=%s", path, exc)
+        LOGGER.warning(
+            "[firestore] heartbeat write failed env=%s service=%s error=%s",
+            env,
+            process,
+            exc,
+        )
 
 
 def publish_state(snapshot: Dict[str, Any]) -> None:
@@ -515,12 +575,8 @@ def publish_heartbeat(
     env: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Publish lightweight heartbeat under hedge/{env}/telemetry/heartbeats."""
-    env_name = env or os.getenv("ENV", os.getenv("ENVIRONMENT", "prod"))
+    """Publish lightweight heartbeat under hedge/{env}/telemetry/health."""
     try:
-        db = get_db(strict=False)
-        if not _firestore_available(db):
-            raise RuntimeError("Firestore client unavailable")
         now = datetime.now(timezone.utc)
         payload: Dict[str, Any] = {
             "service": service,
@@ -531,18 +587,16 @@ def publish_heartbeat(
         }
         if extra:
             payload.update(extra)
-        doc_ref = (
-            db.collection("hedge")
-            .document(env_name)
-            .collection("telemetry")
-            .document("heartbeats")
+        publish_health_if_needed(payload, env=env, service=service)
+        LOGGER.info(
+            "[firestore] heartbeat publish ok env=%s service=%s",
+            env or _env(),
+            service,
         )
-        doc_ref.set(payload, merge=True)
-        LOGGER.info("[firestore] heartbeat publish ok env=%s service=%s", env_name, service)
     except Exception as exc:
         LOGGER.warning(
             "[firestore] heartbeat publish failed env=%s service=%s err=%s",
-            env_name,
+            env or _env(),
             service,
             exc,
         )
@@ -553,14 +607,12 @@ def safe_publish_health(payload: Dict[str, Any]) -> None:
     try:
         env = payload.get("env") or _env()
         service = payload.get("service") or payload.get("process") or "unknown"
-        doc = dict(payload)
-        doc.setdefault("ts", time.time())
-        doc.setdefault("ts_iso", _utcnow_iso())
-        db = get_db(strict=False)
-        if not _firestore_available(db):
-            raise RuntimeError("Firestore unavailable")
-        write_doc(db, f"hedge/{env}/health/{service}", doc, require=False)
-        LOGGER.info("[firestore] telemetry publish ok path=hedge/%s/health/%s", env, service)
+        publish_health_if_needed(payload, env=env, service=service)
+        LOGGER.info(
+            "[firestore] telemetry publish ok path=hedge/%s/telemetry/health service=%s",
+            env,
+            service,
+        )
     except Exception as exc:
         LOGGER.exception("[firestore] telemetry publish failed: %s", exc)
 
@@ -615,10 +667,11 @@ def publish_positions(payload: Optional[Dict[str, Any]] = None) -> None:
         positions = payload
     if not isinstance(positions, list):
         positions = []
-    doc = {
+    now_iso = _utcnow_iso()
+    doc_items: Dict[str, Any] = {
         "env": env,
-        "updated_at": _utcnow_iso(),
-        "positions": positions,
+        "updated_at": now_iso,
+        "items": positions,
     }
     combined_snapshot: Dict[str, Any] = {
         "source": "combined_spot_futures",
@@ -686,16 +739,24 @@ def publish_positions(payload: Optional[Dict[str, Any]] = None) -> None:
         if nav_trading:
             combined_snapshot["sources"]["futures_wallet"]["raw"] = nav_trading
     if combined_snapshot["sources"]:
-        doc["snapshot"] = combined_snapshot
-        doc["source"] = combined_snapshot["source"]
-        doc["sources"] = combined_snapshot["sources"]
+        doc_items["snapshot"] = combined_snapshot
+        doc_items["source"] = combined_snapshot["source"]
+        doc_items["sources"] = combined_snapshot["sources"]
     elif snapshot is not None:
-        doc["snapshot"] = snapshot
+        doc_items["snapshot"] = snapshot
     db = get_db(strict=False)
     if not _firestore_available(db):
         raise RuntimeError("Firestore unavailable")
-    write_doc(db, f"hedge/{env}/positions/latest", doc, require=False)
-    LOGGER.info("[firestore] positions publish ok env=%s count=%d", env, len(doc["positions"]))
+    write_doc(db, f"hedge/{env}/state/positions", doc_items, require=False)
+    LOGGER.info("[firestore] positions publish ok env=%s count=%d", env, len(positions))
+
+    try:
+        legacy_doc = dict(doc_items)
+        legacy_doc["positions"] = positions
+        write_doc(db, f"hedge/{env}/positions/latest", legacy_doc, require=False)
+        LOGGER.debug("[firestore] positions legacy mirror ok env=%s", env)
+    except Exception as exc:
+        LOGGER.debug("[firestore] positions legacy mirror failed env=%s err=%s", env, exc)
 
 
 def publish_treasury(payload: Optional[Dict[str, Any]] = None) -> None:

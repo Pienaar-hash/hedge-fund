@@ -6,17 +6,26 @@ import time
 import hmac
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from datetime import datetime, timezone
 
 import requests
+import subprocess
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from execution.firestore_utils import get_db as get_firestore_db
-from dashboard.router_health import _load_order_events
+try:
+    import streamlit as st  # type: ignore
+
+    _HAVE_ST = True
+except Exception:  # pragma: no cover
+    st = None  # type: ignore
+    _HAVE_ST = False
+
+from execution.firestore_utils import get_db as get_firestore_db  # noqa: E402
+from dashboard.router_health import _load_order_events  # noqa: E402
 
 ANSI_GREEN = "\033[92m"
 ANSI_RED = "\033[91m"
@@ -35,13 +44,21 @@ try:
 except Exception:  # pragma: no cover
     utils_get_live_positions = None
 try:
-    from execution.utils import get_coingecko_prices as utils_get_coingecko_prices
-except Exception:  # pragma: no cover
-    utils_get_coingecko_prices = None
-try:
     from execution.utils import get_usd_to_zar as utils_get_usd_to_zar
 except Exception:  # pragma: no cover
     utils_get_usd_to_zar = None
+try:
+    from execution.utils import get_treasury_snapshot as utils_get_treasury_snapshot
+except Exception:  # pragma: no cover
+    utils_get_treasury_snapshot = None
+try:
+    from execution.utils import compute_treasury_pnl as utils_compute_treasury_pnl
+except Exception:  # pragma: no cover
+    utils_compute_treasury_pnl = None
+try:
+    from binance.um_futures import UMFutures  # type: ignore
+except Exception:  # pragma: no cover
+    UMFutures = None
 
 def _now_ms(): return int(time.time()*1000)
 
@@ -158,6 +175,55 @@ SERVICE_ALIASES = {
     "executor_live": ("executor_live", "executor", "executorlive"),
     "sync_state": ("sync_state", "sync", "sync_daemon"),
 }
+
+_FUTURES_CLIENT: Optional[Any] = None
+_FUTURES_CLIENT_ERROR: Optional[str] = None
+
+
+def _firestore_available(db: Any) -> bool:
+    return db is not None and not getattr(db, "_is_noop", False)
+
+
+def _ensure_futures_client() -> Tuple[Optional[Any], Optional[str]]:
+    global _FUTURES_CLIENT, _FUTURES_CLIENT_ERROR
+    if _FUTURES_CLIENT is not None or _FUTURES_CLIENT_ERROR is not None:
+        return _FUTURES_CLIENT, _FUTURES_CLIENT_ERROR
+    if UMFutures is None:
+        _FUTURES_CLIENT_ERROR = "UMFutures unavailable"
+        return None, _FUTURES_CLIENT_ERROR
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+    if not api_key or not api_secret:
+        _FUTURES_CLIENT_ERROR = "missing credentials"
+        return None, _FUTURES_CLIENT_ERROR
+    kwargs: Dict[str, Any] = {"key": api_key, "secret": api_secret}
+    testnet = str(os.getenv("BINANCE_TESTNET", "")).strip().lower() in ("1", "true", "yes", "on")
+    if testnet:
+        kwargs["base_url"] = "https://testnet.binancefuture.com"
+    try:
+        _FUTURES_CLIENT = UMFutures(**kwargs)  # type: ignore[arg-type]
+    except Exception as exc:  # pragma: no cover - network dependency
+        _FUTURES_CLIENT = None
+        _FUTURES_CLIENT_ERROR = str(exc)
+    return _FUTURES_CLIENT, _FUTURES_CLIENT_ERROR
+
+
+def _resolve_telemetry_doc(db: Any, env: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if not _firestore_available(db):
+        return None, None
+    telemetry = db.collection("hedge").document(env).collection("telemetry")
+    for name in ("health", "heartbeats"):
+        try:
+            snap = telemetry.document(name).get(timeout=5.0)
+        except Exception as exc:  # pragma: no cover - network dependency
+            print(f"[doctor] heartbeat telemetry read failed ({name}): {exc}")
+            continue
+        if not getattr(snap, "exists", False):
+            continue
+        payload = snap.to_dict() or {}
+        if isinstance(payload, dict):
+            return payload, f"telemetry/{name}"
+    return None, None
 
 
 def _extract_service_timestamp(doc: Mapping[str, Any], aliases: Sequence[str]) -> Optional[datetime]:
@@ -305,55 +371,165 @@ def _collect_nav() -> Dict[str, Any]:
             print(f"[doctor] NAV read failed for {path}: {exc}")
     return {"value": nav_value, "source": nav_source}
 
-def _collect_positions() -> Dict[str, Any]:
-    count = 0
-    error = None
-    if utils_get_live_positions is not None:
+
+def _load_cached_positions(path: Path = Path("logs/execution/position_state.jsonl")) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            lines = handle.readlines()
+    except Exception as exc:
+        print(f"[doctor] cached positions read failed: {exc}")
+        return []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
         try:
-            positions = utils_get_live_positions(None)
-            count = len(positions or [])
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            entries = payload.get("items") or payload.get("positions") or payload.get("rows")
+            if isinstance(entries, list):
+                return entries
+    return []
+
+
+def _collect_positions(client: Optional[Any], init_error: Optional[str]) -> Dict[str, Any]:
+    count = 0
+    error = init_error
+    source = "none"
+    positions: List[Dict[str, Any]] = []
+    if utils_get_live_positions is not None and client is not None and not init_error:
+        try:
+            positions = utils_get_live_positions(client) or []
         except Exception as exc:
             error = str(exc)
-    else:
+    elif utils_get_live_positions is None:
         error = "helper unavailable"
-    return {"count": count, "error": error}
+    elif client is None and not init_error:
+        error = "client unavailable"
+    if positions:
+        count = len(positions)
+        source = "live"
+    else:
+        cached_positions = _load_cached_positions()
+        if cached_positions:
+            positions = cached_positions
+            count = len(positions)
+            source = "cache"
+    sample = positions[:5] if positions else []
+    return {"count": count, "error": error, "source": source, "sample": sample}
+
+def _load_treasury_payload(env: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    local_payload: Optional[Dict[str, Any]] = None
+    if utils_get_treasury_snapshot is not None:
+        try:
+            data = utils_get_treasury_snapshot("logs/treasury.json")
+        except Exception as exc:
+            print(f"[doctor] treasury snapshot helper failed: {exc}")
+            data = {}
+        if isinstance(data, dict) and data:
+            local_payload = data
+    else:
+        local_path = Path("logs/treasury.json")
+        if local_path.exists():
+            payload = safe_load(str(local_path), default={})
+            if isinstance(payload, dict) and payload:
+                local_payload = payload
+    if local_payload:
+        return local_payload, "logs/treasury.json"
+    try:
+        db = get_firestore_db(strict=False)
+    except Exception as exc:
+        print(f"[doctor] treasury firestore init failed: {exc}")
+        return None, None
+    if not _firestore_available(db):
+        return None, None
+    try:
+        snap = (
+            db.collection("hedge")
+            .document(env)
+            .collection("treasury")
+            .document("latest")
+            .get(timeout=5.0)
+        )
+    except Exception as exc:  # pragma: no cover - network dependency
+        print(f"[doctor] treasury firestore read failed: {exc}")
+        return None, None
+    if getattr(snap, "exists", False):
+        payload = snap.to_dict() or {}
+        if isinstance(payload, dict) and payload:
+            return payload, "firestore:treasury/latest"
+    return None, None
+
 
 def _collect_reserves() -> Dict[str, Any]:
-    reserve_btc = 0.0
-    reserve_xaut = 0.0
-    try:
-        reserve_btc = float(os.getenv("RESERVE_BTC") or os.getenv("DASHBOARD_RESERVE_BTC") or 0.0)
-    except Exception:
-        reserve_btc = 0.0
-    try:
-        reserve_xaut = float(os.getenv("RESERVE_XAUT") or 0.0)
-    except Exception:
-        reserve_xaut = 0.0
+    env = os.getenv("ENV", "prod")
+    payload, source = _load_treasury_payload(env)
+    if not isinstance(payload, dict) or not payload:
+        return {"total": None, "assets": [], "updated_at": None, "source": source or "unavailable"}
 
-    prices: Dict[str, float] = {}
-    if utils_get_coingecko_prices is not None:
-        try:
-            prices = utils_get_coingecko_prices()
-        except Exception as exc:
-            print(f"[doctor] reserves price fetch failed: {exc}")
+    treasury = payload.get("treasury") if isinstance(payload.get("treasury"), dict) else payload
+    assets = treasury.get("assets") if isinstance(treasury.get("assets"), list) else []
 
-    btc_px = float(prices.get("BTC", 0.0) or 0.0)
-    xaut_px = float(prices.get("XAUT", 0.0) or 0.0)
-    btc_val = reserve_btc * btc_px if btc_px else None
-    xaut_val = reserve_xaut * xaut_px if xaut_px else None
-    total = 0.0
-    for val in (btc_val, xaut_val):
-        if isinstance(val, (int, float)):
-            total += float(val)
-    return {
-        "btc_qty": reserve_btc,
-        "btc_px": btc_px,
-        "btc_val": btc_val,
-        "xaut_qty": reserve_xaut,
-        "xaut_px": xaut_px,
-        "xaut_val": xaut_val,
-        "total": total if total > 0 else None,
+    def _fallback_total(items: List[Dict[str, Any]]) -> Optional[float]:
+        total_val = 0.0
+        seen = False
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                usd_val = float(entry.get("usd_value") or entry.get("USD Value") or 0.0)
+            except Exception:
+                continue
+            total_val += usd_val
+            seen = True
+        return total_val if seen else None
+
+    total_candidates = [
+        treasury.get("total_usd"),
+        treasury.get("treasury_usdt"),
+        treasury.get("total_treasury_usdt"),
+    ]
+    total_value: Optional[float] = None
+    for candidate in total_candidates:
+        if isinstance(candidate, (int, float)):
+            total_value = float(candidate)
+            break
+        if isinstance(candidate, str):
+            try:
+                total_value = float(candidate)
+                break
+            except Exception:
+                continue
+    if total_value is None and isinstance(assets, list):
+        total_value = _fallback_total(assets)
+
+    updated_at = (
+        treasury.get("updated_at")
+        or payload.get("updated_at")
+        or treasury.get("ts")
+        or payload.get("ts")
+    )
+
+    result: Dict[str, Any] = {
+        "total": total_value,
+        "assets": assets if isinstance(assets, list) else [],
+        "updated_at": updated_at,
+        "source": source or "unknown",
     }
+    if isinstance(treasury.get("sources_seen"), list):
+        result["sources_seen"] = treasury["sources_seen"]
+    if isinstance(treasury.get("source"), str):
+        result["origin"] = treasury["source"]
+    if utils_compute_treasury_pnl is not None:
+        try:
+            result["pnl"] = utils_compute_treasury_pnl(payload or {})
+        except Exception as exc:
+            print(f"[doctor] treasury pnl compute failed: {exc}")
+    return result
 
 
 def _load_treasury_total(freshness_limit: float = 600.0) -> float:
@@ -467,25 +643,16 @@ def _collect_heartbeats() -> Dict[str, Any]:
 
     try:
         db = get_firestore_db(strict=False)
-        if db is not None and not getattr(db, "_is_noop", False):
+        if _firestore_available(db):
             firestore_hits: List[str] = []
-            telemetry_ref = (
-                db.collection("hedge")
-                .document(env)
-                .collection("telemetry")
-                .document("health")
-            )
-            try:
-                telemetry_snap = telemetry_ref.get(timeout=5.0)
-            except Exception as exc:
-                print(f"[doctor] heartbeat telemetry read failed: {exc}")
-            else:
-                if getattr(telemetry_snap, "exists", False):
-                    payload = telemetry_snap.to_dict() or {}
-                    parsed = parse_heartbeats(payload)
-                    _update_service("executor", parsed.get("executor_live"), "firestore:telemetry/health")
-                    _update_service("sync_state", parsed.get("sync_state"), "firestore:telemetry/health")
-                    firestore_hits.append("telemetry/health")
+            telemetry_payload, telemetry_label = _resolve_telemetry_doc(db, env)
+            if telemetry_payload is not None:
+                parsed = parse_heartbeats(telemetry_payload)
+                origin = f"firestore:{telemetry_label}" if telemetry_label else "firestore:telemetry"
+                _update_service("executor", parsed.get("executor_live"), origin)
+                _update_service("sync_state", parsed.get("sync_state"), origin)
+                if telemetry_label:
+                    firestore_hits.append(telemetry_label)
             executor_ref = (
                 db.collection("hedge")
                 .document(env)
@@ -503,7 +670,7 @@ def _collect_heartbeats() -> Dict[str, Any]:
                     _update_service("executor", ts_val, "firestore:health/executor_live")
                     firestore_hits.append("health/executor_live")
             if firestore_hits:
-                doc_source = "firestore"
+                doc_source = ",".join(sorted(set(firestore_hits)))
     except Exception as exc:
         print(f"[doctor] heartbeat firestore read failed: {exc}")
     if path.exists():
@@ -691,51 +858,127 @@ def _drawdown_state() -> Dict[str, Any]:
     }
 
 
-def collect_doctor_snapshot() -> Dict[str, Any]:
+def collect_doctor_snapshot(
+    futures_client: Optional[Any] = None,
+    *,
+    client_error: Optional[str] = None,
+) -> Dict[str, Any]:
+    if futures_client is None and client_error is None:
+        futures_client, client_error = _ensure_futures_client()
+
     nav_freshness = {
         "fresh": is_nav_fresh(),
         "age": get_nav_age(),
         "drawdown": _drawdown_state(),
         "zar_rate": None,
         "zar_source": "none",
+        "zar_age_seconds": None,
+        "zar_status": "MISSING",
     }
+
     snapshot = {
         "nav": _collect_nav(),
-        "positions": _collect_positions(),
+        "positions": _collect_positions(futures_client, client_error),
         "firestore": _collect_firestore_status(),
         "heartbeats": _collect_heartbeats(),
         "reserves": _collect_reserves(),
         "nav_freshness": nav_freshness,
     }
+
+    if client_error:
+        print(f"[doctor] futures client unavailable: {client_error}")
+
     if utils_get_usd_to_zar is not None:
-        rate = None
+        rate: Optional[float] = None
         source = "none"
+        age_seconds: Optional[float] = None
         try:
-            rate = utils_get_usd_to_zar(force=True)
-            if rate:
-                source = "fresh"
+            rate, meta = utils_get_usd_to_zar(force=True, with_meta=True)  # type: ignore[assignment]
+            source = (meta or {}).get("source") or "api"
+            age_seconds = (meta or {}).get("age")  # type: ignore[assignment]
         except Exception as exc:
             print(f"[doctor] ZAR conversion fetch failed: {exc}")
-        if not rate:
+            rate = None
+            source = "error"
+            age_seconds = None
+        if rate is None:
             try:
-                cached = utils_get_usd_to_zar()
-            except Exception:
-                cached = None
-            if cached:
-                rate = cached
-                source = "cached"
+                cached_rate, cached_meta = utils_get_usd_to_zar(with_meta=True)  # type: ignore[assignment]
+            except Exception as exc:
+                print(f"[doctor] ZAR conversion cached fetch failed: {exc}")
+                cached_rate = None
+                cached_meta = None
+            if cached_rate is not None:
+                rate = cached_rate
+                source = (cached_meta or {}).get("source") or "cache"
+                age_seconds = (cached_meta or {}).get("age")  # type: ignore[assignment]
                 print("[doctor] ZAR conversion stale, using cached value")
             else:
                 print("[doctor] ZAR conversion unavailable (no rate)")
+        status = "MISSING"
+        if rate is not None:
+            if source == "cache" or (age_seconds is not None and age_seconds > 6 * 3600):
+                status = "STALE"
+            else:
+                status = "FRESH"
         nav_freshness["zar_rate"] = rate
-        nav_freshness["zar_source"] = source
+        nav_freshness["zar_source"] = source or "none"
+        nav_freshness["zar_age_seconds"] = age_seconds
+        nav_freshness["zar_status"] = status
     else:
         print("[doctor] ZAR conversion helper unavailable")
+
     snapshot["drawdown"] = nav_freshness["drawdown"]
     snapshot["zar_rate"] = nav_freshness["zar_rate"]
     snapshot["zar_source"] = nav_freshness["zar_source"]
+    snapshot["zar_status"] = nav_freshness.get("zar_status")
+    snapshot["zar_age_seconds"] = nav_freshness.get("zar_age_seconds")
     print("[doctor] nav_freshness integrated (is_nav_fresh + get_nav_age)")
     return snapshot
+
+
+def run_doctor_subprocess(timeout: int = 30, placeholder: Any = None) -> Tuple[str, Optional[str]]:
+    cmd = [sys.executable, str(Path(__file__).resolve())]
+    if placeholder is None and _HAVE_ST:
+        placeholder = st.empty()
+    process = subprocess.Popen(  # noqa: S603
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    lines: List[str] = []
+    start = time.time()
+    stream_target = placeholder
+    try:
+        if process.stdout is None:
+            raise RuntimeError("doctor subprocess missing stdout pipe")
+        for line in process.stdout:
+            lines.append(line)
+            if stream_target is not None:
+                stream_target.code("".join(lines[-120:]))
+            if timeout and timeout > 0 and (time.time() - start) > timeout:
+                process.kill()
+                raise TimeoutError("doctor subprocess timed out")
+        process.wait()
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+    output = "".join(lines)
+    if process.returncode == 1:
+        message = "doctor subprocess exited with status 1"
+        if stream_target is not None:
+            stream_target.warning(message)
+        return output, message
+    if process.returncode not in (0, None):
+        message = f"doctor subprocess exited with status {process.returncode}"
+        if stream_target is not None:
+            stream_target.error(message)
+        raise RuntimeError(message)
+    if stream_target is not None and output:
+        stream_target.code(output)
+    return output, None
 
 
 def main():
@@ -833,6 +1076,8 @@ def main():
     drawdown_info = nav_freshness.get("drawdown", {})
     zar_rate = nav_freshness.get("zar_rate")
     zar_source = nav_freshness.get("zar_source")
+    zar_age_seconds = nav_freshness.get("zar_age_seconds")
+    zar_status_label = nav_freshness.get("zar_status")
 
     env = os.getenv("ENV", "dev")
     fs_status = "STALE"
@@ -887,17 +1132,16 @@ def main():
         f"dd={dd_pct:.2f}% (abs=${dd_abs:,.2f}, peak=${peak_equity:,.2f}, nav=${nav_equity:,.2f})"
     )
 
-    if positions_info["error"]:
-        print(f"[doctor] Positions: {positions_info['count']} open (fallback: {positions_info['error']})")
+    pos_source = positions_info.get("source") or "unknown"
+    pos_error = positions_info.get("error")
+    if pos_error:
+        print(
+            f"[doctor] Positions [{pos_source}]: {positions_info['count']} open "
+            f"(note: {pos_error})"
+        )
     else:
-        print(f"[doctor] Positions: {positions_info['count']} open")
+        print(f"[doctor] Positions [{pos_source}]: {positions_info['count']} open")
 
-    btc_val_display = (
-        f"${reserves_info['btc_val']:,.2f}" if isinstance(reserves_info["btc_val"], (int, float)) else "n/a"
-    )
-    xaut_val_display = (
-        f"${reserves_info['xaut_val']:,.2f}" if isinstance(reserves_info["xaut_val"], (int, float)) else "n/a"
-    )
     raw_reserves_total = reserves_info.get("total")
     treasury_total: Optional[float] = (
         float(raw_reserves_total) if isinstance(raw_reserves_total, (int, float)) and raw_reserves_total > 0 else None
@@ -921,11 +1165,57 @@ def main():
         reserves_zar = reserves_usd_val * float(zar_rate)
     if zar_rate and total_equity_val is not None:
         total_zar = total_equity_val * float(zar_rate)
+
+    assets_raw = reserves_info.get("assets") if isinstance(reserves_info.get("assets"), list) else []
+
+    def _extract_asset(symbol: str) -> Tuple[Optional[float], Optional[float]]:
+        for entry in assets_raw:
+            if not isinstance(entry, dict):
+                continue
+            label = str(
+                entry.get("asset")
+                or entry.get("Asset")
+                or entry.get("symbol")
+                or entry.get("code")
+                or ""
+            ).upper()
+            if label != symbol.upper():
+                continue
+            balance_raw = (
+                entry.get("balance")
+                or entry.get("qty")
+                or entry.get("Units")
+                or entry.get("units")
+                or entry.get("amount")
+            )
+            value_raw = entry.get("usd_value") or entry.get("USD Value") or entry.get("value_usd")
+            try:
+                balance_val = float(balance_raw) if balance_raw is not None else None
+            except Exception:
+                balance_val = None
+            try:
+                usd_val = float(value_raw) if value_raw is not None else None
+            except Exception:
+                usd_val = None
+            return balance_val, usd_val
+        return None, None
+
+    btc_qty, btc_val = _extract_asset("BTC")
+    xaut_qty, xaut_val = _extract_asset("XAUT")
+
+    btc_val_display = f"${btc_val:,.2f}" if isinstance(btc_val, (int, float)) else "n/a"
+    xaut_val_display = f"${xaut_val:,.2f}" if isinstance(xaut_val, (int, float)) else "n/a"
+
+    reserve_segments: List[str] = []
+    if btc_qty is not None:
+        reserve_segments.append(f"BTC: {btc_qty:.4f} → {btc_val_display}")
+    if xaut_qty is not None:
+        reserve_segments.append(f"XAUT: {xaut_qty:.4f} → {xaut_val_display}")
+    reserve_segments.append(f"Total: {total_display}")
     print(
         "[doctor] reserves "
-        f"BTC: {reserves_info['btc_qty']:.4f} → {btc_val_display} | "
-        f"XAUT: {reserves_info['xaut_qty']:.4f} → {xaut_val_display} | "
-        f"Total: {total_display}"
+        + " | ".join(reserve_segments)
+        + (f" (source={reserves_info.get('source')})" if reserves_info.get("source") else "")
     )
 
     print(f"[doctor] NAV: {f'${nav_usd_val:,.2f}' if nav_usd_val is not None else 'n/a'}")
@@ -936,8 +1226,13 @@ def main():
         nav_zar_display = f"R{nav_zar:,.0f}" if isinstance(nav_zar, (int, float)) else "n/a"
         reserves_zar_display = f"R{reserves_zar:,.0f}" if isinstance(reserves_zar, (int, float)) else "n/a"
         total_zar_display = f"R{total_zar:,.0f}" if isinstance(total_zar, (int, float)) else "n/a"
+        zar_age_display = (
+            f"{zar_age_seconds/3600:.1f}h" if isinstance(zar_age_seconds, (int, float)) else "n/a"
+        )
+        zar_status_display = zar_status_label or "n/a"
         print(
-            f"[doctor] ZAR conversion @ {zar_rate:.2f} ({zar_source}) → "
+            f"[doctor] ZAR conversion @ {zar_rate:.2f} ({zar_source}) "
+            f"status={zar_status_display} age={zar_age_display} → "
             f"NAV≈{nav_zar_display} | Reserves≈{reserves_zar_display} | Total≈{total_zar_display}"
         )
     else:
@@ -1025,4 +1320,4 @@ if __name__ == "__main__":
         sys.exit(0)
 
 
-__all__ = ["collect_doctor_snapshot", "collect_router_health"]
+__all__ = ["collect_doctor_snapshot", "collect_router_health", "run_doctor_subprocess"]

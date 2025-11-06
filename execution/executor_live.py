@@ -2495,7 +2495,10 @@ def _pub_tick() -> None:
 
         try:
             with with_firestore() as db:
-                db.document(f"hedge/{ENV}/state/positions").set({"rows": rows}, merge=False)
+                db.document(f"hedge/{ENV}/state/positions").set(
+                    {"items": rows, "env": ENV, "updated_at": datetime.now(timezone.utc).isoformat()},
+                    merge=False,
+                )
             print("[executor] Firestore publish ok", flush=True)
         except Exception as exc:
             LOG.error("[executor] Firestore publish error: %s", exc)

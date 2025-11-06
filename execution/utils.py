@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union, Mapping
 
 import requests
 
@@ -439,7 +439,10 @@ def _load_cache_from_disk() -> None:
             _COINGECKO_TS = float(data.get("prices_ts") or 0.0)
             rate = data.get("usd_zar")
             if rate:
-                _USD_ZAR_CACHE = {"rate": float(rate)}
+                _USD_ZAR_CACHE = {
+                    "rate": float(rate),
+                    "source": data.get("usd_zar_source") or "cache",
+                }
                 _USD_ZAR_TS = float(data.get("usd_zar_ts") or 0.0)
     except Exception as exc:  # pragma: no cover - cache load best effort
         logging.debug("[coingecko] cache load failed: %s", exc)
@@ -453,6 +456,7 @@ def _persist_cache(prices: dict, usd_zar: Optional[float]) -> None:
             "prices_ts": _COINGECKO_TS,
             "usd_zar": usd_zar if usd_zar is not None else _USD_ZAR_CACHE.get("rate"),
             "usd_zar_ts": _USD_ZAR_TS,
+            "usd_zar_source": _USD_ZAR_CACHE.get("source"),
         }
         CACHE_PATH.write_text(json.dumps(payload))
     except Exception as exc:  # pragma: no cover
@@ -484,12 +488,12 @@ def get_coingecko_prices(vs: str = "usd", force: bool = False) -> dict:
                 prices[ticker] = float(data[coingecko_id][vs])
             except Exception:
                 continue
-        usd_zar = get_usd_to_zar(force=force)  # ensure cache alignment
+        usd_zar_rate = get_usd_to_zar(force=force)  # ensure cache alignment
         if prices:
             _COINGECKO_CACHE = prices
             _COINGECKO_TS = now
-            logging.info("[coingecko] updated: %s usd→zar=%.4f", prices, usd_zar or -1.0)
-            _persist_cache(_COINGECKO_CACHE, usd_zar)
+            logging.info("[coingecko] updated: %s usd→zar=%.4f", prices, usd_zar_rate or -1.0)
+            _persist_cache(_COINGECKO_CACHE, usd_zar_rate)
         return _COINGECKO_CACHE or prices
     except Exception as exc:
         logging.error("[coingecko] fetch error: %s", exc)
@@ -499,12 +503,29 @@ def get_coingecko_prices(vs: str = "usd", force: bool = False) -> dict:
         return {}
 
 
-def get_usd_to_zar(force: bool = False) -> Optional[float]:
-    """Return USD→ZAR rate using CoinGecko."""
+def get_treasury_snapshot(path: str = "logs/treasury.json") -> Dict[str, Any]:
+    """Return parsed treasury snapshot from disk; {} when unavailable."""
+    try:
+        payload = load_json(path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logging.debug("[treasury] snapshot load failed: %s", exc)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def get_usd_to_zar(
+    force: bool = False,
+    with_meta: bool = False,
+) -> Union[Optional[float], Tuple[Optional[float], Dict[str, Optional[float]]]]:
+    """Return USD→ZAR rate; optionally include freshness metadata."""
     global _USD_ZAR_CACHE, _USD_ZAR_TS
     now = time.time()
-    if not force and _USD_ZAR_CACHE and (now - _USD_ZAR_TS) < 120:
-        return _USD_ZAR_CACHE.get("rate")
+    cache_rate = _USD_ZAR_CACHE.get("rate")
+    cache_source = _USD_ZAR_CACHE.get("source") or "cache"
+    cache_age = (now - _USD_ZAR_TS) if _USD_ZAR_TS else None
+    if not force and cache_rate is not None and (cache_age is None or cache_age < 120):
+        meta = {"source": cache_source, "age": cache_age}
+        return (cache_rate, meta) if with_meta else cache_rate
     try:
         resp = requests.get(
             COINGECKO_URL,
@@ -515,14 +536,112 @@ def get_usd_to_zar(force: bool = False) -> Optional[float]:
         data = resp.json() or {}
         rate = float(((data or {}).get("usd") or {}).get("zar") or 0.0)
         if rate > 0:
-            _USD_ZAR_CACHE = {"rate": rate}
+            _USD_ZAR_CACHE = {"rate": rate, "source": "api"}
             _USD_ZAR_TS = now
             logging.info("[coingecko] usd→zar updated: %.4f", rate)
             _persist_cache(_COINGECKO_CACHE, rate)
-        return _USD_ZAR_CACHE.get("rate")
+            meta = {"source": "api", "age": 0.0}
+            return (rate, meta) if with_meta else rate
+        # Fallback to cached values if API returns unexpected payload
+        if cache_rate is not None:
+            meta = {"source": cache_source, "age": cache_age}
+            return (cache_rate, meta) if with_meta else cache_rate
+        meta = {"source": "unavailable", "age": None}
+        return (None, meta) if with_meta else None
     except Exception as exc:
         logging.error("[coingecko] usd→zar fetch error: %s", exc)
-        cached = _USD_ZAR_CACHE.get("rate")
-        if cached:
+        if cache_rate is not None:
             logging.info("[coingecko] using cached usd→zar rate")
-        return cached
+            meta = {"source": cache_source, "age": cache_age}
+            return (cache_rate, meta) if with_meta else cache_rate
+        meta = {"source": "error", "age": None}
+        return (None, meta) if with_meta else None
+
+
+def compute_treasury_pnl(snapshot: Mapping[str, Any]) -> List[Dict[str, Optional[float]]]:
+    """
+    Compute per-asset PnL metrics from a treasury snapshot.
+
+    Returns a list of dicts containing: symbol, value_usd, avg_entry_price, pnl_pct.
+    """
+    if not isinstance(snapshot, Mapping):
+        return []
+
+    treasury: Mapping[str, Any]
+    if isinstance(snapshot.get("treasury"), Mapping):
+        treasury = snapshot["treasury"]  # type: ignore[assignment]
+    else:
+        treasury = snapshot
+
+    assets = treasury.get("assets")
+    if not isinstance(assets, list):
+        return []
+
+    results: List[Dict[str, Optional[float]]] = []
+    for entry in assets:
+        if not isinstance(entry, Mapping):
+            continue
+        symbol = str(
+            entry.get("asset")
+            or entry.get("Asset")
+            or entry.get("symbol")
+            or entry.get("code")
+            or ""
+        ).upper()
+        if not symbol:
+            continue
+
+        balance = (
+            _optional_float(entry.get("balance"))
+            or _optional_float(entry.get("qty"))
+            or _optional_float(entry.get("Units"))
+            or _optional_float(entry.get("units"))
+            or _optional_float(entry.get("amount"))
+        )
+        value_usd = (
+            _optional_float(entry.get("usd_value"))
+            or _optional_float(entry.get("USD Value"))
+            or _optional_float(entry.get("value_usd"))
+            or _optional_float(entry.get("usd"))
+        )
+        price_usd = (
+            _optional_float(entry.get("price_usdt"))
+            or _optional_float(entry.get("price"))
+            or _optional_float(entry.get("px"))
+        )
+        avg_entry_price = (
+            _optional_float(entry.get("avg_entry_price"))
+            or _optional_float(entry.get("avg_price"))
+            or _optional_float(entry.get("avg_entry"))
+        )
+        cost_basis_usd = (
+            _optional_float(entry.get("cost_basis_usd"))
+            or _optional_float(entry.get("usd_cost"))
+            or _optional_float(entry.get("cost_basis"))
+        )
+
+        if avg_entry_price is None and cost_basis_usd is not None and balance:
+            if balance != 0:
+                avg_entry_price = cost_basis_usd / balance
+        if cost_basis_usd is None and avg_entry_price is not None and balance:
+            cost_basis_usd = avg_entry_price * balance
+        if price_usd is None and value_usd is not None and balance:
+            if balance != 0:
+                price_usd = value_usd / balance
+
+        pnl_pct: Optional[float] = None
+        if avg_entry_price and price_usd and avg_entry_price != 0:
+            pnl_pct = ((price_usd - avg_entry_price) / avg_entry_price) * 100.0
+        elif cost_basis_usd and value_usd and cost_basis_usd != 0:
+            pnl_pct = ((value_usd - cost_basis_usd) / cost_basis_usd) * 100.0
+
+        results.append(
+            {
+                "symbol": symbol,
+                "value_usd": value_usd,
+                "avg_entry_price": avg_entry_price,
+                "pnl_pct": pnl_pct,
+            }
+        )
+
+    return results

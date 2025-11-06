@@ -38,6 +38,33 @@ SERVICE_ALIASES = {
 }
 
 
+def _firestore_available(db: Any) -> bool:
+    return db is not None and not getattr(db, "_is_noop", False)
+
+
+def _resolve_heartbeat_doc(db: Any, env: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Return the preferred telemetry heartbeat document plus its source label.
+
+    Precedence: telemetry/health (new schema) > telemetry/heartbeats (legacy mirror).
+    """
+    if not _firestore_available(db):
+        return None, None
+    telemetry = db.collection("hedge").document(env).collection("telemetry")
+    for name in ("health", "heartbeats"):
+        try:
+            snap = telemetry.document(name).get(timeout=3.0)
+        except Exception as exc:
+            LOG.debug("[dash] telemetry doc fetch failed telemetry/%s: %s", name, exc)
+            continue
+        if not getattr(snap, "exists", False):
+            continue
+        data = snap.to_dict() if hasattr(snap, "to_dict") else None
+        if isinstance(data, dict):
+            return data, f"telemetry/{name}"
+    return None, None
+
+
 def _pick_path(doc: Mapping[str, Any], path: str) -> Any:
     current: Any = doc
     for segment in path.split("."):
@@ -222,13 +249,15 @@ def fetch_telemetry_health(env: str = "prod") -> Dict[str, Any]:
         data = snap.to_dict() if hasattr(snap, "to_dict") else None
         return data if isinstance(data, dict) else None
 
-    telemetry_doc = _fetch_doc("telemetry", "health")
-    if telemetry_doc is not None:
-        result.update(telemetry_doc)
-        sources.append("telemetry/health")
-        parsed = _parse_service_heartbeats(telemetry_doc)
-        _register("executor_live", parsed.get("executor_live"), "firestore:telemetry/health")
-        _register("sync_state", parsed.get("sync_state"), "firestore:telemetry/health")
+    heartbeat_doc, heartbeat_source = _resolve_heartbeat_doc(db, env)
+    if heartbeat_doc is not None:
+        result.update(heartbeat_doc)
+        if heartbeat_source:
+            sources.append(heartbeat_source)
+        parsed = _parse_service_heartbeats(heartbeat_doc)
+        origin = f"firestore:{heartbeat_source}" if heartbeat_source else "firestore:telemetry"
+        _register("executor_live", parsed.get("executor_live"), origin)
+        _register("sync_state", parsed.get("sync_state"), origin)
 
     executor_doc = _fetch_doc("health", "executor_live")
     if executor_doc is not None:
@@ -255,6 +284,41 @@ def fetch_telemetry_health(env: str = "prod") -> Dict[str, Any]:
         result["services"] = services
     else:
         result.setdefault("services", {})
+
+    def _maybe_float(value: Any) -> Optional[float]:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return float(text)
+            except Exception:
+                return None
+        return None
+
+    timestamp_dt = latest_ts or _coerce_timestamp(result.get("ts") or result.get("updated_at") or result.get("timestamp"))
+    result["timestamp"] = timestamp_dt.isoformat() if timestamp_dt else None
+    if timestamp_dt and not result.get("ts"):
+        result["ts"] = result["timestamp"]
+    if timestamp_dt and not result.get("updated_at"):
+        result["updated_at"] = result["timestamp"]
+
+    uptime_value: Optional[float] = None
+    for key in ("uptime", "rolling_uptime_pct", "uptime_pct"):
+        uptime_value = _maybe_float(result.get(key))
+        if uptime_value is not None:
+            break
+    result["uptime"] = uptime_value
+
+    avg_conf_value = _maybe_float(result.get("avg_confidence"))
+    if avg_conf_value is None:
+        aggregate_payload = result.get("aggregate")
+        if isinstance(aggregate_payload, Mapping):
+            avg_conf_value = _maybe_float(aggregate_payload.get("avg_confidence"))
+    result["avg_confidence"] = avg_conf_value
+
     if sources:
         result["source"] = ",".join(sources)
     return result
