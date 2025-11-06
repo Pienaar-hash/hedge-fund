@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from utils.firestore_client import get_db, write_doc
 
@@ -34,6 +34,340 @@ def _safe_load_json(path: str) -> Optional[Dict[str, Any]]:
 
 def _firestore_available(db: Any) -> bool:
     return db is not None and not getattr(db, "_is_noop", False)
+
+
+def _to_float(value: Any) -> float:
+    try:
+        if value in (None, "", "null"):
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _to_int(value: Any) -> int:
+    try:
+        if value in (None, "", "null"):
+            return 0
+        return int(float(value))
+    except Exception:
+        return 0
+
+
+def _extract_router_metrics(payload: Optional[Dict[str, Any]]) -> Dict[str, float]:
+    metrics = {
+        "trades": 0.0,
+        "win_rate": 0.0,
+        "avg_pnl": 0.0,
+        "cum_pnl": 0.0,
+        "fill_rate": 0.0,
+        "lat_p50_ms": 0.0,
+        "lat_p95_ms": 0.0,
+        "slip_p50_bps": 0.0,
+        "slip_p95_bps": 0.0,
+    }
+    if not isinstance(payload, dict):
+        return metrics
+
+    source = payload.get("metrics")
+    if not isinstance(source, dict):
+        source = payload
+
+    intents = payload.get("intents")
+    if isinstance(intents, dict):
+        emitted = intents.get("emitted")
+        if emitted is None:
+            emitted = intents.get("executed")
+        metrics["trades"] = float(_to_int(emitted))
+        attempted = _to_int(intents.get("attempted"))
+        executed = _to_int(intents.get("executed") or intents.get("emitted"))
+        if attempted > 0:
+            metrics["fill_rate"] = min(100.0, max(0.0, (executed / attempted) * 100.0))
+
+    for key in ("trades", "win_rate", "avg_pnl", "avg_pnl_usd", "avg_pnl_usdt"):
+        value = source.get(key)
+        if value is not None:
+            if key == "trades":
+                metrics["trades"] = float(_to_int(value))
+            elif key.startswith("avg_pnl"):
+                metrics["avg_pnl"] = _to_float(value)
+            elif key == "win_rate":
+                metrics["win_rate"] = _to_float(value)
+
+    cum_pnl = source.get("cum_pnl") or source.get("cumulative_pnl") or source.get("cum_pnl_usd")
+    metrics["cum_pnl"] = _to_float(cum_pnl)
+
+    fill_rate = source.get("fill_rate") or source.get("fill_rate_pct")
+    if fill_rate is not None:
+        metrics["fill_rate"] = _to_float(fill_rate)
+
+    latency = source.get("latency_ms") or source.get("latency")
+    if isinstance(latency, dict):
+        p50 = latency.get("decision_p50") or latency.get("p50") or latency.get("latency_p50_ms")
+        p95 = latency.get("decision_p95") or latency.get("p95") or latency.get("latency_p95_ms")
+        metrics["lat_p50_ms"] = _to_float(p50)
+        metrics["lat_p95_ms"] = _to_float(p95)
+    else:
+        metrics["lat_p50_ms"] = _to_float(source.get("lat_p50_ms"))
+        metrics["lat_p95_ms"] = _to_float(source.get("lat_p95_ms"))
+
+    slippage = source.get("slippage_bps") or source.get("slippage")
+    if isinstance(slippage, dict):
+        metrics["slip_p50_bps"] = _to_float(slippage.get("p50"))
+        metrics["slip_p95_bps"] = _to_float(slippage.get("p95"))
+    else:
+        metrics["slip_p50_bps"] = _to_float(source.get("slip_p50_bps"))
+        metrics["slip_p95_bps"] = _to_float(source.get("slip_p95_bps"))
+
+    return metrics
+
+
+def _format_treasury_asset(asset: str, balance: float, price: float, usd_value: float) -> Dict[str, float | str]:
+    return {
+        "asset": asset,
+        "balance": float(balance),
+        "price_usdt": float(price),
+        "usd_value": float(usd_value),
+    }
+
+
+def _normalize_treasury_payload(payload: Optional[Dict[str, Any]], source: str) -> Dict[str, Any]:
+    assets_acc: Dict[str, Dict[str, float]] = {}
+
+    def ingest_node(node: Any, hint: Optional[str] = None) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_lower = str(key).lower()
+                if key_lower in {"total_usd", "total_treasury_usdt", "updated_at", "ts"}:
+                    continue
+                if key_lower in {"assets", "treasury"}:
+                    ingest_node(value)
+                    continue
+                ingest_entry(str(key), value)
+        elif isinstance(node, list):
+            for entry in node:
+                ingest_entry(hint, entry)
+
+    def ingest_entry(hint: Optional[str], entry: Any) -> None:
+        asset_name = ""
+        qty = 0.0
+        price = 0.0
+        usd_value = 0.0
+
+        if isinstance(entry, dict):
+            candidate = entry.get("asset") or entry.get("Asset") or entry.get("symbol") or entry.get("code")
+            asset_name = str(hint or candidate or "").upper()
+            qty = _to_float(entry.get("qty") or entry.get("Units") or entry.get("units") or entry.get("balance") or entry.get("amount"))
+            price = _to_float(entry.get("px") or entry.get("price") or entry.get("price_usdt"))
+            usd_value = _to_float(
+                entry.get("val_usdt")
+                or entry.get("USD Value")
+                or entry.get("usd_value")
+                or entry.get("value_usd")
+                or entry.get("usd")
+            )
+        else:
+            asset_name = str(hint or "").upper()
+            qty = _to_float(entry)
+
+        if not asset_name or asset_name in {"TOTAL_USD", "TOTAL_TREASURY_USDT"}:
+            return
+
+        acc = assets_acc.setdefault(asset_name, {"balance": 0.0, "price": 0.0, "usd_value": 0.0})
+        if qty:
+            acc["balance"] = float(qty)
+        if price:
+            acc["price"] = float(price)
+        if usd_value:
+            acc["usd_value"] = float(usd_value)
+
+    if isinstance(payload, dict):
+        candidates: List[Any] = []
+        if isinstance(payload.get("assets"), (list, dict)):
+            candidates.append(payload["assets"])
+        if isinstance(payload.get("treasury"), dict):
+            treas = payload["treasury"]
+            candidates.append(treas)
+            if isinstance(treas.get("assets"), (list, dict)):
+                candidates.append(treas["assets"])
+        if isinstance(payload.get("breakdown"), dict):
+            breakdown = payload["breakdown"]
+            tre = breakdown.get("treasury")
+            if isinstance(tre, (list, dict)):
+                candidates.append(tre)
+                if isinstance(tre, dict) and isinstance(tre.get("assets"), (list, dict)):
+                    candidates.append(tre["assets"])
+
+        for node in candidates:
+            ingest_node(node)
+
+    assets: List[Dict[str, Any]] = []
+    total_payload = 0.0
+    if isinstance(payload, dict):
+        total_payload = _to_float(
+            payload.get("total_usd")
+            or payload.get("treasury_usdt")
+            or payload.get("total_treasury_usdt")
+            or payload.get("treasury_total")
+        )
+
+    total_usd = 0.0
+    for asset, info in assets_acc.items():
+        balance = float(info.get("balance") or 0.0)
+        price = float(info.get("price") or 0.0)
+        usd_value = float(info.get("usd_value") or 0.0)
+
+        if balance and usd_value and price <= 0.0:
+            price = usd_value / balance if balance else 0.0
+
+        if price <= 0.0:
+            if asset in {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}:
+                price = 1.0
+
+        if usd_value <= 0.0:
+            usd_value = balance * price if balance else 0.0
+
+        assets.append(_format_treasury_asset(asset, balance, price, usd_value))
+        total_usd += usd_value
+
+    if not assets and isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in {"total_usd", "treasury_usdt", "treasury"}:
+                continue
+            try:
+                balance = _to_float(value)
+            except Exception:
+                continue
+            if balance:
+                assets.append(_format_treasury_asset(str(key).upper(), balance, 0.0, balance))
+                total_usd += balance
+
+    total = total_payload if total_payload > 0 else total_usd
+    return {
+        "assets": assets,
+        "total_usd": float(total),
+        "source": source,
+    }
+
+
+def _read_treasury_sources(root: str) -> List[Dict[str, Any]]:
+    """Return a list of treasury source candidates with freshness metadata."""
+    candidates = [
+        ("logs/treasury.json", os.path.join(root, "logs", "treasury.json")),
+    ]
+    sources: List[Dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+    for label, path in candidates:
+        payload = _safe_load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        updated_raw = payload.get("updated_at") or payload.get("ts")
+        updated_at = None
+        freshness = None
+        if isinstance(updated_raw, str):
+            try:
+                updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+            except Exception:
+                updated_at = None
+        if updated_at:
+            freshness = (now - updated_at).total_seconds()
+        sources.append(
+            {
+                "label": label,
+                "payload": payload,
+                "updated_at": updated_at,
+                "freshness_seconds": freshness,
+            }
+        )
+    config_payload = _safe_load_json(os.path.join(root, "config", "reserves.json"))
+    if isinstance(config_payload, dict):
+        sources.append(
+            {
+                "label": "config/reserves.json",
+                "payload": config_payload,
+                "updated_at": None,
+                "freshness_seconds": None,
+            }
+        )
+    return sources
+
+
+def _select_canonical_treasury(
+    sources: List[Dict[str, Any]], freshness_limit: float = 600.0
+) -> tuple[Dict[str, float], float, str, List[str]]:
+    """Select a single treasury source using freshness priority rules."""
+    assets: Dict[str, float] = {}
+    total_usd = 0.0
+    source_used = "config/reserves.json"
+    sources_seen: List[str] = []
+
+    best_candidate: Optional[Dict[str, Any]] = None
+    for label in ("logs/treasury.json",):
+        for entry in sources:
+            if entry.get("label") != label:
+                continue
+            sources_seen.append(label)
+            freshness = entry.get("freshness_seconds")
+            if freshness is not None and freshness <= freshness_limit:
+                best_candidate = entry
+                break
+        if best_candidate:
+            break
+
+    if best_candidate is None:
+        for entry in sources:
+            if entry.get("label") == "config/reserves.json":
+                best_candidate = entry
+                sources_seen.append("config/reserves.json")
+                break
+
+    if best_candidate is None:
+        return assets, total_usd, source_used, sources_seen
+
+    label = str(best_candidate.get("label") or "unknown")
+    payload = best_candidate.get("payload") if isinstance(best_candidate.get("payload"), dict) else {}
+    source_used = label
+
+    if label == "config/reserves.json":
+        config = payload
+        stable_set = {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}
+        for symbol, qty in config.items():
+            try:
+                amount = float(qty)
+            except Exception:
+                continue
+            asset = str(symbol).upper()
+            if not asset or amount == 0:
+                continue
+            price = 1.0 if asset in stable_set else 0.0
+            if price == 0.0:
+                try:
+                    from execution.exchange_utils import get_price
+
+                    price = float(get_price(f"{asset}USDT") or 0.0)
+                except Exception:
+                    price = 0.0
+            if price <= 0 and asset.endswith("USDT"):
+                price = 1.0
+            usd_value = amount * price if price > 0 else amount
+            assets[asset] = usd_value
+            total_usd += usd_value
+    else:
+        normalized = _normalize_treasury_payload(payload, label)
+        for entry in normalized.get("assets", []):
+            if not isinstance(entry, dict):
+                continue
+            asset = str(entry.get("asset") or "").upper()
+            if not asset:
+                continue
+            balance = _to_float(entry.get("balance"))
+            usd_value = _to_float(entry.get("usd_value") or entry.get("usd"))
+            price = _to_float(entry.get("price_usdt") or entry.get("price"))
+            if usd_value <= 0 and balance and price > 0:
+                usd_value = balance * price
+            assets[asset] = usd_value if usd_value > 0 else balance
+            total_usd += assets[asset]
+    return assets, float(total_usd), source_used, sources_seen
 
 
 def fetch_leaderboard(limit: int = 10) -> list[Dict[str, Any]]:
@@ -159,12 +493,15 @@ def publish_router_health(payload: Optional[Dict[str, Any]] = None) -> None:
             or _safe_load_json(os.path.join(root, "logs", "router.json"))
             or {}
         )
-    body = {
+    metrics = _extract_router_metrics(payload)
+    body: Dict[str, Any] = {
         "env": env,
         "updated_at": _utcnow_iso(),
+        "metrics": metrics,
     }
     if isinstance(payload, dict):
         body.update(payload)
+    body["metrics"] = metrics
     db = get_db(strict=False)
     if not _firestore_available(db):
         raise RuntimeError("Firestore unavailable")
@@ -175,8 +512,8 @@ def publish_router_health(payload: Optional[Dict[str, Any]] = None) -> None:
 def publish_positions(payload: Optional[Dict[str, Any]] = None) -> None:
     """Publish positions snapshot to Firestore, defaulting to local cache."""
     env = _env()
+    root = _repo_root()
     if payload is None:
-        root = _repo_root()
         payload = (
             _safe_load_json(os.path.join(root, "logs", "spot_state.json"))
             or _safe_load_json(os.path.join(root, "logs", "positions.json"))
@@ -201,10 +538,147 @@ def publish_positions(payload: Optional[Dict[str, Any]] = None) -> None:
         "updated_at": _utcnow_iso(),
         "positions": positions,
     }
-    if snapshot is not None:
+    combined_snapshot: Dict[str, Any] = {
+        "source": "combined_spot_futures",
+        "sources": {},
+    }
+    if snapshot is not None and isinstance(snapshot, dict):
+        combined_snapshot["base"] = snapshot
+    spot_info: Dict[str, Any] = {}
+    try:
+        from execution.exchange_utils import get_spot_balances
+
+        spot_info = get_spot_balances() or {}
+    except Exception as exc:
+        LOGGER.warning("[firestore] get_spot_balances failed: %s", exc)
+        spot_info = {}
+    spot_balances = {
+        str(asset).upper(): _to_float(val)
+        for asset, val in (spot_info.get("balances") or {}).items()
+        if val is not None
+    }
+    spot_total = _to_float(spot_info.get("total_usd"))
+    if spot_total <= 0 and spot_balances:
+        spot_total = sum(_to_float(val) for val in spot_balances.values())
+    spot_source = str(spot_info.get("source") or "treasury_file")
+    spot_updated_at = spot_info.get("updated_at")
+    if spot_balances or spot_total:
+        combined_snapshot["sources"]["spot"] = {
+            "source": spot_source,
+            "balances": spot_balances,
+            "total_usd": float(spot_total),
+            "updated_at": spot_updated_at,
+        }
+        raw_payload = spot_info.get("raw")
+        if isinstance(raw_payload, dict) and raw_payload:
+            combined_snapshot["sources"]["spot"]["raw"] = raw_payload
+    futures_balances: Dict[str, float] = {}
+    nav_trading: Optional[Dict[str, Any]] = None
+    futures_source = "futures_api"
+    futures_updated_at = None
+    try:
+        from execution.exchange_utils import get_futures_balances
+
+        futures_balances = get_futures_balances() or {}
+    except Exception as exc:
+        LOGGER.warning("[firestore] get_futures_balances failed: %s", exc)
+        futures_balances = {}
+    if futures_balances:
+        futures_updated_at = _utcnow_iso()
+    if not futures_balances:
+        nav_trading = _safe_load_json(os.path.join(root, "logs", "nav_trading.json")) or {}
+        breakdown = nav_trading.get("breakdown") if isinstance(nav_trading, dict) else {}
+        futures_usd = _to_float((breakdown or {}).get("futures_wallet_usdt"))
+        if futures_usd > 0:
+            futures_balances["USDT"] = futures_usd
+            futures_source = "nav_trading.json"
+            futures_updated_at = (nav_trading or {}).get("ts") if isinstance(nav_trading, dict) else None
+    futures_total = sum(_to_float(val) for val in futures_balances.values())
+    if futures_balances or futures_total:
+        combined_snapshot["sources"]["futures_wallet"] = {
+            "source": "futures_api" if futures_source == "futures_api" else futures_source,
+            "balances": futures_balances,
+            "total_usd": float(futures_total),
+            "updated_at": futures_updated_at,
+        }
+        if nav_trading:
+            combined_snapshot["sources"]["futures_wallet"]["raw"] = nav_trading
+    if combined_snapshot["sources"]:
+        doc["snapshot"] = combined_snapshot
+        doc["source"] = combined_snapshot["source"]
+        doc["sources"] = combined_snapshot["sources"]
+    elif snapshot is not None:
         doc["snapshot"] = snapshot
     db = get_db(strict=False)
     if not _firestore_available(db):
         raise RuntimeError("Firestore unavailable")
     write_doc(db, f"hedge/{env}/positions/latest", doc, require=False)
     LOGGER.info("[firestore] positions publish ok env=%s count=%d", env, len(doc["positions"]))
+
+
+def publish_treasury(payload: Optional[Dict[str, Any]] = None) -> None:
+    """Publish treasury holdings snapshot to Firestore."""
+    env = _env()
+    root = _repo_root()
+
+    sources = _read_treasury_sources(root)
+    if payload is not None and isinstance(payload, dict):
+        sources.insert(
+            0,
+            {
+                "label": "payload_provided",
+                "payload": payload,
+                "updated_at": None,
+                "freshness_seconds": None,
+            },
+        )
+
+    assets_map, total_usd, source_used, sources_seen = _select_canonical_treasury(sources)
+
+    def _price_for(asset: str) -> float:
+        if asset in {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}:
+            return 1.0
+        try:
+            from execution.exchange_utils import get_price
+
+            price = float(get_price(f"{asset}USDT") or 0.0)
+            if price <= 0 and asset.endswith("USDT"):
+                price = 1.0
+            return price
+        except Exception:
+            return 0.0
+
+    assets_list: List[Dict[str, Any]] = []
+    for asset, usd_value in assets_map.items():
+        if usd_value <= 0:
+            continue
+        price = _price_for(asset)
+        balance = usd_value / price if price > 0 else usd_value
+        assets_list.append(
+            {
+                "asset": asset,
+                "balance": float(balance),
+                "price_usdt": float(price),
+                "usd_value": float(usd_value),
+            }
+        )
+
+    assets_list.sort(key=lambda item: item.get("usd_value", 0.0), reverse=True)
+    treasury_payload: Dict[str, Any] = {
+        "assets": assets_list,
+        "total_usd": float(total_usd),
+        "source": source_used,
+        "sources_seen": sources_seen,
+    }
+
+    doc = {
+        "env": env,
+        "updated_at": _utcnow_iso(),
+        "treasury": treasury_payload,
+    }
+
+    db = get_db(strict=False)
+    if not _firestore_available(db):
+        raise RuntimeError("Firestore unavailable")
+    write_doc(db, f"hedge/{env}/treasury/latest", doc, require=False)
+    LOGGER.info("[firestore] treasury publish ok env=%s source=%s total=%.2f", env, source_used, total_usd)

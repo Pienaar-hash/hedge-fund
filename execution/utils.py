@@ -70,7 +70,7 @@ def write_nav_snapshots_pair(
 
 
 def write_treasury_snapshot(
-    val_usdt: float, breakdown: dict, path: str = "logs/nav_treasury.json"
+    val_usdt: float, breakdown: dict, path: str = "logs/treasury.json"
 ) -> None:
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

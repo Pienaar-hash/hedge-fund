@@ -25,6 +25,7 @@ from dashboard.dashboard_utils import (  # noqa: E402
     get_firestore_connection,
     fetch_state_document,
     fetch_telemetry_health,
+    fetch_treasury_latest,
     parse_nav_to_df_and_kpis,
     positions_sorted,
     fetch_mark_price_usdt,
@@ -35,6 +36,7 @@ from dashboard.dashboard_utils import (  # noqa: E402
 from dashboard.async_cache import gather_once  # noqa: E402
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
 from dashboard.router_health import load_router_health, RouterHealthData  # noqa: E402
+from dashboard.live_helpers import get_nav_snapshot, get_treasury  # noqa: E402
 from scripts.doctor import collect_doctor_snapshot  # noqa: E402
 from research.correlation_matrix import DEFAULT_OUTPUT_PATH as CORRELATION_CACHE_PATH  # noqa: E402
 from execution.capital_allocator import DEFAULT_OUTPUT_PATH as CAPITAL_ALLOC_CACHE_PATH  # noqa: E402
@@ -868,6 +870,14 @@ def main():
         except Exception:
             return 0.0
 
+    def _maybe_float(value: Any) -> Optional[float]:
+        try:
+            if value in (None, "", "null"):
+                return None
+            return float(value)
+        except Exception:
+            return None
+
     def _to_optional_float(value: Any) -> Optional[float]:
         try:
             num = float(value)
@@ -1016,6 +1026,105 @@ def main():
     router_snapshot = load_exec_snapshot("router", ENV)
     trades_snapshot = load_exec_snapshot("trades", ENV)
     signals_snapshot = load_exec_snapshot("signals", ENV)
+    nav_snapshot_live = get_nav_snapshot()
+    treasury_snapshot_live = get_treasury()
+
+    treasury_latest_doc = fetch_treasury_latest(ENV)
+    if not isinstance(treasury_latest_doc, dict):
+        treasury_latest_doc = {}
+    treasury_payload = treasury_latest_doc.get("treasury") if isinstance(treasury_latest_doc, dict) else {}
+    if not isinstance(treasury_payload, dict) or not treasury_payload:
+        treasury_payload = treasury_snapshot_live if isinstance(treasury_snapshot_live, dict) else {}
+
+    treasury_assets_raw = treasury_payload.get("assets") if isinstance(treasury_payload.get("assets"), list) else []
+    treasury_assets_rows: List[Dict[str, Any]] = []
+    for entry in treasury_assets_raw:
+        if not isinstance(entry, dict):
+            continue
+        asset_name = str(
+            entry.get("asset")
+            or entry.get("Asset")
+            or entry.get("symbol")
+            or entry.get("code")
+            or ""
+        ).upper()
+        if not asset_name:
+            continue
+        balance_val = _maybe_float(
+            entry.get("balance")
+            or entry.get("qty")
+            or entry.get("Units")
+            or entry.get("units")
+            or entry.get("amount")
+        )
+        price_val = _maybe_float(entry.get("price_usdt") or entry.get("price") or entry.get("px"))
+        usd_val = _maybe_float(
+            entry.get("usd_value")
+            or entry.get("USD Value")
+            or entry.get("value_usd")
+            or entry.get("val_usdt")
+        )
+        if usd_val is None and balance_val is not None and price_val is not None:
+            usd_val = balance_val * price_val
+        treasury_assets_rows.append(
+            {
+                "Asset": asset_name,
+                "Balance": balance_val,
+                "Price (USDT)": price_val,
+                "USD Value": usd_val,
+            }
+        )
+
+    def _extract_total_usd(payload: Dict[str, Any]) -> Optional[float]:
+        if not isinstance(payload, dict):
+            return None
+        total = payload.get("total_usd") or payload.get("nav") or payload.get("treasury_usdt")
+        try:
+            if isinstance(total, (int, float)):
+                return float(total)
+            if isinstance(total, str) and total.strip():
+                return float(total)
+        except Exception:
+            return None
+        return None
+
+    treasury_firestore_total: Optional[float] = _extract_total_usd(treasury_payload)
+    if treasury_firestore_total is None:
+        treasury_firestore_total = _extract_total_usd(treasury_snapshot_live)
+
+    treasury_updated_at = treasury_latest_doc.get("updated_at") or treasury_payload.get("updated_at")
+    treasury_updated_ts = _to_epoch_seconds(treasury_updated_at)
+    treasury_age_seconds: Optional[float] = None
+    if treasury_updated_ts is not None:
+        try:
+            treasury_age_seconds = max(0.0, time.time() - float(treasury_updated_ts))
+        except Exception:
+            treasury_age_seconds = None
+    treasury_source = treasury_latest_doc.get("source") or treasury_payload.get("source") or "firestore"
+
+    nav_trading_usd = _to_optional_float(
+        nav_snapshot_live.get("nav")
+        or nav_snapshot_live.get("equity")
+        or (nav_doc or {}).get("nav")
+        or (nav_doc or {}).get("equity")
+    )
+    if nav_trading_usd is None:
+        nav_trading_usd = _to_optional_float(nav_value)
+
+    reserves_usd_val = treasury_firestore_total
+    if reserves_usd_val is None and treasury_snapshot_live:
+        reserves_usd_val = _extract_total_usd(treasury_snapshot_live)
+
+    total_equity_usd: Optional[float] = None
+    if nav_trading_usd is not None or reserves_usd_val is not None:
+        total_equity_usd = float(nav_trading_usd or 0.0) + float(reserves_usd_val or 0.0)
+
+    total_equity_zar: Optional[float] = None
+    if total_equity_usd is not None and zar_rate is not None:
+        try:
+            total_equity_zar = float(total_equity_usd) * float(zar_rate)
+        except Exception:
+            total_equity_zar = None
 
     status.success(
         f"Loaded · nav_source={nav_source} · positions_source={pos_source} · leaderboard_source={lb_source}"
@@ -1084,7 +1193,9 @@ def main():
         except Exception as exc:
             LOG.warning("[dash] reserves valuation failed: %s", exc)
 
-    if not reserves_total_usd:
+    if treasury_firestore_total is not None:
+        reserves_total_usd = float(treasury_firestore_total)
+    elif not reserves_total_usd:
         candidate_total = reserves_snapshot.get("total")
         if isinstance(candidate_total, (int, float)):
             reserves_total_usd = float(candidate_total)
@@ -1154,14 +1265,27 @@ def main():
     exchange_nav_display = format_currency(exchange_nav_value, "$")
     nav_zar_value = None
     nav_zar_text = "≈ R—"
-    zar_rate = nav_freshness.get("zar_rate") or cached_usd_to_zar()
-    zar_source = nav_freshness.get("zar_source") or ("cached" if zar_rate else "none")
-    if zar_rate and isinstance(nav_value, (int, float)):
+    zar_rate: Optional[float] = None
+    zar_source: Optional[str] = None
+    nav_zar_value = None
+    if nav_freshness.get("zar_rate") is not None:
+        try:
+            zar_rate = float(nav_freshness.get("zar_rate") or 0.0)
+        except Exception:
+            zar_rate = None
+    if zar_rate is None:
+        cached_rate = cached_usd_to_zar()
+        if isinstance(cached_rate, (int, float)):
+            zar_rate = float(cached_rate)
+            zar_source = "cached"
+    else:
+        zar_source = nav_freshness.get("zar_source") or "fresh"
+    if zar_rate is not None and isinstance(nav_value, (int, float)):
         nav_zar_value = float(nav_value) * float(zar_rate)
         nav_zar_text = f"≈ {format_currency(nav_zar_value, 'R')}"
 
     prev_nav_zar = None
-    if zar_rate and isinstance(prev_nav_value, (int, float)):
+    if zar_rate is not None and isinstance(prev_nav_value, (int, float)):
         prev_nav_zar = float(prev_nav_value) * float(zar_rate)
 
     nav_delta_html = compare_nav_zar(prev_nav_zar, nav_zar_value)
@@ -1277,7 +1401,7 @@ def main():
     """
 
     nav_main_text = f"⚡ NAV {nav_usd_text} | {nav_zar_text} | {env_label}"
-    rate_display = f"R{zar_rate:.2f}/USD" if zar_rate else "R—/USD"
+    rate_display = f"R{zar_rate:.2f}/USD" if zar_rate is not None else "R—/USD"
 
     drawdown_snapshot = nav_freshness.get("drawdown", {})
     heartbeat_snapshot = doctor_snapshot.get("heartbeats", {})
@@ -1345,7 +1469,7 @@ def main():
     if not btc_price:
         btc_price = fetch_mark_price_usdt("BTCUSDT")
     reserve_usdt = RESERVE_BTC * btc_price if btc_price and btc_price > 0 else 0.0
-    reserve_zar = reserve_usdt * float(zar_rate) if zar_rate and reserve_usdt else None
+    reserve_zar = reserve_usdt * float(zar_rate) if zar_rate is not None and reserve_usdt else None
 
     # ---- Tabs layout --------------------------------------------------------------
     (
@@ -1389,23 +1513,59 @@ def main():
         doc_col3.metric("Drawdown", f"{dd_pct:.2f}%", format_currency(dd_abs, "$"))
         doc_col4.metric("Heartbeat", hb_status, heartbeat_brief)
 
-        doc_row2 = st.columns(4)
+        doc_row2 = st.columns(5)
         doc_row2[0].metric("Positions", positions_info.get("count", 0), None)
-        doc_row2[1].metric(
-            "Firestore",
-            firestore_info.get("status", "n/a").upper() if firestore_info.get("enabled") else "DISABLED",
-            firestore_info.get("age", "n/a"),
-        )
         doc_row2[2].metric(
             "ZAR Rate",
-            f"{zar_rate:.2f}" if zar_rate else "n/a",
-            zar_source if zar_rate else "none",
+            f"{zar_rate:.2f}" if zar_rate is not None else "n/a",
+            zar_source if zar_rate is not None else "none",
         )
         doc_row2[3].metric(
             "Reserves",
             treasury_display,
             None,
         )
+        total_equity_display = format_currency(total_equity_usd, "$") if total_equity_usd is not None else "—"
+        total_equity_delta = (
+            f"≈ R{total_equity_zar:,.0f} @ {zar_rate:.2f}/USD"
+            if total_equity_zar is not None and zar_rate is not None
+            else None
+        )
+        doc_row2[4].metric(
+            "Total Equity (USD)",
+            total_equity_display,
+            total_equity_delta,
+        )
+
+        st.markdown("#### Treasury (Firestore)")
+        treasury_cols = st.columns([1, 2])
+        treasury_delta = format_age_seconds(treasury_age_seconds) if treasury_age_seconds is not None else "n/a"
+        treasury_cols[0].metric(
+            "Treasury (USDT)",
+            format_currency(treasury_firestore_total, "$") if treasury_firestore_total is not None else "—",
+            f"Age {treasury_delta}" if treasury_delta not in {"n/a", "—"} else None,
+        )
+        if treasury_assets_rows:
+            df_treasury = pd.DataFrame(treasury_assets_rows)
+            # format values for readability
+            display_df = df_treasury.copy()
+            display_df["Balance"] = display_df["Balance"].map(lambda v: f"{v:.6f}".rstrip("0").rstrip(".") if isinstance(v, (int, float)) else "—")
+            display_df["Price (USDT)"] = display_df["Price (USDT)"].map(
+                lambda v: f"{v:,.2f}" if isinstance(v, (int, float)) else "—"
+            )
+            display_df["USD Value"] = display_df["USD Value"].map(
+                lambda v: format_currency(v, "$") if isinstance(v, (int, float)) else "—"
+            )
+            treasury_cols[1].dataframe(display_df, use_container_width=True, hide_index=True)
+        else:
+            treasury_cols[1].info("No treasury assets available.")
+        treasury_caption_parts = []
+        if treasury_updated_at:
+            treasury_caption_parts.append(f"updated {treasury_updated_at}")
+        if treasury_source:
+            treasury_caption_parts.append(f"source {treasury_source}")
+        if treasury_caption_parts:
+            st.caption(" · ".join(treasury_caption_parts))
 
         st.markdown("---")
         st.subheader("Portfolio KPIs")
@@ -1425,12 +1585,12 @@ def main():
         reserve_caption = f"~{format_currency(reserve_usdt, '$')}" if reserve_usdt and reserve_usdt > 0 else "—"
         k6.metric("Reserve (BTC)", f"{RESERVE_BTC:.3f} BTC", reserve_caption)
 
-        if zar_rate and nav_zar_value:
+        if zar_rate is not None and nav_zar_value:
             st.markdown(
                 f"<div class='zar-note'>{format_currency(nav_value, '$')} ≈ {format_currency(nav_zar_value, 'R')} @ R{zar_rate:.2f}/USD</div>",
                 unsafe_allow_html=True,
             )
-        if zar_rate and isinstance(reserve_zar, (int, float)) and reserve_zar:
+        if zar_rate is not None and isinstance(reserve_zar, (int, float)) and reserve_zar:
             st.markdown(
                 f"<div class='zar-note'>Reserves ≈ {format_currency(reserve_zar, 'R')}</div>",
                 unsafe_allow_html=True,
@@ -1897,7 +2057,7 @@ def main():
         if leader_df is None or leader_df.empty:
             st.info("No leaderboard entries yet.")
         else:
-            if zar_rate:
+            if zar_rate is not None:
                 def _extract_return_usd(row: pd.Series) -> Optional[float]:
                     for key in ("return_usd", "return", "pnl_usd", "pnl", "usd_return"):
                         if key in row:
@@ -1908,7 +2068,7 @@ def main():
 
                 def _compute_return_zar(row: pd.Series) -> str:
                     usd_val = _extract_return_usd(row)
-                    if usd_val is None or not zar_rate:
+                    if usd_val is None or zar_rate is None:
                         return "≈ R—"
                     try:
                         return f"≈ {format_currency(float(usd_val) * float(zar_rate), 'R')}"
@@ -2279,7 +2439,7 @@ def main():
         with st.expander("Doctor — Universe & Risk", expanded=False):
             tpath = "logs/nav_trading.json"
             rpath = "logs/nav_reporting.json"
-            zpath = "logs/nav_treasury.json"
+            zpath = "logs/treasury.json"
             spath = "logs/nav_snapshot.json"
             if any(os.path.exists(p) for p in (tpath, rpath, zpath, spath)):
                 try:
@@ -2304,7 +2464,7 @@ def main():
                             "**Treasury (off-exchange, excluded from NAV):** "
                             f"{zval:.2f} USDT"
                         )
-                        if zar_rate and isinstance(zval, (int, float)):
+                        if zar_rate is not None and isinstance(zval, (int, float)):
                             st.markdown(
                                 f"<div class='zar-note'>≈ R{zval * zar_rate:,.0f} @ R{zar_rate:.2f}/USD</div>",
                                 unsafe_allow_html=True,
@@ -2330,7 +2490,7 @@ def main():
                                 cg_price = price_cache.get(str(asset).upper()) if isinstance(price_cache, dict) else None
                                 if usd_val is None and cg_price and qty_val is not None:
                                     usd_val = qty_val * float(cg_price)
-                                zar_val = usd_val * float(zar_rate) if zar_rate and usd_val is not None else None
+                                zar_val = usd_val * float(zar_rate) if zar_rate is not None and usd_val is not None else None
                                 rows.append(
                                     {
                                         "Asset": asset,

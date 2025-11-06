@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import hmac
 import logging
 import math
@@ -87,6 +88,22 @@ def is_dry_run() -> bool:
 def _dry_run_stub(action: str, stub: Any) -> Any:
     _LOG.info("[dry-run] stubbed %s", action)
     return stub
+
+
+def _repo_root() -> str:
+    return os.environ.get("REPO_ROOT") or os.getcwd()
+
+
+def _coerce_float(value: Any) -> float:
+    try:
+        if value in (None, "", "null"):
+            return 0.0
+        return float(value)
+    except Exception:
+        try:
+            return float(str(value))
+        except Exception:
+            return 0.0
 
 
 def is_testnet() -> bool:
@@ -498,8 +515,182 @@ def get_account() -> Dict[str, Any]:
                 "totalUnrealizedProfit": "0.0",
                 "dryRun": True,
             },
-        )
+    )
     return _req("GET", "/fapi/v2/account", signed=True).json()
+
+
+def get_futures_balances() -> Dict[str, float]:
+    """Return futures wallet balances keyed by asset."""
+    if is_dry_run():
+        return _dry_run_stub("get_futures_balances", {"USDT": 0.0})
+    try:
+        balances = get_balances()
+    except Exception as exc:
+        _LOG.warning("[futures] balance fetch failed: %s", exc)
+        balances = []
+    result: Dict[str, float] = {}
+    for entry in balances or []:
+        if not isinstance(entry, dict):
+            continue
+        asset = str(entry.get("asset") or "").upper()
+        if not asset:
+            continue
+        value = (
+            entry.get("walletBalance")
+            or entry.get("balance")
+            or entry.get("crossWalletBalance")
+            or entry.get("availableBalance")
+        )
+        result[asset] = _coerce_float(value)
+    if result:
+        return result
+    # Fallback to nav_trading cache
+    try:
+        root = _repo_root()
+        cache_path = os.path.join(root, "logs", "nav_trading.json")
+        if os.path.exists(cache_path):
+            with open(cache_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            breakdown = payload.get("breakdown") if isinstance(payload, dict) else None
+            if isinstance(breakdown, dict):
+                futures_usd = breakdown.get("futures_wallet_usdt")
+                if futures_usd is not None:
+                    result["USDT"] = _coerce_float(futures_usd)
+    except Exception as exc:
+        _LOG.debug("[futures] nav_trading fallback failed: %s", exc)
+    return result
+
+
+def get_spot_balances() -> Dict[str, Any]:
+    """Spot balances now consolidated under treasury; no live API calls."""
+    if is_dry_run():
+        return _dry_run_stub(
+            "get_spot_balances",
+            {"balances": {}, "total_usd": 0.0, "source": "treasury_file:dry_run", "updated_at": None},
+        )
+
+    def _read_payload(path: str) -> Optional[Dict[str, Any]]:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def _merge_assets(container: Dict[str, float], payload: Mapping[str, Any]) -> None:
+        for key, value in payload.items():
+            if key in {"total_usd", "treasury_usdt", "treasury_total"}:
+                continue
+            try:
+                amount = _coerce_float(value)
+            except Exception:
+                continue
+            if amount:
+                container[str(key).upper()] = amount
+
+    def _extract_assets(payload: Mapping[str, Any]) -> Dict[str, float]:
+        balances: Dict[str, float] = {}
+        queue: List[Any] = []
+        assets = payload.get("assets")
+        if assets is not None:
+            queue.append(assets)
+        treasury = payload.get("treasury")
+        if treasury is not None:
+            queue.append(treasury)
+        breakdown = payload.get("breakdown")
+        if isinstance(breakdown, Mapping):
+            tre = breakdown.get("treasury")
+            if tre is not None:
+                queue.append(tre)
+        for node in queue:
+            if isinstance(node, Mapping):
+                nested_assets = node.get("assets")
+                if nested_assets is not None:
+                    queue.append(nested_assets)
+                    continue
+                _merge_assets(balances, node)
+            elif isinstance(node, list):
+                for entry in node:
+                    if not isinstance(entry, Mapping):
+                        continue
+                    asset = str(
+                        entry.get("asset")
+                        or entry.get("Asset")
+                        or entry.get("symbol")
+                        or entry.get("code")
+                        or ""
+                    ).upper()
+                    if not asset:
+                        continue
+                    amount = _coerce_float(
+                        entry.get("balance")
+                        or entry.get("qty")
+                        or entry.get("Units")
+                        or entry.get("units")
+                        or entry.get("amount")
+                        or entry.get("free")
+                    )
+                    if amount:
+                        balances[asset] = amount
+        return balances
+
+    root = _repo_root()
+    treasury_candidates = [
+        os.path.join(root, "logs", "treasury.json"),
+    ]
+
+    for path in treasury_candidates:
+        payload = _read_payload(path)
+        if not payload:
+            continue
+        balances = _extract_assets(payload)
+        total = _coerce_float(
+            payload.get("total_usd")
+            or payload.get("treasury_usdt")
+            or (payload.get("breakdown") or {}).get("total_treasury_usdt")
+        )
+        if total <= 0 and balances:
+            total = sum(_coerce_float(v) for v in balances.values())
+        updated_at = payload.get("updated_at") or payload.get("ts")
+        return {
+            "balances": balances,
+            "total_usd": float(total),
+            "source": f"treasury_file:{os.path.basename(path)}",
+            "updated_at": updated_at,
+            "raw": payload,
+        }
+
+    # Fallback to config reserves valuation
+    reserves_path = os.path.join(root, "config", "reserves.json")
+    payload = _read_payload(reserves_path)
+    balances: Dict[str, float] = {}
+    total_val = 0.0
+    if isinstance(payload, dict):
+        for asset, qty in payload.items():
+            try:
+                amount = float(qty)
+            except Exception:
+                continue
+            symbol = str(asset).upper()
+            if not symbol or amount == 0:
+                continue
+            price = 1.0 if symbol in {"USDT", "USDC", "DAI", "FDUSD", "TUSD"} else 0.0
+            if price == 0.0:
+                try:
+                    price = float(get_price(f"{symbol}USDT") or 0.0)
+                except Exception:
+                    price = 0.0
+            if price <= 0 and symbol.endswith("USDT"):
+                price = 1.0
+            balances[symbol] = amount
+            total_val += amount * price if price > 0 else amount
+    return {
+        "balances": balances,
+        "total_usd": float(total_val),
+        "source": "treasury_file:config/reserves.json",
+        "updated_at": None,
+        "raw": payload if isinstance(payload, dict) else {},
+    }
 
 
 def _is_dual_side() -> bool:

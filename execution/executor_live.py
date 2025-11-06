@@ -2484,12 +2484,18 @@ def _pub_tick() -> None:
         _publish_mirror_updates()
         if _startup_flags_snapshot.get("fs_enabled"):
             try:
-                from execution.firestore_utils import publish_router_health, publish_positions
+                from execution.firestore_utils import publish_router_health, publish_positions, publish_treasury
 
-                publish_router_health()
+                router_metrics_payload = None
+                try:
+                    router_metrics_payload = _safe_load_json(os.path.join(LOGS_ROOT, "router_health.json"))
+                except Exception:
+                    router_metrics_payload = None
+                publish_router_health(router_metrics_payload)
                 publish_positions()
+                publish_treasury()
             except Exception as exc:
-                LOG.warning("[firestore] router/positions publish failed: %s", exc)
+                LOG.warning("[firestore] router/positions/treasury publish failed: %s", exc)
     except Exception as exc:
         LOG.error("[executor] publisher fallback error: %s", exc)
 

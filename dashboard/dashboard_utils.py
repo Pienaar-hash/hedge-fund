@@ -1,8 +1,9 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -31,6 +32,96 @@ except Exception:  # pragma: no cover
     st = _Dummy()
 
 # ---------------------------- Firestore --------------------------------------
+SERVICE_ALIASES = {
+    "executor_live": ("executor_live", "executor", "executorlive"),
+    "sync_state": ("sync_state", "sync", "sync_daemon"),
+}
+
+
+def _pick_path(doc: Mapping[str, Any], path: str) -> Any:
+    current: Any = doc
+    for segment in path.split("."):
+        if not isinstance(current, Mapping) or segment not in current:
+            return None
+        current = current[segment]
+    return current
+
+
+def _coerce_timestamp(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, datetime):
+            return value.astimezone(timezone.utc)
+        if isinstance(value, (int, float)):
+            val = float(value)
+            if val > 1e12:
+                val /= 1000.0
+            return datetime.fromtimestamp(val, tz=timezone.utc)
+        if hasattr(value, "timestamp"):
+            ts_val = value.timestamp() if callable(value.timestamp) else float(value.timestamp)
+            return datetime.fromtimestamp(float(ts_val), tz=timezone.utc)
+        if hasattr(value, "seconds"):
+            seconds = float(getattr(value, "seconds", 0.0))
+            nanos = float(getattr(value, "nanos", 0.0))
+            return datetime.fromtimestamp(seconds + nanos / 1_000_000_000, tz=timezone.utc)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.isdigit():
+                val = float(text)
+                if val > 1e12:
+                    val /= 1000.0
+                return datetime.fromtimestamp(val, tz=timezone.utc)
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+    return None
+
+
+def _extract_service_ts(doc: Mapping[str, Any], aliases: Sequence[str]) -> Optional[datetime]:
+    if not isinstance(doc, Mapping):
+        return None
+    for alias in aliases:
+        alias_norm = str(alias or "").strip()
+        if not alias_norm:
+            continue
+        alias_key = alias_norm.replace("-", "_")
+        candidates = [
+            f"heartbeat.{alias_key}",
+            f"heartbeats.{alias_key}",
+            f"hb.{alias_key}",
+            alias_key,
+            f"{alias_key}_ts",
+            f"{alias_key}.ts",
+            f"{alias_key}.ts_iso",
+            f"{alias_key}.timestamp",
+            f"{alias_key}.updated_at",
+        ]
+        for path in candidates:
+            target = _pick_path(doc, path) if "." in path else doc.get(path)
+            if isinstance(target, Mapping):
+                nested = _extract_service_ts(target, aliases)
+                if nested:
+                    return nested
+            else:
+                ts_val = _coerce_timestamp(target)
+                if ts_val:
+                    return ts_val
+    for fallback in ("ts_iso", "ts", "timestamp", "updated_at", "time", "last_seen"):
+        target = doc.get(fallback)
+        ts_val = _coerce_timestamp(target)
+        if ts_val:
+            return ts_val
+    return None
+
+
+def _parse_service_heartbeats(doc: Mapping[str, Any]) -> Dict[str, Optional[datetime]]:
+    result = {"executor_live": None, "sync_state": None}
+    for service, aliases in SERVICE_ALIASES.items():
+        result[service] = _extract_service_ts(doc, aliases)
+    return result
 
 @st.cache_resource(show_spinner=False)
 def _build_firestore_connection():
@@ -87,23 +178,122 @@ def fetch_state_document(name: str, env: str = "prod") -> Dict[str, Any]:
 
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_telemetry_health(env: str = "prod") -> Dict[str, Any]:
-    """Return sync_state telemetry health document (hedge/{env}/telemetry/health)."""
+    """Return combined telemetry health across sync_state + executor heartbeats."""
     db = get_firestore_connection()
     if db is None:
         return {}
-    try:
-        snap = (
-            db.collection("hedge")
-            .document(env)
-            .collection("telemetry")
-            .document("health")
-            .get(timeout=3.0)
-        )
-        if hasattr(snap, "to_dict"):
-            data = snap.to_dict() or {}
-            return data if isinstance(data, dict) else {}
-    except Exception as exc:
-        LOG.debug("[dash] telemetry health fetch failed for %s: %s", env, exc)
+    result: Dict[str, Any] = {}
+    service_dt: Dict[str, datetime] = {}
+    services: Dict[str, Dict[str, Any]] = {}
+    latest_ts: Optional[datetime] = None
+    sources: List[str] = []
+
+    def _register(service: str, ts_val: Optional[datetime], origin: str) -> None:
+        nonlocal latest_ts
+        if ts_val is None:
+            return
+        current = service_dt.get(service)
+        if current is None or ts_val > current:
+            service_dt[service] = ts_val
+            age_seconds = max(0.0, time.time() - ts_val.timestamp())
+            services[service] = {
+                "ts": ts_val.isoformat(),
+                "age_seconds": age_seconds,
+                "age_minutes": age_seconds / 60.0 if age_seconds else 0.0,
+                "source": origin,
+            }
+        if latest_ts is None or ts_val > latest_ts:
+            latest_ts = ts_val
+
+    def _fetch_doc(collection: str, document: str) -> Optional[Dict[str, Any]]:
+        try:
+            snap = (
+                db.collection("hedge")
+                .document(env)
+                .collection(collection)
+                .document(document)
+                .get(timeout=3.0)
+            )
+        except Exception as exc:
+            LOG.debug("[dash] telemetry doc fetch failed %s/%s: %s", collection, document, exc)
+            return None
+        if not getattr(snap, "exists", True):
+            return None
+        data = snap.to_dict() if hasattr(snap, "to_dict") else None
+        return data if isinstance(data, dict) else None
+
+    telemetry_doc = _fetch_doc("telemetry", "health")
+    if telemetry_doc is not None:
+        result.update(telemetry_doc)
+        sources.append("telemetry/health")
+        parsed = _parse_service_heartbeats(telemetry_doc)
+        _register("executor_live", parsed.get("executor_live"), "firestore:telemetry/health")
+        _register("sync_state", parsed.get("sync_state"), "firestore:telemetry/health")
+
+    executor_doc = _fetch_doc("health", "executor_live")
+    if executor_doc is not None:
+        sources.append("health/executor_live")
+        ts_val = _extract_service_ts(executor_doc, SERVICE_ALIASES.get("executor_live", ("executor_live",)))
+        _register("executor_live", ts_val, "firestore:health/executor_live")
+
+    existing_ts = _coerce_timestamp(result.get("ts") or result.get("updated_at"))
+    if existing_ts and (latest_ts is None or existing_ts > latest_ts):
+        latest_ts = existing_ts
+
+    firestore_flag = result.get("firestore_ok")
+    if isinstance(firestore_flag, str):
+        firestore_flag = firestore_flag.strip().lower() in {"1", "true", "ok", "yes", "fresh"}
+    else:
+        firestore_flag = bool(firestore_flag)
+    result["firestore_ok"] = bool(firestore_flag or service_dt)
+
+    if latest_ts:
+        result["ts"] = latest_ts.isoformat()
+        result.setdefault("updated_at", result["ts"])
+
+    if service_dt:
+        result["services"] = services
+    else:
+        result.setdefault("services", {})
+    if sources:
+        result["source"] = ",".join(sources)
+    return result
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_treasury_latest(env: str = "prod") -> Dict[str, Any]:
+    """Return latest treasury snapshot from Firestore with local fallback."""
+    db = get_firestore_connection()
+    if db is not None:
+        try:
+            snap = (
+                db.collection("hedge")
+                .document(env)
+                .collection("treasury")
+                .document("latest")
+                .get(timeout=3.0)
+            )
+        except Exception as exc:
+            LOG.debug("[dash] treasury latest fetch failed %s: %s", env, exc)
+        else:
+            if getattr(snap, "exists", False):
+                data = snap.to_dict() or {}
+                if isinstance(data, dict):
+                    return data
+    # local fallback if firestore unavailable
+    base = Path(__file__).resolve().parents[1]
+    for candidate in ("logs/treasury.json",):
+        try:
+            payload = json.loads((base / candidate).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return {
+                "updated_at": payload.get("updated_at") or payload.get("ts"),
+                "env": env,
+                "treasury": payload,
+                "source": f"local:{candidate}",
+            }
     return {}
 
 

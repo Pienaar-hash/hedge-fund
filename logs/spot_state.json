@@ -1,1 +1,19 @@
-{"source":"binance_spot","assets":[{"asset":"USDT","balance":2404.59444119,"price_usdt":1.0,"usd_value":2404.59444119},{"asset":"USDC","balance":1500.0,"price_usdt":1.0,"usd_value":1500.0}],"total_usd":3904.59444119,"updated_at":"2025-11-05T16:13:54.509209+00:00"}
+{
+  "assets": [
+    {
+      "asset": "USDT",
+      "balance": 2418.66767076,
+      "price_usdt": 1.0,
+      "usd_value": 2418.66767076
+    },
+    {
+      "asset": "USDC",
+      "balance": 1500.0,
+      "price_usdt": 1.0,
+      "usd_value": 1500.0
+    }
+  ],
+  "source": "binance_futures",
+  "total_usd": 3918.66767076,
+  "updated_at": "2025-11-06T13:28:00.896284+00:00"
+}

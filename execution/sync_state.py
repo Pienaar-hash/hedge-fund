@@ -454,6 +454,12 @@ def _collect_spot_cache(previous: Dict[str, Any]) -> Dict[str, Any]:
         balances = raw.get("balances")
         if isinstance(balances, list):
             entries = [entry for entry in balances if isinstance(entry, dict)]
+        elif isinstance(balances, dict):
+            entries = [
+                {"asset": key, "free": balances.get(key)}
+                for key in balances
+                if balances.get(key) is not None
+            ]
         elif isinstance(raw.get("assets"), list):
             entries = [entry for entry in raw["assets"] if isinstance(entry, dict)]
         else:
