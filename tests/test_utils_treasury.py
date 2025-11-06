@@ -1,20 +1,35 @@
-"""
-Validates get_treasury_snapshot and compute_treasury_pnl helpers.
-"""
+import pytest
 
-import json
-from execution import utils
+from execution.utils import compute_treasury_pnl
 
-def test_treasury_snapshot_and_pnl(tmp_path):
-    treasury_file = tmp_path / "treasury.json"
-    treasury_file.write_text(json.dumps({
-        "BTC": {"value_usd": 10000, "avg_entry_price": 9500},
-        "USDT": {"value_usd": 2000, "avg_entry_price": 1.0}
-    }))
 
-    snap = utils.get_treasury_snapshot(path=str(treasury_file))
-    pnl = utils.compute_treasury_pnl(snap)
+def test_compute_treasury_pnl_returns_symbol_dict_with_pct():
+    snapshot = {
+        "treasury": {
+            "assets": [
+                {
+                    "asset": "BTC",
+                    "balance": 1.0,
+                    "price_usdt": 22000.0,
+                    "avg_entry_price": 20000.0,
+                    "usd_value": 22000.0,
+                },
+                {
+                    "asset": "USDT",
+                    "balance": 1000.0,
+                    "price_usdt": 1.0,
+                    "usd_value": 1000.0,
+                },
+            ]
+        }
+    }
 
-    assert "BTC" in pnl and "pnl_pct" in pnl["BTC"]
-    assert isinstance(pnl["BTC"]["pnl_pct"], float)
-    assert abs(pnl["BTC"]["pnl_pct"]) < 10  # sanity margin
+    pnl = compute_treasury_pnl(snapshot)
+
+    assert isinstance(pnl, dict)
+    assert "BTC" in pnl
+    btc_entry = pnl["BTC"]
+    assert isinstance(btc_entry, dict)
+    assert btc_entry["value_usd"] == 22000.0
+    assert isinstance(btc_entry["pnl_pct"], float)
+    assert btc_entry["pnl_pct"] == pytest.approx(10.0, rel=1e-3)

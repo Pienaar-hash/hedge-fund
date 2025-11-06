@@ -558,14 +558,14 @@ def get_usd_to_zar(
         return (None, meta) if with_meta else None
 
 
-def compute_treasury_pnl(snapshot: Mapping[str, Any]) -> List[Dict[str, Optional[float]]]:
+def compute_treasury_pnl(snapshot: Mapping[str, Any]) -> Dict[str, Dict[str, Optional[float]]]:
     """
     Compute per-asset PnL metrics from a treasury snapshot.
 
-    Returns a list of dicts containing: symbol, value_usd, avg_entry_price, pnl_pct.
+    Returns a dict keyed by symbol containing value_usd, avg_entry_price, pnl_pct.
     """
     if not isinstance(snapshot, Mapping):
-        return []
+        return {}
 
     treasury: Mapping[str, Any]
     if isinstance(snapshot.get("treasury"), Mapping):
@@ -575,9 +575,9 @@ def compute_treasury_pnl(snapshot: Mapping[str, Any]) -> List[Dict[str, Optional
 
     assets = treasury.get("assets")
     if not isinstance(assets, list):
-        return []
+        return {}
 
-    results: List[Dict[str, Optional[float]]] = []
+    results: Dict[str, Dict[str, Optional[float]]] = {}
     for entry in assets:
         if not isinstance(entry, Mapping):
             continue
@@ -635,13 +635,10 @@ def compute_treasury_pnl(snapshot: Mapping[str, Any]) -> List[Dict[str, Optional
         elif cost_basis_usd and value_usd and cost_basis_usd != 0:
             pnl_pct = ((value_usd - cost_basis_usd) / cost_basis_usd) * 100.0
 
-        results.append(
-            {
-                "symbol": symbol,
-                "value_usd": value_usd,
-                "avg_entry_price": avg_entry_price,
-                "pnl_pct": pnl_pct,
-            }
-        )
+        results[symbol] = {
+            "value_usd": value_usd if value_usd is not None else None,
+            "avg_entry_price": avg_entry_price if avg_entry_price is not None else None,
+            "pnl_pct": float(pnl_pct) if pnl_pct is not None else None,
+        }
 
     return results
