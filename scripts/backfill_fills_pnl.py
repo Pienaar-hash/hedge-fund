@@ -16,7 +16,6 @@ import json
 import os
 import sys
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple

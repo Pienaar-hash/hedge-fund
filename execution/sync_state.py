@@ -206,7 +206,7 @@ NAV_LOG: str = os.path.join(LOGS_DIR, "nav_log.json")
 PEAK_STATE: str = os.path.join(LOGS_DIR, "cache", "peak_state.json")
 SYNCED_STATE: str = os.path.join(LOGS_DIR, "synced_state.json")
 SPOT_CACHE_PATH: str = os.path.join(LOGS_DIR, "spot_state.json")
-TREASURY_CACHE_PATH: str = os.path.join(LOGS_DIR, "treasury.json")
+TREASURY_CACHE_PATH: str = os.path.join(LOGS_DIR, "cache", "treasury_sync.json")
 POLYMARKET_CACHE_PATH: str = os.path.join(LOGS_DIR, "polymarket.json")
 print(f"[sync] file paths => NAV_LOG={NAV_LOG}", flush=True)
 
@@ -545,6 +545,19 @@ def _collect_treasury_cache(previous: Dict[str, Any]) -> Dict[str, Any]:
     prev_lookup = _cache_asset_lookup(previous)
 
     base_qty: Dict[str, float] = {}
+    asset_order: List[str] = []
+
+    def _register_qty(sym: str, qty: float) -> None:
+        sym_up = str(sym or "").upper()
+        if not sym_up:
+            return
+        quantity = _to_float(qty)
+        if quantity < 0:
+            return
+        base_qty[sym_up] = quantity
+        if sym_up not in asset_order:
+            asset_order.append(sym_up)
+
     for sym, entry in prev_lookup.items():
         qty = _to_float(
             entry.get("qty")
@@ -554,83 +567,77 @@ def _collect_treasury_cache(previous: Dict[str, Any]) -> Dict[str, Any]:
             or entry.get("free")
         )
         if qty > 0:
-            base_qty[sym] = qty
+            _register_qty(sym, qty)
 
-    if not base_qty:
-        treasury_cfg_path = os.path.join(REPO_ROOT, "config", "treasury.json")
+    for cfg_name in ("treasury.json", "reserves.json"):
+        cfg_path = os.path.join(REPO_ROOT, "config", cfg_name)
         try:
-            with open(treasury_cfg_path, "r", encoding="utf-8") as handle:
+            with open(cfg_path, "r", encoding="utf-8") as handle:
                 cfg_payload = json.load(handle) or {}
-            if isinstance(cfg_payload, dict):
-                for raw_asset, raw_qty in cfg_payload.items():
-                    sym = str(raw_asset or "").upper()
-                    qty = _to_float(raw_qty)
-                    if sym and qty > 0:
-                        base_qty[sym] = qty
         except Exception:
-            pass
+            cfg_payload = {}
+        if isinstance(cfg_payload, dict):
+            for raw_asset, raw_qty in cfg_payload.items():
+                _register_qty(raw_asset, _to_float(raw_qty))
 
-    asset_map: Dict[str, Dict[str, Any]] = {}
-    asset_rows: List[Dict[str, Any]] = []
+    if not asset_order:
+        return {
+            "assets": [],
+            "total_usd": 0.0,
+            "updated_at": updated_at,
+        }
+
+    assets_payload: List[Dict[str, Any]] = []
     total_usd = 0.0
 
-    for sym, qty in base_qty.items():
-        usd_val = _convert_to_usd(sym, qty)
-        prev_entry = prev_lookup.get(sym)
-        if usd_val <= 0 and prev_entry:
-            usd_val = _to_float(
-                prev_entry.get("value_usd")
-                or prev_entry.get("usd_value")
-                or prev_entry.get("USD Value")
-                or prev_entry.get("usd")
-            )
+    for sym in asset_order:
+        qty = base_qty.get(sym, 0.0)
+        prev_entry = prev_lookup.get(sym, {})
 
-        price = 0.0
-        if qty > 0 and usd_val > 0:
-            try:
-                price = float(usd_val / qty)
-            except Exception:
-                price = 0.0
+        if sym in _STABLE_ASSETS:
+            price = 1.0
+            usd_val = qty * price
+        else:
+            usd_val = _convert_to_usd(sym, qty)
+            if usd_val <= 0 and prev_entry:
+                usd_val = _to_float(
+                    prev_entry.get("value_usd")
+                    or prev_entry.get("usd_value")
+                    or prev_entry.get("USD Value")
+                    or prev_entry.get("usd")
+                )
+            price = 0.0
+            if qty > 0 and usd_val > 0:
+                try:
+                    price = float(usd_val / qty)
+                except Exception:
+                    price = 0.0
+            if price <= 0:
+                price = _infer_price(sym, qty, prev_entry)
+                if price > 0 and usd_val <= 0:
+                    usd_val = qty * price
+
         if price <= 0:
-            price = _infer_price(sym, qty, prev_entry)
-            if price > 0 and usd_val <= 0:
-                usd_val = qty * price
+            price = 0.0
+            usd_val = 0.0 if sym not in _STABLE_ASSETS else qty * price
 
-        total_usd += max(usd_val, 0.0)
-        asset_payload = {
-            "qty": float(qty),
-            "price": float(max(price, 0.0)),
-            "value_usd": float(max(usd_val, 0.0)),
-            "usd_value": float(max(usd_val, 0.0)),
-        }
-        asset_map[sym] = asset_payload
-        asset_rows.append(
+        usd_val = max(usd_val, 0.0)
+        total_usd += usd_val
+
+        assets_payload.append(
             {
-                "Asset": sym,
-                "Units": float(qty),
-                "USD Value": float(max(usd_val, 0.0)),
-                "price": float(max(price, 0.0)),
+                "asset": sym,
+                "balance": float(qty),
+                "price_usdt": float(price),
+                "usd_value": float(usd_val),
             }
         )
 
-    if total_usd <= 0 and prev_lookup:
-        total_usd = sum(
-            _to_float(
-                entry.get("value_usd")
-                or entry.get("usd_value")
-                or entry.get("USD Value")
-                or entry.get("usd")
-            )
-            for entry in prev_lookup.values()
-        )
-
-    payload: Dict[str, Any] = {
-        "assets": asset_rows,
+    return {
+        "assets": assets_payload,
         "total_usd": float(total_usd),
         "updated_at": updated_at,
     }
-    payload.update(asset_map)
-    return payload
 
 
 def _collect_polymarket_cache(previous: Dict[str, Any]) -> Dict[str, Any]:

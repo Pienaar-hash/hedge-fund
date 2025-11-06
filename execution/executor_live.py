@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover - optional dependency
     UMFutures = None
 
 from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
+from execution.firestore_utils import _safe_load_json
 from execution.events import now_utc, write_event
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 
@@ -992,6 +993,25 @@ def _compute_nav() -> float:
         trading, reporting = compute_nav_pair(cfg)
         write_nav_snapshots_pair(trading, reporting)
         tre_val, tre_detail = compute_treasury_only()
+        # Ensure treasury snapshot always includes reserves (e.g., USDC) even if upstream omits them.
+        try:
+            reserves_cfg = load_json("config/reserves.json") or {}
+        except Exception:
+            reserves_cfg = {}
+        if isinstance(tre_detail, dict):
+            treasury_node = tre_detail.setdefault("treasury", {})
+            if isinstance(treasury_node, dict):
+                for asset, qty in (reserves_cfg.items() if isinstance(reserves_cfg, dict) else []):
+                    asset_code = str(asset).upper()
+                    try:
+                        qty_val = float(qty)
+                    except Exception:
+                        continue
+                    entry = treasury_node.setdefault(asset_code, {})
+                    if isinstance(entry, dict):
+                        entry.setdefault("qty", qty_val)
+                        entry.setdefault("balance", qty_val)
+                        entry.setdefault("Units", qty_val)
         write_treasury_snapshot(tre_val, tre_detail)
         return float(trading[0])
     except Exception as exc:
@@ -2476,7 +2496,10 @@ def _pub_tick() -> None:
 
         try:
             with with_firestore() as db:
-                db.document(f"hedge/{ENV}/state/positions").set({"rows": rows}, merge=False)
+                db.document(f"hedge/{ENV}/state/positions").set(
+                    {"items": rows, "env": ENV, "updated_at": datetime.now(timezone.utc).isoformat()},
+                    merge=False,
+                )
             print("[executor] Firestore publish ok", flush=True)
         except Exception as exc:
             LOG.error("[executor] Firestore publish error: %s", exc)

@@ -1,1 +1,0 @@
-{"strategy": "smoke_test", "symbol": "BTCUSDT", "signal_ts": 1760812476.1504726, "veto_reason": "smoke_block", "veto_detail": {"reason": "smoke_block", "thresholds": {"test": 1}}, "local_ts": 1760812476.6504726, "ts": "2025-10-18T18:34:36.157397+00:00", "event_type": "risk_veto", "pid": 613813, "hostname": "ubuntu-4gb-fsn1-2"}

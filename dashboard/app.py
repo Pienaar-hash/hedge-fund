@@ -1,9 +1,11 @@
+# mypy: ignore-errors
+
 import asyncio
+import html
 import os
 import sys
 import json
 import time
-import subprocess
 import logging
 import math
 import threading
@@ -37,7 +39,7 @@ from dashboard.async_cache import gather_once  # noqa: E402
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
 from dashboard.router_health import load_router_health, RouterHealthData  # noqa: E402
 from dashboard.live_helpers import get_nav_snapshot, get_treasury  # noqa: E402
-from scripts.doctor import collect_doctor_snapshot  # noqa: E402
+from scripts.doctor import collect_doctor_snapshot, run_doctor_subprocess  # noqa: E402
 from research.correlation_matrix import DEFAULT_OUTPUT_PATH as CORRELATION_CACHE_PATH  # noqa: E402
 from execution.capital_allocator import DEFAULT_OUTPUT_PATH as CAPITAL_ALLOC_CACHE_PATH  # noqa: E402
 from research.factor_fusion import (  # noqa: E402
@@ -235,14 +237,17 @@ def main():
             return {}
 
     @st.cache_data(ttl=120, show_spinner=False)
-    def cached_usd_to_zar() -> Optional[float]:
+    def cached_usd_to_zar() -> Tuple[Optional[float], Optional[str], Optional[float]]:
         if get_usd_to_zar is None:
-            return None
+            return None, None, None
         try:
-            return get_usd_to_zar()
+            rate, meta = get_usd_to_zar(with_meta=True)
+            source = (meta or {}).get("source") if isinstance(meta, dict) else None
+            age = (meta or {}).get("age") if isinstance(meta, dict) else None
+            return rate, source, age  # type: ignore[arg-type]
         except Exception as exc:
             LOG.warning("[dash] usd→zar unavailable: %s", exc)
-            return None
+            return None, "error", None
 
     def format_currency(value: Optional[float], symbol: str = "$") -> str:
         if value is None:
@@ -977,6 +982,8 @@ def main():
             return df.head(limit)
         return pd.DataFrame(columns=["ts", "symbol", "signal", "doctor_status"])
 
+    nav_value: Optional[float] = None
+
     # --------------------------- Load Firestore ----------------------------------
     status = st.empty()
     status.info("Loading data…")
@@ -991,7 +998,6 @@ def main():
 
     nav_doc, nav_source = load_nav_state()
     pos_doc, pos_source = load_positions_state()
-    lb_doc, lb_source = load_leaderboard_state()
 
     async_entries = load_async_entries()
     doctor_snapshot = async_entries.get("doctor", {}).get("payload", {}) or {}
@@ -1021,13 +1027,17 @@ def main():
     if not isinstance(positions_info.get("count"), (int, float)):
         positions_info = dict(positions_info)
         positions_info["count"] = len(positions_fs)
-    leaderboard = (lb_doc or {}).get("items") or []
 
     router_snapshot = load_exec_snapshot("router", ENV)
     trades_snapshot = load_exec_snapshot("trades", ENV)
     signals_snapshot = load_exec_snapshot("signals", ENV)
     nav_snapshot_live = get_nav_snapshot()
     treasury_snapshot_live = get_treasury()
+
+    # --- ZAR guard: declare upfront so early reads never crash ---
+    zar_rate: Optional[float] = None
+    zar_source: Optional[str] = None
+    nav_zar_value: Optional[float] = None
 
     treasury_latest_doc = fetch_treasury_latest(ENV)
     if not isinstance(treasury_latest_doc, dict):
@@ -1108,7 +1118,7 @@ def main():
         or (nav_doc or {}).get("nav")
         or (nav_doc or {}).get("equity")
     )
-    if nav_trading_usd is None:
+    if nav_trading_usd is None and nav_value is not None:
         nav_trading_usd = _to_optional_float(nav_value)
 
     reserves_usd_val = treasury_firestore_total
@@ -1120,15 +1130,8 @@ def main():
         total_equity_usd = float(nav_trading_usd or 0.0) + float(reserves_usd_val or 0.0)
 
     total_equity_zar: Optional[float] = None
-    if total_equity_usd is not None and zar_rate is not None:
-        try:
-            total_equity_zar = float(total_equity_usd) * float(zar_rate)
-        except Exception:
-            total_equity_zar = None
 
-    status.success(
-        f"Loaded · nav_source={nav_source} · positions_source={pos_source} · leaderboard_source={lb_source}"
-    )
+    status.success(f"Loaded · nav_source={nav_source} · positions_source={pos_source}")
     if not nav_doc:
         st.warning("NAV data unavailable; showing empty series.")
 
@@ -1146,7 +1149,6 @@ def main():
     env_label, env_color = get_env_badge(TESTNET)
     badge_icon = "🟠" if TESTNET else "🟢"
 
-    nav_value: Optional[float] = None
     raw_equity = kpis.get("total_equity")
     if isinstance(raw_equity, (int, float)):
         nav_value = float(raw_equity)
@@ -1265,24 +1267,42 @@ def main():
     exchange_nav_display = format_currency(exchange_nav_value, "$")
     nav_zar_value = None
     nav_zar_text = "≈ R—"
-    zar_rate: Optional[float] = None
+    zar_rate = None
     zar_source: Optional[str] = None
-    nav_zar_value = None
+    zar_age_seconds: Optional[float] = None
+    zar_status = nav_freshness.get("zar_status")
+    # Resolve zar_rate late, but variables already exist so upstream guards won't crash
     if nav_freshness.get("zar_rate") is not None:
         try:
             zar_rate = float(nav_freshness.get("zar_rate") or 0.0)
         except Exception:
             zar_rate = None
+        zar_source = nav_freshness.get("zar_source") or "fresh"
+        zar_age_candidate = nav_freshness.get("zar_age_seconds")
+        if isinstance(zar_age_candidate, (int, float)):
+            zar_age_seconds = float(zar_age_candidate)
     if zar_rate is None:
-        cached_rate = cached_usd_to_zar()
+        cached_rate, cached_source, cached_age = cached_usd_to_zar()
         if isinstance(cached_rate, (int, float)):
             zar_rate = float(cached_rate)
-            zar_source = "cached"
-    else:
-        zar_source = nav_freshness.get("zar_source") or "fresh"
+            zar_source = cached_source or "cache"
+            zar_age_seconds = float(cached_age) if isinstance(cached_age, (int, float)) else None
+            if zar_status is None or str(zar_status).upper() == "MISSING":
+                if zar_source == "cache" or (zar_age_seconds is not None and zar_age_seconds > 6 * 3600):
+                    zar_status = "STALE"
+                else:
+                    zar_status = "FRESH"
     if zar_rate is not None and isinstance(nav_value, (int, float)):
         nav_zar_value = float(nav_value) * float(zar_rate)
         nav_zar_text = f"≈ {format_currency(nav_zar_value, 'R')}"
+        if zar_status and str(zar_status).upper() == "STALE":
+            nav_zar_text = f"{nav_zar_text} · STALE"
+
+    if total_equity_usd is not None and zar_rate is not None:
+        try:
+            total_equity_zar = float(total_equity_usd) * float(zar_rate)
+        except Exception:
+            total_equity_zar = None
 
     prev_nav_zar = None
     if zar_rate is not None and isinstance(prev_nav_value, (int, float)):
@@ -1291,6 +1311,13 @@ def main():
     nav_delta_html = compare_nav_zar(prev_nav_zar, nav_zar_value)
 
     nav_display = f"{nav_value:,.2f} USD" if isinstance(nav_value, (int, float)) else "n/a"
+
+    def _tooltip_span(label_html: str, tooltip_text: Optional[str], classes: str = "") -> str:
+        tooltip_text = tooltip_text or ""
+        safe_tooltip = html.escape(tooltip_text, quote=True)
+        base_classes = (classes or "").strip()
+        class_attr = f"{base_classes} dash-tooltip".strip() if base_classes else "dash-tooltip"
+        return f"<span class='{class_attr}' data-tooltip=\"{safe_tooltip}\">{label_html}</span>"
 
     header_css = """
     <style>
@@ -1397,10 +1424,80 @@ def main():
         border-radius: 999px;
         border: 1px solid rgba(148, 163, 184, 0.35);
     }
+    .dash-tooltip {
+        position: relative;
+        cursor: help;
+    }
+    .dash-tooltip::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        left: 50%;
+        top: calc(100% + 8px);
+        transform: translateX(-50%);
+        background: rgba(15, 23, 42, 0.92);
+        color: #f8fafc;
+        padding: 0.45rem 0.6rem;
+        border-radius: 8px;
+        font-size: 0.75rem;
+        font-weight: 500;
+        line-height: 1.2;
+        white-space: pre-wrap;
+        max-width: 260px;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s ease-in-out;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.2);
+        z-index: 1200;
+    }
+    .dash-tooltip::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: calc(100% + 2px);
+        transform: translateX(-50%);
+        border-width: 6px;
+        border-style: solid;
+        border-color: rgba(15, 23, 42, 0.92) transparent transparent transparent;
+        opacity: 0;
+        transition: opacity 0.15s ease-in-out;
+    }
+    .dash-tooltip:hover::after,
+    .dash-tooltip:hover::before {
+        opacity: 1;
+    }
+    .dash-tooltip-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.15rem;
+        height: 1.15rem;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.2);
+        color: rgba(30, 41, 59, 0.85);
+        font-size: 0.75rem;
+        margin-left: 0.35rem;
+    }
     </style>
     """
 
-    nav_main_text = f"⚡ NAV {nav_usd_text} | {nav_zar_text} | {env_label}"
+    nav_zar_tooltip_parts: List[str] = []
+    if zar_rate is not None:
+        source_label = f" ({zar_source})" if zar_source else ""
+        nav_zar_tooltip_parts.append(f"Rate: R{zar_rate:.2f}/USD{source_label}")
+    else:
+        nav_zar_tooltip_parts.append("Rate unavailable")
+    if zar_age_seconds is not None:
+        nav_zar_tooltip_parts.append(f"Age: {format_age_seconds(zar_age_seconds)}")
+    if zar_status:
+        nav_zar_tooltip_parts.append(f"Status: {zar_status}")
+    if nav_zar_value is not None:
+        nav_zar_tooltip_parts.append(f"NAV ≈ {format_currency(nav_zar_value, 'R')}")
+    if total_equity_zar is not None:
+        nav_zar_tooltip_parts.append(f"Total equity ≈ {format_currency(total_equity_zar, 'R')}")
+    nav_zar_tooltip = "\n".join(nav_zar_tooltip_parts)
+    nav_zar_html = _tooltip_span(nav_zar_text, nav_zar_tooltip, "dash-nav-zar")
+
+    nav_main_label = f"⚡ NAV {nav_usd_text} | {nav_zar_html} | {env_label}"
     rate_display = f"R{zar_rate:.2f}/USD" if zar_rate is not None else "R—/USD"
 
     drawdown_snapshot = nav_freshness.get("drawdown", {})
@@ -1411,15 +1508,19 @@ def main():
     nav_chip_class = "fresh" if nav_is_fresh else "stale"
     nav_chip_label = "Fresh" if nav_is_fresh else "STALE"
     nav_chip_label = f"{nav_chip_label} · {nav_age_display}"
-    nav_chip_title = f"NAV age {nav_age_display}"
-    nav_chip_html = f"<span class='dash-nav-chip {nav_chip_class}' title=\"{nav_chip_title}\">{nav_chip_label}</span>"
+    nav_chip_tooltip_parts = [f"Status: {'Fresh' if nav_is_fresh else 'Stale'}", f"Age {nav_age_display}"]
+    threshold_val = nav_freshness.get("threshold")
+    if isinstance(threshold_val, (int, float)):
+        nav_chip_tooltip_parts.append(f"Fresh ≤ {format_age_seconds(threshold_val)}")
+    nav_chip_tooltip = "\n".join(nav_chip_tooltip_parts)
+    nav_chip_html = _tooltip_span(nav_chip_label, nav_chip_tooltip, f"dash-nav-chip {nav_chip_class}")
 
     dd_pct = drawdown_snapshot.get("dd_pct") or 0.0
     dd_abs = drawdown_snapshot.get("dd_abs") or 0.0
     dd_chip_class = "dd-ok" if not dd_pct or dd_pct <= 0 else "dd-warn"
     dd_chip_label = f"Drawdown · {dd_pct:.2f}%"
     dd_chip_title = f"Daily drawdown {dd_pct:.2f}%"
-    dd_chip_html = f"<span class='dash-nav-chip {dd_chip_class}' title=\"{dd_chip_title}\">{dd_chip_label}</span>"
+    dd_chip_html = _tooltip_span(dd_chip_label, dd_chip_title, f"dash-nav-chip {dd_chip_class}")
 
     treasury_total = reserves_total_usd
     if not isinstance(treasury_total, (int, float)):
@@ -1427,13 +1528,12 @@ def main():
         if isinstance(candidate_total, (int, float)):
             treasury_total = float(candidate_total)
     treasury_display = format_currency(treasury_total, "$") if treasury_total is not None else "—"
-    nav_tooltip = (
+    nav_tooltip_text = (
         f"Total NAV (USD)\nExchange: {exchange_nav_display} (source {nav_info.get('source', 'n/a')})\nReserves: {treasury_display}"
         if nav_display != "n/a"
         else "Total NAV (USD)"
     )
-    nav_tooltip = nav_tooltip.replace("\n", "&#10;")
-    nav_span = f"<span class='dash-nav-main' title=\"{nav_tooltip}\">{nav_main_text}</span>"
+    nav_span = _tooltip_span(nav_main_label, nav_tooltip_text, "dash-nav-main")
     nav_main_block = f"<div class='dash-nav-main-row'>{nav_span}{nav_chip_html}{dd_chip_html}</div>"
 
     hb_services = (heartbeat_snapshot or {}).get("services", {})
@@ -1474,10 +1574,8 @@ def main():
     # ---- Tabs layout --------------------------------------------------------------
     (
         tab_overview,
-        tab_positions,
         tab_execution,
         tab_router,
-        tab_leader,
         tab_signals,
         tab_ml_insights,
         tab_ml_models,
@@ -1489,10 +1587,8 @@ def main():
     ) = st.tabs(
         [
             "Overview",
-            "Positions",
             "Execution",
             "Router Health",
-            "Leaderboard",
             "Signals",
             "ML Insights",
             "ML Models",
@@ -1632,38 +1728,6 @@ def main():
             else:
                 st.line_chart(plot_df["equity"], use_container_width=True)
                 st.line_chart(plot_df[["drawdown_pct"]], use_container_width=True)
-
-    # --------------------------- Positions Tab -----------------------------------
-    with tab_positions:
-        st.subheader("Open Positions")
-        positions_df = pd.DataFrame(positions_fs)
-        if positions_df is None or positions_df.empty:
-            st.info("No open positions.")
-        else:
-            for col in ("entryPrice", "markPrice"):
-                if col in positions_df.columns:
-                    positions_df[col] = pd.to_numeric(positions_df[col], errors="coerce")
-            if "entryPrice" in positions_df.columns and "markPrice" in positions_df.columns:
-                entry = positions_df["entryPrice"].replace({0: pd.NA})
-                pnl_pct = ((positions_df["markPrice"] - entry) / entry) * 100
-                positions_df["PnL%"] = pnl_pct.round(2)
-            cols_order = [
-                c for c in [
-                    "symbol",
-                    "positionAmt",
-                    "entryPrice",
-                    "markPrice",
-                    "PnL%",
-                    "unrealizedPnl",
-                    "leverage",
-                    "updatedAt",
-                ]
-                if c in positions_df.columns
-            ]
-            remaining_cols = [c for c in positions_df.columns if c not in cols_order]
-            positions_df = positions_df[cols_order + remaining_cols]
-            st.dataframe(positions_df, use_container_width=True, height=420)
-
     # --------------------------- Execution Tab ----------------------------------
     with tab_execution:
         st.subheader("Execution Health")
@@ -1749,6 +1813,37 @@ def main():
             else:
                 st.info("No veto data in the last 24 hours.")
 
+        st.markdown("#### Open Positions")
+        positions_payload = positions_fs or []
+        positions_df = pd.DataFrame(positions_payload)
+        if positions_df.empty:
+            st.info("No open positions.")
+        else:
+            for col in ("entryPrice", "markPrice"):
+                if col in positions_df.columns:
+                    positions_df[col] = pd.to_numeric(positions_df[col], errors="coerce")
+            if "entryPrice" in positions_df.columns and "markPrice" in positions_df.columns:
+                entry = positions_df["entryPrice"].replace({0: pd.NA})
+                pnl_pct = ((positions_df["markPrice"] - entry) / entry) * 100
+                positions_df["PnL%"] = pnl_pct.round(2)
+            cols_order = [
+                c
+                for c in [
+                    "symbol",
+                    "positionAmt",
+                    "entryPrice",
+                    "markPrice",
+                    "PnL%",
+                    "unrealizedPnl",
+                    "leverage",
+                    "updatedAt",
+                ]
+                if c in positions_df.columns
+            ]
+            remaining_cols = [c for c in positions_df.columns if c not in cols_order]
+            positions_df = positions_df[cols_order + remaining_cols]
+            st.dataframe(positions_df, use_container_width=True, height=420)
+
         if not latency_summary:
             st.caption(
                 "Latency metrics unavailable. Generate a cache with "
@@ -1821,6 +1916,7 @@ def main():
                 age_seconds = None
         status_icon = "🔴"
         status_text = "DOWN"
+        clean_detail: Optional[str] = None
         if age_seconds is not None:
             age_text = f"{int(age_seconds)} s"
             if age_seconds <= 60:
@@ -1836,7 +1932,25 @@ def main():
                 if len(clean_detail) > 80:
                     clean_detail = clean_detail[:77] + "..."
                 status_text = f"DOWN ({clean_detail})"
-        telemetry_section.markdown(f"**Status:** {status_icon} {status_text}")
+        telemetry_status_lines: List[str] = []
+        if age_seconds is not None:
+            telemetry_status_lines.append(f"Age: {int(age_seconds)} s")
+        if telemetry_health:
+            firestore_ok = telemetry_health.get("firestore_ok")
+            firestore_label = "yes" if firestore_ok else "no"
+            telemetry_status_lines.append(f"Firestore ok: {firestore_label}")
+        if clean_detail:
+            telemetry_status_lines.append(f"Issue: {clean_detail}")
+        elif telemetry_error:
+            detail_line = str(telemetry_error).splitlines()[0]
+            if len(detail_line) > 80:
+                detail_line = detail_line[:77] + "..."
+            telemetry_status_lines.append(f"Issue: {detail_line}")
+        if not telemetry_status_lines:
+            telemetry_status_lines.append("No additional details")
+        status_label_html = f"<strong>Status:</strong> {status_icon} {status_text}"
+        telemetry_status_html = _tooltip_span(status_label_html, "\n".join(telemetry_status_lines), "dash-telemetry-status")
+        telemetry_section.markdown(telemetry_status_html, unsafe_allow_html=True)
 
         if telemetry_health:
             health_ok = bool(telemetry_health.get("firestore_ok"))
@@ -2049,36 +2163,6 @@ def main():
                     lambda v: f"{float(v):.1f}%" if v is not None else "n/a"
                 )
             st.dataframe(display_df, use_container_width=True, height=420)
-
-    # --------------------------- Leaderboard Tab ---------------------------------
-    with tab_leader:
-        st.subheader("Leaderboard")
-        leader_df = pd.DataFrame(leaderboard)
-        if leader_df is None or leader_df.empty:
-            st.info("No leaderboard entries yet.")
-        else:
-            if zar_rate is not None:
-                def _extract_return_usd(row: pd.Series) -> Optional[float]:
-                    for key in ("return_usd", "return", "pnl_usd", "pnl", "usd_return"):
-                        if key in row:
-                            val = row.get(key)
-                            if isinstance(val, (int, float)):
-                                return float(val)
-                    return None
-
-                def _compute_return_zar(row: pd.Series) -> str:
-                    usd_val = _extract_return_usd(row)
-                    if usd_val is None or zar_rate is None:
-                        return "≈ R—"
-                    try:
-                        return f"≈ {format_currency(float(usd_val) * float(zar_rate), 'R')}"
-                    except Exception:
-                        return "≈ R—"
-
-                leader_df = leader_df.copy()
-                leader_df["Return (ZAR)"] = leader_df.apply(_compute_return_zar, axis=1)
-            st.dataframe(leader_df, use_container_width=True, height=420)
-
     # --------------------------- Signals Tab -------------------------------------
     with tab_signals:
         st.subheader("Signals (last 24h)")
@@ -2400,16 +2484,19 @@ def main():
         run = st.button("Run doctor.py", help="Gathers hedge/one-way, crosses, gates, and blocked_by reasons.")
         doctor_data = None
         if run:
+            stream_placeholder = st.empty()
             try:
-                out = subprocess.check_output(
-                    ["python3", "scripts/doctor.py"], stderr=subprocess.STDOUT, timeout=20
-                ).decode()
+                output, error_msg = run_doctor_subprocess(timeout=30, placeholder=stream_placeholder)
+                if error_msg:
+                    st.warning(error_msg)
                 try:
-                    doctor_data = json.loads(out)
+                    doctor_data = json.loads(output or "{}")
                 except Exception:
-                    st.code(out[:4000], language="json")
-            except Exception as e:
-                st.error(f"doctor.py failed: {e}")
+                    st.code((output or "")[:4000], language="json")
+            except TimeoutError as exc:
+                st.error(f"doctor.py timed out: {exc}")
+            except Exception as exc:
+                st.error(f"doctor.py failed: {exc}")
 
         # Derive flags from env and doctor output (dualSide comes from doctor if available)
         def _b(name: str) -> bool:

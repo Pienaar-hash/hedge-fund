@@ -1,8 +1,0 @@
-{"ts":"2025-10-31T15:30:00Z",
- "window_s":60,
- "intents":{"attempted":0,"emitted":0,"vetoed":0},
- "latency_ms":{"decision_p50":0,"decision_p95":0},
- "slippage_bps":{"p50":0.0,"p95":0.0},
- "retries":{"p50":0,"max":0},
- "errors":{"submit_fail":0,"ack_timeout":0},
- "note":"bootstrap placeholder until next real window"}
