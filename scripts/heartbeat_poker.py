@@ -1,4 +1,6 @@
-import time, random, logging
+import time
+import random
+import logging
 from execution.firestore_utils import publish_heartbeat
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 while True:

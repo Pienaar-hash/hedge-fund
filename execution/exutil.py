@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 try:  # dotenv is optional in production images
     from dotenv import load_dotenv  # type: ignore

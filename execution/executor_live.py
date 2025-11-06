@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover - optional dependency
     UMFutures = None
 
 from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
+from execution.firestore_utils import _safe_load_json
 from execution.events import now_utc, write_event
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 
