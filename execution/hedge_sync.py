@@ -1,31 +1,3 @@
-import os
-import time
-
-from execution.sync_state import sync_nav, sync_positions
-from utils.firestore_client import get_db
-
-
-def main():
-    ENV = os.environ.get("ENV", "dev")
-    db = get_db()
-    while True:
-        # TODO: replace with real readers for balances/positions from exchange or local state
-        positions_payload = {"items": []}
-        nav_payload = {
-            "series": [],
-            "total_equity": 0,
-            "realized_pnl": 0,
-            "unrealized_pnl": 0,
-            "peak_equity": 0,
-            "drawdown": 0,
-        }
-        try:
-            sync_positions(db, positions_payload, ENV)
-            sync_nav(db, nav_payload, ENV)
-        except Exception as e:
-            print(f"[hedge-sync] error: {e}")
-        time.sleep(60)
-
-
-if __name__ == "__main__":
-    main()
+# Archived by Codex [v5.9-prep] repo hygiene sweep
+# Original moved to /archive/deprecated_v5.7/execution/hedge_sync.py
+# Do not reintroduce without audit approval.
