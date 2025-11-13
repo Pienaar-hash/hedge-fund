@@ -9,9 +9,19 @@ from typing import Any, Dict, Iterable, List, Tuple
 import os
 from .exchange_utils import get_klines, get_price, get_symbol_filters
 from .orderbook_features import evaluate_entry_gate
-from .signal_generator import normalize_intent as generator_normalize_intent
+from .signal_generator import (
+    normalize_intent as generator_normalize_intent,
+    allow_trade,
+    size_for,
+)
 from .universe_resolver import resolve_allowed_symbols, symbol_tier, is_listed_on_futures
-from .risk_limits import check_order, RiskState, RiskGate
+from .risk_limits import (
+    check_order,
+    RiskState,
+    RiskGate,
+    symbol_notional_guard,
+    symbol_dd_guard,
+)
 from .nav import PortfolioSnapshot
 
 try:
@@ -486,6 +496,34 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","gross":{effective_notional},"min_notional":{min_notional},"veto":{vetoes}}}'
             )
             continue
+
+        # Execution hardening gates
+        if not allow_trade(sym_key):
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["signal_gate"]}}'
+            )
+            continue
+        if not symbol_notional_guard(sym_key):
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["symbol_notional_cap"]}}'
+            )
+            continue
+        if not symbol_dd_guard(sym_key):
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["symbol_drawdown_cap"]}}'
+            )
+            continue
+
+        scaled_notional = size_for(sym_key, effective_notional)
+        if scaled_notional <= 0:
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["sizing_zero"]}}'
+            )
+            continue
+        requested_notional = max(float(scaled_notional), min_notional)
+        effective_notional = requested_notional
+        cap = requested_notional / lev if lev > 0 else requested_notional
+
         signal = (
             "BUY"
             if z < -0.8

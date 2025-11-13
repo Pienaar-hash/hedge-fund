@@ -1,3 +1,9 @@
+"""
+v5.9 Execution Hardening — Risk gates
+- Per-symbol 7d notional share cap
+- Per-symbol daily drawdown kill with cooldown
+"""
+
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, getcontext
 import math
@@ -15,10 +21,21 @@ from execution.nav import (
     get_nav_age as _nav_get_nav_age,
 )
 from execution.utils import load_json, get_live_positions
+from .utils.metrics import (
+    notional_7d_by_symbol,
+    total_notional_7d,
+    dd_today_pct,
+    is_in_asset_universe,
+)
+from .utils.toggle import disable_symbol_temporarily, is_symbol_disabled
 from execution.exchange_utils import get_balances
 from execution.log_utils import get_logger, log_event, safe_dump
 
 LOGGER = logging.getLogger("risk_limits")
+
+SYMBOL_NOTIONAL_CAP = 0.25
+SYM_DD_CAP_PCT = 3.0
+COOLDOWN_H = 24
 
 
 _GLOBAL_KEYS = {
@@ -1460,3 +1477,25 @@ class RiskGate:
             return False, "trade_rate_limit"
 
         return True, ""
+
+
+def symbol_notional_guard(symbol: str) -> bool:
+    if not is_in_asset_universe(symbol):
+        return False
+    total = total_notional_7d() or 0.0
+    if total <= 0:
+        return True
+    share = (notional_7d_by_symbol(symbol) or 0.0) / max(total, 1e-9)
+    return share <= SYMBOL_NOTIONAL_CAP
+
+
+def symbol_dd_guard(symbol: str) -> bool:
+    if is_symbol_disabled(symbol):
+        return False
+    if not is_in_asset_universe(symbol):
+        return False
+    dd = dd_today_pct(symbol) or 0.0
+    if dd <= -SYM_DD_CAP_PCT:
+        disable_symbol_temporarily(symbol, ttl_hours=COOLDOWN_H, reason="dd_cap_hit")
+        return False
+    return True

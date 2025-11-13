@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime
-from typing import List
+from typing import Any, Dict, List, Sequence
 
 try:
     import requests
@@ -30,7 +30,7 @@ def _utc() -> str:
 
 
 # --- Core send ---
-def send_telegram(message: str, silent: bool = False) -> bool:
+def send_telegram(message: str, silent: bool = False, parse_mode: str | None = None) -> bool:
     env = _env()
     if not env["enabled"]:
         print("❌ Telegram disabled (TELEGRAM_ENABLED!=1).", flush=True)
@@ -51,6 +51,8 @@ def send_telegram(message: str, silent: bool = False) -> bool:
             "text": f"{_utc()}\n{message}",
             "disable_notification": bool(silent),
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         r = requests.post(url, json=payload, timeout=15)
         if r.ok:
             print("✅ Telegram message sent.", flush=True)
@@ -65,6 +67,30 @@ def send_telegram(message: str, silent: bool = False) -> bool:
 # --- Cadence / rate limiting ---
 _last_summary_ts: float | None = None
 _last_dd_ts: float | None = None
+ALERT_COOLDOWN_S = int(os.getenv("EXEC_ALERT_COOLDOWN_S", "60") or 60)
+_last_alert_ts: Dict[str, float] = {}
+_MD_ESCAPE = str.maketrans(
+    {
+        "_": r"\_",
+        "*": r"\*",
+        "[": r"\[",
+        "]": r"\]",
+        "(": r"\(",
+        ")": r"\)",
+        "~": r"\~",
+        "`": r"\`",
+        ">": r"\>",
+        "#": r"\#",
+        "+": r"\+",
+        "-": r"\-",
+        "=": r"\=",
+        "|": r"\|",
+        "{": r"\{",
+        "}": r"\}",
+        ".": r"\.",
+        "!": r"\!",
+    }
+)
 
 
 def should_send_summary(last_sent_ts: float | None, minutes: int) -> bool:
@@ -122,6 +148,55 @@ def send_drawdown_alert(
         f"Equity: {equity:,.2f} | Peak: {peak_equity:,.2f}"
     )
     send_telegram(msg, silent=False)
+
+
+def _escape_markdown(text: str) -> str:
+    return str(text or "").translate(_MD_ESCAPE)
+
+
+def send_execution_alerts(symbol: str, alerts: Sequence[Dict[str, Any]]) -> None:
+    """
+    Sends aggregated execution alerts per symbol using Markdown formatting.
+    """
+    if not alerts:
+        return
+
+    sym = str(symbol or "ALL").upper()
+    now = time.time()
+    last = _last_alert_ts.get(sym, 0.0)
+    if now - last < ALERT_COOLDOWN_S:
+        return
+
+    severity_order = {"critical": 3, "warning": 2, "info": 1}
+    emoji_map = {"critical": "🛑", "warning": "⚠️", "info": "ℹ️"}
+
+    def _severity(alert: Dict[str, Any]) -> str:
+        return str(alert.get("severity") or "info").lower()
+
+    sorted_alerts = sorted(
+        alerts,
+        key=lambda alert: (
+            -severity_order.get(_severity(alert), 0),
+            str(alert.get("type") or ""),
+        ),
+    )
+    top_severity = _severity(sorted_alerts[0])
+    header = f"*Execution Alerts — {_escape_markdown(sym)}*"
+    lines = []
+    for alert in sorted_alerts:
+        severity = _severity(alert)
+        icon = emoji_map.get(severity, "•")
+        msg = _escape_markdown(alert.get("msg") or f"{sym}: {alert.get('type', 'alert')}")
+        severity_label = _escape_markdown(severity.upper())
+        lines.append(f"{icon} *{severity_label}* — {msg}")
+
+    body = "\n".join([header, "", *lines])
+    silent = severity_order.get(top_severity, 0) < severity_order.get("critical", 3)
+    try:
+        send_telegram(body, silent=silent, parse_mode="MarkdownV2")
+    except Exception:
+        pass
+    _last_alert_ts[sym] = now
 
 
 # --- CLI smoke test ---

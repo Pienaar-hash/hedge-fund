@@ -86,6 +86,55 @@ def publish_symbol_toggle(symbol: str, meta: Dict[str, Any], *, env: Optional[st
     client.collection("hedge").document(env_name).collection("symbol_toggles").document(doc_id).set(data, merge=True)
 
 
+def publish_execution_health(symbol: Optional[str], payload: Dict[str, Any], *, env: Optional[str] = None) -> None:
+    """
+    Mirror execution health snapshots for remote dashboards.
+    """
+    try:
+        client = _direct_client()
+    except Exception:  # pragma: no cover - optional dependency
+        return
+
+    env_name = env or os.getenv("HEDGE_ENV") or _env()
+    ts = int(time.time())
+    doc_id = f"{(symbol or 'ALL').upper()}_{ts}"
+    data = dict(payload)
+    data.setdefault("symbol", symbol)
+    data.setdefault("env", env_name)
+    data.setdefault("updated_at", ts)
+    try:
+        client.collection("hedge").document(env_name).collection("execution_health").document(doc_id).set(data, merge=True)
+    except Exception as exc:  # pragma: no cover - telemetry best effort
+        LOGGER.debug("[firestore] execution_health_publish_failed symbol=%s err=%s", symbol, exc)
+
+
+def publish_execution_alert(alert: Dict[str, Any], *, env: Optional[str] = None) -> None:
+    """
+    Mirror execution alerts for dashboard consumption.
+    """
+    if not isinstance(alert, dict):
+        raise ValueError("alert must be a dict")
+    try:
+        client = _direct_client()
+    except Exception:  # pragma: no cover - optional dependency
+        return
+
+    env_name = env or os.getenv("HEDGE_ENV") or _env()
+    ts = int(time.time())
+    symbol = str(alert.get("symbol") or "ALL").upper()
+    a_type = str(alert.get("type") or "generic")
+    doc_id = f"{symbol}_{a_type}_{ts}"
+    data = dict(alert)
+    data.setdefault("symbol", symbol)
+    data.setdefault("type", a_type)
+    data.setdefault("env", env_name)
+    data.setdefault("updated_at", ts)
+    try:
+        client.collection("hedge").document(env_name).collection("execution_alerts").document(doc_id).set(data, merge=True)
+    except Exception as exc:  # pragma: no cover - telemetry best effort
+        LOGGER.debug("[firestore] execution_alert_publish_failed symbol=%s err=%s", symbol, exc)
+
+
 def fetch_symbol_toggles(*, env: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Fetch all symbol toggle docs for the requested environment.

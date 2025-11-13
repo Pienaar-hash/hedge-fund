@@ -1,14 +1,294 @@
+"""
+v5.9 Execution Hardening — Router upgrades
+- Maker-first POST_ONLY with smart fallback
+- Fee-aware effective price calculator
+- Child-order aggregation by min-notional
+- Auto-cancel/refresh on low fill ratio
+"""
+
 from __future__ import annotations
 
 import logging
+import os
 import time
-from typing import Any, Dict, Mapping, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, Mapping, Tuple
+
+import requests
 
 from execution import exchange_utils as ex
 from execution.log_utils import get_logger, log_event, safe_dump
 
-__all__ = ["route_order", "route_intent", "is_ack_ok"]
+try:  # optional dependency
+    import yaml
+except Exception:  # pragma: no cover - best-effort fallback when PyYAML absent
+    yaml = None  # type: ignore[assignment]
 
+__all__ = [
+    "route_order",
+    "route_intent",
+    "is_ack_ok",
+    "PlaceOrderResult",
+    "effective_px",
+    "chunk_qty",
+    "submit_limit",
+    "monitor_and_refresh",
+]
+
+def _load_runtime_cfg() -> Dict[str, Any]:
+    path = Path(os.getenv("RUNTIME_CONFIG") or "config/runtime.yaml")
+    if yaml is None or not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+_RUNTIME_CFG = _load_runtime_cfg()
+_TRADING_WINDOW = _RUNTIME_CFG.get("trading_window") or {}
+_OFFPEAK_CFG = _RUNTIME_CFG.get("offpeak") or {}
+_PRIORITY_CFG = _RUNTIME_CFG.get("priority") or {}
+_FEES_CFG = (
+    _RUNTIME_CFG.get("fees")
+    or (_RUNTIME_CFG.get("execution") or {}).get("fees")
+    or {}
+)
+
+
+def _runtime_flag(key: str, default: Any) -> Any:
+    value = _RUNTIME_CFG.get(key)
+    return value if value is not None else default
+
+
+def _min_child_from_runtime(default: float) -> float:
+    candidates: list[float] = []
+    for section in (_OFFPEAK_CFG, _PRIORITY_CFG):
+        try:
+            val = float(section.get("min_child_notional", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if val > 0:
+            candidates.append(val)
+    return min(candidates) if candidates else default
+
+
+def _fee_from_runtime(key: str, env_key: str, default: float) -> float:
+    env_val = os.getenv(env_key)
+    if env_val is not None:
+        try:
+            return float(env_val)
+        except (TypeError, ValueError):
+            pass
+    cfg_val = _FEES_CFG.get(key)
+    if cfg_val is not None:
+        try:
+            return float(cfg_val)
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+# --- Tunables sourced from runtime.yaml / env overrides ---
+POST_ONLY_DEFAULT = bool(_runtime_flag("post_only_default", True))
+SLIP_MAX_BPS = int(_runtime_flag("router_slip_max_bps", 3))  # switch to taker if mid drifts beyond this
+REJECTS_MAX = int(_runtime_flag("router_rejects_max", 2))  # post-only rejects before fallback
+MIN_CHILD_NOTIONAL = _min_child_from_runtime(30.0)  # USDT per child
+LOW_FILL_WINDOW_S = int(_runtime_flag("low_fill_window_s", 60))
+MIN_FILL_RATIO = float(_runtime_flag("min_fill_ratio", 0.40))
+
+# Exchange fee tier (bps). Negative for maker rebates.
+TAKER_BPS = _fee_from_runtime("taker_bps", "TAKER_FEE_BPS", 5.0)
+MAKER_BPS = _fee_from_runtime("maker_bps", "MAKER_FEE_BPS", -1.0)
+
+# expose trading window metadata for downstream schedulers
+TRADING_WINDOW = _TRADING_WINDOW
+OFFPEAK_CFG = _OFFPEAK_CFG
+PRIORITY_CFG = _PRIORITY_CFG
+
+
+@dataclass
+class PlaceOrderResult:
+    order_id: str
+    side: str
+    price: float | None
+    qty: float
+    is_maker: bool
+    rejected_post_only: bool = False
+    rejections: int = 0
+    slippage_bps: float = 0.0
+    placed_ts: float = field(default_factory=time.time)
+    filled_qty: float = 0.0
+    raw: Dict[str, Any] | None = None
+
+
+def _bps(a: float | None, b: float | None) -> float:
+    if a is None or b in (None, 0):
+        return 0.0
+    return (a - b) / b * 1e4
+
+
+def effective_px(px: float | None, side: str, is_maker: bool = True) -> float | None:
+    """Price adjusted for fees/rebates from the strategy's perspective."""
+    if px is None:
+        return None
+    bps = MAKER_BPS if is_maker else TAKER_BPS
+    adj = (bps / 1e4) * px
+    return px + adj if side.upper() == "BUY" else px - adj
+
+
+def MAX(a: float, b: float) -> float:
+    """Tiny local helper to avoid importing math for a single call."""
+    return a if a > b else b
+
+
+def chunk_qty(total_qty: float, px: float) -> list[float]:
+    """Split into children ensuring min notional."""
+    if total_qty <= 0:
+        return []
+    if px <= 0:
+        return [total_qty]
+    min_child = MAX(1.0, MIN_CHILD_NOTIONAL)
+    chunks = max(1, int((total_qty * px) // min_child))
+    return [total_qty / chunks] * chunks
+
+
+def place_order(
+    symbol: str,
+    side: str,
+    order_type: str,
+    price: float | None,
+    qty: float,
+    flags: Mapping[str, Any] | None = None,
+) -> PlaceOrderResult:
+    """
+    Thin wrapper around exchange client (existing implementation below).
+    This function is expected to:
+      - honor postOnly if flags={"postOnly": True}
+      - set rejected_post_only=True if post-only would cross
+      - populate order_id and partial fills via polling hook elsewhere
+    """
+    flags = dict(flags or {})
+    payload = {
+        "symbol": symbol.upper(),
+        "side": side.upper(),
+        "type": order_type.upper(),
+        "quantity": _as_str_quantity(qty),
+    }
+    if price not in (None, "", 0, 0.0) and payload["type"] != "MARKET":
+        payload["price"] = str(price)
+    payload.update(flags)
+    if flags.get("postOnly") and "timeInForce" not in payload:
+        payload["timeInForce"] = "GTX"
+
+    rejection_result = PlaceOrderResult(
+        order_id="",
+        side=payload["side"],
+        price=_to_float(price),
+        qty=float(qty),
+        is_maker=bool(flags.get("postOnly")),
+        rejected_post_only=True,
+        rejections=1,
+    )
+
+    try:
+        resp = ex.send_order(**payload)
+    except requests.HTTPError as exc:
+        if flags.get("postOnly") and exc.response is not None:
+            try:
+                body = exc.response.json()
+                msg = str(body.get("msg", "")).lower()
+                if body.get("code") == -2010 or "immediately match" in msg:
+                    return rejection_result
+            except Exception:
+                pass
+        raise
+
+    avg_px = _to_float(resp.get("avgPrice")) or _to_float(price)
+    executed_qty = _to_float(resp.get("executedQty")) or 0.0
+    orig_qty = _to_float(resp.get("origQty")) or float(qty)
+    status = _normalize_status(resp.get("status"))
+    was_post_only = bool(flags.get("postOnly"))
+    rejected_post_only = was_post_only and status in {"REJECTED", "EXPIRED"}
+
+    result = PlaceOrderResult(
+        order_id=str(resp.get("orderId") or ""),
+        side=payload["side"],
+        price=avg_px,
+        qty=orig_qty,
+        is_maker=bool(resp.get("maker")) if "maker" in resp else was_post_only,
+        rejected_post_only=rejected_post_only,
+        filled_qty=executed_qty,
+        slippage_bps=_bps(avg_px, _to_float(price)) if price is not None else 0.0,
+        raw=resp,
+    )
+    return result
+
+
+def submit_limit(
+    symbol: str,
+    px: float,
+    qty: float,
+    side: str,
+    post_only: bool = POST_ONLY_DEFAULT,
+    prev: PlaceOrderResult | None = None,
+    place_func: Callable[..., PlaceOrderResult] | None = None,
+) -> PlaceOrderResult:
+    """Maker-first with bounded smart fallback."""
+    place_cb = place_func or place_order
+    flags = {"postOnly": post_only} if post_only else {}
+    result = place_cb(symbol, side, "LIMIT", px, qty, flags)
+    prior_rejections = prev.rejections if prev else 0
+    prior_rejections = max(0, prior_rejections or 0)
+    current_rejections = max(0, result.rejections or 0)
+    if result.rejected_post_only:
+        result.rejections = max(prior_rejections, current_rejections) + 1
+    else:
+        result.rejections = max(prior_rejections, current_rejections)
+
+    slip = result.slippage_bps or 0.0
+    if (result.rejections >= REJECTS_MAX) or (slip > SLIP_MAX_BPS):
+        return place_cb(symbol, side, "MARKET", None, qty, flags={"postOnly": False})
+    return result
+
+
+def monitor_and_refresh(
+    order: PlaceOrderResult,
+    get_state: Callable[[str], Any],
+    cancel: Callable[[str], Any],
+    reprice_wider: Callable[[PlaceOrderResult], Any],
+    now: float | None = None,
+) -> None:
+    """
+    Generic watcher: if order is live longer than LOW_FILL_WINDOW_S and
+    fill ratio < MIN_FILL_RATIO -> cancel and reprice.
+    """
+    if not order or not order.order_id:
+        return
+    state = get_state(order.order_id)
+    if not state:
+        return
+    placed_ts = order.placed_ts or 0.0
+    age = (now or time.time()) - placed_ts
+
+    filled_qty = getattr(state, "filled_qty", None)
+    if filled_qty is None and isinstance(state, Mapping):
+        filled_qty = state.get("filled_qty") or state.get("executedQty")
+    try:
+        filled_qty = float(filled_qty or 0.0)
+    except (TypeError, ValueError):
+        filled_qty = 0.0
+
+    denom = order.qty if order.qty not in (None, 0) else 1e-12
+    fill_ratio = filled_qty / denom
+
+    if age > LOW_FILL_WINDOW_S and fill_ratio < MIN_FILL_RATIO:
+        cancel(order.order_id)
+        reprice_wider(order)
+        return
 
 _LOG = logging.getLogger("order_router")
 LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
@@ -141,6 +421,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             "raw": None,
         }
 
+    risk_ctx = dict(risk_ctx or {})
     price = risk_ctx.get("price") or intent.get("price")
     order_type = str(intent.get("type") or risk_ctx.get("type") or "MARKET").upper()
     position_side = intent.get("positionSide") or risk_ctx.get("positionSide")
@@ -175,29 +456,65 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     except Exception:
         filters_snapshot = {}
 
+    maker_qty = _to_float(risk_ctx.get("maker_qty"))
+    maker_price = _to_float(risk_ctx.get("maker_price") or price)
+    maker_enabled = (
+        bool(risk_ctx.get("maker_first"))
+        and not bool(payload.get("reduceOnly"))
+        and maker_qty is not None
+        and maker_qty > 0
+        and maker_price is not None
+        and maker_price > 0
+    )
+
     latency_ms: float | None = None
-    try:
-        t0 = time.perf_counter()
-        resp = ex.send_order(**payload)
-        latency_ms = (time.perf_counter() - t0) * 1000.0
-    except Exception as exc:
-        error_payload: Dict[str, Any] = {
-            "exc": repr(exc),
-            "symbol": symbol,
-            "side": side,
-            "order_type": order_type,
-            "price": _to_float(price),
-            "qty": _to_float(qty),
-            "payload": payload,
-            "dry_run": bool(dry_run),
-            "position_side": payload.get("positionSide"),
-            "reduce_only": payload.get("reduceOnly"),
-        }
-        if filters_snapshot:
-            error_payload["exchange_filters_used"] = filters_snapshot
-        log_event(LOG_ORDERS, "order_error", safe_dump(error_payload))
-        _LOG.error("route_order failed: %s", exc)
-        raise
+    resp: Dict[str, Any] | None = None
+    if maker_enabled:
+        try:
+            t0 = time.perf_counter()
+            maker_px = effective_px(maker_price, side, is_maker=True) or maker_price
+            maker_result = submit_limit(symbol, maker_px, maker_qty, side)
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+        except Exception as exc:
+            maker_result = None
+            _LOG.warning("maker_first_failed symbol=%s err=%s", symbol, exc)
+        else:
+            resp = maker_result.raw or {
+                "orderId": maker_result.order_id,
+                "status": "FILLED" if maker_result.filled_qty else "NEW",
+                "avgPrice": maker_result.price,
+                "executedQty": maker_result.filled_qty,
+                "origQty": maker_result.qty,
+            }
+            resp["maker_result"] = {
+                "is_maker": maker_result.is_maker,
+                "rejections": maker_result.rejections,
+                "slippage_bps": maker_result.slippage_bps,
+            }
+
+    if resp is None:
+        try:
+            t0 = time.perf_counter()
+            resp = ex.send_order(**payload)
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+        except Exception as exc:
+            error_payload: Dict[str, Any] = {
+                "exc": repr(exc),
+                "symbol": symbol,
+                "side": side,
+                "order_type": order_type,
+                "price": _to_float(price),
+                "qty": _to_float(qty),
+                "payload": payload,
+                "dry_run": bool(dry_run),
+                "position_side": payload.get("positionSide"),
+                "reduce_only": payload.get("reduceOnly"),
+            }
+            if filters_snapshot:
+                error_payload["exchange_filters_used"] = filters_snapshot
+            log_event(LOG_ORDERS, "order_error", safe_dump(error_payload))
+            _LOG.error("route_order failed: %s", exc)
+            raise
 
     order_id = resp.get("orderId")
     status = _normalize_status(resp.get("status"))

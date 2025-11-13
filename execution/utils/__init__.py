@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, Mapping
 
 import requests
 
-ASSET_DECIMALS = {"BTC": 8, "ETH": 8, "USDT": 6, "USDC": 6}
+ASSET_DECIMALS = {"BTC": 8, "ETH": 8, "USDC": 6, "USDC": 6}
 
 
 def load_env_var(key, default=None):
@@ -69,8 +69,17 @@ def write_nav_snapshots_pair(
         pass
 
 
+def atr_pct(symbol: str, lookback: int = 14, median_only: bool = False):
+    """
+    Placeholder ATR percent fetcher.
+    Real implementation is expected to pull from cached indicators.
+    """
+    _ = (symbol, lookback, median_only)
+    return None
+
+
 _TREASURY_RESERVED_KEYS = {"assets", "total_usd", "treasury_usdt", "breakdown", "updated_at", "ts"}
-_TREASURY_STABLES = {"USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE"}
+_TREASURY_STABLES = {"USDC", "USDC", "DAI", "FDUSD", "TUSD", "USDE"}
 
 
 def _optional_float(value: Any) -> Optional[float]:
@@ -263,7 +272,7 @@ def _resolve_asset_price(
             return float(derived)
     if callable(get_price_fn):
         try:
-            fetched = float(get_price_fn(f"{asset_code}USDT") or 0.0)
+            fetched = float(get_price_fn(f"{asset_code}USDC") or 0.0)
             if fetched > 0:
                 return fetched
         except Exception as exc:
@@ -420,7 +429,7 @@ COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
 COINGECKO_IDS = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
-    "USDT": "tether",
+    "USDC": "tether",
     "XAUT": "tether-gold",
 }
 _COINGECKO_CACHE: dict = {}
