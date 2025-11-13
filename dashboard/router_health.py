@@ -306,6 +306,8 @@ def load_router_health(
 
     if trades_records:
         trades_df = pd.DataFrame.from_records(trades_records)
+        if "attempt_id" in trades_df.columns:
+            trades_df = trades_df.drop_duplicates(subset=["attempt_id"], keep="last")
         trades_df = trades_df.sort_values("time", ascending=True).reset_index(drop=True)
         trades_df["is_win"] = trades_df["pnl_usd"] > 0
         trades_df["trade_index"] = trades_df.index + 1
@@ -459,6 +461,8 @@ def load_router_health(
         trades.append(normalized)
 
     trades_df = pd.DataFrame.from_records(trades)
+    if not trades_df.empty and "attempt_id" in trades_df.columns:
+        trades_df = trades_df.drop_duplicates(subset=["attempt_id"], keep="last")
     if trades_df.empty:
         per_symbol_df = pd.DataFrame(
             columns=[

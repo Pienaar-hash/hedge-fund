@@ -1,0 +1,13 @@
+metric,value
+Trades (count),1464.0
+Win rate (%),21.45
+Gross realized PnL (USDT),73.92
+Fees paid on trades (USDT),50.4
+Net realized PnL after trade fees (USDT),23.52
+Funding total (USDT),0.16
+Commission adjustments total (USDT),-50.4
+7d notional traded (USDT est),100791.02
+Avg trade notional (USDT est),68.85
+Order fill rate (%),40.05
+Order cancel rate (%),0.0
+Stablecoin net cashflow (USDT-like),1123.68

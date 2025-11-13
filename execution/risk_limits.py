@@ -1416,7 +1416,13 @@ class RiskGate:
         max_gross_pct = _normalize_pct(self.sizing.get("max_gross_exposure_pct", 150)) * guard_multiplier
         if nav > 0 and max_gross_pct > 0:
             current_pct = (current_gross / nav) * 100.0
-            if current_pct + additional_pct > max_gross_pct:
+            prospective_pct = current_pct + additional_pct
+            snapshot_pct: Optional[float]
+            try:
+                snapshot_pct = float(self._gross_exposure_pct())
+            except Exception:
+                snapshot_pct = None
+            if prospective_pct > max_gross_pct and (snapshot_pct is None or snapshot_pct > max_gross_pct):
                 _emit_veto(
                     symbol,
                     "portfolio_cap",
@@ -1424,6 +1430,7 @@ class RiskGate:
                         "max_gross_exposure_pct": max_gross_pct,
                         "current_portfolio_pct": current_pct,
                         "incoming_pct": additional_pct,
+                        "snapshot_portfolio_pct": snapshot_pct,
                     },
                     context={
                         **nav_context,
