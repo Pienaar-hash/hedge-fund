@@ -6,11 +6,17 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+try:
+    from google.cloud import firestore as _firestore_client  # type: ignore
+except Exception:  # pragma: no cover
+    _firestore_client = None  # type: ignore
+
 from utils.firestore_client import get_db, write_doc
 
 LOGGER = logging.getLogger("firestore")
 
 _STABLE_ASSETS = {"USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE"}
+_DIRECT_CLIENT = None
 
 
 def _env() -> str:
@@ -36,6 +42,66 @@ def _safe_load_json(path: str) -> Optional[Dict[str, Any]]:
 
 def _firestore_available(db: Any) -> bool:
     return db is not None and not getattr(db, "_is_noop", False)
+
+
+def _direct_client() -> Any:
+    global _DIRECT_CLIENT
+    if _DIRECT_CLIENT is not None:
+        return _DIRECT_CLIENT
+    if _firestore_client is None:
+        raise RuntimeError("google.cloud.firestore unavailable")
+    _DIRECT_CLIENT = _firestore_client.Client()
+    return _DIRECT_CLIENT
+
+
+def publish_router_metrics(doc_id: str, payload: Dict[str, Any], *, env: Optional[str] = None) -> None:
+    """
+    Mirror router metrics into Firestore under hedge/{env}/router_metrics/{doc_id}.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a dict")
+    client = _direct_client()
+    env_name = env or _env()
+    data = dict(payload)
+    data.setdefault("env", env_name)
+    data.setdefault("updated_at", time.time())
+    client.collection("hedge").document(env_name).collection("router_metrics").document(doc_id).set(data, merge=True)
+
+
+def publish_symbol_toggle(symbol: str, meta: Dict[str, Any], *, env: Optional[str] = None) -> None:
+    """
+    Mirror symbol toggle state into Firestore under hedge/{env}/symbol_toggles/{symbol}.
+    """
+    if not symbol:
+        raise ValueError("symbol is required")
+    if not isinstance(meta, dict):
+        raise ValueError("meta must be a dict")
+    client = _direct_client()
+    env_name = env or _env()
+    doc_id = symbol.upper()
+    data = dict(meta)
+    data.setdefault("symbol", doc_id)
+    data.setdefault("env", env_name)
+    data.setdefault("updated_at", time.time())
+    client.collection("hedge").document(env_name).collection("symbol_toggles").document(doc_id).set(data, merge=True)
+
+
+def fetch_symbol_toggles(*, env: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Fetch all symbol toggle docs for the requested environment.
+    """
+    client = _direct_client()
+    env_name = env or _env()
+    toggles: List[Dict[str, Any]] = []
+    try:
+        collection = client.collection("hedge").document(env_name).collection("symbol_toggles")
+        for doc in collection.stream():
+            data = doc.to_dict() or {}
+            data.setdefault("symbol", str(doc.id).upper())
+            toggles.append(data)
+    except Exception as exc:  # pragma: no cover - network failures
+        LOGGER.warning("[firestore] fetch_symbol_toggles_failed env=%s err=%s", env_name, exc)
+    return toggles
 
 
 def publish_health_if_needed(
