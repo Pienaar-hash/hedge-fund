@@ -1,3 +1,7 @@
+"""
+v5.9 Execution Hardening — Performance throttle
+"""
+
 from __future__ import annotations
 
 import json
@@ -9,9 +13,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
+import numpy as np
 from execution.log_utils import safe_dump
 from execution.risk_limits import RiskGate, RiskState
 from execution.metrics_normalizer import NormalizedMetrics, compute_normalized_metrics
+from .utils.metrics import rolling_sharpe_7d
 
 LOG = logging.getLogger("risk.autotune")
 
@@ -278,3 +284,25 @@ class RiskAutotuner:
     @property
     def last_adjustment(self) -> Dict[str, Any]:
         return self._last_adjust_summary
+
+
+SHARPE_MIN = -1.0
+SHARPE_MAX = 3.0
+MULT_MIN = 0.25
+MULT_MAX = 2.0
+
+
+def size_multiplier(symbol: str) -> float:
+    """
+    Scale position size by realized Sharpe over ~7 days.
+    Underperformers shrink, strong performers grow (within clamps).
+    """
+    sh = rolling_sharpe_7d(symbol)
+    if sh is None:
+        return 1.0
+
+    sh_clamped = max(SHARPE_MIN, min(SHARPE_MAX, sh))
+    span = SHARPE_MAX - SHARPE_MIN
+    alpha = (sh_clamped - SHARPE_MIN) / span  # 0..1
+    mult = MULT_MIN + alpha * (MULT_MAX - MULT_MIN)
+    return float(np.clip(mult, MULT_MIN, MULT_MAX))

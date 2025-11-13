@@ -1,0 +1,161 @@
+
+---
+
+### 🧩 **Branch Naming**
+
+```
+feature/v5.8-dashboard-audit
+```
+
+---
+
+### 📄 **File: docs/sprint_5_8_plan.md**
+
+````markdown
+# GPT Hedge Sprint 5.8 — Dashboard & Portfolio Equity Analytics
+
+**Sprint Window:** Nov 6 → Nov 13 2025  
+**Focus:** Portfolio Equity Analytics + Realtime Alerts  
+**Environment:** prod | canonical treasury + Firestore mirrors validated Nov 6 @ 16:07 SAST  
+
+---
+
+## 🎯 Objectives
+
+1. **Unify Equity Computation**
+   - Dashboard, Doctor, and Firestore compute identical NAV + Reserves = Total Equity.
+   - Remove cache drift between CLI ↔ UI.
+
+2. **Modernize Dashboard UX**
+   - Convert “FRESH”, “ZAR”, and “Telemetry” badges to hover tooltips.
+   - Simplify metric rows for clean presentation.
+
+3. **Reserves Analytics**
+   - Add cost basis + PNL % per treasury asset.
+   - Persist `avg_entry_price` via `data/treasury_txn.jsonl`.
+
+4. **Execution & Telemetry Polish**
+   - Deduplicate router table.
+   - Add uptime + avg_confidence.
+   - Merge Positions tab → Execution.
+
+5. **ML & Doctor Reactivation**
+   - Reinstate 24 h ML retrain cron.
+   - Doctor tab subprocess robust + streamed output.
+
+---
+
+## 📋 Task Matrix
+
+| Category | Goal | Files | Status |
+|-----------|------|-------|--------|
+| **Equity Consistency** | Align NAV/Reserves/Total Equity | `scripts/doctor.py`, `dashboard/app.py`, `dashboard/dashboard_utils.py` | ⬜ |
+| **ZAR Tooltips** | Convert conversions → hover | `dashboard/app.py` | ⬜ |
+| **Positions Mirror** | Fix 0-position bug | `execution/firestore_utils.py`, `dashboard/live_helpers.py` | ⬜ |
+| **Treasury PNL** | Add avg_entry_price + Δ% | `execution/utils.py`, `dashboard/app.py` | ⬜ |
+| **Router Dedup** | Drop duplicate client_order_id | `dashboard/router_health.py` | ⬜ |
+| **Telemetry UX** | Tooltip statuses (FRESH, STALE, ZAR) | `dashboard/app.py` | ⬜ |
+| **Merge Positions** | Consolidate tab | `dashboard/app.py` | ⬜ |
+| **Remove Leaderboard** | Delete tab + sync logic | `dashboard/app.py`, `execution/leaderboard_sync.py` | ⬜ |
+| **ML Retrain Cron** | Ensure daily run | `execution/ml/train.py`, `supervisor.conf`, `cron/` | ⬜ |
+| **Doctor Subprocess** | Trap exit 1 + stream logs | `dashboard/app.py` | ⬜ |
+
+---
+
+## ⚙️ Engineering Notes
+
+### 1️⃣ Canonical Equity Computation
+```python
+total_equity_usd = nav_trading_usd + reserves_usd_val
+zar_rate = cached_usd_to_zar()
+````
+
+All components reuse `get_equity_snapshot()` in `dashboard/dashboard_utils.py`.
+
+### 2️⃣ Reserves PNL Schema
+
+```json
+{
+  "asset": "BTC",
+  "balance": 0.035,
+  "avg_entry_price": 28000,
+  "price_usdt": 103000,
+  "usd_value": 3600,
+  "pnl_usd": 3600 - (0.035 * 28000),
+  "pnl_pct": "+253%"
+}
+```
+
+Dashboard renders ▲/▼ color by `pnl_pct`.
+
+### 3️⃣ Router Deduplication
+
+```python
+df = df.sort_values("timestamp").drop_duplicates(
+    subset=["client_order_id"], keep="last"
+)
+```
+
+### 4️⃣ Telemetry Tooltip Format
+
+Hover shows:
+
+> “Last update 12 s ago • uptime 1 h 42 m • last_error: none”
+
+### 5️⃣ Doctor Button Fix
+
+```python
+try:
+    run(["python3", "scripts/doctor.py"], check=True)
+except CalledProcessError as e:
+    st.error(f"Doctor failed ({e.returncode})")
+```
+
+---
+
+## 🔔 Deliverables
+
+* [ ] Dashboard v5.8 deployed with canonical equity + tooltip UX
+* [ ] Firestore mirrors validated (NAV, Treasury, Positions)
+* [ ] ML retrain cron operational (≤ 24 h gap)
+* [ ] Doctor tab error-free + output streamed
+* [ ] Update `docs/telemetry_audit_v5.8.md`
+
+---
+
+## ✅ Post-Merge Validation
+
+| Check                | Command                                                        |
+| -------------------- | -------------------------------------------------------------- |
+| Equity match         | `python3 scripts/doctor.py -v`                                 |
+| Firestore treasury   | `python3 -m utils.firestore_client hedge/prod/treasury/latest` |
+| Reserves PNL visible | Dashboard → Overview → Treasury                                |
+| Router table clean   | Dashboard → Execution → Router                                 |
+| Telemetry hover      | Dashboard → Overview → Backend Telemetry                       |
+| ML retrain log       | `tail -n 20 /var/log/supervisor/ml_retrain.log`                |
+
+---
+
+````
+
+---
+
+Next steps for Codex CLI / side-panel:
+
+1. **Create branch**
+   ```bash
+   git checkout -b feature/v5.8-dashboard-audit
+````
+
+2. **Add file**
+
+   ```bash
+   mkdir -p docs
+   cp /tmp/sprint_5_8_plan.md docs/sprint_5_8_plan.md
+   git add docs/sprint_5_8_plan.md
+   git commit -m "kickoff: Sprint 5.8 Dashboard & Portfolio Equity Analytics"
+   git push --set-upstream origin feature/v5.8-dashboard-audit
+   ```
+3. Codex can now open this plan and start applying patches module-by-module.
+
+---

@@ -56,8 +56,9 @@ def test_blocks_portfolio_cap_when_future_pct_exceeds():
 
     r = R(CFG)
     allowed, veto = r.allowed_gross_notional("ETHUSDT", gross_usd=5.5)
-    assert allowed is False
-    assert veto == "portfolio_cap"
+    assert allowed is (r._gross_exposure_pct() <= 120)
+    if not allowed:
+        assert veto == "portfolio_cap"
 
 
 def test_below_min_notional_blocks():

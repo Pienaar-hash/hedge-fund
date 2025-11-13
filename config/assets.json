@@ -1,0 +1,6 @@
+{
+  "BTC":  {"qty": 0.035, "price_usd": 101500.0},
+  "XAUT": {"qty": 0.59,  "price_usd": 3981.0},
+  "USDT": {"qty": 2407,  "price_usd": 0.9998},
+  "USDC": {"qty": 3500,  "price_usd": 0.9992}
+}

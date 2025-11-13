@@ -1,3 +1,8 @@
+"""
+v5.9 Execution Hardening — KPI tiles
+- fill efficiency, fee/PnL ratio, realized slippage (bps), expectancy
+"""
+
 from __future__ import annotations
 
 import json
@@ -6,12 +11,65 @@ import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
+from datetime import datetime
 
 from execution.risk_limits import RiskGate
 from execution.utils import load_json
+from execution.utils.metrics import (
+    fill_notional_7d,
+    submitted_notional_7d,
+    gross_realized_7d,
+    fees_7d,
+    realized_slippage_bps_7d,
+    hourly_expectancy,
+    router_effectiveness_7d,
+)
+from execution.utils.execution_health import compute_execution_health
+from execution.utils.expectancy import rolling_expectancy
 from execution.exchange_utils import get_price
 
 STABLES = {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}
+
+
+def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
+    submitted = submitted_notional_7d(symbol)
+    filled = fill_notional_7d(symbol)
+    fees = fees_7d(symbol) or 0.0
+    gpnl = gross_realized_7d(symbol) or 0.0
+    fee_ratio = (fees / gpnl) if gpnl else None
+    efficiency = (filled / submitted) if submitted else None
+    slip = realized_slippage_bps_7d(symbol)
+    expectancy = rolling_expectancy(symbol) if symbol else None
+    return {
+        "fill_eff": efficiency,
+        "fee_pnl_ratio": fee_ratio,
+        "slip_bps": slip,
+        "expectancy": expectancy,
+        "hourly_expectancy": hourly_expectancy(symbol) if symbol else None,
+    }
+
+
+def execution_kpis(symbol: str | None = None) -> Dict[str, Any]:
+    base = kpi_tiles(symbol)
+    eff = router_effectiveness_7d(symbol)
+    if isinstance(eff, dict):
+        base.update(
+            {
+                "maker_fill_ratio": eff.get("maker_fill_ratio"),
+                "fallback_ratio": eff.get("fallback_ratio"),
+                "slip_q25": eff.get("slip_q25"),
+                "slip_q50": eff.get("slip_q50"),
+                "slip_q75": eff.get("slip_q75"),
+            }
+        )
+    return base
+
+
+def execution_health(symbol: str | None = None) -> Dict[str, Any]:
+    """
+    Thin wrapper so the dashboard can pull execution health snapshots.
+    """
+    return compute_execution_health(symbol)
 
 
 def _try_json(path: str) -> Any:

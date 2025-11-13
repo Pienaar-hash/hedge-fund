@@ -34,11 +34,12 @@ from dashboard.dashboard_utils import (  # noqa: E402
     get_env_float,
     get_env_badge,
     load_exec_snapshot,
+    compute_total_nav_cached,
 )
 from dashboard.async_cache import gather_once  # noqa: E402
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
 from dashboard.router_health import load_router_health, RouterHealthData  # noqa: E402
-from dashboard.live_helpers import get_nav_snapshot, get_treasury  # noqa: E402
+from dashboard.live_helpers import get_nav_snapshot, get_treasury, execution_kpis, execution_health  # noqa: E402
 from scripts.doctor import collect_doctor_snapshot, run_doctor_subprocess  # noqa: E402
 from research.correlation_matrix import DEFAULT_OUTPUT_PATH as CORRELATION_CACHE_PATH  # noqa: E402
 from execution.capital_allocator import DEFAULT_OUTPUT_PATH as CAPITAL_ALLOC_CACHE_PATH  # noqa: E402
@@ -165,6 +166,22 @@ def main():
             if value is None or (isinstance(value, float) and value != value):
                 return "—"
             return f"{float(value):.0f} ms"
+        except Exception:
+            return "—"
+
+    def format_percent(value):
+        if value is None:
+            return "—"
+        try:
+            return f"{float(value) * 100:.1f}%"
+        except Exception:
+            return "—"
+
+    def format_bps(value):
+        if value is None:
+            return "—"
+        try:
+            return f"{float(value):.2f} bps"
         except Exception:
             return "—"
 
@@ -1098,9 +1115,9 @@ def main():
             return None
         return None
 
-    treasury_firestore_total: Optional[float] = _extract_total_usd(treasury_payload)
-    if treasury_firestore_total is None:
-        treasury_firestore_total = _extract_total_usd(treasury_snapshot_live)
+    treasury_total_usd: Optional[float] = _extract_total_usd(treasury_payload)
+    if treasury_total_usd is None:
+        treasury_total_usd = _extract_total_usd(treasury_snapshot_live)
 
     treasury_updated_at = treasury_latest_doc.get("updated_at") or treasury_payload.get("updated_at")
     treasury_updated_ts = _to_epoch_seconds(treasury_updated_at)
@@ -1121,13 +1138,7 @@ def main():
     if nav_trading_usd is None and nav_value is not None:
         nav_trading_usd = _to_optional_float(nav_value)
 
-    reserves_usd_val = treasury_firestore_total
-    if reserves_usd_val is None and treasury_snapshot_live:
-        reserves_usd_val = _extract_total_usd(treasury_snapshot_live)
-
     total_equity_usd: Optional[float] = None
-    if nav_trading_usd is not None or reserves_usd_val is not None:
-        total_equity_usd = float(nav_trading_usd or 0.0) + float(reserves_usd_val or 0.0)
 
     total_equity_zar: Optional[float] = None
 
@@ -1179,7 +1190,7 @@ def main():
         last_sync_label = "—"
 
     exchange_nav_value = nav_value if isinstance(nav_value, (int, float)) else None
-    reserves_total_usd = 0.0
+    reserves_total_usd: Optional[float] = None
 
     if callable(load_reserves) and callable(value_reserves_usd):
         try:
@@ -1195,36 +1206,27 @@ def main():
         except Exception as exc:
             LOG.warning("[dash] reserves valuation failed: %s", exc)
 
-    if treasury_firestore_total is not None:
-        reserves_total_usd = float(treasury_firestore_total)
-    elif not reserves_total_usd:
+    if reserves_total_usd is None:
         candidate_total = reserves_snapshot.get("total")
         if isinstance(candidate_total, (int, float)):
             reserves_total_usd = float(candidate_total)
 
-    if (
-        reserves_total_usd
-        and isinstance(nav_df, pd.DataFrame)
-        and not nav_df.empty
-        and "equity" in nav_df.columns
+    nav_value = exchange_nav_value
+    if nav_value is None and nav_trading_usd is not None:
+        nav_value = float(nav_trading_usd)
+
+    if total_equity_usd is None and any(
+        val is not None for val in (nav_trading_usd, treasury_total_usd, reserves_total_usd)
     ):
-        nav_df = nav_df.copy()
-        try:
-            nav_df["equity"] = pd.to_numeric(nav_df["equity"], errors="coerce").fillna(0.0) + reserves_total_usd
-        except Exception:
-            nav_df["equity"] = nav_df["equity"].apply(
-                lambda val: (float(val) if isinstance(val, (int, float)) else 0.0) + reserves_total_usd
-            )
+        total_equity_usd = (
+            float(nav_trading_usd or 0.0)
+            + float(treasury_total_usd or 0.0)
+            + float(reserves_total_usd or 0.0)
+        )
 
-    total_nav_value = None
-    if exchange_nav_value is not None or reserves_total_usd:
-        total_nav_value = (exchange_nav_value or 0.0) + reserves_total_usd
-        nav_value = total_nav_value
-    else:
-        nav_value = None
-
-    if isinstance(total_nav_value, (int, float)):
-        kpis["total_equity"] = total_nav_value
+    aum_total_usd = total_equity_usd
+    if isinstance(aum_total_usd, (int, float)):
+        kpis["total_equity"] = aum_total_usd
 
     prev_nav_value = None
     if isinstance(nav_df, pd.DataFrame) and nav_df.shape[0] >= 2:
@@ -1522,16 +1524,15 @@ def main():
     dd_chip_title = f"Daily drawdown {dd_pct:.2f}%"
     dd_chip_html = _tooltip_span(dd_chip_label, dd_chip_title, f"dash-nav-chip {dd_chip_class}")
 
-    treasury_total = reserves_total_usd
-    if not isinstance(treasury_total, (int, float)):
-        candidate_total = reserves_snapshot.get("total")
-        if isinstance(candidate_total, (int, float)):
-            treasury_total = float(candidate_total)
-    treasury_display = format_currency(treasury_total, "$") if treasury_total is not None else "—"
+    treasury_display = format_currency(treasury_total_usd, "$") if treasury_total_usd is not None else "—"
+    reserves_display = format_currency(reserves_total_usd, "$") if reserves_total_usd is not None else "—"
     nav_tooltip_text = (
-        f"Total NAV (USD)\nExchange: {exchange_nav_display} (source {nav_info.get('source', 'n/a')})\nReserves: {treasury_display}"
+        "Trading NAV (USD)\n"
+        f"Exchange: {exchange_nav_display} (source {nav_info.get('source', 'n/a')})\n"
+        f"Treasury: {treasury_display}\n"
+        f"Reserves: {reserves_display}"
         if nav_display != "n/a"
-        else "Total NAV (USD)"
+        else "Trading NAV (USD)"
     )
     nav_span = _tooltip_span(nav_main_label, nav_tooltip_text, "dash-nav-main")
     nav_main_block = f"<div class='dash-nav-main-row'>{nav_span}{nav_chip_html}{dd_chip_html}</div>"
@@ -1561,6 +1562,70 @@ def main():
 
     log_nav_value = f"{nav_value:.2f}" if isinstance(nav_value, (int, float)) else "n/a"
     LOG.info("[dash] header updated NAV=%s source=%s env=%s", log_nav_value, nav_source, env_label)
+
+    # ---- AUM breakdown ----------------------------------------------------------
+    aum_rows = []
+
+    def _add_segment(label: str, value: Optional[float]) -> None:
+        if value is None:
+            return
+        try:
+            numeric = float(value)
+        except Exception:
+            return
+        if numeric <= 0:
+            return
+        aum_rows.append({"Segment": label, "USD": numeric})
+
+    _add_segment("Trading NAV", nav_value if isinstance(nav_value, (int, float)) else nav_trading_usd)
+    _add_segment("Treasury", treasury_total_usd)
+    _add_segment("Reserves", reserves_total_usd)
+
+    try:
+        cached_sources, _ = compute_total_nav_cached()
+    except Exception:
+        cached_sources = {}
+    for key, label in (("spot", "Spot"), ("poly", "Polymarket")):
+        nav_entry = cached_sources.get(key) if isinstance(cached_sources, dict) else {}
+        nav_val = nav_entry.get("nav") if isinstance(nav_entry, dict) else None
+        _add_segment(label, nav_val)
+    if aum_rows:
+        with st.container():
+            st.markdown("#### AUM Breakdown")
+            if alt is not None:
+                df_aum = pd.DataFrame(aum_rows)
+                segment_order = df_aum["Segment"].tolist()
+                palette = {
+                    "Trading NAV": "#2563eb",
+                    "Treasury": "#f97316",
+                    "Reserves": "#14b8a6",
+                    "Spot": "#06b6d4",
+                    "Polymarket": "#a855f7",
+                }
+                color_scale = alt.Scale(
+                    domain=segment_order,
+                    range=[palette.get(seg, "#94a3b8") for seg in segment_order],
+                )
+                chart = (
+                    alt.Chart(df_aum)
+                    .mark_arc(innerRadius=60, stroke="white")
+                    .encode(
+                        theta=alt.Theta(field="USD", type="quantitative"),
+                        color=alt.Color(
+                            field="Segment",
+                            type="nominal",
+                            legend=alt.Legend(title=None, orient="right"),
+                            scale=color_scale,
+                        ),
+                        tooltip=[
+                            alt.Tooltip("Segment:N"),
+                            alt.Tooltip("USD:Q", format=",.2f"),
+                        ],
+                    )
+                )
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.dataframe(pd.DataFrame(aum_rows), hide_index=True, use_container_width=True)
 
     # ---- Read-only Reserve KPI ---------------------------------------------------
     RESERVE_BTC = get_env_float("DASHBOARD_RESERVE_BTC", 0.13)
@@ -1638,7 +1703,7 @@ def main():
         treasury_delta = format_age_seconds(treasury_age_seconds) if treasury_age_seconds is not None else "n/a"
         treasury_cols[0].metric(
             "Treasury (USDT)",
-            format_currency(treasury_firestore_total, "$") if treasury_firestore_total is not None else "—",
+            format_currency(treasury_total_usd, "$") if treasury_total_usd is not None else "—",
             f"Age {treasury_delta}" if treasury_delta not in {"n/a", "—"} else None,
         )
         if treasury_assets_rows:
@@ -1801,6 +1866,52 @@ def main():
             col_p50.metric("Latency p50", format_latency(latency_summary.get("p50_ms")))
             col_p90.metric("Latency p90", format_latency(latency_summary.get("p90_ms")))
 
+            exec_kpi_data = execution_kpis()
+            maker_col, fallback_col, q25_col, q50_col, q75_col = st.columns(5)
+            maker_col.metric("Maker Fill %", format_percent(exec_kpi_data.get("maker_fill_ratio")))
+            fallback_col.metric("Fallback Rate %", format_percent(exec_kpi_data.get("fallback_ratio")))
+            q25_col.metric("Slippage Q25", format_bps(exec_kpi_data.get("slip_q25")))
+            q50_col.metric("Slippage Q50", format_bps(exec_kpi_data.get("slip_q50")))
+            q75_col.metric("Slippage Q75", format_bps(exec_kpi_data.get("slip_q75")))
+
+            st.markdown("#### Execution Health Overview")
+            health_snapshot = execution_health(None)
+            router = health_snapshot.get("router") or {}
+            risk = health_snapshot.get("risk") or {}
+            vol = health_snapshot.get("vol") or {}
+            sizing = health_snapshot.get("sizing") or {}
+
+            r1c1, r1c2, r1c3 = st.columns(3)
+            r1c1.metric("Maker Fill % (7d)", format_percent(router.get("maker_fill_ratio")))
+            r1c2.metric("Fallback Rate % (7d)", format_percent(router.get("fallback_ratio")))
+            r1c3.metric("Median Slippage (bps)", format_bps(router.get("slip_q50")))
+
+            r2c1, r2c2, r2c3 = st.columns(3)
+            sharpe_val = sizing.get("sharpe_7d")
+            r2c1.metric(
+                "Sharpe (7d)",
+                "—" if sharpe_val is None else f"{sharpe_val:.2f}",
+                help=f"State: {risk.get('sharpe_state', 'unknown')}",
+            )
+            dd_today = risk.get("dd_today_pct")
+            r2c2.metric("DD Today (%)", "—" if dd_today is None else f"{dd_today:.2f}")
+            r2c3.metric("ATR Regime", (vol.get("atr_regime") or "unknown").capitalize())
+
+            r3c1, r3c2, r3c3 = st.columns(3)
+            r3c1.metric("Sharpe Size Mult", f"{(sizing.get('size_mult_sharpe') or 1.0):.2f}x")
+            r3c2.metric("Regime Size Mult", f"{(sizing.get('size_mult_regime') or 1.0):.2f}x")
+            r3c3.metric("Combined Size Mult", f"{(sizing.get('size_mult_combined') or 1.0):.2f}x")
+
+            warnings_lines = []
+            router_warnings = router.get("router_warnings") or []
+            risk_flags = risk.get("risk_flags") or []
+            if router_warnings:
+                warnings_lines.append(f"Router: {', '.join(router_warnings)}")
+            if risk_flags:
+                warnings_lines.append(f"Risk: {', '.join(risk_flags)}")
+            if warnings_lines:
+                st.warning(" | ".join(warnings_lines))
+
             top_vetoes = exec_stats.get("top_vetoes") or []
             if top_vetoes:
                 st.markdown("#### Top Veto Reasons (24h)")
@@ -1863,7 +1974,11 @@ def main():
             st.info("No router executions recorded yet.")
 
         st.markdown("#### Recent Trades (mirror)")
-        trade_snapshot_items = trades_snapshot.get("items") if isinstance(trades_snapshot, dict) else []
+        trade_snapshot_items = []
+        if isinstance(trades_snapshot, dict):
+            items = trades_snapshot.get("items")
+            if isinstance(items, list):
+                trade_snapshot_items = items
         trade_items = [dict(item) for item in trade_snapshot_items if isinstance(item, dict)]
         if trade_items:
             st.dataframe(pd.DataFrame(trade_items).head(50), use_container_width=True, height=220)

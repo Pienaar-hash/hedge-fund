@@ -1,3 +1,9 @@
+"""
+v5.9 Execution Hardening — Signal gates
+- ATR-based volatility filter & inverse-vol size scaling
+- Rolling expectancy veto (per symbol)
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -11,6 +17,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Optional
 from datetime import datetime
 
 from execution.utils import load_json
+from execution.utils.metrics import is_in_asset_universe
+from execution.utils.vol import atr_pct
+from execution.risk_autotune import size_multiplier
+from execution.position_sizing import inverse_vol_size, volatility_regime_scale
+from .utils.expectancy import rolling_expectancy
 
 _LOG = logging.getLogger("signal_generator")
 _STRATEGY_MODULES = ("momentum", "relative_value")
@@ -35,6 +46,27 @@ _ML_EXECUTOR: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(max_workers=1) i
 _ML_FUTURE: Optional[Future] = None
 _ML_CACHE_TS: float = 0.0
 _ML_SCORES: Dict[str, float] = {}
+
+ATR_LOOKBACK = 50
+ATR_MULT = 1.5
+
+
+def allow_trade(symbol: str) -> bool:
+    if not is_in_asset_universe(symbol):
+        return False
+    atr = atr_pct(symbol, lookback_bars=ATR_LOOKBACK)
+    med = atr_pct(symbol, lookback_bars=ATR_LOOKBACK * 10, median_only=True)
+    if atr is not None and med is not None and atr > ATR_MULT * med:
+        return False
+    expectancy = rolling_expectancy(symbol)
+    return (expectancy is None) or (expectancy >= 0.0)
+
+
+def size_for(symbol: str, base_size: float) -> float:
+    size = inverse_vol_size(symbol, base_size, lookback=ATR_LOOKBACK)
+    size *= volatility_regime_scale(symbol)
+    size *= size_multiplier(symbol)
+    return size
 
 
 def _load_registry() -> Dict[str, Dict[str, Any]]:

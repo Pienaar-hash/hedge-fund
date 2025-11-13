@@ -12,3 +12,6 @@ config/firebase_creds.old.json
 logs/*.json
 logs/**/*.jsonl
 logs/
+
+venv/
+google-chrome-stable_current_amd64.deb
