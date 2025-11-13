@@ -26,12 +26,20 @@ except Exception:  # pragma: no cover - optional dependency
     UMFutures = None
 
 from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
-from execution.firestore_utils import _safe_load_json
+from execution.firestore_utils import (
+    _safe_load_json,
+    publish_router_metrics,
+    publish_execution_health,
+    publish_execution_alert,
+)
 from execution.events import now_utc, write_event
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 
 import requests
 from utils.firestore_client import with_firestore
+from execution.utils.execution_health import compute_execution_health
+from execution.utils.execution_alerts import classify_alerts
+from execution.telegram_utils import send_execution_alerts
 # Optional .env so Supervisor doesn't need to export everything
 try:
     from dotenv import load_dotenv
@@ -69,6 +77,10 @@ _POSITION_TRACKER = PositionTracker()
 _FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)
 _FILL_POLL_TIMEOUT = float(os.getenv("ORDER_FILL_POLL_TIMEOUT", "8.0") or 8.0)
 _FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
+_HEALTH_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_HEALTH_PUBLISH_INTERVAL", "120") or 120)
+_LAST_HEALTH_PUBLISH: Dict[str, float] = {}
+EXEC_ALERT_INTERVAL_S = float(os.getenv("EXEC_ALERT_INTERVAL_S", "60") or 60)
+_LAST_EXEC_ALERT_EVAL: Dict[str, float] = {}
 
 
 def mk_id(prefix: str) -> str:
@@ -89,6 +101,72 @@ def _append_order_metrics(record: Mapping[str, Any]) -> None:
     except Exception as exc:
         LOG.debug("[metrics] order_metrics_append_failed: %s", exc)
 
+
+def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
+    if publish_router_metrics is None or not isinstance(event, Mapping):
+        return
+    try:
+        symbol = str(event.get("symbol") or "unknown").upper()
+        ts_val = event.get("ts")
+        if isinstance(ts_val, (int, float)):
+            ts_int = int(ts_val)
+        else:
+            ts_int = int(time.time())
+        doc_id = f"{symbol}_{ts_int}"
+        publish_router_metrics(doc_id, dict(event))
+    except Exception as exc:  # pragma: no cover - telemetry best effort
+        LOG.debug("[firestore] router_metrics_publish_failed doc=%s err=%s", event.get("attempt_id"), exc)
+
+
+def _maybe_publish_execution_health(symbol: str) -> None:
+    if not symbol or publish_execution_health is None:
+        return
+    now = time.time()
+    last = _LAST_HEALTH_PUBLISH.get(symbol, 0.0)
+    if now - last < _HEALTH_PUBLISH_INTERVAL_S:
+        return
+    try:
+        snapshot = compute_execution_health(symbol)
+        publish_execution_health(symbol, snapshot)
+        _LAST_HEALTH_PUBLISH[symbol] = now
+    except Exception as exc:  # pragma: no cover - telemetry best effort
+        LOG.debug("[firestore] execution_health_publish_failed symbol=%s err=%s", symbol, exc)
+
+
+def _maybe_emit_execution_alerts(symbol: str) -> None:
+    """
+    Periodically evaluate execution alerts per symbol and fan out to sinks.
+    """
+    if not symbol:
+        return
+    now = time.time()
+    last = _LAST_EXEC_ALERT_EVAL.get(symbol, 0.0)
+    if now - last < EXEC_ALERT_INTERVAL_S:
+        return
+    try:
+        snapshot = compute_execution_health(symbol)
+    except Exception as exc:
+        LOG.debug("[alerts] compute_failed symbol=%s err=%s", symbol, exc)
+        return
+    try:
+        alerts = classify_alerts(snapshot)
+    except Exception as exc:
+        LOG.debug("[alerts] classify_failed symbol=%s err=%s", symbol, exc)
+        return
+    if not alerts:
+        _LAST_EXEC_ALERT_EVAL[symbol] = now
+        return
+    try:
+        send_execution_alerts(symbol, alerts)
+    except Exception as exc:
+        LOG.debug("[alerts] telegram_send_failed symbol=%s err=%s", symbol, exc)
+    for alert in alerts:
+        try:
+            publish_execution_alert(alert)
+        except Exception as exc:
+            LOG.debug("[firestore] execution_alert_publish_failed symbol=%s err=%s", symbol, exc)
+    _LAST_EXEC_ALERT_EVAL[symbol] = now
+
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (
     _req,
@@ -102,12 +180,26 @@ from execution.exchange_utils import (
     set_dry_run,
 )
 try:
-    from execution.order_router import route_order as _route_order
-    from execution.order_router import route_intent as _route_intent
+    from execution.order_router import (
+        route_order as _route_order,
+        route_intent as _route_intent,
+        submit_limit,
+        effective_px,
+        PlaceOrderResult,
+    )
 except Exception:
     _route_order = None  # type: ignore[assignment]
     _route_intent = None  # type: ignore[assignment]
-from execution.risk_limits import RiskState, check_order, RiskGate
+    submit_limit = None  # type: ignore[assignment]
+    effective_px = None  # type: ignore[assignment]
+    PlaceOrderResult = None  # type: ignore[assignment]
+from execution.risk_limits import (
+    RiskState,
+    check_order,
+    RiskGate,
+    symbol_notional_guard,
+    symbol_dd_guard,
+)
 from execution.risk_autotune import RiskAutotuner
 from execution.nav import compute_nav_pair, compute_treasury_only, PortfolioSnapshot
 from execution import size_model
@@ -119,7 +211,12 @@ from execution.utils import (
     get_live_positions,
 )
 
-from execution.signal_generator import generate_intents, normalize_intent as generator_normalize_intent
+from execution.signal_generator import (
+    generate_intents,
+    normalize_intent as generator_normalize_intent,
+    allow_trade,
+    size_for,
+)
 from execution import signal_doctor
 try:
     from execution.signal_screener import run_once as run_screener_once
@@ -993,25 +1090,6 @@ def _compute_nav() -> float:
         trading, reporting = compute_nav_pair(cfg)
         write_nav_snapshots_pair(trading, reporting)
         tre_val, tre_detail = compute_treasury_only()
-        # Ensure treasury snapshot always includes reserves (e.g., USDC) even if upstream omits them.
-        try:
-            reserves_cfg = load_json("config/reserves.json") or {}
-        except Exception:
-            reserves_cfg = {}
-        if isinstance(tre_detail, dict):
-            treasury_node = tre_detail.setdefault("treasury", {})
-            if isinstance(treasury_node, dict):
-                for asset, qty in (reserves_cfg.items() if isinstance(reserves_cfg, dict) else []):
-                    asset_code = str(asset).upper()
-                    try:
-                        qty_val = float(qty)
-                    except Exception:
-                        continue
-                    entry = treasury_node.setdefault(asset_code, {})
-                    if isinstance(entry, dict):
-                        entry.setdefault("qty", qty_val)
-                        entry.setdefault("balance", qty_val)
-                        entry.setdefault("Units", qty_val)
         write_treasury_snapshot(tre_val, tre_detail)
         return float(trading[0])
     except Exception as exc:
@@ -1299,6 +1377,26 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             )
     except Exception:
         gross_target = max(gross_target, floor_gross)
+
+    if not reduce_only:
+        if not allow_trade(symbol):
+            _persist_veto("signal_gate", price_guess)
+            return
+        if not symbol_notional_guard(symbol):
+            _persist_veto("symbol_notional_cap", price_guess)
+            return
+        if not symbol_dd_guard(symbol):
+            _persist_veto("symbol_drawdown_cap", price_guess)
+            return
+        try:
+            scaled_notional = size_for(symbol, gross_target)
+        except Exception:
+            scaled_notional = gross_target
+        if scaled_notional <= 0:
+            _persist_veto("sizing_zero", price_guess)
+            return
+        gross_target = max(float(scaled_notional), floor_gross)
+
     margin_target = gross_target / max(lev, 1.0)
     attempt_start_monotonic = time.monotonic()
     attempt_payload = {
@@ -1649,12 +1747,64 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         except (TypeError, ValueError):
             return fallback
 
+    def _attempt_maker_first(px: float, qty: float) -> Optional[PlaceOrderResult]:
+        if submit_limit is None or effective_px is None or PlaceOrderResult is None:
+            return None
+        if px <= 0 or qty <= 0:
+            return None
+        try:
+            post_px = effective_px(px, side, is_maker=True) or px
+            return submit_limit(symbol, post_px, qty, side)
+        except Exception as exc:
+            LOG.warning("[executor] maker_first_failed symbol=%s err=%s", symbol, exc)
+            return None
+
+    def _maker_metrics(result: PlaceOrderResult) -> Dict[str, Any]:
+        avg_fill = result.price if result.price is not None else None
+        return {
+            "attempt_id": attempt_id,
+            "venue": "binance_futures",
+            "route": "maker_first",
+            "prices": {
+                "mark": price_hint,
+                "submitted": result.price,
+                "avg_fill": avg_fill,
+            },
+            "qty": {
+                "contracts": result.filled_qty or result.qty,
+                "notional_usd": (avg_fill or price_hint) * (result.filled_qty or result.qty or 0.0)
+                if (avg_fill or price_hint)
+                else None,
+            },
+            "timing_ms": {
+                "decision": decision_latency_ms,
+                "submit": None,
+                "ack": None,
+                "fill": None,
+            },
+            "result": {
+                "status": "FILLED" if (result.filled_qty or 0.0) > 0 else "NEW",
+                "retries": result.rejections,
+                "cancelled": False,
+            },
+            "fees_usd": None,
+            "slippage_bps": result.slippage_bps,
+        }
+
     if not reduce_only:
         # Ensure the opening order never carries the reduceOnly flag
         payload.pop("reduceOnly", None)
 
     norm_price = _meta_float(meta.get("normalized_price"), price_hint)
     norm_qty = _meta_float(meta.get("normalized_qty"), _meta_float(payload.get("quantity"), 0.0))
+    maker_ctx_enabled = (
+        not reduce_only
+        and not force_direct_send
+        and norm_price > 0
+        and norm_qty > 0
+        and submit_limit is not None
+        and effective_px is not None
+    )
     payload_view = {
         k: payload[k]
         for k in ("type", "quantity", "reduceOnly", "positionSide")
@@ -1811,6 +1961,14 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             "positionSide": pos_side,
             "reduceOnly": reduce_only,
         }
+        if maker_ctx_enabled:
+            router_ctx.update(
+                {
+                    "maker_first": True,
+                    "maker_price": norm_price,
+                    "maker_qty": norm_qty,
+                }
+            )
         router_payload = dict(intent)
         router_payload.update(
             {
@@ -1826,6 +1984,8 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "timing": {"decision": decision_latency_ms},
             }
         )
+        if maker_ctx_enabled:
+            router_payload["route"] = "maker_first"
         try:
             result, router_metrics = _route_intent(router_payload, attempt_id)
         except Exception as exc:
@@ -1852,6 +2012,14 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             "positionSide": pos_side,
             "reduceOnly": reduce_only,
         }
+        if maker_ctx_enabled:
+            router_ctx.update(
+                {
+                    "maker_first": True,
+                    "maker_price": norm_price,
+                    "maker_qty": norm_qty,
+                }
+            )
         try:
             result = _route_order(router_intent, router_ctx, DRY_RUN)
         except Exception as exc:
@@ -1867,69 +2035,82 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             LOG.error(
                 "[executor] router_reject %s %s reason=%s", symbol, side, router_error
             )
-        try:
-            resp = send_order(**payload)
-        except requests.HTTPError as exc:
+        if maker_ctx_enabled:
+            maker_result = _attempt_maker_first(norm_price, norm_qty)
+            if maker_result:
+                resp = maker_result.raw or {}
+                router_metrics = router_metrics or _maker_metrics(maker_result)
+                LOG.info(
+                    "[executor] maker_first_fallback symbol=%s side=%s is_maker=%s rejections=%s",
+                    symbol,
+                    side,
+                    maker_result.is_maker,
+                    maker_result.rejections,
+                )
+        if not resp:
             try:
-                _RISK_STATE.note_error(time.time())
-            except Exception:
-                pass
-            err_code = None
-            try:
-                if exc.response is not None:
-                    err_code = exc.response.json().get("code")
-            except Exception:
+                resp = send_order(**payload)
+            except requests.HTTPError as exc:
+                try:
+                    _RISK_STATE.note_error(time.time())
+                except Exception:
+                    pass
                 err_code = None
-            LOG.error(
-                "[executor] ORDER_ERR code=%s symbol=%s side=%s meta=%s payload=%s err=%s",
-                err_code,
-                symbol,
-                side,
-                meta,
-                payload_view,
-                exc,
-            )
-            try:
-                publish_order_audit(
-                    symbol,
-                    {
-                        "phase": "error",
-                        "side": side,
-                        "positionSide": pos_side,
-                        "error": str(exc),
-                        "code": err_code,
-                        "normalized": normalized_ctx,
-                        "payload": payload_view,
-                    },
-                )
-            except Exception:
-                pass
-            if err_code == -1111:
+                try:
+                    if exc.response is not None:
+                        err_code = exc.response.json().get("code")
+                except Exception:
+                    err_code = None
                 LOG.error(
-                    "[executor] ORDER_PRECISION ctx=%s payload=%s",
-                    normalized_ctx,
-                    payload_view,
-                )
-                return
-            raise
-        except Exception as exc:
-            try:
-                _RISK_STATE.note_error(time.time())
-            except Exception:
-                pass
-            try:
-                publish_order_audit(
+                    "[executor] ORDER_ERR code=%s symbol=%s side=%s meta=%s payload=%s err=%s",
+                    err_code,
                     symbol,
-                    {
-                        "phase": "error",
-                        "side": side,
-                        "positionSide": pos_side,
-                        "error": str(exc),
-                    },
+                    side,
+                    meta,
+                    payload_view,
+                    exc,
                 )
-            except Exception:
-                pass
-            raise
+                try:
+                    publish_order_audit(
+                        symbol,
+                        {
+                            "phase": "error",
+                            "side": side,
+                            "positionSide": pos_side,
+                            "error": str(exc),
+                            "code": err_code,
+                            "normalized": normalized_ctx,
+                            "payload": payload_view,
+                        },
+                    )
+                except Exception:
+                    pass
+                if err_code == -1111:
+                    LOG.error(
+                        "[executor] ORDER_PRECISION ctx=%s payload=%s",
+                        normalized_ctx,
+                        payload_view,
+                    )
+                    return
+                raise
+            except Exception as exc:
+                try:
+                    _RISK_STATE.note_error(time.time())
+                except Exception:
+                    pass
+                try:
+                    publish_order_audit(
+                        symbol,
+                        {
+                            "phase": "error",
+                            "side": side,
+                            "positionSide": pos_side,
+                            "error": str(exc),
+                        },
+                    )
+                except Exception:
+                    pass
+                raise
         else:
             router_metrics = router_metrics or {
                 "attempt_id": attempt_id,
@@ -2068,6 +2249,8 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     router_metrics["side"] = side
     router_metrics["ts"] = time.time()
     _append_order_metrics(router_metrics)
+    _mirror_router_metrics(router_metrics)
+    _maybe_publish_execution_health(symbol)
     _INTENT_REGISTRY[intent_id] = {
         "order_id": ack_info.order_id if ack_info else resp.get("orderId"),
         "symbol": symbol,
@@ -2534,6 +2717,13 @@ def _loop_once(i: int) -> None:
         baseline_positions = []
     gross_total, _ = _gross_and_open_qty("", "", baseline_positions)
     _update_risk_state_counters(baseline_positions, gross_total)
+    active_symbols = {
+        str(pos.get("symbol") or "").upper()
+        for pos in baseline_positions
+        if isinstance(pos, Mapping) and pos.get("symbol")
+    }
+    for symbol in sorted(active_symbols):
+        _maybe_emit_execution_alerts(symbol)
 
     if INTENT_TEST:
         intent = {
