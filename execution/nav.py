@@ -536,6 +536,7 @@ def _mark_nav_unhealthy(
     record["nav"] = nav_val
     record["nav_usd"] = nav_val
     record["sources_ok"] = False
+    sanitized: Dict[str, bool] = {}
     if isinstance(source_health, dict):
         sanitized = {str(key): bool(val) for key, val in source_health.items()}
     record["source_health"] = sanitized
