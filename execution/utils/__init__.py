@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, Mapping
 
 import requests
 
-ASSET_DECIMALS = {"BTC": 8, "ETH": 8, "USDC": 6, "USDC": 6}
+ASSET_DECIMALS = {"BTC": 8, "ETH": 8, "USDC": 6}
 
 
 def load_env_var(key, default=None):
@@ -429,7 +429,7 @@ COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
 COINGECKO_IDS = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
-    "USDC": "tether",
+    "USDC": "usd-coin",
     "XAUT": "tether-gold",
 }
 _COINGECKO_CACHE: dict = {}
