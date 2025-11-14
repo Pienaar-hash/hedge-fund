@@ -1,0 +1,181 @@
+Here’s a tight, **do-now** set of quant-engineering adjustments that map straight onto our repo (router, risk, signals, dashboard). I’ve kept them mechanical and testable.
+
+# 1) Execution: cut friction and churn
+
+**A. Maker-first with smart fallback**
+
+* Default **POST_ONLY**; if 2–3 rejections or mid drifts > `slip_max_bps`, flip one-shot to taker.
+
+```python
+# execution/order_router.py
+POST_ONLY = True
+SLIP_MAX_BPS = 3
+REJECTS_MAX = 2
+
+def submit_limit(symbol, px, qty, side):
+    flags = {"postOnly": POST_ONLY}
+    r = place_order(symbol, side, "LIMIT", px, qty, flags)
+    if r.rejected_post_only or r.slippage_bps > SLIP_MAX_BPS or r.rejections >= REJECTS_MAX:
+        return place_order(symbol, side, "MARKET", None, qty)  # single fallback
+    return r
+```
+
+**B. Fee-aware quoting (price includes fees/rebates)**
+
+* Compute **effective** entry/exit that the strategy sees.
+
+```python
+# execution/order_router.py
+TAKER_BPS = 5     # 0.05%
+MAKER_BPS = -1    # rebate, adjust to your tier
+
+def effective_px(px, side, is_maker=True):
+    bps = MAKER_BPS if is_maker else TAKER_BPS
+    adj = (bps/1e4) * px
+    return px + (adj if side=="BUY" else -adj)
+```
+
+* Pipe `effective_px` back to the signal for **ex-ante** PnL calc; veto trades that flip negative after fees.
+
+**C. Child-order aggregation + min notional**
+
+```python
+# execution/order_router.py
+MIN_CHILD_NOTIONAL = 30  # USDT
+def chunk(qty, px):
+    n = max(1, int((qty*px)/MIN_CHILD_NOTIONAL))
+    return [qty/n]*n
+```
+
+**D. Auto-cancel low-fill orders**
+
+```python
+# execution/order_router.py
+LOW_FILL_WINDOW_S = 60
+MIN_FILL_RATIO = 0.4
+if order.live_time_s > LOW_FILL_WINDOW_S and order.filled/ order.qty < MIN_FILL_RATIO:
+    cancel(order); reprice_wider(order)
+```
+
+# 2) Signals: improve expectancy, not trade count
+
+**A. Volatility gate / size scaling**
+
+```python
+# execution/signal_generator.py
+atr = atr_pct(symbol, lookback=50)      # ATR / price * 100
+if atr > 1.5 * median_atr[symbol]: 
+    return None  # skip low-quality chop
+size = base_size * (median_atr[symbol] / max(atr,1e-9))  # inverse-vol sizing
+```
+
+**B. Rolling **expectancy filter** per symbol**
+
+```python
+# utils/expectancy.py
+E = p_win*avg_win + (1-p_win)*avg_loss
+if E < 0: veto_signal(symbol)
+```
+
+* Update per 500 trades / 24h and cache; router refuses new orders if `E<0`.
+
+**C. TP/SL weekly tune (grid refresh)**
+
+* Cron a weekly job to sweep `(TP, SL)` combos and write `config/params/{symbol}.yaml`.
+* Loader in `risk_autotune.py` reads the fresh pair each startup / midnight.
+
+# 3) Risk: stop LTC from dominating and cap losers
+
+**A. Per-symbol exposure cap (share of notional)**
+
+```python
+# execution/risk_limits.py
+SYMBOL_NOTIONAL_CAP = 0.25  # 25% of rolling 7d notional
+if notional_7d[symbol] / total_notional_7d > SYMBOL_NOTIONAL_CAP:
+    reduce_or_block(symbol)
+```
+
+**B. Per-symbol drawdown kill & cooldown**
+
+```python
+# execution/risk_limits.py
+SYM_DD_CAP_PCT = 3.0   # of equity per day
+COOLDOWN_H = 24
+if dd_today_pct(symbol) <= -SYM_DD_CAP_PCT:
+    disable(symbol, ttl_hours=COOLDOWN_H)
+```
+
+**C. Performance throttle**
+
+```python
+# execution/risk_autotune.py
+sh = rolling_sharpe(symbol, lookback_days=7)
+m = np.clip(1 + 0.5*sh, 0.25, 2.0)
+target_size = base_size * m
+```
+
+# 4) Allocation: variance parity (simple, effective)
+
+Normalize sizes by realized σ so underperforming/volatile symbols don’t soak capital.
+
+```python
+# execution/position_sizing.py
+sigma = rolling_sigma(symbol, lookback=1000 trades)
+w = 1/ max(sigma, 1e-6)
+weights = normalize({sym:w for sym in active_syms})
+size_sym = weights[symbol] * portfolio_risk_budget
+```
+
+# 5) Session scheduling: trade when our fills and flows are best
+
+* Peak activity was **10:00–16:00 UTC**. Run **priority mode** there; throttle outside.
+
+```yaml
+# config/runtime.yaml
+trading_window:
+  start_utc: 10
+  end_utc: 16
+offpeak:
+  max_concurrent_orders: 2
+  min_child_notional: 50
+priority:
+  max_concurrent_orders: 6
+  min_child_notional: 25
+```
+
+# 6) Telemetry (add to dashboard + logs)
+
+Add these KPIs so we see improvements in hours, not weeks:
+
+* **Fill efficiency** = filled_notional / submitted_notional
+* **Fee/PnL ratio** = fees / gross_realized
+* **Realized slippage (bps)** vs mid at touch
+* **Expectancy** per symbol and per hour
+* **LTC throttle status** (active/disabled + TTL)
+
+```python
+# dashboard/live_helpers.py
+metrics = {
+  "fill_eff": fill_notional/submitted_notional,
+  "fee_pnl_ratio": fees/max(1e-9, gross_pnl),
+  "slip_bps": realized_slippage_bps(symbol),
+  "expectancy": expectancy(symbol),
+  "trade_hour_heat": hourly_expectancy(symbol)
+}
+```
+
+# 7) Guardrails & tests (fast to add)
+
+* Unit: effective price math, maker→taker fallback, notional cap, DD kill.
+* Integration: simulate a burst on LTC, confirm throttle and cooldown.
+* Dashboard: assert KPIs render and not NaN under empty data.
+
+---
+
+## Minimal rollout order (same day)
+
+1. Router: **POST_ONLY default + fee-aware effective price + low-fill cancel**
+2. Risk: **LTC choke (notional cap) + per-symbol DD cap**
+3. Signals: **expectancy filter** (simple rolling version)
+4. Allocation: **variance-parity sizing**
+5. Telemetry: **fee/PnL ratio and fill efficiency** tiles

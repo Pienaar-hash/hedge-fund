@@ -21,6 +21,7 @@ from execution.utils.metrics import is_in_asset_universe
 from execution.utils.vol import atr_pct
 from execution.risk_autotune import size_multiplier
 from execution.position_sizing import inverse_vol_size, volatility_regime_scale
+from execution.intel.symbol_score import symbol_size_factor
 from .utils.expectancy import rolling_expectancy
 
 _LOG = logging.getLogger("signal_generator")
@@ -66,6 +67,12 @@ def size_for(symbol: str, base_size: float) -> float:
     size = inverse_vol_size(symbol, base_size, lookback=ATR_LOOKBACK)
     size *= volatility_regime_scale(symbol)
     size *= size_multiplier(symbol)
+    try:
+        intel = symbol_size_factor(symbol)
+        factor = float(intel.get("size_factor") or 1.0)
+    except Exception:
+        factor = 1.0
+    size *= factor
     return size
 
 

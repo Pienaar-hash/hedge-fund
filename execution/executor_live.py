@@ -31,6 +31,7 @@ from execution.firestore_utils import (
     publish_router_metrics,
     publish_execution_health,
     publish_execution_alert,
+    publish_execution_intel,
 )
 from execution.events import now_utc, write_event
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
@@ -40,6 +41,9 @@ from utils.firestore_client import with_firestore
 from execution.utils.execution_health import compute_execution_health
 from execution.utils.execution_alerts import classify_alerts
 from execution.telegram_utils import send_execution_alerts
+from execution.intel.symbol_score import compute_symbol_score
+from execution.intel.expectancy_map import hourly_expectancy
+from execution.intel.router_policy import router_policy
 # Optional .env so Supervisor doesn't need to export everything
 try:
     from dotenv import load_dotenv
@@ -81,6 +85,8 @@ _HEALTH_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_HEALTH_PUBLISH_INTERVAL", "12
 _LAST_HEALTH_PUBLISH: Dict[str, float] = {}
 EXEC_ALERT_INTERVAL_S = float(os.getenv("EXEC_ALERT_INTERVAL_S", "60") or 60)
 _LAST_EXEC_ALERT_EVAL: Dict[str, float] = {}
+EXEC_INTEL_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_INTEL_PUBLISH_INTERVAL_S", "300") or 300)
+_LAST_INTEL_PUBLISH: Dict[str, float] = {}
 
 
 def mk_id(prefix: str) -> str:
@@ -166,6 +172,35 @@ def _maybe_emit_execution_alerts(symbol: str) -> None:
         except Exception as exc:
             LOG.debug("[firestore] execution_alert_publish_failed symbol=%s err=%s", symbol, exc)
     _LAST_EXEC_ALERT_EVAL[symbol] = now
+
+
+def _maybe_publish_execution_intel(symbol: str) -> None:
+    """
+    Periodically publish execution intelligence snapshots for a symbol.
+    """
+    if not symbol or publish_execution_intel is None:
+        return
+    now = time.time()
+    last = _LAST_INTEL_PUBLISH.get(symbol, 0.0)
+    if now - last < EXEC_INTEL_PUBLISH_INTERVAL_S:
+        return
+    try:
+        score_payload = compute_symbol_score(symbol)
+        hourly = hourly_expectancy(symbol)
+    except Exception as exc:
+        LOG.debug("[firestore] execution_intel_compute_failed symbol=%s err=%s", symbol, exc)
+        return
+    payload = {
+        "symbol": symbol,
+        "score": score_payload.get("score"),
+        "components": score_payload.get("components") or {},
+        "hourly_expectancy": hourly,
+    }
+    try:
+        publish_execution_intel(symbol, payload)
+        _LAST_INTEL_PUBLISH[symbol] = now
+    except Exception as exc:
+        LOG.debug("[firestore] execution_intel_publish_failed symbol=%s err=%s", symbol, exc)
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (
@@ -1961,6 +1996,12 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             "positionSide": pos_side,
             "reduceOnly": reduce_only,
         }
+        policy = router_policy(symbol)
+        router_ctx["router_policy"] = {
+            "quality": policy.quality,
+            "taker_bias": policy.taker_bias,
+            "maker_first": policy.maker_first,
+        }
         if maker_ctx_enabled:
             router_ctx.update(
                 {
@@ -2011,6 +2052,12 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             "price": price_hint,
             "positionSide": pos_side,
             "reduceOnly": reduce_only,
+        }
+        policy = router_policy(symbol)
+        router_ctx["router_policy"] = {
+            "quality": policy.quality,
+            "taker_bias": policy.taker_bias,
+            "maker_first": policy.maker_first,
         }
         if maker_ctx_enabled:
             router_ctx.update(
@@ -2724,6 +2771,7 @@ def _loop_once(i: int) -> None:
     }
     for symbol in sorted(active_symbols):
         _maybe_emit_execution_alerts(symbol)
+        _maybe_publish_execution_intel(symbol)
 
     if INTENT_TEST:
         intent = {

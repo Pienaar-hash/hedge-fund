@@ -19,6 +19,8 @@ import requests
 
 from execution import exchange_utils as ex
 from execution.log_utils import get_logger, log_event, safe_dump
+from execution.intel.maker_offset import suggest_maker_offset_bps
+from execution.intel.router_policy import router_policy
 
 try:  # optional dependency
     import yaml
@@ -143,6 +145,23 @@ def effective_px(px: float | None, side: str, is_maker: bool = True) -> float | 
 def MAX(a: float, b: float) -> float:
     """Tiny local helper to avoid importing math for a single call."""
     return a if a > b else b
+
+
+def _apply_offset(mid: float, bps: float, side: str) -> float:
+    """
+    Apply a signed bps offset relative to mid.
+    BUY -> quote below mid, SELL -> quote above mid.
+    """
+    if mid <= 0:
+        return mid
+    try:
+        side_norm = side.upper()
+    except Exception:
+        side_norm = "BUY"
+    delta = (bps / 10_000.0) * mid
+    if side_norm == "SELL":
+        return mid + delta
+    return mid - delta
 
 
 def chunk_qty(total_qty: float, px: float) -> list[float]:
@@ -458,8 +477,10 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
 
     maker_qty = _to_float(risk_ctx.get("maker_qty"))
     maker_price = _to_float(risk_ctx.get("maker_price") or price)
+    policy = router_policy(symbol)
+    effective_maker_first = bool(risk_ctx.get("maker_first")) and policy.maker_first
     maker_enabled = (
-        bool(risk_ctx.get("maker_first"))
+        effective_maker_first
         and not bool(payload.get("reduceOnly"))
         and maker_qty is not None
         and maker_qty > 0
@@ -472,7 +493,12 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     if maker_enabled:
         try:
             t0 = time.perf_counter()
-            maker_px = effective_px(maker_price, side, is_maker=True) or maker_price
+            try:
+                adaptive_bps = suggest_maker_offset_bps(symbol)
+            except Exception:
+                adaptive_bps = 2.0
+            adjusted_price = _apply_offset(maker_price, adaptive_bps, side)
+            maker_px = effective_px(adjusted_price, side, is_maker=True) or adjusted_price
             maker_result = submit_limit(symbol, maker_px, maker_qty, side)
             latency_ms = (time.perf_counter() - t0) * 1000.0
         except Exception as exc:

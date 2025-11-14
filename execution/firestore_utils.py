@@ -135,6 +135,33 @@ def publish_execution_alert(alert: Dict[str, Any], *, env: Optional[str] = None)
         LOGGER.debug("[firestore] execution_alert_publish_failed symbol=%s err=%s", symbol, exc)
 
 
+def publish_execution_intel(symbol: str, payload: Dict[str, Any], *, env: Optional[str] = None) -> None:
+    """
+    Mirror execution intelligence snapshots into Firestore.
+    """
+    if not symbol or not isinstance(payload, dict):
+        return
+    try:
+        client = _direct_client()
+    except Exception:  # pragma: no cover - optional dependency
+        return
+
+    env_name = env or os.getenv("HEDGE_ENV") or _env()
+    ts = int(time.time())
+    doc_id = symbol.upper()
+    data = dict(payload)
+    data.setdefault("symbol", doc_id)
+    data.setdefault("env", env_name)
+    data.setdefault("updated_at", ts)
+    try:
+        client.collection("hedge").document(env_name).collection("execution_intel").document(doc_id).set(
+            data,
+            merge=True,
+        )
+    except Exception as exc:  # pragma: no cover - telemetry best effort
+        LOGGER.debug("[firestore] execution_intel_publish_failed symbol=%s err=%s", symbol, exc)
+
+
 def fetch_symbol_toggles(*, env: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Fetch all symbol toggle docs for the requested environment.

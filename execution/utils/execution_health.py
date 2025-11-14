@@ -18,6 +18,9 @@ from execution.utils.vol import atr_pct
 from execution.utils.toggle import is_symbol_disabled, get_symbol_disable_meta
 from execution.risk_autotune import size_multiplier
 from execution.position_sizing import volatility_regime_scale
+from execution.intel.symbol_score import symbol_size_factor
+from execution.intel.maker_offset import suggest_maker_offset_bps
+from execution.intel.router_policy import router_policy
 
 
 FALLBACK_WARN_THRESHOLD = 0.50
@@ -105,12 +108,34 @@ def compute_execution_health(symbol: Optional[str] = None) -> Dict[str, Any]:
     vol_part = classify_atr_regime(symbol)
     size_mult = size_multiplier(symbol)
     regime_mult = volatility_regime_scale(symbol)
+    intel_factor = 1.0
+    try:
+        intel_payload = symbol_size_factor(symbol)
+        intel_factor = float(intel_payload.get("size_factor") or 1.0)
+    except Exception:
+        intel_factor = 1.0
     sizing_part = {
         "sharpe_7d": sharpe,
         "size_mult_sharpe": size_mult,
         "size_mult_regime": regime_mult,
+        "intel_size_factor": intel_factor,
         "size_mult_combined": size_mult * regime_mult,
+        "final_size_factor": size_mult * regime_mult * intel_factor,
     }
+    try:
+        maker_offset = suggest_maker_offset_bps(symbol)
+    except Exception:
+        maker_offset = None
+    router_part["maker_offset_bps"] = maker_offset
+    try:
+        policy = router_policy(symbol)
+        router_part["policy_quality"] = policy.quality
+        router_part["policy_maker_first"] = policy.maker_first
+        router_part["policy_taker_bias"] = policy.taker_bias
+    except Exception:
+        router_part.setdefault("policy_quality", None)
+        router_part.setdefault("policy_maker_first", None)
+        router_part.setdefault("policy_taker_bias", None)
     return {
         "symbol": symbol,
         "router": router_part,

@@ -39,7 +39,14 @@ from dashboard.dashboard_utils import (  # noqa: E402
 from dashboard.async_cache import gather_once  # noqa: E402
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
 from dashboard.router_health import load_router_health, RouterHealthData  # noqa: E402
-from dashboard.live_helpers import get_nav_snapshot, get_treasury, execution_kpis, execution_health  # noqa: E402
+from dashboard.live_helpers import (  # noqa: E402
+    get_nav_snapshot,
+    get_treasury,
+    execution_kpis,
+    execution_health,
+    get_symbol_score,
+    get_hourly_expectancy,
+)
 from scripts.doctor import collect_doctor_snapshot, run_doctor_subprocess  # noqa: E402
 from research.correlation_matrix import DEFAULT_OUTPUT_PATH as CORRELATION_CACHE_PATH  # noqa: E402
 from execution.capital_allocator import DEFAULT_OUTPUT_PATH as CAPITAL_ALLOC_CACHE_PATH  # noqa: E402
@@ -185,9 +192,9 @@ def main():
         except Exception:
             return "—"
 
-    def human_age(ts) -> str:
-        if not ts:
-            return "–"
+def human_age(ts) -> str:
+    if not ts:
+        return "–"
         try:
             now = int(time.time())
             d = now - int(ts)
@@ -198,6 +205,76 @@ def main():
             return f"{d//3600}h"
         except Exception:
             return "–"
+
+
+def render_execution_intel(symbol: Optional[str]) -> None:
+    """
+    Render the v5.10.1 Execution Intelligence view for a symbol.
+    """
+    st.subheader("Execution Intelligence")
+
+    if not symbol:
+        st.info("Select a symbol to view execution intelligence.")
+        return
+
+    try:
+        score_payload = get_symbol_score(symbol)
+    except Exception as exc:  # pragma: no cover - Streamlit safety
+        st.warning(f"Unable to load symbol score for {symbol}: {exc}")
+        return
+
+    intel_score = float(score_payload.get("score") or 0.0)
+    comps = score_payload.get("components") or {}
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        st.metric("Symbol score", f"{intel_score:.2f}")
+        st.write(
+            f"Sharpe: {float(comps.get('sharpe') or 0.0):.2f} "
+            f"(score {float(comps.get('sharpe_score') or 0.0):.2f})"
+        )
+        atr_ratio = comps.get("atr_ratio")
+        atr_ratio_display = float(atr_ratio) if isinstance(atr_ratio, (int, float)) else 0.0
+        st.write(
+            f"ATR ratio: {atr_ratio_display:.2f} "
+            f"(score {float(comps.get('atr_score') or 0.0):.2f})"
+        )
+        st.write(f"Router score: {float(comps.get('router_score') or 0.0):.2f}")
+        st.write(
+            f"DD today: {float(comps.get('dd_pct') or 0.0):.2f}% "
+            f"(score {float(comps.get('dd_score') or 0.0):.2f})"
+        )
+
+    with c2:
+        st.caption(
+            "Score blends Sharpe, volatility regime (ATR ratio), router KPIs, and current symbol drawdown."
+        )
+
+    st.markdown("### Hourly expectancy (last 7d)")
+    try:
+        hourly = get_hourly_expectancy(symbol)
+    except Exception as exc:  # pragma: no cover - Streamlit safety
+        st.warning(f"Unable to load hourly expectancy for {symbol}: {exc}")
+        return
+
+    if not hourly:
+        st.write("No hourly expectancy data available yet.")
+        return
+
+    rows = []
+    for hour in sorted(hourly.keys()):
+        row = hourly.get(hour) or {}
+        rows.append(
+            {
+                "hour": hour,
+                "trades": int(row.get("count") or 0),
+                "exp_per_notional": float(row.get("exp_per_notional") or 0.0),
+                "slip_bps_avg": float(row.get("slip_bps_avg") or 0.0),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True)
 
     def format_age_seconds(age_seconds: Optional[float]) -> str:
         if age_seconds is None:
@@ -2117,6 +2194,41 @@ def main():
 
         if not telemetry_health and not fallback_entries:
             telemetry_section.warning("Telemetry unavailable; no Firestore data and heartbeat log empty.")
+
+        st.markdown("---")
+        symbol_candidates: List[str] = []
+        seen_symbols = set()
+        for entry in positions_fs or []:
+            sym = str(entry.get("symbol") or "").upper()
+            if sym and sym not in seen_symbols:
+                seen_symbols.add(sym)
+                symbol_candidates.append(sym)
+        symbol_stats = exec_stats.get("symbol_stats")
+        if isinstance(symbol_stats, dict):
+            for sym in symbol_stats.keys():
+                sym_clean = str(sym or "").upper()
+                if sym_clean and sym_clean not in seen_symbols:
+                    seen_symbols.add(sym_clean)
+                    symbol_candidates.append(sym_clean)
+        elif isinstance(symbol_stats, list):
+            for row in symbol_stats:
+                if not isinstance(row, dict):
+                    continue
+                sym = str(row.get("symbol") or "").upper()
+                if sym and sym not in seen_symbols:
+                    seen_symbols.add(sym)
+                    symbol_candidates.append(sym)
+        symbol_candidates.sort()
+        select_options = ["(none)"] + symbol_candidates
+        default_index = 1 if len(select_options) > 1 else 0
+        selection = st.selectbox(
+            "Symbol for Execution Intelligence",
+            select_options,
+            index=default_index,
+            key="exec_intel_symbol",
+        )
+        selected_symbol = selection if selection and selection != "(none)" else None
+        render_execution_intel(selected_symbol)
 
     # --------------------------- Router Health Tab --------------------------------
     with tab_router:

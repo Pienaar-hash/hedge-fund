@@ -7,3 +7,5 @@ state/
 *.ipynb
 **/__pycache__/
 tests/fixtures/*
+quant-engineering adjustments.txt
+repro.py

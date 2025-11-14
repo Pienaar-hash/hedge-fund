@@ -21,12 +21,14 @@ from execution.utils.metrics import (
     gross_realized_7d,
     fees_7d,
     realized_slippage_bps_7d,
-    hourly_expectancy,
+    hourly_expectancy as metrics_hourly_expectancy,
     router_effectiveness_7d,
 )
 from execution.utils.execution_health import compute_execution_health
 from execution.utils.expectancy import rolling_expectancy
 from execution.exchange_utils import get_price
+from execution.intel.symbol_score import compute_symbol_score
+from execution.intel.expectancy_map import hourly_expectancy as intel_hourly_expectancy
 
 STABLES = {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}
 
@@ -45,7 +47,7 @@ def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
         "fee_pnl_ratio": fee_ratio,
         "slip_bps": slip,
         "expectancy": expectancy,
-        "hourly_expectancy": hourly_expectancy(symbol) if symbol else None,
+        "hourly_expectancy": metrics_hourly_expectancy(symbol) if symbol else None,
     }
 
 
@@ -449,4 +451,25 @@ def get_treasury() -> Dict[str, Any]:
     }
 
 
-__all__ = ["get_nav_snapshot", "get_caps", "get_veto_counts", "get_treasury"]
+def get_symbol_score(symbol: str) -> Dict[str, Any]:
+    """
+    Thin wrapper around execution.intel.symbol_score.compute_symbol_score.
+    """
+    return compute_symbol_score(symbol)
+
+
+def get_hourly_expectancy(symbol: str | None = None) -> Dict[int, Dict[str, Any]]:
+    """
+    Wrapper around execution.intel.expectancy_map.hourly_expectancy.
+    """
+    return intel_hourly_expectancy(symbol)
+
+
+__all__ = [
+    "get_nav_snapshot",
+    "get_caps",
+    "get_veto_counts",
+    "get_treasury",
+    "get_symbol_score",
+    "get_hourly_expectancy",
+]
