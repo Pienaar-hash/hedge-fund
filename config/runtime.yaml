@@ -1,0 +1,9 @@
+trading_window:
+  start_utc: 10
+  end_utc: 16
+offpeak:
+  max_concurrent_orders: 2
+  min_child_notional: 50
+priority:
+  max_concurrent_orders: 6
+  min_child_notional: 25

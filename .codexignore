@@ -1,0 +1,9 @@
+archive/
+logs/
+tmp/
+backup/
+state/
+*.patch
+*.ipynb
+**/__pycache__/
+tests/fixtures/*

@@ -1,3 +1,6 @@
-# Archived by Codex [v5.9-prep] repo hygiene sweep
-# Original moved to /archive/deprecated_v5.7/execution/leaderboard_sync.py
-# Do not reintroduce without audit approval.
+"""
+Deprecated in v5.9.5.
+
+Original module archived under archive/deprecated_v5.9.5/.
+Do not add new logic here; use execution/sync_state.py instead.
+"""

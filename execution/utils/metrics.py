@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - fallback for tests/CLI
 from execution import router_metrics
 
 
-USDC_SUFFIX = "USDC"
+ALLOWED_SUFFIXES = ("USDC", "USDT")
 
 
 def is_in_asset_universe(symbol: str) -> bool:
@@ -35,7 +35,8 @@ def is_in_asset_universe(symbol: str) -> bool:
     """
     if not symbol:
         return False
-    return symbol.upper().endswith(USDC_SUFFIX)
+    sym = symbol.upper()
+    return any(sym.endswith(suffix) for suffix in ALLOWED_SUFFIXES)
 
 
 # ---------- Notional helpers ----------

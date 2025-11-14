@@ -1,3 +1,6 @@
-# Archived by Codex [v5.9-prep] repo hygiene sweep
-# Original moved to /archive/deprecated_v5.7/execution/pipeline_probe.py
-# Do not reintroduce without audit approval.
+"""
+Deprecated in v5.9.5.
+
+Original implementation moved to archive/deprecated_v5.9.5/.
+Kept as a stub so Codex and imports see this as intentionally unused.
+"""
