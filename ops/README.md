@@ -49,3 +49,22 @@ git fetch --all
 git checkout <tag-or-commit>
 
 sudo supervisorctl restart all
+
+### Reboot & Tail Logs
+Reboots are rarely required, but when kernel patches or driver updates land you can bounce the whole node and rehydrate processes quickly.
+
+```bash
+sudo reboot
+
+# once SSH is back:
+cd /root/hedge-fund
+sudo supervisorctl restart all
+sudo supervisorctl status
+
+# follow critical logs
+tail -fn200 /var/log/hedge/hedge-executor.out.log
+tail -fn200 /var/log/hedge/hedge-executor.err.log
+tail -fn200 /var/log/hedge/hedge-dashboard.err.log
+```
+
+The executor will emit `[send_order] USDC natural-close fallback: stripping reduceOnly+positionSide` when the Binance USDC reduce-only workaround triggers; seeing that line confirms the fallback is active after reboot.

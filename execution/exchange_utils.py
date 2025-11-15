@@ -10,12 +10,17 @@ import os
 import sys
 import time
 import random
+import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlencode
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, getcontext, localcontext
 
 import requests
 from dotenv import load_dotenv  # type: ignore
+try:
+    from binance.um_futures import UMFutures  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    UMFutures = None
 
 from execution.utils import get_coingecko_prices, load_json
 
@@ -41,6 +46,10 @@ except Exception:
     LOGGER.info("[exutil] .env not found — using existing environment")
 
 getcontext().prec = 28
+
+_UM_CLIENT: Optional[Any] = None
+_UM_CLIENT_ERROR: Optional[str] = None
+_USDC_FORCE_NATURAL_CLOSE = {"BTCUSDC", "ETHUSDC"}
 
 # --- Base URL + one-time environment banner ---------------------------------
 def _base_url() -> str:
@@ -83,6 +92,51 @@ def set_dry_run(flag: bool) -> None:
 
 def is_dry_run() -> bool:
     return _DRY_RUN
+
+
+def reset_um_client() -> None:
+    """Reset the cached UMFutures client (mainly for tests)."""
+    global _UM_CLIENT, _UM_CLIENT_ERROR
+    _UM_CLIENT = None
+    _UM_CLIENT_ERROR = None
+
+
+def um_client_error() -> Optional[str]:
+    """Return the last UM client initialisation error, if any."""
+    return _UM_CLIENT_ERROR
+
+
+def get_um_client(force_refresh: bool = False) -> Optional[Any]:
+    """Return a cached UMFutures client configured for the current env."""
+    global _UM_CLIENT, _UM_CLIENT_ERROR
+    if force_refresh:
+        reset_um_client()
+    if _UM_CLIENT is not None:
+        return _UM_CLIENT
+    if UMFutures is None:
+        _UM_CLIENT_ERROR = "UMFutures module unavailable"
+        _LOG.warning("[um_client] binance.um_futures import missing")
+        return None
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+    if not api_key or not api_secret:
+        _UM_CLIENT_ERROR = "missing credentials"
+        _LOG.warning("[um_client] missing BINANCE_API_KEY / BINANCE_API_SECRET")
+        return None
+    kwargs: Dict[str, Any] = {"key": api_key, "secret": api_secret}
+    base = _base_url()
+    if base:
+        kwargs["base_url"] = base
+    try:
+        _UM_CLIENT = UMFutures(**kwargs)  # type: ignore[arg-type]
+    except Exception as exc:  # pragma: no cover - network dependency
+        _UM_CLIENT = None
+        _UM_CLIENT_ERROR = str(exc)
+        _LOG.error("[um_client] init_failed: %s", exc)
+        return None
+    _UM_CLIENT_ERROR = None
+    _LOG.info("[um_client] UMFutures client initialised (testnet=%s)", is_testnet())
+    return _UM_CLIENT
 
 
 def _dry_run_stub(action: str, stub: Any) -> Any:
@@ -971,6 +1025,88 @@ def _floor_step(x: float, step: float) -> float:
     return math.floor(x / step) * step
 
 
+_ORDER_PARAM_WHITELIST = {
+    "symbol",
+    "side",
+    "type",
+    "quantity",
+    "price",
+    "timeInForce",
+    "positionSide",
+    "reduceOnly",
+    "newClientOrderId",
+    "closePosition",
+}
+_CLOSE_POSITION_QUOTES = {"USDT", "USD"}
+
+
+def _boolish(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _position_qty_for_side(
+    symbol: str,
+    position_side: str,
+    positions: Optional[List[Mapping[str, Any]]] = None,
+) -> float:
+    sym_u = str(symbol or "").upper()
+    data = positions
+    if data is None:
+        try:
+            data = get_positions(sym_u)
+        except Exception:
+            data = []
+    qty = 0.0
+    for entry in data or []:
+        if str(entry.get("symbol") or "").upper() != sym_u:
+            continue
+        side = str(entry.get("positionSide") or entry.get("side") or "").upper()
+        if side != position_side:
+            continue
+        try:
+            qty_val = float(entry.get("qty") or entry.get("positionAmt") or 0.0)
+        except Exception:
+            qty_val = 0.0
+        if qty_val == 0.0:
+            continue
+        qty = abs(qty_val)
+        break
+    return qty
+
+
+def should_use_close_position(
+    symbol: str,
+    side: str,
+    position_side: Optional[str],
+    reduce_only: Optional[Any],
+    *,
+    order_type: Optional[str] = None,
+    positions: Optional[List[Mapping[str, Any]]] = None,
+) -> tuple[bool, float]:
+    """Return (should_convert, open_qty) for hedge-mode close conversions."""
+    if not _boolish(reduce_only):
+        return False, 0.0
+    pos_side = str(position_side or "").upper()
+    if pos_side not in {"LONG", "SHORT"}:
+        return False, 0.0
+    side_u = str(side or "").upper()
+    expected = "SELL" if pos_side == "LONG" else "BUY"
+    if side_u != expected:
+        return False, 0.0
+    ord_type = str(order_type or "").upper()
+    quote = _split_symbol(symbol)[1]
+    if ord_type != "MARKET" and quote not in _CLOSE_POSITION_QUOTES:
+        return False, 0.0
+    if not _DRY_RUN and UMFutures is None:
+        return False, 0.0
+    qty = _position_qty_for_side(symbol, pos_side, positions=positions)
+    if qty <= 0.0:
+        return False, 0.0
+    return True, qty
+
+
 def send_order(
     symbol: str,
     side: str,
@@ -979,47 +1115,96 @@ def send_order(
     positionSide: Optional[str] = None,
     reduceOnly: Optional[str | bool] = None,
     price: Optional[str | float | Decimal] = None,
+    positions: Optional[List[Mapping[str, Any]]] = None,
     **extra: Any,
 ) -> Dict[str, Any]:
+    """Canonical Binance UM futures order sender."""
+    ord_type = str(type or "").upper()
+    side_u = str(side or "").upper()
+    sym_u = str(symbol or "").upper()
+
     params: Dict[str, Any] = {
-        "symbol": symbol.upper(),
-        "side": side.upper(),
-        "type": type.upper(),
+        "symbol": sym_u,
+        "side": side_u,
+        "type": ord_type,
     }
 
-    if isinstance(quantity, Decimal):
-        params["quantity"] = f"{quantity:f}"
-    else:
-        params["quantity"] = str(quantity)
+    if quantity is not None:
+        params["quantity"] = str(quantity if not isinstance(quantity, Decimal) else f"{quantity:f}")
 
-    if positionSide:
-        params["positionSide"] = positionSide.upper()
-
-    if price not in (None, "", 0, 0.0):
+    if ord_type != "MARKET" and price not in (None, "", 0, 0.0):
         params["price"] = str(price)
 
-    if isinstance(reduceOnly, str):
-        reduce_flag = reduceOnly.lower() in ("1", "true", "yes", "on")
-    else:
-        reduce_flag = bool(reduceOnly)
-    if reduce_flag:
-        params["reduceOnly"] = "true"
+    tif = str(extra.get("timeInForce") or "").upper()
+    if ord_type != "MARKET" and tif:
+        params["timeInForce"] = tif
 
-    params.update({k: v for k, v in extra.items() if v is not None})
+    if positionSide:
+        params["positionSide"] = str(positionSide).upper()
 
-    if params["type"] == "MARKET":
-        params.pop("price", None)
+    if reduceOnly is not None and bool(reduceOnly):
+        params["reduceOnly"] = True
+
+    manual_positions = positions or extra.pop("positions", None)
+
+    if extra.get("newClientOrderId"):
+        params["newClientOrderId"] = str(extra["newClientOrderId"])
+    if extra.get("closePosition"):
+        params["closePosition"] = True
+
+    convert_close, close_qty = should_use_close_position(
+        sym_u,
+        side_u,
+        params.get("positionSide"),
+        params.get("reduceOnly"),
+        order_type=ord_type,
+        positions=manual_positions,
+    )
+    if convert_close and ord_type != "MARKET":
+        params.pop("reduceOnly", None)
+        params.pop("quantity", None)
+        params["closePosition"] = True
+        _LOG.info(
+            "[send_order] convert reduceOnly=>closePosition symbol=%s side=%s positionSide=%s qty=%.6f",
+            sym_u,
+            side_u,
+            params.get("positionSide"),
+            close_qty,
+        )
+    elif convert_close:
+        _LOG.info(
+            "[send_order] skip closePosition: MARKET not allowed (using reduceOnly qty instead) symbol=%s side=%s positionSide=%s qty=%.6f",
+            sym_u,
+            side_u,
+            params.get("positionSide"),
+            close_qty,
+        )
+
+    clean_params = {
+        k: v for k, v in params.items() if k in _ORDER_PARAM_WHITELIST and v not in (None, "")
+    }
+    usdc_natural_close = (
+        ord_type == "MARKET"
+        and bool(clean_params.get("reduceOnly"))
+        and sym_u in _USDC_FORCE_NATURAL_CLOSE
+    )
+    if usdc_natural_close:
+        _LOG.info("[send_order] USDC natural-close fallback: stripping reduceOnly+positionSide")
+        clean_params.pop("reduceOnly", None)
+        clean_params.pop("positionSide", None)
+        _LOG.info("[send_order][debug] usdc_natural_close_params=%s", clean_params)
+    _LOG.info("[send_order][debug] clean_params=%s", clean_params)
 
     if is_dry_run():
-        qty_view = str(params.get("quantity", "0"))
+        qty_view = str(clean_params.get("quantity", "0"))
         return _dry_run_stub(
             "send_order",
             {
                 "dryRun": True,
                 "orderId": 0,
-                "symbol": params.get("symbol"),
-                "side": params.get("side"),
-                "type": params.get("type"),
+                "symbol": clean_params.get("symbol"),
+                "side": clean_params.get("side"),
+                "type": clean_params.get("type"),
                 "status": "DRY_RUN",
                 "origQty": qty_view,
                 "executedQty": "0",
@@ -1028,20 +1213,46 @@ def send_order(
             },
         )
 
+    def _submit(params: Dict[str, Any]) -> Dict[str, Any]:
+        resp = _req("POST", "/fapi/v1/order", signed=True, params=params)
+        payload = resp.json() or {}
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Unexpected order response: {payload!r}")
+        return payload
+
+    allow_fallback = (
+        ord_type == "MARKET"
+        and bool(clean_params.get("reduceOnly"))
+        and str(clean_params.get("positionSide", "")).upper() in {"LONG", "SHORT"}
+    )
+
     try:
-        r = _req("POST", "/fapi/v1/order", signed=True, params=params)
-        return r.json()
+        return _submit(clean_params)
     except requests.HTTPError as exc:
-        if params.get("reduceOnly"):
-            try:
-                body = exc.response.json() if exc.response is not None else {}
-                if body.get("code") == -1106:
-                    params.pop("reduceOnly", None)
-                    r = _req("POST", "/fapi/v1/order", signed=True, params=params)
-                    return r.json()
-            except Exception:
-                pass
-        raise
+        resp = exc.response
+        err_code = None
+        try:
+            if resp is not None:
+                err_code = resp.json().get("code")
+        except Exception:
+            err_code = None
+        if err_code == -4061:
+            _LOG.error("[send_order] AUTH_ERR -4061 params=%s", clean_params)
+        if not (
+            allow_fallback
+            and err_code == -4061
+        ):
+            raise
+        _LOG.warning("[send_order][fallback] -4061 detected, retrying without positionSide")
+        retry_params = dict(clean_params)
+        retry_params.pop("positionSide", None)
+        retry_params.pop("newClientOrderId", None)
+        retry_params["newClientOrderId"] = f"fallback_{uuid.uuid4().hex}"
+        _LOG.info("[send_order][fallback] retry_params=%s", retry_params)
+        try:
+            return _submit(retry_params)
+        except requests.HTTPError:
+            raise
 
 
 def place_market_order_sized(
