@@ -23,7 +23,20 @@ def rolling_sigma(symbol: str, lookback: int = 50) -> float:
     Realized std of per-trade or per-bar returns for `symbol` over `lookback`.
     Delegates to pnl_tracker; normalize as needed downstream.
     """
-    stats = pnl_tracker.get_symbol_stats(symbol, window_trades=lookback)
+    if pnl_tracker is None:
+        return 0.0
+    stats: Mapping[str, Any] | None = None
+    try:
+        stats = pnl_tracker.get_symbol_stats(symbol, window_trades=lookback)
+    except TypeError:
+        try:
+            stats = pnl_tracker.get_symbol_stats(symbol, lookback)  # type: ignore[misc]
+        except Exception:
+            stats = None
+    except Exception:
+        stats = None
+    if not isinstance(stats, Mapping):
+        return 0.0
     return float(stats.get("std", 0.0) or 0.0)
 
 

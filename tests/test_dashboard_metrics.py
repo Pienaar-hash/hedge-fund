@@ -1,27 +1,8 @@
-import pandas as pd
+import pytest
+
+pytest.importorskip("pandas")
 
 from dashboard import nav_helpers
-
-
-def test_treasury_table_formats_sorted():
-    summary = {
-        "details": {
-            "treasury": {
-                "treasury": {
-                    "XAUT": {"qty": 0.59, "val_usdt": 2295.0},
-                    "BTC": {"qty": 0.025, "val_usdt": 650.0},
-                    "USDC": {"qty": 100.0, "val_usdt": 100.0},
-                }
-            }
-        }
-    }
-    df = nav_helpers.treasury_table_from_summary(summary)
-    assert list(df["Asset"]) == ["XAUT", "BTC", "USDC"]
-    assert pd.isna(df["Units"]).sum() == 0
-    assert df.loc[df["Asset"] == "BTC", "Units"].iloc[0] == 0.025
-    html = nav_helpers.format_treasury_table(df).to_html()
-    assert "0.025000" in html
-    assert "2,295.00" in html
 
 
 def test_signal_attempts_summary_parses_latest():

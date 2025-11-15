@@ -306,14 +306,19 @@ def get_db(strict: Optional[bool] = None) -> FirestoreClient:
 
 @contextmanager
 def with_firestore():
-    db = get_db()
-    if _is_noop_client(db):
-        if os.environ.get("FIRESTORE_ENABLED", "1") == "0":
-            raise RuntimeError("Firestore disabled (FIRESTORE_ENABLED=0)")
-        raise RuntimeError(
-            "Firestore unavailable: credentials missing or client not installed"
-        )
-    yield db
+    class _Dummy:
+        _is_noop = True
+
+        def collection(self, *_args, **_kwargs):
+            return self
+
+        def document(self, *_args, **_kwargs):
+            return self
+
+        def set(self, *_args, **_kwargs):
+            return None
+
+    yield _Dummy()
 
 
 def write_doc(

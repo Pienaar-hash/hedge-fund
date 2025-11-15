@@ -24,10 +24,6 @@ if str(PROJECT_ROOT) not in sys.path and PROJECT_ROOT.is_dir():
 
 # Local helpers
 from dashboard.dashboard_utils import (  # noqa: E402
-    get_firestore_connection,
-    fetch_state_document,
-    fetch_telemetry_health,
-    fetch_treasury_latest,
     parse_nav_to_df_and_kpis,
     positions_sorted,
     fetch_mark_price_usdt,
@@ -39,7 +35,13 @@ from dashboard.dashboard_utils import (  # noqa: E402
 from dashboard.async_cache import gather_once  # noqa: E402
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
 from dashboard.router_health import load_router_health, RouterHealthData  # noqa: E402
-from dashboard.live_helpers import get_nav_snapshot, get_treasury, execution_kpis, execution_health  # noqa: E402
+from dashboard.live_helpers import (  # noqa: E402
+    get_nav_snapshot,
+    execution_kpis,
+    execution_health,
+    get_symbol_score,
+    get_hourly_expectancy,
+)
 from scripts.doctor import collect_doctor_snapshot, run_doctor_subprocess  # noqa: E402
 from research.correlation_matrix import DEFAULT_OUTPUT_PATH as CORRELATION_CACHE_PATH  # noqa: E402
 from execution.capital_allocator import DEFAULT_OUTPUT_PATH as CAPITAL_ALLOC_CACHE_PATH  # noqa: E402
@@ -72,11 +74,6 @@ try:
     from execution.risk_limits import get_nav_age as risk_nav_get_age
 except Exception:  # pragma: no cover
     risk_nav_get_age = None
-try:
-    from execution.reserves import load_reserves, value_reserves_usd
-except Exception:  # pragma: no cover
-    load_reserves = None  # type: ignore[assignment]
-    value_reserves_usd = None  # type: ignore[assignment]
 try:
     from ml.telemetry import aggregate_history as telemetry_aggregate, load_history as telemetry_load
 except Exception:  # pragma: no cover
@@ -185,9 +182,9 @@ def main():
         except Exception:
             return "—"
 
-    def human_age(ts) -> str:
-        if not ts:
-            return "–"
+def human_age(ts) -> str:
+    if not ts:
+        return "–"
         try:
             now = int(time.time())
             d = now - int(ts)
@@ -198,6 +195,76 @@ def main():
             return f"{d//3600}h"
         except Exception:
             return "–"
+
+
+def render_execution_intel(symbol: Optional[str]) -> None:
+    """
+    Render the v5.10.1 Execution Intelligence view for a symbol.
+    """
+    st.subheader("Execution Intelligence")
+
+    if not symbol:
+        st.info("Select a symbol to view execution intelligence.")
+        return
+
+    try:
+        score_payload = get_symbol_score(symbol)
+    except Exception as exc:  # pragma: no cover - Streamlit safety
+        st.warning(f"Unable to load symbol score for {symbol}: {exc}")
+        return
+
+    intel_score = float(score_payload.get("score") or 0.0)
+    comps = score_payload.get("components") or {}
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        st.metric("Symbol score", f"{intel_score:.2f}")
+        st.write(
+            f"Sharpe: {float(comps.get('sharpe') or 0.0):.2f} "
+            f"(score {float(comps.get('sharpe_score') or 0.0):.2f})"
+        )
+        atr_ratio = comps.get("atr_ratio")
+        atr_ratio_display = float(atr_ratio) if isinstance(atr_ratio, (int, float)) else 0.0
+        st.write(
+            f"ATR ratio: {atr_ratio_display:.2f} "
+            f"(score {float(comps.get('atr_score') or 0.0):.2f})"
+        )
+        st.write(f"Router score: {float(comps.get('router_score') or 0.0):.2f}")
+        st.write(
+            f"DD today: {float(comps.get('dd_pct') or 0.0):.2f}% "
+            f"(score {float(comps.get('dd_score') or 0.0):.2f})"
+        )
+
+    with c2:
+        st.caption(
+            "Score blends Sharpe, volatility regime (ATR ratio), router KPIs, and current symbol drawdown."
+        )
+
+    st.markdown("### Hourly expectancy (last 7d)")
+    try:
+        hourly = get_hourly_expectancy(symbol)
+    except Exception as exc:  # pragma: no cover - Streamlit safety
+        st.warning(f"Unable to load hourly expectancy for {symbol}: {exc}")
+        return
+
+    if not hourly:
+        st.write("No hourly expectancy data available yet.")
+        return
+
+    rows = []
+    for hour in sorted(hourly.keys()):
+        row = hourly.get(hour) or {}
+        rows.append(
+            {
+                "hour": hour,
+                "trades": int(row.get("count") or 0),
+                "exp_per_notional": float(row.get("exp_per_notional") or 0.0),
+                "slip_bps_avg": float(row.get("slip_bps_avg") or 0.0),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True)
 
     def format_age_seconds(age_seconds: Optional[float]) -> str:
         if age_seconds is None:
@@ -348,51 +415,10 @@ def main():
         return list(entries)
 
     def telemetry_health_card(env: str = ENV, firestore_available: bool = True) -> Tuple[Dict[str, Any], Optional[str], Optional[float]]:
-        if not firestore_available:
-            st.metric("Firestore", "🔴 Down", delta="unknown")
-            return {}, "firestore_unavailable", None
-        try:
-            meta = fetch_telemetry_health(env)
-            if not isinstance(meta, dict):
-                meta = {}
-            error: Optional[str] = None
-        except Exception as exc:
-            meta = {}
-            error = str(exc)
-        else:
-            error = None
-
-        ts_val = _to_epoch_seconds(meta.get("ts") or meta.get("updated_at"))
-        age_seconds: Optional[float] = None
-        if ts_val is not None:
-            try:
-                age_seconds = max(0.0, time.time() - float(ts_val))
-            except Exception:
-                age_seconds = None
-
-        status_icon = "🔴"
-        status_label = "Down"
-        if error:
-            status_icon = "🔴"
-            status_label = "Down"
-        else:
-            ok = bool(meta.get("firestore_ok"))
-            if age_seconds is not None and age_seconds <= 60 and ok:
-                status_icon = "🟢"
-                status_label = "Fresh"
-            elif ok:
-                status_icon = "🟡"
-                status_label = "Stale"
-            elif not meta:
-                status_icon = "⚪"
-                status_label = "Unknown"
-            else:
-                status_icon = "🔴"
-                status_label = "Down"
-
-        delta_text = f"{int(age_seconds)}s ago" if age_seconds is not None else "unknown"
-        st.metric("Firestore", f"{status_icon} {status_label}", delta=delta_text)
-        return meta, error, age_seconds
+        _ = env
+        _ = firestore_available
+        st.metric("Firestore", "⚪ Disabled", delta="local-only")
+        return {}, "firestore_disabled", None
 
     def nav_freshness_info() -> Dict[str, Any]:
         record: Dict[str, Any] = {}
@@ -626,30 +652,12 @@ def main():
         return pd.DataFrame(rows[:limit])
 
     def load_nav_state() -> Tuple[Dict[str, Any], str]:
-        try:
-            doc = fetch_state_document("nav", env=ENV)
-            if isinstance(doc, dict) and doc:
-                return doc, "firestore"
-        except Exception as exc:
-            LOG.warning("[dash] nav Firestore fetch failed: %s", exc)
         return load_local_nav_doc(), "local"
 
     def load_positions_state() -> Tuple[Dict[str, Any], str]:
-        try:
-            doc = fetch_state_document("positions", env=ENV)
-            if isinstance(doc, dict) and doc:
-                return doc, "firestore"
-        except Exception as exc:
-            LOG.warning("[dash] positions Firestore fetch failed: %s", exc)
         return load_local_positions(), "local"
 
     def load_leaderboard_state() -> Tuple[Dict[str, Any], str]:
-        try:
-            doc = fetch_state_document("leaderboard", env=ENV)
-            if isinstance(doc, dict) and doc:
-                return doc, "firestore"
-        except Exception as exc:
-            LOG.warning("[dash] leaderboard Firestore fetch failed: %s", exc)
         return load_local_leaderboard(), "local"
 
     DOCTOR_CACHE_PATH = PROJECT_ROOT / "logs" / "cache" / "doctor.json"
@@ -1005,13 +1013,8 @@ def main():
     status = st.empty()
     status.info("Loading data…")
 
-    firestore_error: Optional[str] = None
-    try:
-        db = get_firestore_connection()
-    except Exception as exc:
-        firestore_error = str(exc)
-        LOG.warning("[dash] firestore connection failed: %s", exc)
-        db = None
+    firestore_error: Optional[str] = "firestore_disabled"
+    db = None
 
     nav_doc, nav_source = load_nav_state()
     pos_doc, pos_source = load_positions_state()
@@ -1030,10 +1033,6 @@ def main():
     firestore_info = doctor_snapshot.get("firestore") or {}
     if not isinstance(firestore_info, dict):
         firestore_info = {}
-    reserves_snapshot = doctor_snapshot.get("reserves") or {}
-    if not isinstance(reserves_snapshot, dict):
-        reserves_snapshot = {}
-
     nav_df, kpis = parse_nav_to_df_and_kpis(nav_doc or {})
     kpis = dict(kpis or {})
     try:
@@ -1049,85 +1048,11 @@ def main():
     trades_snapshot = load_exec_snapshot("trades", ENV)
     signals_snapshot = load_exec_snapshot("signals", ENV)
     nav_snapshot_live = get_nav_snapshot()
-    treasury_snapshot_live = get_treasury()
 
     # --- ZAR guard: declare upfront so early reads never crash ---
     zar_rate: Optional[float] = None
     zar_source: Optional[str] = None
     nav_zar_value: Optional[float] = None
-
-    treasury_latest_doc = fetch_treasury_latest(ENV)
-    if not isinstance(treasury_latest_doc, dict):
-        treasury_latest_doc = {}
-    treasury_payload = treasury_latest_doc.get("treasury") if isinstance(treasury_latest_doc, dict) else {}
-    if not isinstance(treasury_payload, dict) or not treasury_payload:
-        treasury_payload = treasury_snapshot_live if isinstance(treasury_snapshot_live, dict) else {}
-
-    treasury_assets_raw = treasury_payload.get("assets") if isinstance(treasury_payload.get("assets"), list) else []
-    treasury_assets_rows: List[Dict[str, Any]] = []
-    for entry in treasury_assets_raw:
-        if not isinstance(entry, dict):
-            continue
-        asset_name = str(
-            entry.get("asset")
-            or entry.get("Asset")
-            or entry.get("symbol")
-            or entry.get("code")
-            or ""
-        ).upper()
-        if not asset_name:
-            continue
-        balance_val = _maybe_float(
-            entry.get("balance")
-            or entry.get("qty")
-            or entry.get("Units")
-            or entry.get("units")
-            or entry.get("amount")
-        )
-        price_val = _maybe_float(entry.get("price_usdt") or entry.get("price") or entry.get("px"))
-        usd_val = _maybe_float(
-            entry.get("usd_value")
-            or entry.get("USD Value")
-            or entry.get("value_usd")
-            or entry.get("val_usdt")
-        )
-        if usd_val is None and balance_val is not None and price_val is not None:
-            usd_val = balance_val * price_val
-        treasury_assets_rows.append(
-            {
-                "Asset": asset_name,
-                "Balance": balance_val,
-                "Price (USDT)": price_val,
-                "USD Value": usd_val,
-            }
-        )
-
-    def _extract_total_usd(payload: Dict[str, Any]) -> Optional[float]:
-        if not isinstance(payload, dict):
-            return None
-        total = payload.get("total_usd") or payload.get("nav") or payload.get("treasury_usdt")
-        try:
-            if isinstance(total, (int, float)):
-                return float(total)
-            if isinstance(total, str) and total.strip():
-                return float(total)
-        except Exception:
-            return None
-        return None
-
-    treasury_total_usd: Optional[float] = _extract_total_usd(treasury_payload)
-    if treasury_total_usd is None:
-        treasury_total_usd = _extract_total_usd(treasury_snapshot_live)
-
-    treasury_updated_at = treasury_latest_doc.get("updated_at") or treasury_payload.get("updated_at")
-    treasury_updated_ts = _to_epoch_seconds(treasury_updated_at)
-    treasury_age_seconds: Optional[float] = None
-    if treasury_updated_ts is not None:
-        try:
-            treasury_age_seconds = max(0.0, time.time() - float(treasury_updated_ts))
-        except Exception:
-            treasury_age_seconds = None
-    treasury_source = treasury_latest_doc.get("source") or treasury_payload.get("source") or "firestore"
 
     nav_trading_usd = _to_optional_float(
         nav_snapshot_live.get("nav")
@@ -1190,39 +1115,12 @@ def main():
         last_sync_label = "—"
 
     exchange_nav_value = nav_value if isinstance(nav_value, (int, float)) else None
-    reserves_total_usd: Optional[float] = None
-
-    if callable(load_reserves) and callable(value_reserves_usd):
-        try:
-            reserves_raw = load_reserves()
-            if reserves_raw:
-                reserves_total_calc, reserves_detail_calc = value_reserves_usd(reserves_raw)
-                reserves_total_usd = float(reserves_total_calc)
-                reserves_snapshot = {
-                    "total": reserves_total_usd,
-                    "reserves": reserves_detail_calc,
-                    "raw": reserves_raw,
-                }
-        except Exception as exc:
-            LOG.warning("[dash] reserves valuation failed: %s", exc)
-
-    if reserves_total_usd is None:
-        candidate_total = reserves_snapshot.get("total")
-        if isinstance(candidate_total, (int, float)):
-            reserves_total_usd = float(candidate_total)
-
     nav_value = exchange_nav_value
     if nav_value is None and nav_trading_usd is not None:
         nav_value = float(nav_trading_usd)
 
-    if total_equity_usd is None and any(
-        val is not None for val in (nav_trading_usd, treasury_total_usd, reserves_total_usd)
-    ):
-        total_equity_usd = (
-            float(nav_trading_usd or 0.0)
-            + float(treasury_total_usd or 0.0)
-            + float(reserves_total_usd or 0.0)
-        )
+    if total_equity_usd is None and nav_value is not None:
+        total_equity_usd = float(nav_value)
 
     aum_total_usd = total_equity_usd
     if isinstance(aum_total_usd, (int, float)):
@@ -1524,13 +1422,9 @@ def main():
     dd_chip_title = f"Daily drawdown {dd_pct:.2f}%"
     dd_chip_html = _tooltip_span(dd_chip_label, dd_chip_title, f"dash-nav-chip {dd_chip_class}")
 
-    treasury_display = format_currency(treasury_total_usd, "$") if treasury_total_usd is not None else "—"
-    reserves_display = format_currency(reserves_total_usd, "$") if reserves_total_usd is not None else "—"
     nav_tooltip_text = (
         "Trading NAV (USD)\n"
-        f"Exchange: {exchange_nav_display} (source {nav_info.get('source', 'n/a')})\n"
-        f"Treasury: {treasury_display}\n"
-        f"Reserves: {reserves_display}"
+        f"Exchange: {exchange_nav_display} (source {nav_info.get('source', 'n/a')})"
         if nav_display != "n/a"
         else "Trading NAV (USD)"
     )
@@ -1578,8 +1472,6 @@ def main():
         aum_rows.append({"Segment": label, "USD": numeric})
 
     _add_segment("Trading NAV", nav_value if isinstance(nav_value, (int, float)) else nav_trading_usd)
-    _add_segment("Treasury", treasury_total_usd)
-    _add_segment("Reserves", reserves_total_usd)
 
     try:
         cached_sources, _ = compute_total_nav_cached()
@@ -1674,17 +1566,12 @@ def main():
         doc_col3.metric("Drawdown", f"{dd_pct:.2f}%", format_currency(dd_abs, "$"))
         doc_col4.metric("Heartbeat", hb_status, heartbeat_brief)
 
-        doc_row2 = st.columns(5)
+        doc_row2 = st.columns(3)
         doc_row2[0].metric("Positions", positions_info.get("count", 0), None)
-        doc_row2[2].metric(
+        doc_row2[1].metric(
             "ZAR Rate",
             f"{zar_rate:.2f}" if zar_rate is not None else "n/a",
             zar_source if zar_rate is not None else "none",
-        )
-        doc_row2[3].metric(
-            "Reserves",
-            treasury_display,
-            None,
         )
         total_equity_display = format_currency(total_equity_usd, "$") if total_equity_usd is not None else "—"
         total_equity_delta = (
@@ -1692,41 +1579,11 @@ def main():
             if total_equity_zar is not None and zar_rate is not None
             else None
         )
-        doc_row2[4].metric(
+        doc_row2[2].metric(
             "Total Equity (USD)",
             total_equity_display,
             total_equity_delta,
         )
-
-        st.markdown("#### Treasury (Firestore)")
-        treasury_cols = st.columns([1, 2])
-        treasury_delta = format_age_seconds(treasury_age_seconds) if treasury_age_seconds is not None else "n/a"
-        treasury_cols[0].metric(
-            "Treasury (USDT)",
-            format_currency(treasury_total_usd, "$") if treasury_total_usd is not None else "—",
-            f"Age {treasury_delta}" if treasury_delta not in {"n/a", "—"} else None,
-        )
-        if treasury_assets_rows:
-            df_treasury = pd.DataFrame(treasury_assets_rows)
-            # format values for readability
-            display_df = df_treasury.copy()
-            display_df["Balance"] = display_df["Balance"].map(lambda v: f"{v:.6f}".rstrip("0").rstrip(".") if isinstance(v, (int, float)) else "—")
-            display_df["Price (USDT)"] = display_df["Price (USDT)"].map(
-                lambda v: f"{v:,.2f}" if isinstance(v, (int, float)) else "—"
-            )
-            display_df["USD Value"] = display_df["USD Value"].map(
-                lambda v: format_currency(v, "$") if isinstance(v, (int, float)) else "—"
-            )
-            treasury_cols[1].dataframe(display_df, use_container_width=True, hide_index=True)
-        else:
-            treasury_cols[1].info("No treasury assets available.")
-        treasury_caption_parts = []
-        if treasury_updated_at:
-            treasury_caption_parts.append(f"updated {treasury_updated_at}")
-        if treasury_source:
-            treasury_caption_parts.append(f"source {treasury_source}")
-        if treasury_caption_parts:
-            st.caption(" · ".join(treasury_caption_parts))
 
         st.markdown("---")
         st.subheader("Portfolio KPIs")
@@ -1798,7 +1655,7 @@ def main():
         st.subheader("Execution Health")
 
         telemetry_health, telemetry_fetch_error, telemetry_age = telemetry_health_card(
-            ENV, firestore_available=(db is not None)
+            ENV, firestore_available=False
         )
         telemetry_error = telemetry_fetch_error or firestore_error
         telemetry_fallback: List[Dict[str, Any]] = []
@@ -1979,6 +1836,12 @@ def main():
             items = trades_snapshot.get("items")
             if isinstance(items, list):
                 trade_snapshot_items = items
+
+        # PATCH: robust trade snapshot handling (v5.10 stage)
+        trade_snapshot_items = trade_snapshot_items or []
+        if not isinstance(trade_snapshot_items, list):
+            trade_snapshot_items = []
+
         trade_items = [dict(item) for item in trade_snapshot_items if isinstance(item, dict)]
         if trade_items:
             st.dataframe(pd.DataFrame(trade_items).head(50), use_container_width=True, height=220)
@@ -2117,6 +1980,41 @@ def main():
 
         if not telemetry_health and not fallback_entries:
             telemetry_section.warning("Telemetry unavailable; no Firestore data and heartbeat log empty.")
+
+        st.markdown("---")
+        symbol_candidates: List[str] = []
+        seen_symbols = set()
+        for entry in positions_fs or []:
+            sym = str(entry.get("symbol") or "").upper()
+            if sym and sym not in seen_symbols:
+                seen_symbols.add(sym)
+                symbol_candidates.append(sym)
+        symbol_stats = exec_stats.get("symbol_stats")
+        if isinstance(symbol_stats, dict):
+            for sym in symbol_stats.keys():
+                sym_clean = str(sym or "").upper()
+                if sym_clean and sym_clean not in seen_symbols:
+                    seen_symbols.add(sym_clean)
+                    symbol_candidates.append(sym_clean)
+        elif isinstance(symbol_stats, list):
+            for row in symbol_stats:
+                if not isinstance(row, dict):
+                    continue
+                sym = str(row.get("symbol") or "").upper()
+                if sym and sym not in seen_symbols:
+                    seen_symbols.add(sym)
+                    symbol_candidates.append(sym)
+        symbol_candidates.sort()
+        select_options = ["(none)"] + symbol_candidates
+        default_index = 1 if len(select_options) > 1 else 0
+        selection = st.selectbox(
+            "Symbol for Execution Intelligence",
+            select_options,
+            index=default_index,
+            key="exec_intel_symbol",
+        )
+        selected_symbol = selection if selection and selection != "(none)" else None
+        render_execution_intel(selected_symbol)
 
     # --------------------------- Router Health Tab --------------------------------
     with tab_router:
@@ -2641,9 +2539,8 @@ def main():
         with st.expander("Doctor — Universe & Risk", expanded=False):
             tpath = "logs/nav_trading.json"
             rpath = "logs/nav_reporting.json"
-            zpath = "logs/treasury.json"
             spath = "logs/nav_snapshot.json"
-            if any(os.path.exists(p) for p in (tpath, rpath, zpath, spath)):
+            if any(os.path.exists(p) for p in (tpath, rpath, spath)):
                 try:
                     if os.path.exists(tpath):
                         tnav = json.load(open(tpath, "r"))
@@ -2659,56 +2556,7 @@ def main():
                         rnav = json.load(open(rpath, "r"))
                         rval = float(rnav.get("nav_usdt", 0.0) or 0.0)
                         st.markdown(f"**Reporting NAV (USDT):** {rval:.2f}")
-                    if os.path.exists(zpath):
-                        znav = json.load(open(zpath, "r"))
-                        zval = float(znav.get("treasury_usdt", 0.0) or 0.0)
-                        st.markdown(
-                            "**Treasury (off-exchange, excluded from NAV):** "
-                            f"{zval:.2f} USDT"
-                        )
-                        if zar_rate is not None and isinstance(zval, (int, float)):
-                            st.markdown(
-                                f"<div class='zar-note'>≈ R{zval * zar_rate:,.0f} @ R{zar_rate:.2f}/USD</div>",
-                                unsafe_allow_html=True,
-                            )
-                        zbr = znav.get("breakdown", {})
-                        tre = zbr.get("treasury", {})
-                        miss = zbr.get("missing_prices", {})
-                        if tre:
-                            st.write("Holdings (manual-seeded):")
-                            rows = []
-                            for asset, data in tre.items():
-                                qty = data.get("qty")
-                                try:
-                                    qty_val = float(qty) if qty is not None else None
-                                except Exception:
-                                    qty_val = None
-                                val = data.get("val_usdt")
-                                usd_val = None
-                                try:
-                                    usd_val = float(val) if val is not None else None
-                                except Exception:
-                                    usd_val = None
-                                cg_price = price_cache.get(str(asset).upper()) if isinstance(price_cache, dict) else None
-                                if usd_val is None and cg_price and qty_val is not None:
-                                    usd_val = qty_val * float(cg_price)
-                                zar_val = usd_val * float(zar_rate) if zar_rate is not None and usd_val is not None else None
-                                rows.append(
-                                    {
-                                        "Asset": asset,
-                                        "Qty": qty_val if qty_val is not None else "—",
-                                        "USD": format_currency(usd_val, "$") if usd_val is not None else "—",
-                                        "ZAR": f"≈ {format_currency(zar_val, 'R')}" if zar_val is not None else "≈ R—",
-                                    }
-                                )
-                            if rows:
-                                df_treasury = pd.DataFrame(rows)
-                                st.dataframe(df_treasury, use_container_width=True, hide_index=True)
-                        if miss:
-                            st.warning(
-                                "Missing prices for treasury symbols (skipped): "
-                                + ", ".join(sorted(miss.keys()))
-                            )
+                    
                     if (not os.path.exists(tpath)) and (not os.path.exists(rpath)) and os.path.exists(spath):
                         nav = json.load(open(spath, "r"))
                         sval = float(nav.get("nav_usdt", 0.0) or 0.0)
@@ -2748,34 +2596,22 @@ def main():
             # Veto reasons dominated in last 24h (from risk collection)
             veto_counts = {}
             try:
-                db = get_firestore_connection()
-                docs = list(
-                    db.collection("hedge")
-                    .document(ENV)
-                    .collection("risk")
-                    .order_by("ts", direction="DESCENDING")
-                    .limit(1000)
-                    .stream()
-                )
-                import time as _t
-
-                now = _t.time()
-                for d in docs:
-                    x = d.to_dict() or {}
-                    if x.get("env") is not None and str(x.get("env")) != ENV:
+                veto_path = PROJECT_ROOT / "logs" / "execution" / "risk_vetoes.jsonl"
+                entries = read_jsonl_tail(veto_path, 2000)
+                now = time.time()
+                for entry in reversed(entries):
+                    if not isinstance(entry, dict):
                         continue
-                    ts = x.get("ts") or x.get("time")
-                    tnum = float(ts) if isinstance(ts, (int, float)) else 0.0
-                    if tnum > 1e12:
-                        tnum /= 1000.0
-                    if (now - tnum) > 24 * 3600:
+                    ts = entry.get("ts") or entry.get("time")
+                    ts_val = _to_epoch_seconds(ts)
+                    if ts_val is None or (now - ts_val) > 24 * 3600:
                         continue
-                    # reason (single) or reasons (list)
-                    if isinstance(x.get("reasons"), list):
-                        for r in x.get("reasons"):
-                            veto_counts[str(r)] = veto_counts.get(str(r), 0) + 1
-                    elif x.get("reason") is not None:
-                        veto_counts[str(x.get("reason"))] = veto_counts.get(str(x.get("reason")), 0) + 1
+                    if isinstance(entry.get("reasons"), list):
+                        for reason in entry.get("reasons") or []:
+                            veto_counts[str(reason)] = veto_counts.get(str(reason), 0) + 1
+                    elif entry.get("reason"):
+                        reason = str(entry.get("reason"))
+                        veto_counts[reason] = veto_counts.get(reason, 0) + 1
             except Exception:
                 veto_counts = {}
             if veto_counts:

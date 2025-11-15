@@ -292,14 +292,12 @@ def _compute_exec_stats() -> Dict[str, Any]:
 
 
 def _firestore_enabled() -> bool:
-    return os.environ.get("FIRESTORE_ENABLED", "1") != "0"
+    return False
 
 
 # ----- Firestore client -----
 def _fs_client():
-    if not _firestore_enabled():
-        raise RuntimeError("firestore_disabled")
-    return get_db()
+    return None
 
 
 # ----- Exchange helpers (import late so .env is loaded) -----

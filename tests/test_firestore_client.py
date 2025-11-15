@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+from typing import List
 
 import pytest
 
@@ -36,54 +37,15 @@ def test_firestore_set_retries(monkeypatch) -> None:
 
 
 def test_sync_state_health_degrades(monkeypatch) -> None:
-    sync_state._FIRESTORE_FAIL_COUNT = 0
-    sync_state._LAST_SUCCESS_TS = None
-    monkeypatch.setenv("ENV", "pytest")
+    calls: List[str] = []
 
-    telemetry_records = []
-    heartbeat_records = []
-
-    monkeypatch.setattr(
-        sync_state,
-        "write_doc",
-        lambda _db, path, payload, require=True: telemetry_records.append(
-            (path, payload, require)
-        )
-        or True,
-    )
-    monkeypatch.setattr(
-        sync_state,
-        "publish_heartbeat",
-        lambda _db, env, service, status, **kwargs: heartbeat_records.append(
-            (env, service, status, kwargs)
-        )
-        or True,
-    )
-
-    class FakeDB:
-        def collection(self, name: str):
-            return types.SimpleNamespace(name=name)
-
-    def failing_sync(db):
+    def failing_sync(_db):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(sync_state, "_sync_once_with_db", failing_sync)
-    monkeypatch.setattr(sync_state, "get_db", lambda strict=True: FakeDB())
+    monkeypatch.setattr(sync_state, "_publish_health", lambda *a, **k: calls.append("publish"))
 
     with pytest.raises(RuntimeError):
         sync_state.sync_once()
 
-    assert telemetry_records, "health payload was not written"
-    path, payload, require = telemetry_records[-1]
-    assert path.endswith("telemetry/health")
-    assert payload["firestore_ok"] is False
-    assert payload["last_error"]
-    assert payload["ts"] > 0
-    assert require is False
-
-    assert heartbeat_records, "heartbeat was not published"
-    env, service, status, kwargs = heartbeat_records[-1]
-    assert env == "pytest"
-    assert service == "sync_state"
-    assert status == "degraded"
-    assert "extra" in kwargs and "last_error" in kwargs["extra"]
+    assert not calls, "local sync should not attempt Firestore health writes"

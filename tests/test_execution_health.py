@@ -67,9 +67,26 @@ def test_compute_execution_health_combines_parts_execution_hardening(monkeypatch
     monkeypatch.setattr("execution.utils.execution_health.atr_pct", atr_stub)
     monkeypatch.setattr("execution.utils.execution_health.volatility_regime_scale", lambda s: 1.0)
     monkeypatch.setattr("execution.utils.execution_health.size_multiplier", lambda s: 1.5)
+    monkeypatch.setattr(
+        "execution.utils.execution_health.symbol_size_factor",
+        lambda symbol: {"symbol": symbol, "size_factor": 0.8},
+    )
+    monkeypatch.setattr("execution.utils.execution_health.suggest_maker_offset_bps", lambda s: 3.0)
+    from execution.intel.router_policy import RouterPolicy
+    monkeypatch.setattr(
+        "execution.utils.execution_health.router_policy",
+        lambda symbol: RouterPolicy(maker_first=False, taker_bias="prefer_taker", quality="broken", reason="test"),
+    )
 
     snapshot = eh.compute_execution_health("BTCUSDC")
     assert snapshot["symbol"] == "BTCUSDC"
     assert snapshot["router"]["maker_fill_ratio"] == 0.6
     assert snapshot["sizing"]["sharpe_7d"] == 2.0
     assert snapshot["sizing"]["size_mult_combined"] == 1.5
+    assert snapshot["sizing"]["intel_size_factor"] == 0.8
+    # floating point multiply: 1.5 * 0.8 ~= 1.2000000000000002
+    assert abs(snapshot["sizing"]["final_size_factor"] - 1.2) < 1e-8
+    assert snapshot["router"]["maker_offset_bps"] == 3.0
+    assert snapshot["router"]["policy_quality"] == "broken"
+    assert snapshot["router"]["policy_maker_first"] is False
+    assert snapshot["router"]["policy_taker_bias"] == "prefer_taker"

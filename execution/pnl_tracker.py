@@ -217,15 +217,22 @@ def get_gross_realized(symbol: Optional[str] = None, window_days: int = 7) -> fl
 
 
 def get_fees(symbol: Optional[str] = None, window_days: int = 7) -> float:
-    events = _recent_executed(window_days)
-    total = 0.0
-    for rec in events:
-        if symbol and rec.get("symbol") != symbol.upper():
-            continue
-        fee = _fee_value(rec)
-        if fee is not None:
-            total += fee
-    return total
+    """
+    Compatibility shim for dashboards. Returns 0.0 on any failure so callers
+    never crash even if fee tracking is unavailable.
+    """
+    try:
+        events = _recent_executed(window_days)
+        total = 0.0
+        for rec in events:
+            if symbol and rec.get("symbol") != symbol.upper():
+                continue
+            fee = _fee_value(rec)
+            if fee is not None:
+                total += fee
+        return total
+    except Exception:
+        return 0.0
 
 
 def get_symbol_stats(symbol: str, window_days: int = 7) -> Dict[str, float]:

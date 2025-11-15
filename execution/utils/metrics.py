@@ -61,7 +61,13 @@ def total_notional_7d() -> float:
 
 def dd_today_pct(symbol: str) -> float:
     """Per-symbol drawdown for the current day, as a percentage of equity."""
-    return float(drawdown_tracker.get_symbol_dd_today_pct(symbol))
+    getter = getattr(drawdown_tracker, "get_symbol_dd_today_pct", None)
+    if callable(getter):
+        try:
+            return float(getter(symbol))
+        except Exception:
+            return 0.0
+    return 0.0
 
 
 def rolling_sharpe_7d(symbol: str) -> float:
