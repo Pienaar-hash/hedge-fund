@@ -8,8 +8,7 @@ import time
 import logging
 from typing import Any, Dict, List, Tuple, Optional, cast
 
-from execution.exchange_utils import get_balances, get_positions, get_price
-from execution.reserves import load_reserves, value_reserves_usd
+from execution.exchange_utils import get_balances, get_positions
 
 _NAV_CACHE_PATH = "logs/cache/nav_confirmed.json"
 _NAV_LOG_PATH = "logs/nav_log.json"
@@ -89,75 +88,14 @@ def _futures_nav_usdt() -> Tuple[float, JSONDict]:
     return wallet, detail
 
 
-_STABLES = {"USDT", "USDC", "BUSD"}
-
-
-def _treasury_nav_usdt(treasury_path: str = "config/treasury.json") -> Tuple[float, JSONDict]:
-    treasury = _load_json(treasury_path)
-    if not treasury:
-        return 0.0, {"treasury": {}}
-
-    total = 0.0
-    holdings: Dict[str, Dict[str, float]] = {}
-    missing: Dict[str, str] = {}
-
-    for asset, qty in treasury.items():
-        if qty in (None, "", []):
-            continue
-        try:
-            qty_float = float(qty)
-        except Exception:
-            continue
-        if abs(qty_float) < 1e-12:
-            continue
-
-        asset_code = str(asset).upper()
-        try:
-            if asset_code in _STABLES:
-                price = 1.0
-            else:
-                price = float(get_price(f"{asset_code}USDT"))
-        except Exception as exc:
-            missing[asset_code] = str(exc)
-            continue
-
-        value = qty_float * price
-        total += value
-        holdings[asset_code] = {
-            "qty": qty_float,
-            "px": price,
-            "val_usdt": value,
-        }
-
-    breakdown: JSONDict = {"treasury": holdings, "total_treasury_usdt": total}
-    if missing:
-        breakdown["missing_prices"] = missing
-    return total, breakdown
+def _treasury_nav_usdt(_: str = "config/treasury.json") -> Tuple[float, JSONDict]:
+    """Treasury valuations are no longer part of NAV (v5.10+)."""
+    return 0.0, {"treasury": {}}
 
 
 def _reserves_nav_usd() -> Tuple[float, JSONDict]:
-    """Load off-exchange reserves and value them in USD."""
-    try:
-        reserves = load_reserves()
-    except Exception as exc:
-        LOGGER.warning("[nav] reserves_load_failed: %s", exc)
-        return 0.0, {"reserves": {}, "error": str(exc)}
-
-    if not reserves:
-        return 0.0, {"reserves": {}}
-
-    try:
-        total, detail = value_reserves_usd(reserves)
-    except Exception as exc:  # pragma: no cover - defensive
-        LOGGER.warning("[nav] reserves_value_failed: %s", exc)
-        return 0.0, {"reserves": {}, "error": str(exc), "raw": reserves}
-
-    reserves_detail: Dict[str, Any] = {
-        "reserves": detail,
-        "total_reserves_usd": float(total),
-        "raw": reserves,
-    }
-    return float(total), reserves_detail
+    """Reserve valuations are excluded from NAV (v5.10+)."""
+    return 0.0, {"reserves": {}}
 
 
 def _nav_sources(cfg: JSONDict) -> Tuple[str, str, bool, Any]:
@@ -207,23 +145,11 @@ def compute_nav_summary(cfg: JSONDict | None = None) -> JSONDict:
     cfg = cfg or _load_json("config/strategy_config.json")
 
     futures_nav, futures_detail = _futures_nav_usdt()
-    treasury_nav, treasury_detail = _treasury_nav_usdt()
-    reserves_nav, reserves_detail = _reserves_nav_usd()
-
-    total_aum = float(futures_nav + treasury_nav + reserves_nav)
-    summary: JSONDict = {
+    return {
         "futures_nav": float(futures_nav),
-        "treasury_nav": float(treasury_nav),
-        "reserves_nav": float(reserves_nav),
         "total_nav": float(futures_nav),
-        "total_aum": total_aum,
-        "details": {
-            "futures": futures_detail,
-            "treasury": treasury_detail,
-            "reserves": reserves_detail,
-        },
+        "details": {"futures": futures_detail},
     }
-    return summary
 
 
 def _fallback_capital(cfg: JSONDict) -> Tuple[float, JSONDict]:
@@ -239,47 +165,25 @@ def compute_reporting_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
             return float(manual), {"source": "manual"}
         return _fallback_capital(cfg)
 
-    summary = compute_nav_summary(cfg)
-    fut_detail = summary["details"].get("futures", {})
-    detail: JSONDict = {"source": "exchange", **fut_detail}
-    total_nav = float(summary["futures_nav"])
-    treasury_detail = summary["details"].get("treasury", {})
-    reserves_detail = summary["details"].get("reserves", {})
-    holdings = treasury_detail.get("treasury", {}) if isinstance(treasury_detail, dict) else {}
-    if holdings:
-        detail["treasury"] = holdings
-    missing = treasury_detail.get("missing_prices") if isinstance(treasury_detail, dict) else None
-    if missing:
-        detail["treasury_missing_prices"] = missing
-    detail["treasury_total_usdt"] = float(summary["treasury_nav"])
-    reserves_map = reserves_detail.get("reserves") if isinstance(reserves_detail, dict) else {}
-    if reserves_map:
-        detail["reserves"] = reserves_map
-    if isinstance(reserves_detail, dict) and reserves_detail.get("error"):
-        detail["reserves_error"] = reserves_detail.get("error")
-    detail["reserves_total_usd"] = float(summary.get("reserves_nav", 0.0) or 0.0)
-    detail["aum_breakdown"] = {
-        "treasury": treasury_detail,
-        "reserves": reserves_detail,
-    }
+    nav_val, detail = compute_trading_nav(cfg)
+    if nav_val > 0:
+        enriched = {"source": "exchange"}
+        if isinstance(detail, dict):
+            enriched.update(detail)
+        return nav_val, enriched
 
-    if total_nav > 0:
-        return total_nav, detail
     confirmed = get_confirmed_nav()
     confirmed_nav = float(confirmed.get("nav") or 0.0) if confirmed else 0.0
     if confirmed_nav > 0:
-        detail.update(
-            {
-                "source": "exchange_cache",
-                "confirmed_ts": confirmed.get("ts"),
-                "sources_ok": confirmed.get("sources_ok"),
-            }
-        )
+        cache_detail = {
+            "source": "exchange_cache",
+            "confirmed_ts": confirmed.get("ts"),
+            "sources_ok": confirmed.get("sources_ok"),
+        }
         if confirmed.get("stale_flags"):
-            detail["stale_flags"] = confirmed["stale_flags"]
-        return confirmed_nav, detail
-    detail["source"] = "unavailable"
-    return 0.0, detail
+            cache_detail["stale_flags"] = confirmed["stale_flags"]
+        return confirmed_nav, cache_detail
+    return 0.0, {"source": "unavailable"}
 
 
 def compute_nav_pair(cfg: JSONDict) -> Tuple[Tuple[float, JSONDict], Tuple[float, JSONDict]]:
@@ -289,11 +193,7 @@ def compute_nav_pair(cfg: JSONDict) -> Tuple[Tuple[float, JSONDict], Tuple[float
 
 
 def compute_treasury_only() -> Tuple[float, JSONDict]:
-    try:
-        total, breakdown = _treasury_nav_usdt()
-        return float(total), breakdown
-    except Exception as exc:
-        return 0.0, {"treasury": {}, "error": str(exc)}
+    return 0.0, {"treasury": {}}
 
 
 def compute_aum_breakdown(cfg: JSONDict | None = None) -> JSONDict:
@@ -303,9 +203,9 @@ def compute_aum_breakdown(cfg: JSONDict | None = None) -> JSONDict:
     summary = compute_nav_summary(cfg)
     return {
         "trading_nav": float(summary["futures_nav"]),
-        "treasury_nav": float(summary["treasury_nav"]),
-        "reserves_nav": float(summary["reserves_nav"]),
-        "total_aum": float(summary["total_aum"]),
+        "treasury_nav": 0.0,
+        "reserves_nav": 0.0,
+        "total_aum": float(summary["futures_nav"]),
     }
 
 

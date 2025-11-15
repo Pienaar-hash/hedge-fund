@@ -35,11 +35,7 @@ def _dry_run_mode() -> str:
 
 
 def _firestore_enabled() -> bool:
-    return os.getenv("FIRESTORE_ENABLED", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-    )
+    return False
 
 
 def _repo_root_log() -> None:
@@ -48,46 +44,11 @@ def _repo_root_log() -> None:
 
 
 def _resolve_firestore_creds() -> str | None:
-    candidates = [
-        os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-        os.getenv("FIREBASE_CREDS_PATH"),
-        "/root/hedge-fund/config/firebase_creds.json",
-    ]
-    for path in candidates:
-        if path and os.path.exists(path):
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
-            os.environ.setdefault("FIREBASE_CREDS_PATH", path)
-            LOGGER.info("[firestore] using credentials at %s", path)
-            return path
-    LOGGER.warning("[firestore] No Firestore credentials found; running offline")
     return None
 
 
 def safe_publish_health(service: str = "sync_state", status: str = "ok", err: str = "") -> None:
-    key = _resolve_firestore_creds()
-    if not key:
-        return
-    try:
-        from google.cloud import firestore  # type: ignore
-    except Exception as exc:
-        LOGGER.warning("[firestore] google-cloud-firestore import failed: %s", exc)
-        return
-    try:
-        client = firestore.Client()
-        env = os.getenv("ENV", "prod")
-        path = f"hedge/{env}/telemetry/health"
-        payload = {
-            "service": service,
-            "status": status,
-            "firestore_ok": status == "ok",
-            "last_error": err,
-            "ts": time.time(),
-            "ts_iso": datetime.utcnow().isoformat(),
-        }
-        client.document(path).set(payload, merge=True)
-        LOGGER.info("[firestore] telemetry publish ok path=%s", path)
-    except Exception as exc:
-        LOGGER.exception("[firestore] telemetry publish failed: %s", exc)
+    return None
 
 
 def _log_startup_summary() -> Dict[str, Any]:
@@ -112,51 +73,44 @@ def _log_startup_summary() -> Dict[str, Any]:
 
 
 def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
-    if not flags.get("fs_enabled"):
-        return
-    try:
-        from execution.firestore_utils import publish_health
-
-        publish_health(
-            {
-                "process": "sync_state",
-                "status": "ok",
-                "ts": _now_iso(),
-                "env": flags.get("env"),
-            }
-        )
-        print(
-            f"[firestore] heartbeat write ok path=hedge/{flags.get('env')}/telemetry/health",
-            flush=True,
-        )
-    except Exception as exc:
-        print(
-            f"[{flags.get('prefix', 'live')}] Firestore heartbeat failed: {exc}",
-            flush=True,
-        )
+    print(f"[{flags.get('prefix', 'live')}] Firestore heartbeat skipped (disabled)", flush=True)
 
 # --- Force package import path when launched via Supervisor ---
 import importlib.util  # noqa: E402
 
-try:
-    from utils.firestore_client import get_db, write_doc, publish_heartbeat  # noqa: E402
-except Exception as e:
-    _utils_path = os.path.join(REPO_ROOT, "utils", "firestore_client.py")
-    if os.path.exists(_utils_path):
-        spec = importlib.util.spec_from_file_location("firestore_client", _utils_path)
-        if spec and spec.loader:
-            fc = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(fc)  # type: ignore[attr-defined]
-            get_db = fc.get_db  # type: ignore[attr-defined]
-            write_doc = fc.write_doc  # type: ignore[attr-defined]
-            publish_heartbeat = fc.publish_heartbeat  # type: ignore[attr-defined]
-            print("[sync] Fallback firestore_client importloader success", flush=True)
-        else:
-            raise RuntimeError(f"Cannot import firestore_client: loader missing (spec={spec})")
-    else:
-        raise RuntimeError(f"Cannot import firestore_client: {e}")
+class _NoopDoc:
+    exists = False
 
-get_db(strict=True)  # permanent strict Firestore initialization on daemon start
+    def to_dict(self):
+        return {}
+
+
+class _NoopFirestore:
+    _is_noop = True
+
+    def collection(self, *_args, **_kwargs):
+        return self
+
+    def document(self, *_args, **_kwargs):
+        return self
+
+    def set(self, *_args, **_kwargs):
+        return None
+
+    def get(self, *_args, **_kwargs):
+        return _NoopDoc()
+
+
+def get_db(strict: bool = True):
+    return _NoopFirestore()
+
+
+def write_doc(*_args, **_kwargs):
+    return False
+
+
+def publish_heartbeat(*_args, **_kwargs):
+    return False
 
 # Make relative file reads (nav_log.json, etc.) deterministic under Supervisor
 try:
@@ -171,11 +125,8 @@ except Exception:
 #  - Applies cutoff filtering to NAV history if configured
 #  - Guards against zero-equity rows and empty tails
 #  - Computes exposure KPIs from positions
-#  - Derives peak from best available source (file, rows, existing Firestore doc)
-#  - Upserts compact docs to Firestore:
-#       hedge/{ENV}/state/nav
-#       hedge/{ENV}/state/positions
-#       hedge/{ENV}/state/leaderboard
+#  - Derives peak from best available source (file, rows, cached doc)
+#  - Persists compact state locally for dashboard/cache consumers (no Firestore writes)
 #
 # Env knobs
 #  ENV=prod|dev
@@ -1133,8 +1084,6 @@ def _commit_nav(db, rows: List[Dict[str, Any]], peak: float) -> Dict[str, Any]:
             "updated_at": slim[-1].get("t", _now_iso()),
             **tail,
         }
-    _nav_doc_ref(db).set(payload, merge=True)
-    print("[sync] write success (nav)", flush=True)
     return payload
 
 
@@ -1143,7 +1092,6 @@ def _commit_positions(db, positions: Dict[str, Any]) -> Dict[str, Any]:
     norm = _normalize_positions_items(items)  # normalize to dashboard schema
     exp = _exposure_from_positions(norm)
     payload = {"items": norm, "updated_at": _now_iso(), **exp}
-    _pos_doc_ref(db).set(payload, merge=True)
     return payload
 
 
@@ -1168,39 +1116,11 @@ def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
         reverse=True,
     )
     payload = {"items": leaderboard, "updated_at": _now_iso()}
-    _lb_doc_ref(db).set(payload, merge=True)
     return payload
 
 
 def _publish_health(db, ok: bool, last_error: str) -> None:
-    status = "ok" if ok else "degraded"
-    payload = {
-        "firestore_ok": bool(ok),
-        "last_error": str(last_error or ""),
-        "ts": time.time(),
-    }
-    try:
-        write_doc(
-            db,
-            f"hedge/{_get_env()}/telemetry/health",
-            payload,
-            require=False,
-        )
-    except Exception as exc:
-        LOGGER.warning("[sync] telemetry_write_failed path=telemetry/health error=%s", exc)
-    try:
-        publish_heartbeat(
-            db,
-            _get_env(),
-            "sync_state",
-            status,
-            error_count=_FIRESTORE_FAIL_COUNT,
-            last_success_ts=_LAST_SUCCESS_TS,
-            extra={"last_error": str(last_error or "")},
-        )
-    except Exception as exc:
-        LOGGER.warning("[sync] heartbeat_publish_failed error=%s", exc)
-    safe_publish_health(service="sync_state", status=status, err=str(last_error or ""))
+    return None
 
 
 # ------------------------------ Public API ----------------------------------
@@ -1221,13 +1141,6 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
             flush=True,
         )
         # still log positions exposure to nav doc (merge), but skip full write
-        try:
-            pos_snap = _read_positions_snapshot(SYNCED_STATE)
-            exp = _exposure_from_positions(pos_snap.get("items") or [])
-            if exp:
-                _nav_doc_ref(db).set(exp | {"updated_at": _now_iso()}, merge=True)
-        except Exception:
-            pass
         return {}, {}, {}
 
     # Peak: choose the best available source in this order:
@@ -1264,7 +1177,6 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
     exposure = _exposure_from_positions(pos_snap.get("items") or [])
     if exposure:
         nav_payload.update(exposure)
-        _nav_doc_ref(db).set(exposure, merge=True)
 
     nav_for_drawdown = nav_total_equity
     if nav_for_drawdown <= 0.0:
@@ -1277,7 +1189,8 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         reset_timezone=reset_tz,
     )
     save_peak_state(drawdown_state)
-    mirror_peak_state_to_firestore(drawdown_state, db, env=_get_env())
+    if db is not None and not getattr(db, "_is_noop", False):
+        mirror_peak_state_to_firestore(drawdown_state, db, env=_get_env())
     dd_payload = {
         "drawdown": drawdown_state.get("dd_pct", 0.0),
         "drawdown_pct": drawdown_state.get("dd_pct", 0.0),
@@ -1288,7 +1201,6 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         "drawdown_snapshot_at": drawdown_state.get("updated_at"),
     }
     nav_payload.update(dd_payload)
-    _nav_doc_ref(db).set(dd_payload, merge=True)
     print(
         "[sync] drawdown tracker "
         f"peak={drawdown_state.get('peak', 0.0):.2f} "
@@ -1299,31 +1211,6 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
 
     pos_payload = _commit_positions(db, pos_snap)
     lb_payload = _commit_leaderboard(db, pos_snap)
-
-    try:
-        sync_state_payload = {
-            "nav": {
-                "total_equity": nav_payload.get("total_equity"),
-                "peak_equity": nav_payload.get("peak_equity"),
-                "drawdown_pct": nav_payload.get("drawdown_pct"),
-                "drawdown_abs": nav_payload.get("drawdown_abs"),
-                "updated_at": nav_payload.get("updated_at"),
-            },
-            "positions": {
-                "count": len(pos_payload.get("items") or []),
-                "gross_exposure": pos_payload.get("gross_exposure"),
-                "net_exposure": pos_payload.get("net_exposure"),
-                "updated_at": pos_payload.get("updated_at"),
-            },
-            "leaderboard": {
-                "items": (lb_payload.get("items") or [])[:10],
-                "updated_at": lb_payload.get("updated_at"),
-            },
-            "updated_at": _now_iso(),
-        }
-        _sync_state_doc_ref(db).set(sync_state_payload, merge=True)
-    except Exception as exc:
-        LOGGER.warning("[sync] sync_state_doc_write_failed error=%s", exc)
 
     # Console log
     try:
@@ -1343,32 +1230,19 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
 
 def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """
-    Read files -> filter/compute -> upsert Firestore once.
+    Read files -> filter/compute using local data only.
     Returns (nav_payload, positions_payload, leaderboard_payload).
     """
     global _FIRESTORE_FAIL_COUNT, _LAST_SUCCESS_TS
-    db = None
     try:
-        db = get_db(strict=True)
+        db = get_db(strict=False)
         result = _sync_once_with_db(db)
         _LAST_SUCCESS_TS = time.time()
-        _publish_health(db, True, "")
         _FIRESTORE_FAIL_COUNT = 0
         return result
     except Exception as exc:
         _FIRESTORE_FAIL_COUNT += 1
-        print(
-            f"[sync] WARN firestore_sync_error count={_FIRESTORE_FAIL_COUNT} err={exc}",
-            flush=True,
-        )
-        if _FIRESTORE_FAIL_COUNT >= _FAILURE_THRESHOLD:
-            print("[sync] ERROR firestore_degraded", flush=True)
-        try:
-            if db is None:
-                db = get_db(strict=False)
-            _publish_health(db, False, str(exc))
-        except Exception:
-            pass
+        LOGGER.error("[sync] local sync failed count=%s err=%s", _FIRESTORE_FAIL_COUNT, exc)
         raise
 
 
@@ -1476,9 +1350,7 @@ def run() -> None:
     _repo_root_log()
     dry_run = _dry_run_mode()
     if not _firestore_enabled():
-        msg = "Firestore disabled via FIRESTORE_ENABLED=0; sync_state requires write access"
-        print(f"[sync] {msg}", flush=True)
-        raise RuntimeError(msg)
+        print("[sync] Firestore disabled -> running in local-only mode", flush=True)
     try:
         flags = _log_startup_summary()
     except Exception as exc:

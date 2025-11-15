@@ -20,29 +20,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
 
-try:
-    from binance.um_futures import UMFutures
-except Exception:  # pragma: no cover - optional dependency
-    UMFutures = None
-
 from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
-from execution.firestore_utils import (
-    _safe_load_json,
-    publish_router_metrics,
-    publish_execution_health,
-    publish_execution_alert,
-    publish_execution_intel,
-)
+from execution.firestore_utils import _safe_load_json
 from execution.events import now_utc, write_event
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 
 import requests
-from utils.firestore_client import with_firestore
-from execution.utils.execution_health import compute_execution_health
-from execution.utils.execution_alerts import classify_alerts
-from execution.telegram_utils import send_execution_alerts
-from execution.intel.symbol_score import compute_symbol_score
-from execution.intel.expectancy_map import hourly_expectancy
 from execution.intel.router_policy import router_policy
 # Optional .env so Supervisor doesn't need to export everything
 try:
@@ -109,98 +92,19 @@ def _append_order_metrics(record: Mapping[str, Any]) -> None:
 
 
 def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
-    if publish_router_metrics is None or not isinstance(event, Mapping):
-        return
-    try:
-        symbol = str(event.get("symbol") or "unknown").upper()
-        ts_val = event.get("ts")
-        if isinstance(ts_val, (int, float)):
-            ts_int = int(ts_val)
-        else:
-            ts_int = int(time.time())
-        doc_id = f"{symbol}_{ts_int}"
-        publish_router_metrics(doc_id, dict(event))
-    except Exception as exc:  # pragma: no cover - telemetry best effort
-        LOG.debug("[firestore] router_metrics_publish_failed doc=%s err=%s", event.get("attempt_id"), exc)
+    return None
 
 
 def _maybe_publish_execution_health(symbol: str) -> None:
-    if not symbol or publish_execution_health is None:
-        return
-    now = time.time()
-    last = _LAST_HEALTH_PUBLISH.get(symbol, 0.0)
-    if now - last < _HEALTH_PUBLISH_INTERVAL_S:
-        return
-    try:
-        snapshot = compute_execution_health(symbol)
-        publish_execution_health(symbol, snapshot)
-        _LAST_HEALTH_PUBLISH[symbol] = now
-    except Exception as exc:  # pragma: no cover - telemetry best effort
-        LOG.debug("[firestore] execution_health_publish_failed symbol=%s err=%s", symbol, exc)
+    return None
 
 
 def _maybe_emit_execution_alerts(symbol: str) -> None:
-    """
-    Periodically evaluate execution alerts per symbol and fan out to sinks.
-    """
-    if not symbol:
-        return
-    now = time.time()
-    last = _LAST_EXEC_ALERT_EVAL.get(symbol, 0.0)
-    if now - last < EXEC_ALERT_INTERVAL_S:
-        return
-    try:
-        snapshot = compute_execution_health(symbol)
-    except Exception as exc:
-        LOG.debug("[alerts] compute_failed symbol=%s err=%s", symbol, exc)
-        return
-    try:
-        alerts = classify_alerts(snapshot)
-    except Exception as exc:
-        LOG.debug("[alerts] classify_failed symbol=%s err=%s", symbol, exc)
-        return
-    if not alerts:
-        _LAST_EXEC_ALERT_EVAL[symbol] = now
-        return
-    try:
-        send_execution_alerts(symbol, alerts)
-    except Exception as exc:
-        LOG.debug("[alerts] telegram_send_failed symbol=%s err=%s", symbol, exc)
-    for alert in alerts:
-        try:
-            publish_execution_alert(alert)
-        except Exception as exc:
-            LOG.debug("[firestore] execution_alert_publish_failed symbol=%s err=%s", symbol, exc)
-    _LAST_EXEC_ALERT_EVAL[symbol] = now
+    return None
 
 
 def _maybe_publish_execution_intel(symbol: str) -> None:
-    """
-    Periodically publish execution intelligence snapshots for a symbol.
-    """
-    if not symbol or publish_execution_intel is None:
-        return
-    now = time.time()
-    last = _LAST_INTEL_PUBLISH.get(symbol, 0.0)
-    if now - last < EXEC_INTEL_PUBLISH_INTERVAL_S:
-        return
-    try:
-        score_payload = compute_symbol_score(symbol)
-        hourly = hourly_expectancy(symbol)
-    except Exception as exc:
-        LOG.debug("[firestore] execution_intel_compute_failed symbol=%s err=%s", symbol, exc)
-        return
-    payload = {
-        "symbol": symbol,
-        "score": score_payload.get("score"),
-        "components": score_payload.get("components") or {},
-        "hourly_expectancy": hourly,
-    }
-    try:
-        publish_execution_intel(symbol, payload)
-        _LAST_INTEL_PUBLISH[symbol] = now
-    except Exception as exc:
-        LOG.debug("[firestore] execution_intel_publish_failed symbol=%s err=%s", symbol, exc)
+    return None
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (
@@ -213,6 +117,9 @@ from execution.exchange_utils import (
     is_testnet,
     send_order,
     set_dry_run,
+    should_use_close_position,
+    get_um_client,
+    um_client_error,
 )
 try:
     from execution.order_router import (
@@ -236,12 +143,11 @@ from execution.risk_limits import (
     symbol_dd_guard,
 )
 from execution.risk_autotune import RiskAutotuner
-from execution.nav import compute_nav_pair, compute_treasury_only, PortfolioSnapshot
+from execution.nav import compute_nav_pair, PortfolioSnapshot
 from execution import size_model
 from execution.utils import (
     load_json,
     write_nav_snapshots_pair,
-    write_treasury_snapshot,
     save_json,
     get_live_positions,
 )
@@ -257,16 +163,6 @@ try:
     from execution.signal_screener import run_once as run_screener_once
 except ImportError:  # pragma: no cover - optional dependency
     run_screener_once = None
-try:
-    from execution.firestore_mirror import (
-        publish_exec_snapshot,
-        publish_signals_snapshot,
-    )
-except Exception:
-    publish_exec_snapshot = None  # type: ignore[assignment]
-    publish_signals_snapshot = None  # type: ignore[assignment]
-from execution.mirror_builders import build_mirror_payloads, build_signal_items_24h
-
 # ---- Firestore publisher handle (revisions differ) ----
 def _resolve_env(default: str = "dev") -> str:
     raw = (os.getenv("ENV") or os.getenv("ENVIRONMENT") or "").strip()
@@ -283,24 +179,20 @@ if ENV.lower() == "prod":
             "Refusing to run executor_live with ENV=prod. "
             "Set ALLOW_PROD_WRITE=1 to override explicitly."
         )
-_FS_PUB_INTERVAL = int(os.getenv("FS_PUB_INTERVAL", "60") or 60)
-_PUB: Any
-try:
-    from execution.state_publish import (
-        StatePublisher,
-        publish_close_audit,
-        publish_intent_audit,
-        publish_order_audit,
-        publish_nav_value,
-    )
+def publish_close_audit(*_args, **_kwargs) -> None:  # type: ignore[override]
+    return None
 
-    try:
-        _PUB = StatePublisher(env=ENV, interval_s=_FS_PUB_INTERVAL)  # type: ignore[arg-type]
-    except TypeError:
-        _PUB = StatePublisher(interval_s=_FS_PUB_INTERVAL)
-        setattr(_PUB, "env", ENV)
-except Exception as exc:
-    raise RuntimeError("execution.state_publish is required for executor_live") from exc
+
+def publish_intent_audit(*_args, **_kwargs) -> None:  # type: ignore[override]
+    return None
+
+
+def publish_order_audit(*_args, **_kwargs) -> None:  # type: ignore[override]
+    return None
+
+
+def publish_nav_value(*_args, **_kwargs) -> None:  # type: ignore[override]
+    return None
 
 # ---- risk limits config ----
 _RISK_CFG_PATH = os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
@@ -417,25 +309,7 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
-    if not flags.get("fs_enabled"):
-        return
-    try:
-        from execution.firestore_utils import publish_health  # local import to avoid circulars
-
-        payload = {
-            "process": "executor_live",
-            "status": "ok",
-            "ts": _now_iso(),
-            "env": flags.get("env"),
-        }
-        publish_health(payload)
-    except Exception as exc:
-        LOG.exception("[%s] Firestore heartbeat failed: %s", flags.get("prefix", "live"), exc)
-    else:
-        LOG.info(
-            "[firestore] heartbeat write ok path=hedge/%s/health/executor_live",
-            flags.get("env"),
-        )
+    LOG.info("[%s] Firestore heartbeat skipped (disabled)", flags.get("prefix", "live"))
 
 
 DRY_RUN = _read_dry_run_flag()
@@ -495,10 +369,7 @@ def _publish_intent_audit(symbol: Optional[str], intent: Dict[str, Any]) -> None
     payload = dict(intent)
     payload.setdefault("symbol", symbol)
     payload.setdefault("ts", time.time())
-    try:
-        publish_intent_audit(payload)
-    except Exception:
-        pass
+    return None
 
 
 def _publish_veto_exec(symbol: Optional[str], reasons: Sequence[str], intent: Mapping[str, Any]) -> None:
@@ -514,17 +385,7 @@ def _publish_veto_exec(symbol: Optional[str], reasons: Sequence[str], intent: Ma
         save_json(f"logs/veto_exec_{(symbol or 'UNKNOWN').upper()}.json", payload)
     except Exception:
         pass
-    try:
-        publish_order_audit(
-            (symbol or "UNKNOWN").upper(),
-            {
-                "phase": "veto",
-                "reasons": reasons_list,
-                "intent": dict(intent),
-            },
-        )
-    except Exception:
-        pass
+    return None
 
 
 # ------------- helpers -------------
@@ -1124,8 +985,6 @@ def _compute_nav() -> float:
     try:
         trading, reporting = compute_nav_pair(cfg)
         write_nav_snapshots_pair(trading, reporting)
-        tre_val, tre_detail = compute_treasury_only()
-        write_treasury_snapshot(tre_val, tre_detail)
         return float(trading[0])
     except Exception as exc:
         LOG.error("[executor] compute_nav not available: %s", exc)
@@ -1230,11 +1089,34 @@ def _current_bucket_gross(symbol_gross: Mapping[str, float], buckets: Mapping[st
     return totals
 
 
+# NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     symbol = intent["symbol"]
     sig = str(intent.get("signal", "")).upper()
     side = "BUY" if sig == "BUY" else "SELL"
-    pos_side = intent.get("positionSide") or ("LONG" if side == "BUY" else "SHORT")
+    reduce_only = bool(intent.get("reduceOnly", False))
+
+    pos_side = intent.get("positionSide")
+    if not pos_side:
+        if reduce_only:
+            # Reduce-only orders must target the opposite hedge leg.
+            pos_side = "SHORT" if side == "BUY" else "LONG"
+        else:
+            pos_side = "LONG" if side == "BUY" else "SHORT"
+        intent["positionSide"] = pos_side
+        LOG.debug(
+            "[executor] derived positionSide=%s side=%s reduce_only=%s symbol=%s",
+            pos_side,
+            side,
+            reduce_only,
+            symbol,
+        )
+        if reduce_only:
+            LOG.info(
+                "[send_order] reduceOnly=True inferred_side=%s symbol=%s",
+                pos_side,
+                symbol,
+            )
     attempt_id = str(intent.get("attempt_id") or mk_id("sig"))
     intent_id = str(intent.get("intent_id") or mk_id("ord"))
     intent["attempt_id"] = attempt_id
@@ -1249,7 +1131,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         price_guess = float(intent.get("price", 0.0) or 0.0)
     except Exception:
         price_guess = 0.0
-    reduce_only = bool(intent.get("reduceOnly", False))
     generated_at = intent.get("generated_at") or intent.get("signal_ts")
     decision_latency_ms: Optional[float] = None
     if generated_at is not None:
@@ -1532,6 +1413,38 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     except Exception:
         positions = []
 
+    def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
+        request_payload = dict(payload)
+        order_type = str(request_payload.get("type") or "MARKET").upper()
+        convert_close, _close_qty = should_use_close_position(
+            request_payload.get("symbol"),
+            request_payload.get("side"),
+            request_payload.get("positionSide"),
+            request_payload.get("reduceOnly"),
+            order_type=order_type,
+            positions=positions,
+        )
+        if convert_close and order_type != "MARKET":
+            request_payload.pop("reduceOnly", None)
+            request_payload.pop("quantity", None)
+            request_payload["closePosition"] = True
+        ro_val = request_payload.get("reduceOnly")
+        if isinstance(ro_val, str):
+            ro_val = ro_val.lower() in ("1", "true", "yes", "on")
+        return send_order(
+            symbol=request_payload["symbol"],
+            side=request_payload["side"],
+            type=request_payload.get("type", "MARKET"),
+            quantity=request_payload.get("quantity"),
+            positionSide=request_payload.get("positionSide"),
+            reduceOnly=ro_val,
+            price=request_payload.get("price"),
+            closePosition=request_payload.get("closePosition"),
+            timeInForce=request_payload.get("timeInForce"),
+            newClientOrderId=request_payload.get("newClientOrderId"),
+            positions=positions,
+        )
+
     force_direct_send = False
 
     # Flip handling: flatten any opposing hedge-mode position via a dedicated
@@ -1572,7 +1485,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             )
             reduce_resp: Dict[str, Any] = {}
             try:
-                reduce_resp = send_order(**reduce_payload)
+                reduce_resp = _dispatch(reduce_payload)
             except Exception as exc:
                 LOG.error("[executor] reduce_only_send_failed %s %s", symbol, exc)
                 return
@@ -1776,6 +1689,8 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             pass
         return
 
+    payload["positionSide"] = pos_side
+
     def _meta_float(val: Any, fallback: float) -> float:
         try:
             return float(val)
@@ -1943,7 +1858,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
 
     if force_direct_send:
         try:
-            resp = send_order(**payload)
+            resp = _dispatch(payload)
             router_metrics = {
                 "attempt_id": attempt_id,
                 "venue": "binance_futures",
@@ -2096,7 +2011,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
         if not resp:
             try:
-                resp = send_order(**payload)
+                resp = _dispatch(payload)
             except requests.HTTPError as exc:
                 try:
                     _RISK_STATE.note_error(time.time())
@@ -2642,115 +2557,13 @@ def _persist_spot_state() -> None:
     _write_json_cache(SPOT_STATE_CACHE_PATH, payload)
 
 
-def _publish_mirror_updates() -> None:
-    if publish_exec_snapshot is None:
-        return
-    try:
-        payloads = build_mirror_payloads(LOGS_ROOT)
-        router_items = payloads.router
-        trade_items = payloads.trades
-        signal_items = build_signal_items_24h(LOGS_ROOT)
-        publish_exec_snapshot("router", router_items)
-        publish_exec_snapshot("trades", trade_items)
-        publish_exec_snapshot("signals", signal_items)
-        if publish_signals_snapshot is not None:
-            publish_signals_snapshot(signal_items)
-        LOG.info(
-            "[mirror] router=%d trades=%d signals=%d",
-            len(router_items),
-            len(trade_items),
-            len(signal_items),
-        )
-        signal_summary = next(
-            (item for item in signal_items if item.get("kind") == "signals_summary"),
-            None,
-        )
-        if signal_summary:
-            LOG.info(
-                "[mirror] signals_summary attempted=%s executed=%s vetoed=%s",
-                signal_summary.get("attempted"),
-                signal_summary.get("executed"),
-                signal_summary.get("vetoed"),
-            )
-    except Exception as exc:
-        LOG.warning("[mirror] failed: %s", exc)
-
-
-try:  # runbook logging
-    import inspect
-
-    _RUNBOOK_MIRROR_LINE = inspect.getsourcelines(_publish_mirror_updates)[1]
-    LOG.info("[runbook] mirror wired at: %s:%d", __file__, _RUNBOOK_MIRROR_LINE)
-except Exception:
-    pass
-
-
-
 def _pub_tick() -> None:
-    """
-    Try StatePublisher.{tick,run_once,step,publish,update}; if no such method,
-    publish a minimal NAV+positions snapshot inline so the dashboard stays live.
-    """
     nav_val = _compute_nav_snapshot()
     rows = _collect_rows()
     _persist_positions_cache(rows)
     _persist_nav_log(nav_val, rows)
     _persist_spot_state()
-
-    # Try common method names on the object first
-    for meth in ("tick", "run_once", "step", "publish", "update"):
-        m = getattr(_PUB, meth, None)
-        if callable(m):
-            try:
-                m()
-                return
-            except Exception as e:
-                LOG.error("[executor] publisher.%s error: %s", meth, e)
-
-    # Inline minimal publish (NAV + positions) — Firestore-first dashboard compatible
-    try:
-        if hasattr(_PUB, "maybe_publish_positions"):
-            try:
-                _PUB.maybe_publish_positions(rows)
-            except Exception as exc:
-                LOG.error("[executor] StatePublisher.maybe_publish_positions error: %s", exc)
-
-        if nav_val is not None:
-            try:
-                publish_nav_value(float(nav_val))
-            except Exception as exc:
-                LOG.error("[executor] publish_nav_value error: %s", exc)
-
-        if os.environ.get("FIRESTORE_ENABLED", "1") == "0":
-            return
-
-        try:
-            with with_firestore() as db:
-                db.document(f"hedge/{ENV}/state/positions").set(
-                    {"items": rows, "env": ENV, "updated_at": datetime.now(timezone.utc).isoformat()},
-                    merge=False,
-                )
-            print("[executor] Firestore publish ok", flush=True)
-        except Exception as exc:
-            LOG.error("[executor] Firestore publish error: %s", exc)
-
-        _publish_mirror_updates()
-        if _startup_flags_snapshot.get("fs_enabled"):
-            try:
-                from execution.firestore_utils import publish_router_health, publish_positions, publish_treasury
-
-                router_metrics_payload = None
-                try:
-                    router_metrics_payload = _safe_load_json(os.path.join(LOGS_ROOT, "router_health.json"))
-                except Exception:
-                    router_metrics_payload = None
-                publish_router_health(router_metrics_payload)
-                publish_positions()
-                publish_treasury()
-            except Exception as exc:
-                LOG.warning("[firestore] router/positions/treasury publish failed: %s", exc)
-    except Exception as exc:
-        LOG.error("[executor] publisher fallback error: %s", exc)
+    return None
 
 
 def _loop_once(i: int) -> None:
@@ -2886,14 +2699,12 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
     except Exception as e:
         LOG.error("[executor] dualSide check failed: %s", e)
 
-    client = None
-    api_key = os.getenv("BINANCE_API_KEY")
-    api_secret = os.getenv("BINANCE_API_SECRET")
-    if UMFutures is not None and api_key and api_secret:
-        try:
-            client = UMFutures(key=api_key, secret=api_secret)
-        except Exception as exc:
-            LOG.error("[startup-sync] failed to initialise UMFutures client: %s", exc)
+    client = get_um_client()
+    if client is None:
+        LOG.warning(
+            "[startup-sync] UMFutures client unavailable (%s)",
+            um_client_error() or "unknown",
+        )
     _startup_position_check(client)
 
     i = 0

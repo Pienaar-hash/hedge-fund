@@ -391,54 +391,6 @@ def build_nav_dataframe() -> Tuple[pd.DataFrame, float, str]:
     return df, latest_nav, label
 
 
-def treasury_table_from_summary(summary: Dict[str, Any]) -> pd.DataFrame:
-    """Return a DataFrame of treasury assets from compute_nav_summary output.
-
-    Expected summary shape:
-      {
-        "details": {
-            "treasury": {
-                "treasury": {
-                    "BTC": {"qty": 0.1, "val_usdt": 1000.0, ...},
-                    ...
-                }
-            }
-        }
-      }
-    """
-
-    treasury_detail = (summary.get("details") or {}).get("treasury", {})
-    holdings = treasury_detail.get("treasury", {}) if isinstance(treasury_detail, dict) else {}
-    rows = []
-    for asset, info in holdings.items():
-        try:
-            qty = float(info.get("qty", 0.0) or 0.0)
-            usd = float(info.get("val_usdt", 0.0) or 0.0)
-        except Exception:
-            continue
-        rows.append({"Asset": str(asset), "Units": qty, "USD Value": usd})
-
-    if not rows:
-        return pd.DataFrame(columns=["Asset", "Units", "USD Value"])
-
-    df = pd.DataFrame(rows)
-    df = df.sort_values(by="USD Value", ascending=False).reset_index(drop=True)
-    return df
-
-
-def format_treasury_table(df: pd.DataFrame) -> Styler:
-    """Format treasury DataFrame for display."""
-
-    fmt: Dict[str, str] = {}
-    if "Units" in df.columns:
-        fmt["Units"] = _UNITS_FMT
-    if "Qty" in df.columns:
-        fmt["Qty"] = _UNITS_FMT
-    if "USD Value" in df.columns:
-        fmt["USD Value"] = _USD_FMT
-    return df.style.format(fmt)
-
-
 def signal_attempts_summary(lines: List[str]) -> str:
     """Return latest screener attempted/emitted summary string."""
 
@@ -471,8 +423,6 @@ def _extract_int(text: str, key: str) -> int | None:
 
 
 __all__ = [
-    "treasury_table_from_summary",
-    "format_treasury_table",
     "signal_attempts_summary",
     "load_exec_stats",
     "heartbeat_badge",
