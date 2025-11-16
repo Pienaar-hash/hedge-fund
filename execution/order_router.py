@@ -440,6 +440,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             "raw": None,
         }
 
+    ctx_original = risk_ctx if isinstance(risk_ctx, dict) else None
     risk_ctx = dict(risk_ctx or {})
     price = risk_ctx.get("price") or intent.get("price")
     order_type = str(intent.get("type") or risk_ctx.get("type") or "MARKET").upper()
@@ -478,7 +479,9 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     maker_qty = _to_float(risk_ctx.get("maker_qty"))
     maker_price = _to_float(risk_ctx.get("maker_price") or price)
     policy = router_policy(symbol)
-    effective_maker_first = bool(risk_ctx.get("maker_first")) and policy.maker_first
+    taker_bias = str(getattr(policy, "taker_bias", "") or "").lower()
+    prefer_taker_bias = taker_bias == "prefer_taker"
+    effective_maker_first = bool(risk_ctx.get("maker_first")) and policy.maker_first and not prefer_taker_bias
     maker_enabled = (
         effective_maker_first
         and not bool(payload.get("reduceOnly"))
@@ -490,6 +493,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
 
     latency_ms: float | None = None
     resp: Dict[str, Any] | None = None
+    maker_used = False
     if maker_enabled:
         try:
             t0 = time.perf_counter()
@@ -517,6 +521,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
                 "rejections": maker_result.rejections,
                 "slippage_bps": maker_result.slippage_bps,
             }
+            maker_used = True
 
     if resp is None:
         try:
@@ -541,6 +546,14 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             log_event(LOG_ORDERS, "order_error", safe_dump(error_payload))
             _LOG.error("route_order failed: %s", exc)
             raise
+
+    route_choice = "maker" if maker_used else "taker"
+    risk_ctx["routed_as"] = route_choice
+    if ctx_original is not None:
+        try:
+            ctx_original["routed_as"] = route_choice
+        except Exception:
+            pass
 
     order_id = resp.get("orderId")
     status = _normalize_status(resp.get("status"))
@@ -580,7 +593,8 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
 
 def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Route an order intent and emit routing metrics."""
-    router_ctx = dict(intent.get("router_ctx") or {})
+    router_ctx_raw = intent.get("router_ctx")
+    router_ctx = router_ctx_raw if isinstance(router_ctx_raw, dict) else {}
     dry_run = bool(intent.get("dry_run", False))
     timing = dict(intent.get("timing") or {})
 

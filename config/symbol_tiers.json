@@ -1,17 +1,6 @@
 {
   "CORE": ["BTCUSDT", "ETHUSDT"],
-  "SATELLITE": ["SOLUSDT", "LINKUSDT", "BNBUSDT"],
-  "TACTICAL": ["SUIUSDT", "LTCUSDT", "WIFUSDT", "DOGEUSDT"],
-  "ALT-EXT": [
-    "ARBUSDT",
-    "OPUSDT",
-    "AVAXUSDT",
-    "APTUSDT",
-    "INJUSDT",
-    "RNDRUSDT",
-    "SEIUSDT",
-    "TONUSDT",
-    "XRPUSDT",
-    "ADAUSDT"
-  ]
+  "SATELLITE": ["SOLUSDT"],
+  "TACTICAL": [],
+  "ALT-EXT": []
 }

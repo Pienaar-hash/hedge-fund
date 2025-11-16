@@ -64,7 +64,7 @@ def test_screener_respects_binance_floors(monkeypatch: pytest.MonkeyPatch) -> No
         },
     )
     monkeypatch.setattr(ss, "PortfolioSnapshot", _Snapshot)
-    monkeypatch.setattr(ss, "check_order", lambda **_kwargs: (True, {"reasons": []}))
+    monkeypatch.setattr(ss, "check_order", lambda **_kwargs: (False, {}))
 
     signals = ss.generate_signals_from_config()
     orders = [row for row in signals if not row.get("reduceOnly")]

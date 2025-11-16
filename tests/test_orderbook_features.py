@@ -9,9 +9,11 @@ def test_orderbook_adverse_veto(monkeypatch):
     veto, info = evaluate_entry_gate("BTCUSDT", "BUY", enabled=True)
     assert veto is True
     assert isinstance(info, dict)
+    assert info.get("gate") == "orderbook"
 
 
 def test_orderbook_feature_disabled_pass_through():
     veto, info = evaluate_entry_gate("BTCUSDT", "BUY", enabled=False)
     assert veto is False
     assert isinstance(info, dict)
+    assert info.get("ok") is True

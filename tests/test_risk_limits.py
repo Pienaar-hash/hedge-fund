@@ -60,6 +60,7 @@ def _base_cfg():
             "min_notional_usdt": 25.0,
             "daily_loss_limit_pct": 3.0,
             "max_trade_nav_pct": 10.0,
+            "nav_freshness_seconds": 1_000_000,
         },
         "per_symbol": {
             "BTCUSDT": {"min_notional": 25.0, "max_order_notional": 50.0},
@@ -70,7 +71,7 @@ def _base_cfg():
 
 def test_guardrail_not_whitelisted_blocks():
     st = RiskState()
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="ETHUSDT",
         side="BUY",
         requested_notional=50.0,
@@ -82,13 +83,13 @@ def test_guardrail_not_whitelisted_blocks():
         state=st,
         current_gross_notional=0.0,
     )
-    assert not ok
+    assert veto is True
     assert "not_whitelisted" in details.get("reasons", [])
 
 
 def test_guardrail_below_min_notional_blocks():
     st = RiskState()
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=10.0,
@@ -100,7 +101,7 @@ def test_guardrail_below_min_notional_blocks():
         state=st,
         current_gross_notional=0.0,
     )
-    assert not ok
+    assert veto is True
     assert "below_min_notional" in details.get("reasons", [])
 
 
@@ -108,7 +109,7 @@ def test_guardrail_symbol_cap_blocks():
     st = RiskState()
     cfg = _base_cfg()
     cfg["per_symbol"]["BTCUSDT"]["max_order_notional"] = 20.0
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=50.0,
@@ -120,14 +121,71 @@ def test_guardrail_symbol_cap_blocks():
         state=st,
         current_gross_notional=0.0,
     )
-    assert not ok
+    assert veto is True
     assert "symbol_cap" in details.get("reasons", [])
+
+
+def test_guardrail_global_leverage_cap_blocks_without_symbol_override():
+    st = RiskState()
+    cfg = _base_cfg()
+    cfg["global"]["max_leverage"] = 4
+    veto, details = check_order(
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_notional=30.0,
+        price=0.0,
+        nav=1000.0,
+        open_qty=0.0,
+        now=0.0,
+        cfg=cfg,
+        state=st,
+        current_gross_notional=0.0,
+        lev=5.0,
+    )
+    assert veto is True
+    assert "leverage_exceeded" in details.get("reasons", [])
+
+
+def test_guardrail_symbol_leverage_override_takes_precedence():
+    st = RiskState()
+    cfg = _base_cfg()
+    cfg["global"]["max_leverage"] = 5
+    cfg["per_symbol"]["BTCUSDT"]["max_leverage"] = 3
+    veto, details = check_order(
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_notional=30.0,
+        price=0.0,
+        nav=1000.0,
+        open_qty=0.0,
+        now=0.0,
+        cfg=cfg,
+        state=st,
+        current_gross_notional=0.0,
+        lev=4.0,
+    )
+    assert veto is True
+    assert "leverage_exceeded" in details.get("reasons", [])
+    veto2, details2 = check_order(
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_notional=30.0,
+        price=0.0,
+        nav=1000.0,
+        open_qty=0.0,
+        now=0.0,
+        cfg=cfg,
+        state=st,
+        current_gross_notional=0.0,
+        lev=2.0,
+    )
+    assert not veto2, details2
 
 
 def test_guardrail_day_loss_limit_blocks():
     st = RiskState()
     st.daily_pnl_pct = -3.5
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=25.0,
@@ -139,7 +197,7 @@ def test_guardrail_day_loss_limit_blocks():
         state=st,
         current_gross_notional=0.0,
     )
-    assert not ok
+    assert veto is True
     assert "day_loss_limit" in details.get("reasons", [])
 
 
@@ -151,7 +209,7 @@ def test_guardrail_cooldown_blocks():
     now = 10_000.0
     # last fill 60s ago -> still in cooldown
     st.note_fill("BTCUSDT", now - 60)
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=25.0,
@@ -163,7 +221,7 @@ def test_guardrail_cooldown_blocks():
         state=st,
         current_gross_notional=0.0,
     )
-    assert not ok
+    assert veto is True
     assert "cooldown" in details.get("reasons", [])
     assert isinstance(details.get("cooldown_until"), float)
 
@@ -177,7 +235,7 @@ def test_guardrail_error_circuit_breaker_blocks():
     st.note_error(now - 10)
     st.note_error(now - 5)
     st.note_error(now - 1)
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=30.0,
@@ -189,7 +247,7 @@ def test_guardrail_error_circuit_breaker_blocks():
         state=st,
         current_gross_notional=0.0,
     )
-    assert not ok
+    assert veto is True
     assert "circuit_breaker" in details.get("reasons", [])
 
 
@@ -260,11 +318,12 @@ def test_micro_notional_lev_included_allows_10_blocks_9():
             "min_notional_usdt": 10.0,
             "max_portfolio_gross_nav_pct": 100.0,
             "max_leverage": 20,
+            "nav_freshness_seconds": 1_000_000,
         },
         "per_symbol": {"BTCUSDT": {"max_order_notional": 25.0, "max_leverage": 20}},
     }
     # Gross notional is passed (cap), leverage separately
-    ok, d = check_order(
+    veto, d = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=10.0,
@@ -277,9 +336,9 @@ def test_micro_notional_lev_included_allows_10_blocks_9():
         current_gross_notional=0.0,
         lev=20.0,
     )
-    assert ok, d
+    assert veto is False, d
 
-    ok2, d2 = check_order(
+    veto2, d2 = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=9.0,
@@ -292,5 +351,5 @@ def test_micro_notional_lev_included_allows_10_blocks_9():
         current_gross_notional=0.0,
         lev=20.0,
     )
-    assert not ok2
+    assert veto2 is True
     assert "below_min_notional" in d2.get("reasons", [])

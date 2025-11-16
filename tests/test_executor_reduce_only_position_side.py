@@ -94,7 +94,7 @@ def stub_executor_env(monkeypatch):
         lambda *args, **kwargs: (True, ""),
         raising=False,
     )
-    monkeypatch.setattr(executor_live, "check_order", lambda **kwargs: (True, {"reasons": []}))
+    monkeypatch.setattr(executor_live, "check_order", lambda **kwargs: (False, {}))
     monkeypatch.setattr(executor_live, "_route_intent", None)
     monkeypatch.setattr(executor_live, "_route_order", None)
     monkeypatch.setattr(executor_live, "DRY_RUN", False)

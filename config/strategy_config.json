@@ -2,7 +2,9 @@
   "use_futures": true,
   "poll_seconds": 300,
   "universe": [
-    "BTC"
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
   ],
   "nav": {
     "trading_source": "exchange",
@@ -14,13 +16,9 @@
     "capital_per_trade_usdt": 6.0,
     "default_leverage": 3,
     "per_symbol_leverage": {
-      "BTC": 20,
-      "ETH": 4,
-      "SOL": 3,
-      "SUI": 2,
-      "LTC": 2,
-      "WIF": 2,
-      "LINK": 3
+      "BTCUSDT": 20,
+      "ETHUSDT": 4,
+      "SOLUSDT": 3
     },
     "max_open_positions": 1,
     "max_gross_exposure_pct": 150,
@@ -44,11 +42,7 @@
     "symbol_buckets": {
       "BTCUSDT": "majors",
       "ETHUSDT": "majors",
-      "LTCUSDT": "majors",
-      "SOLUSDT": "alts",
-      "SUIUSDT": "alts",
-      "WIFUSDT": "alts",
-      "LINKUSDT": "alts"
+      "SOLUSDT": "alts"
     }
   },
   "risk": {
@@ -84,11 +78,7 @@
     "symbols": [
       "BTCUSDT",
       "ETHUSDT",
-      "SOLUSDT",
-      "SUIUSDT",
-      "LTCUSDT",
-      "WIFUSDT",
-      "LINKUSDT"
+      "SOLUSDT"
     ],
     "features": {
       "ema_fast": 20,
@@ -190,7 +180,8 @@
     },
     {
       "name": "link_micro",
-      "enabled": true,
+      "enabled": false,
+      "experimental": true,
       "symbol": "LINKUSDT",
       "timeframe": "15m",
       "capital_per_trade": 5.0,
@@ -217,7 +208,8 @@
     },
     {
       "name": "ltc_micro",
-      "enabled": true,
+      "enabled": false,
+      "experimental": true,
       "symbol": "LTCUSDT",
       "timeframe": "15m",
       "capital_per_trade": 5.0,
@@ -243,7 +235,8 @@
     },
     {
       "name": "sui_micro",
-      "enabled": true,
+      "enabled": false,
+      "experimental": true,
       "symbol": "SUIUSDT",
       "timeframe": "15m",
       "capital_per_trade": 5.0,
@@ -270,7 +263,8 @@
     },
     {
       "name": "wif_micro",
-      "enabled": true,
+      "enabled": false,
+      "experimental": true,
       "symbol": "WIFUSDT",
       "timeframe": "15m",
       "capital_per_trade": 5.0,

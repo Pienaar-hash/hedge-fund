@@ -118,25 +118,6 @@ def test_market_reduce_only_keeps_quantity_and_reduce_flag(capture_signed_order)
     assert set(payload.keys()) == {"symbol", "side", "type", "quantity", "positionSide", "reduceOnly"}
 
 
-def test_market_reduce_only_usdc_strips_reduce_flag(capture_signed_order) -> None:
-    ctx = capture_signed_order
-    resp = ex.send_order(
-        "BTCUSDC",
-        "SELL",
-        "MARKET",
-        "0.006",
-        positionSide="LONG",
-        reduceOnly=True,
-    )
-    payload = ctx["captured"]["params"]
-    assert resp["orderId"] == 7
-    assert payload["type"] == "MARKET"
-    assert payload["quantity"] == "0.006"
-    assert "reduceOnly" not in payload
-    assert "positionSide" not in payload
-    assert set(payload.keys()) == {"symbol", "side", "type", "quantity"}
-
-
 def test_stop_market_reduce_only_converts_to_close_position(capture_signed_order) -> None:
     ctx = capture_signed_order
     resp = ex.send_order(

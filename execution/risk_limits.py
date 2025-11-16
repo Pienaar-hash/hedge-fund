@@ -624,7 +624,8 @@ def can_open_position(*args, **kwargs):
     - Legacy: can_open_position(symbol, notional, lev, cfg, st) -> (ok, reason)
     - New:    can_open_position(symbol, notional, lev, nav, open_qty, now, cfg, state, current_gross_notional=0.0)
 
-    The new path delegates to check_order (if available) and returns (ok, first_reason_or_ok).
+    The new path delegates to check_order (if available) and returns
+    ``(ok, first_reason_or_ok)``.
     """
     # Detect legacy 5-positional-args call used by current tests
     if len(args) == 5 and not kwargs:
@@ -644,7 +645,7 @@ def can_open_position(*args, **kwargs):
         "current_gross_notional", args[8] if len(args) > 8 else 0.0
     )
 
-    ok, details = check_order(
+    veto, details = check_order(
         symbol=symbol,
         side="LONG",
         requested_notional=notional,
@@ -656,7 +657,9 @@ def can_open_position(*args, **kwargs):
         state=state,
         current_gross_notional=current_gross_notional,
     )
-    return ok, (details.get("reasons") or ["ok"])[0]
+    reasons = (details.get("reasons") or []) if isinstance(details, dict) else []
+    reason = reasons[0] if reasons else "ok"
+    return (not veto), reason
 
 
 def should_reduce_positions(st: RiskState, cfg: RiskConfig) -> bool:
@@ -721,10 +724,11 @@ def check_order(
     open_positions_count: int | None = None,
     tier_name: Optional[str] = None,
     current_tier_gross_notional: float = 0.0,
-) -> Tuple[bool, dict]:
+) -> Tuple[bool, Dict[str, Any]]:
     """Apply per-symbol and global risk checks.
 
-    Returns (ok, details) where details has keys: reasons: list[str], notional: float, cooldown_until?: float
+    Returns ``(veto, info)`` where ``veto`` indicates the order should be
+    blocked and ``info`` contains structured metadata about the violation.
     """
     cfg = _normalize_risk_cfg(cfg)
 
@@ -1088,8 +1092,9 @@ def check_order(
                 reasons.append("tier_cap")
                 thresholds.setdefault("tier_cap", {"tier": tier_name, "per_symbol_nav_pct": per_sym_pct})
 
-    ok = len(reasons) == 0
-    if not ok and reasons:
+    if not reasons:
+        return False, {}
+
         try:
             qty_req = (
                 float(req_notional / float(price))
@@ -1136,9 +1141,15 @@ def check_order(
         if nav_f > 0.0:
             context["post_trade_exposure_pct"] = ((current_gross_f + req_notional) / nav_f) * 100.0
         detail_payload: Dict[str, Any] = {
+            "gate": "risk_limits",
+            "limit": reasons[0],
             "reasons": list(reasons),
             "thresholds": thresholds,
+            "notional": float(req_notional),
         }
+        value = thresholds.get(reasons[0])
+        if value is not None:
+            detail_payload["value"] = value
         extra = {
             k: v
             for k, v in details.items()
@@ -1155,7 +1166,7 @@ def check_order(
             signal_ts=signal_ts,
             qty=qty_req,
         )
-    return ok, details
+    return True, detail_payload
 
 
 # ---------------- Canonical gross-notional gate (shared taxonomy) ----------------

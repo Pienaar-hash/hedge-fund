@@ -35,9 +35,24 @@ def test_risk_limits_exists_and_parses():
         "drawdown_alert_pct",
         "max_gross_exposure_pct",
         "max_symbol_exposure_pct",
+        "max_leverage",
+        "min_notional_usdt",
     ]
     for key in required:
         assert key in global_cfg
+
+
+def test_per_symbol_caps_defined():
+    risk_cfg = _load(RISK)
+    global_cfg = risk_cfg.get("global", {})
+    per_symbol = risk_cfg.get("per_symbol", {})
+    assert isinstance(per_symbol, dict) and per_symbol
+    global_min = float(global_cfg.get("min_notional_usdt", 0.0))
+    for sym, cfg in per_symbol.items():
+        assert cfg.get("min_notional") is not None, sym
+        assert cfg.get("max_order_notional") is not None, sym
+        if global_min > 0:
+            assert float(cfg["min_notional"]) >= global_min
 
 
 def test_caps_consistency_between_files():

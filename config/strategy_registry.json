@@ -1,16 +1,23 @@
 {
-  "momentum": {
-    "capacity_usd": 250.0,
-    "confidence": 0.6,
+  "btc_micro": {
     "enabled": true,
-    "max_concurrent": 3,
-    "sandbox": false
+    "sandbox": false,
+    "max_concurrent": 1,
+    "confidence": 0.65,
+    "capacity_usd": 500.0
   },
-  "relative_value": {
-    "capacity_usd": 200.0,
-    "confidence": 0.7,
+  "eth_micro": {
     "enabled": true,
-    "max_concurrent": 2,
-    "sandbox": false
+    "sandbox": false,
+    "max_concurrent": 1,
+    "confidence": 0.55,
+    "capacity_usd": 350.0
+  },
+  "sol_micro": {
+    "enabled": true,
+    "sandbox": false,
+    "max_concurrent": 1,
+    "confidence": 0.5,
+    "capacity_usd": 250.0
   }
 }

@@ -174,7 +174,7 @@ def diagnose_symbols(env: str, testnet: bool, symbols: List[str]) -> int:
         # Risk check (gross notional = cap)
         # compute current gross for portfolio/tier (doctor is stateless; pass 0)
         tier = symbol_tier(s) or "UNKNOWN"
-        ok, details = check_order(
+        risk_veto, details = check_order(
             symbol=s,
             side="BUY",
             requested_notional=cap,
@@ -192,7 +192,7 @@ def diagnose_symbols(env: str, testnet: bool, symbols: List[str]) -> int:
         )
         reasons = list(details.get("reasons", [])) if isinstance(details, dict) else []
         vetoes.extend([r for r in reasons if r not in vetoes])
-        would_emit = listed and ok and (
+        would_emit = listed and (not risk_veto) and (
             cap >= max(exch_min_notional, float(g.get("min_notional_usdt", 0) or 0))
         )
         # Include budget info for readout

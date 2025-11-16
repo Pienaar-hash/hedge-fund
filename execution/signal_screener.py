@@ -32,6 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
 LOG_TAG = "[screener]"
 _DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
 _DEDUP_MAX_SIZE = 2048
+_ENTRY_GATE_NAME = "orderbook"
 
 
 def _tf_seconds(tf: str | None) -> float:
@@ -79,6 +80,27 @@ def _dedupe_prune(now: float) -> None:
         _DEDUP_CACHE.popitem(last=False)
     while len(_DEDUP_CACHE) > _DEDUP_MAX_SIZE:
         _DEDUP_CACHE.popitem(last=False)
+
+
+def _entry_gate_result(symbol: str, side: str, *, enabled: bool) -> tuple[bool, Dict[str, Any]]:
+    """Call the orderbook gate while guarding return semantics."""
+
+    try:
+        raw = evaluate_entry_gate(symbol, side, enabled=enabled)
+    except Exception as exc:  # pragma: no cover - defensive
+        return False, {"gate": _ENTRY_GATE_NAME, "ok": True, "error": str(exc)}
+
+    if not isinstance(raw, tuple) or len(raw) != 2:
+        return False, {"gate": _ENTRY_GATE_NAME, "ok": True, "error": "invalid_gate_return"}
+
+    veto, info = raw
+    if not isinstance(info, dict):
+        info = {"detail": info}
+    info.setdefault("gate", _ENTRY_GATE_NAME)
+    info.setdefault("symbol", str(symbol).upper())
+    if "ok" not in info:
+        info["ok"] = not bool(veto)
+    return bool(veto), info
 
 
 def _positions_by_side(
@@ -227,7 +249,7 @@ def would_emit(
     if not is_listed_on_futures(sym):
         return False, ["not_listed"], extra
 
-    veto, info = evaluate_entry_gate(sym, side, enabled=orderbook_gate)
+    veto, info = _entry_gate_result(sym, side, enabled=orderbook_gate)
     metric = float(info.get("metric", 0.0) or 0.0)
     if veto:
         reasons.append("ob_adverse")
@@ -268,7 +290,7 @@ def would_emit(
     temp_state.daily_pnl_pct = _SCREENER_RISK_STATE.daily_pnl_pct
     temp_state.open_notional = float(current_gross_notional)
     temp_state.open_positions = int(open_positions_count)
-    ok, details = check_order(
+    risk_veto, details = check_order(
         symbol=sym,
         side=side,
         requested_notional=float(notional) * float(lev),
@@ -288,7 +310,7 @@ def would_emit(
     for reason in rs:
         if reason and reason not in reasons:
             reasons.append(reason)
-    overall_ok = (len(reasons) == 0) and ok
+    overall_ok = (len(reasons) == 0) and (not risk_veto)
 
     if overall_ok and timeframe and candle_close_ts is not None:
         now_ts = time.time()
@@ -537,7 +559,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         # Optional orderbook entry gate (veto/boost)
         feat = scfg.get("features", {}) if isinstance(scfg, dict) else {}
         ob_enabled = bool(feat.get("orderbook_gate"))
-        veto, info = evaluate_entry_gate(sym, signal, enabled=ob_enabled)
+        veto, info = _entry_gate_result(sym, signal, enabled=ob_enabled)
         if veto:
             if dbg:
                 print(f"[sigdbg] {sym} tf={tf} ob_imbalance={float(info.get('metric',0.0)):.3f} veto")
@@ -590,7 +612,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         if reduce_notional > 0.0 and adj_open_positions > 0:
             adj_open_positions -= 1
 
-        ok, details = check_order(
+        risk_veto, details = check_order(
             symbol=sym,
             side=signal,
             requested_notional=requested_notional,
@@ -606,7 +628,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             tier_name=tname,
             current_tier_gross_notional=adj_tier_gross,
         )
-        if not ok:
+        if risk_veto:
             rs = details.get("reasons", []) if isinstance(details, dict) else []
             if reduce_intents:
                 for ri in reduce_intents:

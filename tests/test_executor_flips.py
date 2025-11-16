@@ -70,7 +70,7 @@ def test_send_order_flips_short_to_long(monkeypatch):
     monkeypatch.setattr(
         executor_live,
         "check_order",
-        lambda **kwargs: (True, {"reasons": []}),
+        lambda **kwargs: (False, {}),
     )
     monkeypatch.setattr(executor_live, "DRY_RUN", False)
 

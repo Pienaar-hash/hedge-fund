@@ -22,7 +22,7 @@ def test_portfolio_cap_blocks():
     st = RiskState()
     cfg = _base_cfg()
     # nav=1000, portfolio cap 15% => 150, current gross 149, request 5 -> block
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=5.0,
@@ -34,7 +34,7 @@ def test_portfolio_cap_blocks():
         state=st,
         current_gross_notional=149.0,
     )
-    assert not ok
+    assert veto is True
     rs = details.get("reasons", [])
     assert "portfolio_cap" in rs or "max_gross_nav_pct" in rs
 
@@ -43,7 +43,7 @@ def test_tier_cap_blocks():
     st = RiskState()
     cfg = _base_cfg()
     # CORE: per-symbol cap 8% of 1000 => 80. current tier gross=79, request 5 -> block
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=5.0,
@@ -57,14 +57,14 @@ def test_tier_cap_blocks():
         tier_name="CORE",
         current_tier_gross_notional=79.0,
     )
-    assert not ok
+    assert veto is True
     assert "tier_cap" in details.get("reasons", [])
 
 
 def test_max_concurrent_blocks():
     st = RiskState()
     cfg = _base_cfg()
-    ok, details = check_order(
+    veto, details = check_order(
         symbol="BTCUSDT",
         side="BUY",
         requested_notional=10.0,
@@ -76,6 +76,5 @@ def test_max_concurrent_blocks():
         state=st,
         open_positions_count=3,
     )
-    assert not ok
+    assert veto is True
     assert "max_concurrent" in details.get("reasons", [])
-

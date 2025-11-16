@@ -1581,10 +1581,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         pass
 
     if reduce_only:
-        ok = True
-        details: Dict[str, Any] = {"reasons": []}
+        risk_veto = False
+        details: Dict[str, Any] = {}
     else:
-        ok, details = check_order(
+        risk_veto, details = check_order(
             symbol=symbol,
             side=side,
             requested_notional=gross_target,
@@ -1598,7 +1598,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             lev=lev,
         )
     reasons = details.get("reasons", []) if isinstance(details, dict) else []
-    if not ok:
+    if risk_veto:
         reason = reasons[0] if reasons else "blocked"
         price_hint = float(intent.get("price", 0.0) or 0.0)
         block_info = {

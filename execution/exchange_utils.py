@@ -49,7 +49,6 @@ getcontext().prec = 28
 
 _UM_CLIENT: Optional[Any] = None
 _UM_CLIENT_ERROR: Optional[str] = None
-_USDC_FORCE_NATURAL_CLOSE = {"BTCUSDC", "ETHUSDC"}
 
 # --- Base URL + one-time environment banner ---------------------------------
 def _base_url() -> str:
@@ -1183,16 +1182,6 @@ def send_order(
     clean_params = {
         k: v for k, v in params.items() if k in _ORDER_PARAM_WHITELIST and v not in (None, "")
     }
-    usdc_natural_close = (
-        ord_type == "MARKET"
-        and bool(clean_params.get("reduceOnly"))
-        and sym_u in _USDC_FORCE_NATURAL_CLOSE
-    )
-    if usdc_natural_close:
-        _LOG.info("[send_order] USDC natural-close fallback: stripping reduceOnly+positionSide")
-        clean_params.pop("reduceOnly", None)
-        clean_params.pop("positionSide", None)
-        _LOG.info("[send_order][debug] usdc_natural_close_params=%s", clean_params)
     _LOG.info("[send_order][debug] clean_params=%s", clean_params)
 
     if is_dry_run():

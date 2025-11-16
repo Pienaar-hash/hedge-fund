@@ -13,7 +13,7 @@ def _setup_stubs(monkeypatch) -> None:
     )
 
     def _ok_check_order(**kwargs):
-        return True, {"reasons": []}
+        return False, {}
 
     monkeypatch.setattr(sc, "check_order", _ok_check_order)
 
