@@ -126,6 +126,10 @@ def write_risk_allocation_suggestions_state(payload: Dict[str, Any]) -> None:
     _write_state_file("risk_allocation_suggestions_v6.json", payload)
 
 
+def write_pipeline_v6_shadow_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("pipeline_v6_shadow_head.json", payload)
+
+
 def _normalize_status(value: Any) -> str:
     if not value:
         return "UNKNOWN"

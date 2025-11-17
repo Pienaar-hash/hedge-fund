@@ -93,6 +93,8 @@ _LAST_FEEDBACK_ALLOCATOR_PUBLISH = 0.0
 RISK_ENGINE_V6_ENABLED = os.getenv("RISK_ENGINE_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 _RISK_ENGINE_V6: Optional[RiskEngineV6] = None
 _RISK_ENGINE_V6_CFG_DIGEST: Optional[str] = None
+PIPELINE_V6_SHADOW_ENABLED = os.getenv("PIPELINE_V6_SHADOW_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+PIPELINE_V6_SHADOW_RECENT = int(os.getenv("PIPELINE_V6_SHADOW_RECENT", "50") or 50)
 
 
 def mk_id(prefix: str) -> str:
@@ -392,7 +394,7 @@ from execution.risk_limits import (
 from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
 from execution.risk_autotune import RiskAutotuner
 from execution.nav import compute_nav_pair, PortfolioSnapshot
-from execution import size_model
+from execution import size_model, pipeline_v6_shadow
 from execution.utils import (
     load_json,
     write_nav_snapshots_pair,
@@ -407,6 +409,7 @@ from execution.signal_generator import (
     size_for,
 )
 from execution import signal_doctor
+from execution.state_publish import write_pipeline_v6_shadow_state
 try:
     from execution.signal_screener import run_once as run_screener_once
 except ImportError:  # pragma: no cover - optional dependency
@@ -491,6 +494,17 @@ def _strategy_concurrency_budget() -> int:
                 continue
             total += 1
     return max(total, 0)
+
+
+_PAIRS_CFG_PATH = os.getenv("PAIRS_UNIVERSE_CONFIG", "config/pairs_universe.json")
+_PAIRS_CFG: Dict[str, Any] = {}
+try:
+    with open(_PAIRS_CFG_PATH, "r") as fh:
+        _PAIRS_CFG = json.load(fh) or {}
+except Exception as e:
+    logging.getLogger("exutil").warning(
+        "[pairs] config load failed (%s): %s", _PAIRS_CFG_PATH, e
+    )
 
 
 def _apply_strategy_concurrency(risk_cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -1500,6 +1514,62 @@ def _evaluate_order_risk(
     return risk_veto, details
 
 
+def _maybe_run_pipeline_v6_shadow(
+    symbol: str,
+    side: str,
+    *,
+    gross_target: float,
+    nav: float,
+    sym_open_qty: float,
+    current_gross: float,
+    open_positions_count: int,
+    tier_name: Optional[str],
+    current_tier_gross: float,
+    lev: float,
+    intent: Mapping[str, Any],
+    nav_snapshot: Mapping[str, Any],
+    positions: Iterable[Mapping[str, Any]],
+    sizing_cfg: Mapping[str, Any],
+) -> None:
+    if not PIPELINE_V6_SHADOW_ENABLED:
+        return
+    try:
+        nav_state = dict(nav_snapshot or {})
+        nav_state.setdefault("nav_usd", nav)
+        nav_state.setdefault("portfolio_gross_usd", current_gross)
+        nav_state.setdefault("symbol_open_qty", sym_open_qty)
+        signal_payload = {
+            "side": side,
+            "notional": gross_target,
+            "price": float(intent.get("price") or 0.0),
+            "leverage": lev,
+            "tier": tier_name,
+            "open_positions_count": open_positions_count,
+            "tier_gross_notional": current_tier_gross,
+            "current_gross_notional": current_gross,
+            "symbol_open_qty": sym_open_qty,
+            "signal_strength": intent.get("signal_strength") or intent.get("confidence"),
+        }
+        positions_state = {"positions": list(positions or [])}
+        result = pipeline_v6_shadow.run_pipeline_v6_shadow(
+            symbol,
+            signal_payload,
+            nav_state,
+            positions_state,
+            _RISK_CFG,
+            _PAIRS_CFG,
+            sizing_cfg,
+            risk_engine=_get_risk_engine_v6() if RISK_ENGINE_V6_ENABLED else None,
+        )
+        pipeline_v6_shadow.append_shadow_decision(result)
+        summary = pipeline_v6_shadow.build_shadow_summary(
+            pipeline_v6_shadow.load_shadow_decisions(limit=PIPELINE_V6_SHADOW_RECENT)
+        )
+        write_pipeline_v6_shadow_state(summary)
+    except Exception as exc:
+        LOG.debug("[shadow] pipeline_v6_failed symbol=%s err=%s", symbol, exc)
+
+
 # NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     symbol = intent["symbol"]
@@ -2091,6 +2161,23 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         reduce_only=reduce_only,
         intent=intent,
     )
+    if PIPELINE_V6_SHADOW_ENABLED and not reduce_only:
+        _maybe_run_pipeline_v6_shadow(
+            symbol,
+            side,
+            gross_target=gross_target,
+            nav=nav,
+            sym_open_qty=sym_open_qty,
+            current_gross=current_gross,
+            open_positions_count=open_positions_count,
+            tier_name=tier_name,
+            current_tier_gross=current_tier_gross,
+            lev=lev,
+            intent=intent,
+            nav_snapshot=nav_snapshot,
+            positions=positions,
+            sizing_cfg=cfg.get("sizing", {}) if isinstance(cfg, Mapping) else {},
+        )
     reasons = details.get("reasons", []) if isinstance(details, dict) else []
     if risk_veto:
         reason = reasons[0] if reasons else "blocked"
