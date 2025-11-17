@@ -1,0 +1,31 @@
+2025-11-17 09:05:38,135 INFO [exutil] [exutil] .env loaded (override=True)
+2025-11-17 09:05:38,135 INFO [exutil] [exutil] ENV context testnet=False dry_run=False
+[doctor] fallback load ok (no loader)
+[doctor] safe_load missing path, returning default
+[doctor] state fallback (empty)
+2025-11-17 09:05:38,777 INFO [exutil] [binance] server_time_offset_ms=-129
+2025-11-17 09:05:39,047 INFO [exutil] [um_client] UMFutures client initialised (testnet=False)
+[doctor] nav_freshness integrated (is_nav_fresh + get_nav_age)
+{
+  "env": {
+    "dualSide": true,
+    "dualSide_raw": "exchange_utils._is_dual_side",
+    "telegram_enabled": false,
+    "heartbeat_minutes": "",
+    "dry_run": "0",
+    "testnet": "0",
+    "use_futures": ""
+  },
+  "strategies": []
+}
+[doctor] NAV check: 4,401.52 USD (source=nav_log.json)
+[doctor] NAV freshness: FRESH (age=157.7s)
+[doctor] Drawdown: dd=1.47% (abs=$65.58, peak=$4,467.09, nav=$4,401.52)
+[doctor] Positions [none]: 0 open
+[doctor] NAV: $4,401.52
+[doctor] Total Equity: $4,401.52
+[doctor] ZAR conversion @ 17.09 (api) status=FRESH age=0.0h → NAV≈R75,222 | Total≈R75,222
+[doctor] Firestore: DISABLED (age=n/as)
+[doctor] Heartbeat: executor≈1m sync_state=n/a (stale)
+[doctor] Router: slip_p50=1.35bps slip_p95=90.93bps lat_p50=0ms lat_p95=0ms fill_rate=100.0% attempted=0 emitted=0 vetoed=0
+[doctor] summary NAV: $4,401.52 | NAV Freshness: FRESH | Drawdown: 1.47% | Positions: 0 | Firestore: DISABLED | Total Equity: $4,401.52 | Heartbeat: stale | Router slip50=1.35bps slip95=90.93bps | Total ZAR≈R75,222

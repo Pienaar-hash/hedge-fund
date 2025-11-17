@@ -1,0 +1,4 @@
+2025-11-17 09:05:40,252 INFO [exutil] [exutil] .env loaded (override=True)
+2025-11-17 09:05:40,252 INFO [exutil] [exutil] ENV context testnet=False dry_run=False
+{"symbol": "BTCUSDT", "tier": "CORE", "would_emit": false, "reasons": ["trade_gt_10pct_equity"], "ob": null, "max_concurrent_positions": 4}
+{"symbol": "ETHUSDT", "tier": "CORE", "would_emit": false, "reasons": ["trade_gt_10pct_equity"], "ob": null, "max_concurrent_positions": 4}
