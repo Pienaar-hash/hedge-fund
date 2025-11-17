@@ -37,6 +37,8 @@ UNIVERSE_STATE_PATH = Path(os.getenv("UNIVERSE_STATE_PATH") or (STATE_DIR / "uni
 ROUTER_HEALTH_STATE_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))
 EXPECTANCY_STATE_PATH = Path(os.getenv("EXPECTANCY_STATE_PATH") or (STATE_DIR / "expectancy_v6.json"))
 SYMBOL_SCORES_STATE_PATH = Path(os.getenv("SYMBOL_SCORES_STATE_PATH") or (STATE_DIR / "symbol_scores_v6.json"))
+PIPELINE_COMPARE_STATE_PATH = Path(os.getenv("PIPELINE_V6_COMPARE_STATE_PATH") or (STATE_DIR / "pipeline_v6_compare_summary.json"))
+PIPELINE_COMPARE_LOG_PATH = Path(os.getenv("PIPELINE_V6_COMPARE_LOG_PATH") or "logs/pipeline_v6_compare.jsonl")
 
 
 def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
@@ -111,6 +113,35 @@ def load_expectancy_v6_state() -> Dict[str, Any]:
 def load_symbol_scores_v6_state() -> Dict[str, Any]:
     payload = _load_state_json(SYMBOL_SCORES_STATE_PATH)
     return payload if isinstance(payload, dict) else {}
+
+
+def load_pipeline_v6_compare_summary() -> Dict[str, Any]:
+    payload = _load_state_json(PIPELINE_COMPARE_STATE_PATH)
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_pipeline_v6_compare_events(limit: int = 200) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    path = PIPELINE_COMPARE_LOG_PATH
+    if not path.exists() or limit <= 0:
+        return records
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except Exception:
+        return records
+    lines = lines[-limit:]
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
 
 
 def get_symbol_intel_table(limit: int = 20) -> List[Dict[str, Any]]:
