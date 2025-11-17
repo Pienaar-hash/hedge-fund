@@ -20,7 +20,13 @@ import requests
 from execution import exchange_utils as ex
 from execution.log_utils import get_logger, log_event, safe_dump
 from execution.intel.maker_offset import suggest_maker_offset_bps
-from execution.intel.router_policy import router_policy
+from execution.intel.router_policy import router_policy, RouterPolicy
+from execution.intel.router_autotune_apply_v6 import (
+    APPLY_ENABLED as AUTOTUNE_APPLY_ENABLED,
+    get_symbol_suggestion,
+    get_current_risk_mode,
+    apply_router_suggestion,
+)
 
 try:  # optional dependency
     import yaml
@@ -479,11 +485,55 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     maker_qty = _to_float(risk_ctx.get("maker_qty"))
     maker_price = _to_float(risk_ctx.get("maker_price") or price)
     policy = router_policy(symbol)
+    try:
+        base_offset_bps = float(suggest_maker_offset_bps(symbol))
+    except Exception:
+        base_offset_bps = 2.0
     policy_snapshot = {
         "maker_first": policy.maker_first,
         "taker_bias": policy.taker_bias,
         "quality": policy.quality,
         "reason": policy.reason,
+        "offset_bps": base_offset_bps,
+    }
+    policy_before_snapshot = dict(policy_snapshot)
+    policy_after_snapshot = dict(policy_snapshot)
+    adjusted_offset_bps = base_offset_bps
+    risk_mode = "normal"
+    autotune_applied = False
+    if AUTOTUNE_APPLY_ENABLED:
+        suggestion = get_symbol_suggestion(symbol)
+        risk_mode = get_current_risk_mode()
+        new_policy_dict, applied, new_offset = apply_router_suggestion(
+            policy_snapshot,
+            suggestion=suggestion,
+            symbol=symbol,
+            risk_mode=risk_mode,
+            current_offset_bps=adjusted_offset_bps,
+        )
+        if applied:
+            autotune_applied = True
+            adjusted_offset_bps = new_offset
+            policy_after_snapshot.update(
+                {
+                    "maker_first": new_policy_dict.get("maker_first", policy.maker_first),
+                    "taker_bias": new_policy_dict.get("taker_bias", policy.taker_bias),
+                    "offset_bps": adjusted_offset_bps,
+                }
+            )
+            policy = RouterPolicy(
+                maker_first=policy_after_snapshot["maker_first"],
+                taker_bias=policy_after_snapshot["taker_bias"],
+                quality=policy.quality,
+                reason=policy.reason,
+            )
+    target_ctx = ctx_original if isinstance(ctx_original, dict) else risk_ctx
+    target_ctx["router_policy"] = policy_after_snapshot
+    target_ctx["autotune"] = {
+        "applied": autotune_applied,
+        "before": policy_before_snapshot,
+        "after": policy_after_snapshot,
+        "risk_mode": risk_mode,
     }
     taker_bias = str(getattr(policy, "taker_bias", "") or "").lower()
     prefer_taker_bias = taker_bias == "prefer_taker"
@@ -503,10 +553,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     if maker_enabled:
         try:
             t0 = time.perf_counter()
-            try:
-                adaptive_bps = suggest_maker_offset_bps(symbol)
-            except Exception:
-                adaptive_bps = 2.0
+            adaptive_bps = adjusted_offset_bps
             adjusted_price = _apply_offset(maker_price, adaptive_bps, side)
             maker_px = effective_px(adjusted_price, side, is_maker=True) or adjusted_price
             maker_result = submit_limit(symbol, maker_px, maker_qty, side)
@@ -584,7 +631,13 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         "maker_start": bool(maker_enabled),
         "is_maker_final": bool(maker_used),
         "used_fallback": bool(maker_enabled and not maker_used),
-        "router_policy": policy_snapshot,
+        "router_policy": policy_after_snapshot,
+        "autotune": {
+            "applied": autotune_applied,
+            "before": policy_before_snapshot,
+            "after": policy_after_snapshot,
+            "risk_mode": risk_mode,
+        },
     }
     result: Dict[str, Any] = {
         "accepted": accepted,
@@ -651,7 +704,12 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
             "taker_bias": policy_meta.get("taker_bias"),
             "quality": policy_meta.get("quality"),
             "reason": policy_meta.get("reason"),
+            "offset_bps": policy_meta.get("offset_bps"),
         }
+        autotune_meta = router_ctx.get("autotune") or {}
+        router_metrics["autotune_applied"] = bool(autotune_meta.get("applied"))
+        router_metrics["policy_before"] = autotune_meta.get("before")
+        router_metrics["policy_after"] = autotune_meta.get("after")
         started_maker = bool(router_ctx.get("maker_first")) and bool(router_ctx.get("maker_qty"))
         router_metrics["maker_start"] = bool(started_maker)
         router_metrics["is_maker_final"] = False
@@ -726,5 +784,14 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
         "taker_bias": policy_meta.get("taker_bias"),
         "quality": policy_meta.get("quality"),
         "reason": policy_meta.get("reason"),
+        "offset_bps": policy_meta.get("offset_bps"),
     }
+    autotune_meta = (
+        router_meta.get("autotune")
+        if isinstance(router_meta, Mapping)
+        else None
+    ) or router_ctx.get("autotune") or {}
+    router_metrics["autotune_applied"] = bool(autotune_meta.get("applied"))
+    router_metrics["policy_before"] = autotune_meta.get("before")
+    router_metrics["policy_after"] = autotune_meta.get("after")
     return exchange_response, router_metrics

@@ -130,6 +130,14 @@ def write_pipeline_v6_shadow_state(payload: Dict[str, Any]) -> None:
     _write_state_file("pipeline_v6_shadow_head.json", payload)
 
 
+def write_pipeline_v6_compare_summary(payload: Dict[str, Any]) -> None:
+    _write_state_file("pipeline_v6_compare_summary.json", payload)
+
+
+def write_v6_runtime_probe_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("v6_runtime_probe.json", payload)
+
+
 def _normalize_status(value: Any) -> str:
     if not value:
         return "UNKNOWN"

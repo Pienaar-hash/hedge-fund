@@ -95,6 +95,20 @@ _RISK_ENGINE_V6: Optional[RiskEngineV6] = None
 _RISK_ENGINE_V6_CFG_DIGEST: Optional[str] = None
 PIPELINE_V6_SHADOW_ENABLED = os.getenv("PIPELINE_V6_SHADOW_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 PIPELINE_V6_SHADOW_RECENT = int(os.getenv("PIPELINE_V6_SHADOW_RECENT", "50") or 50)
+ROUTER_AUTOTUNE_V6_APPLY_ENABLED = os.getenv("ROUTER_AUTOTUNE_V6_APPLY_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+_V6_RUNTIME_PROBE_INTERVAL = float(os.getenv("V6_RUNTIME_PROBE_INTERVAL", "300") or 300)
+_LAST_V6_RUNTIME_PROBE = 0.0
+
+
+def get_v6_flag_snapshot() -> Dict[str, bool]:
+    return {
+        "INTEL_V6_ENABLED": INTEL_V6_ENABLED,
+        "RISK_ENGINE_V6_ENABLED": RISK_ENGINE_V6_ENABLED,
+        "PIPELINE_V6_SHADOW_ENABLED": PIPELINE_V6_SHADOW_ENABLED,
+        "ROUTER_AUTOTUNE_V6_ENABLED": ROUTER_AUTOTUNE_V6_ENABLED,
+        "FEEDBACK_ALLOCATOR_V6_ENABLED": FEEDBACK_ALLOCATOR_V6_ENABLED,
+        "ROUTER_AUTOTUNE_V6_APPLY_ENABLED": ROUTER_AUTOTUNE_V6_APPLY_ENABLED,
+    }
 
 
 def mk_id(prefix: str) -> str:
@@ -206,6 +220,23 @@ def _get_risk_engine_v6() -> Optional[RiskEngineV6]:
         _RISK_ENGINE_V6 = RiskEngineV6.from_configs(_RISK_CFG, pairs_cfg)
         _RISK_ENGINE_V6_CFG_DIGEST = digest
     return _RISK_ENGINE_V6
+
+
+def _maybe_write_v6_runtime_probe(force: bool = False) -> None:
+    global _LAST_V6_RUNTIME_PROBE
+    flag_snapshot = get_v6_flag_snapshot()
+    if not any(flag_snapshot.values()):
+        return
+    now = time.time()
+    if not force and (now - _LAST_V6_RUNTIME_PROBE) < _V6_RUNTIME_PROBE_INTERVAL:
+        return
+    payload = dict(flag_snapshot)
+    payload["ts"] = now
+    try:
+        write_v6_runtime_probe_state(payload)
+        _LAST_V6_RUNTIME_PROBE = now
+    except Exception as exc:
+        LOG.debug("[v6] runtime_probe_write_failed err=%s", exc)
 
 
 def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
@@ -409,7 +440,7 @@ from execution.signal_generator import (
     size_for,
 )
 from execution import signal_doctor
-from execution.state_publish import write_pipeline_v6_shadow_state
+from execution.state_publish import write_pipeline_v6_shadow_state, write_v6_runtime_probe_state
 try:
     from execution.signal_screener import run_once as run_screener_once
 except ImportError:  # pragma: no cover - optional dependency
@@ -3276,6 +3307,12 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
 
     _sync_dry_run()
     LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
+    v6_flags = get_v6_flag_snapshot()
+    LOG.info(
+        "[v6] flags %s",
+        " ".join(f"{key}={int(bool(value))}" for key, value in v6_flags.items()),
+    )
+    _maybe_write_v6_runtime_probe(force=True)
     try:
         if not _is_dual_side():
             LOG.warning("[executor] WARNING — account not in hedge (dualSide) mode")
@@ -3295,6 +3332,7 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         _loop_once(i)
         _maybe_emit_heartbeat(autotuner)
         _maybe_run_internal_screener()
+        _maybe_write_v6_runtime_probe()
         i += 1
         if MAX_LOOPS and i >= MAX_LOOPS:
             LOG.info("[executor] MAX_LOOPS reached — exiting.")

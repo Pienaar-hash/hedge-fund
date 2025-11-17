@@ -23,3 +23,5 @@ def test_route_order_ack_preserves_status(monkeypatch) -> None:
     assert result["price"] is None
     assert result["qty"] is None
     assert result["accepted"] is True
+    assert "autotune" in result["router_meta"]
+    assert result["router_meta"]["autotune"]["applied"] is False

@@ -76,3 +76,17 @@ def test_write_pipeline_shadow_state(tmp_path, monkeypatch) -> None:
     state_publish.write_pipeline_v6_shadow_state({"total": 1})
     out_path = state_publish.STATE_DIR / "pipeline_v6_shadow_head.json"
     assert out_path.exists()
+
+
+def test_write_pipeline_compare_summary(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(state_publish, "STATE_DIR", tmp_path / "state")
+    state_publish.write_pipeline_v6_compare_summary({"sample_size": 0})
+    out_path = state_publish.STATE_DIR / "pipeline_v6_compare_summary.json"
+    assert out_path.exists()
+
+
+def test_write_v6_runtime_probe(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(state_publish, "STATE_DIR", tmp_path / "state")
+    state_publish.write_v6_runtime_probe_state({"ts": 1})
+    out_path = state_publish.STATE_DIR / "v6_runtime_probe.json"
+    assert out_path.exists()
