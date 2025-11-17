@@ -24,6 +24,12 @@ from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
 from execution.firestore_utils import _safe_load_json
 from execution.events import now_utc, write_event
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
+from execution.universe_resolver import (
+    symbol_min_gross,
+    symbol_target_leverage,
+    symbol_tier,
+    universe_by_symbol,
+)
 
 import requests
 from execution.intel.router_policy import router_policy
@@ -204,6 +210,71 @@ except Exception as e:
     logging.getLogger("exutil").warning(
         "[risk] config load failed (%s): %s", _RISK_CFG_PATH, e
     )
+
+
+def _load_registry_entries() -> Dict[str, Dict[str, Any]]:
+    payload = load_json("config/strategy_registry.json") or {}
+    raw = payload.get("strategies") if isinstance(payload, Mapping) else payload
+    if not isinstance(raw, Mapping):
+        return {}
+    entries: Dict[str, Dict[str, Any]] = {}
+    for key, value in raw.items():
+        if isinstance(value, Mapping):
+            entries[str(key)] = dict(value)
+    return entries
+
+
+def _strategy_concurrency_budget() -> int:
+    registry = _load_registry_entries()
+    total = 0
+    if registry:
+        for entry in registry.values():
+            if not entry.get("enabled") or entry.get("sandbox"):
+                continue
+            try:
+                val = int(float(entry.get("max_concurrent", 0) or 0))
+            except Exception:
+                val = 0
+            if val <= 0:
+                val = 1
+            total += val
+    if total <= 0:
+        cfg = load_json("config/strategy_config.json") or {}
+        strategies = cfg.get("strategies") or []
+        for entry in strategies:
+            if not isinstance(entry, Mapping) or not entry.get("enabled"):
+                continue
+            total += 1
+    return max(total, 0)
+
+
+def _apply_strategy_concurrency(risk_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(risk_cfg, dict):
+        return {}
+    derived = _strategy_concurrency_budget()
+    if derived <= 0:
+        return risk_cfg
+    global_cfg = risk_cfg.setdefault("global", {})
+    try:
+        existing = int(float(global_cfg.get("max_concurrent_positions") or 0))
+    except Exception:
+        existing = 0
+    if existing <= 0 or derived < existing:
+        global_cfg["max_concurrent_positions"] = derived
+    return risk_cfg
+
+
+_RISK_CFG = _apply_strategy_concurrency(_RISK_CFG)
+
+
+def _normalize_pct_value(value: Any) -> float:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if 0.0 < pct <= 1.0:
+        return pct * 100.0
+    return pct
 
 _RISK_STATE = RiskState()
 
@@ -1092,6 +1163,7 @@ def _current_bucket_gross(symbol_gross: Mapping[str, float], buckets: Mapping[st
 # NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     symbol = intent["symbol"]
+    symbol_upper = str(symbol).upper()
     sig = str(intent.get("signal", "")).upper()
     side = "BUY" if sig == "BUY" else "SELL"
     reduce_only = bool(intent.get("reduceOnly", False))
@@ -1158,6 +1230,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     continue
     except Exception:
         symbol_gross_map = {}
+    symbol_buckets: Dict[str, str] = {}
+    tier_name = symbol_tier(symbol)
+    tier_gross_map: Dict[str, float] = {}
+    current_tier_gross = 0.0
 
     def _persist_veto(reason: str, price_hint: float, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -1203,48 +1279,127 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         _record_structured_event(LOG_VETOES, "risk_veto", log_payload)
         return payload
 
-    floor_gross = 0.0
-    try:
-        cfg = load_json("config/strategy_config.json")
-        sizing_cfg = (cfg.get("sizing") or {})
-        floor_gross = float((sizing_cfg.get("min_gross_usd_per_order", 0.0)) or 0.0)
-        per_symbol_cfg = sizing_cfg.get("per_symbol_min_gross_usd") or {}
-        sym_floor = per_symbol_cfg.get(symbol.upper())
-        if sym_floor is not None:
-            floor_gross = max(floor_gross, float(sym_floor or 0.0))
-        gross_target = max(gross_target, floor_gross)
-        if not reduce_only:
-            symbol_buckets: Dict[str, str] = {}
-            for strat in cfg.get("strategies") or []:
-                if not isinstance(strat, Mapping):
-                    continue
-                sym = str(strat.get("symbol") or "").upper()
-                bucket = strat.get("bucket")
-                if sym and bucket:
-                    symbol_buckets[sym] = str(bucket)
-            extra_map = sizing_cfg.get("symbol_buckets") or {}
-            if isinstance(extra_map, Mapping):
-                for key, value in extra_map.items():
-                    if not value:
-                        continue
-                    symbol_buckets[str(key).upper()] = str(value)
+    cfg = load_json("config/strategy_config.json") or {}
+    sizing_cfg = (cfg.get("sizing") or {})
+    floor_gross = max(
+        symbol_min_gross(symbol.upper()),
+        float((_RISK_CFG.get("global") or {}).get("min_notional_usdt", 0.0) or 0.0),
+    )
+    gross_target = max(gross_target, floor_gross)
+    if not reduce_only:
+        risk_global_caps = _RISK_CFG.get("global") if isinstance(_RISK_CFG, Mapping) else {}
+        if not isinstance(risk_global_caps, Mapping):
+            risk_global_caps = {}
+        raw_per_symbol = _RISK_CFG.get("per_symbol") if isinstance(_RISK_CFG, Mapping) else {}
+        risk_per_symbol: Dict[str, Mapping[str, Any]] = {}
+        if isinstance(raw_per_symbol, Mapping):
+            for key, value in raw_per_symbol.items():
+                if isinstance(value, Mapping):
+                    risk_per_symbol[str(key).upper()] = value
+        symbol_buckets.clear()
+        for sym_key, info in universe_by_symbol().items():
+            bucket = info.get("tier") or info.get("bucket")
+            if bucket:
+                symbol_buckets[sym_key] = str(bucket)
+        for strat in cfg.get("strategies") or []:
+            if not isinstance(strat, Mapping):
+                continue
+            sym = str(strat.get("symbol") or "").upper()
+            if not sym or sym in symbol_buckets:
+                continue
+            params = strat.get("params") if isinstance(strat.get("params"), Mapping) else {}
+            bucket = (params or {}).get("bucket") or strat.get("bucket")
+            if bucket:
+                symbol_buckets[sym] = str(bucket)
+        symbol_buckets.setdefault(symbol_upper, symbol_buckets.get(symbol_upper, "UNASSIGNED"))
+        tier_gross_map = _current_bucket_gross(symbol_gross_map, symbol_buckets)
+        if not tier_name:
+            tier_name = symbol_buckets.get(symbol_upper)
+        if tier_name:
+            current_tier_gross = tier_gross_map.get(tier_name, 0.0) or 0.0
+
+        def _merge_caps(*values: Any) -> float:
+            caps: List[float] = []
+            for candidate in values:
+                normalized = _normalize_pct_value(candidate)
+                    if normalized > 0.0:
+                        caps.append(normalized)
+                return min(caps) if caps else 0.0
+
+            max_symbol_cap = _merge_caps(
+                risk_global_caps.get("max_symbol_exposure_pct"),
+            )
+            max_portfolio_cap = _merge_caps(
+                risk_global_caps.get("max_gross_exposure_pct"),
+                risk_global_caps.get("max_portfolio_gross_nav_pct"),
+                risk_global_caps.get("max_gross_nav_pct"),
+            )
+            max_trade_nav_cap = _merge_caps(
+                risk_global_caps.get("max_trade_nav_pct"),
+            )
+            trade_equity_cap = _merge_caps(
+                risk_global_caps.get("trade_equity_nav_pct"),
+            )
+            tier_caps: Dict[str, float] = {}
+            tiers_cfg = risk_global_caps.get("tiers") or {}
+            if isinstance(tiers_cfg, Mapping):
+                for tier_name, tier_cfg in tiers_cfg.items():
+                    try:
+                        pct = float((tier_cfg or {}).get("per_symbol_nav_pct", 0.0) or 0.0)
+                    except Exception:
+                        pct = 0.0
+                    if pct > 0.0:
+                        tier_caps[str(tier_name)] = pct
+            per_symbol_leverage: Dict[str, float] = {}
+            default_leverage = float(sizing_cfg.get("default_leverage", 1.0) or 1.0)
+            risk_global_leverage = float(risk_global_caps.get("max_leverage") or 0.0)
+            symbols_for_leverage = set(universe_by_symbol().keys()) | set(risk_per_symbol.keys())
+            symbols_for_leverage.add(symbol_upper)
+            for sym_key in symbols_for_leverage:
+                current_val = symbol_target_leverage(sym_key) or default_leverage
+                risk_sym_lev = 0.0
+                entry = risk_per_symbol.get(sym_key)
+                if entry:
+                    try:
+                        risk_sym_lev = float(entry.get("max_leverage") or 0.0)
+                    except Exception:
+                        risk_sym_lev = 0.0
+                final_val = current_val
+                if risk_sym_lev > 0.0:
+                    final_val = min(final_val, risk_sym_lev) if final_val > 0.0 else risk_sym_lev
+                if risk_global_leverage > 0.0:
+                    final_val = min(final_val, risk_global_leverage) if final_val > 0.0 else risk_global_leverage
+                per_symbol_leverage[sym_key] = max(final_val, 0.0)
+
+            per_symbol_limits: Dict[str, Dict[str, Any]] = {}
+            for sym_key, entry in risk_per_symbol.items():
+                limit_entry: Dict[str, Any] = {}
+                if "max_order_notional" in entry:
+                    limit_entry["max_order_notional"] = entry["max_order_notional"]
+                if "max_nav_pct" in entry:
+                    limit_entry["max_nav_pct"] = entry["max_nav_pct"]
+                if limit_entry:
+                    per_symbol_limits[sym_key] = limit_entry
+
             size_risk_cfg = {
                 "min_notional_usd": floor_gross,
                 "fallback_gross_usd": gross_target,
-                "per_symbol_leverage": sizing_cfg.get("per_symbol_leverage") or {},
-                "default_leverage": sizing_cfg.get("default_leverage", 1.0),
-                "max_symbol_exposure_pct": sizing_cfg.get("max_symbol_exposure_pct"),
-                "max_gross_exposure_pct": sizing_cfg.get("max_gross_exposure_pct"),
-                "max_trade_nav_pct": sizing_cfg.get("max_trade_nav_pct"),
+                "per_symbol_leverage": per_symbol_leverage,
+                "default_leverage": default_leverage,
+                "max_symbol_exposure_pct": max_symbol_cap,
+                "max_gross_exposure_pct": max_portfolio_cap,
+                "max_trade_nav_pct": max_trade_nav_cap,
+                "trade_equity_nav_pct": trade_equity_cap,
                 "vol_target_bps": sizing_cfg.get("vol_target_bps"),
                 "atr_interval": sizing_cfg.get("atr_interval"),
                 "atr_lookback": sizing_cfg.get("atr_lookback"),
-                "bucket_caps_pct": sizing_cfg.get("bucket_caps_pct"),
+                "bucket_caps_pct": tier_caps,
                 "symbol_bucket": symbol_buckets,
                 "current_symbol_gross": symbol_gross_map,
                 "current_bucket_gross": _current_bucket_gross(symbol_gross_map, symbol_buckets),
                 "current_portfolio_gross": nav_snapshot.get("gross_usd"),
                 "price": price_guess,
+                "per_symbol_limits": per_symbol_limits,
             }
             signal_strength = float(
                 intent.get("signal_strength")
@@ -1298,10 +1453,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         if not allow_trade(symbol):
             _persist_veto("signal_gate", price_guess)
             return
-        if not symbol_notional_guard(symbol):
+        if not symbol_notional_guard(symbol, cfg=_RISK_CFG):
             _persist_veto("symbol_notional_cap", price_guess)
             return
-        if not symbol_dd_guard(symbol):
+        if not symbol_dd_guard(symbol, cfg=_RISK_CFG):
             _persist_veto("symbol_drawdown_cap", price_guess)
             return
         try:
@@ -1567,6 +1722,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     nav = _compute_nav()
     current_gross, sym_open_qty = _gross_and_open_qty(symbol, pos_side, positions)
     _update_risk_state_counters(positions, current_gross)
+    open_positions_count = getattr(_RISK_STATE, "open_positions", 0)
     try:
         nav_snapshot = {**nav_snapshot}
     except Exception:
@@ -1596,6 +1752,9 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             state=_RISK_STATE,
             current_gross_notional=current_gross,
             lev=lev,
+            open_positions_count=open_positions_count,
+            tier_name=tier_name,
+            current_tier_gross_notional=current_tier_gross,
         )
     reasons = details.get("reasons", []) if isinstance(details, dict) else []
     if risk_veto:
@@ -1916,6 +2075,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             "quality": policy.quality,
             "taker_bias": policy.taker_bias,
             "maker_first": policy.maker_first,
+            "reason": policy.reason,
         }
         if maker_ctx_enabled:
             router_ctx.update(
@@ -1973,6 +2133,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             "quality": policy.quality,
             "taker_bias": policy.taker_bias,
             "maker_first": policy.maker_first,
+            "reason": policy.reason,
         }
         if maker_ctx_enabled:
             router_ctx.update(

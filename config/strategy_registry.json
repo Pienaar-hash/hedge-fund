@@ -1,23 +1,112 @@
 {
-  "btc_micro": {
-    "enabled": true,
-    "sandbox": false,
-    "max_concurrent": 1,
-    "confidence": 0.65,
-    "capacity_usd": 500.0
-  },
-  "eth_micro": {
-    "enabled": true,
-    "sandbox": false,
-    "max_concurrent": 1,
-    "confidence": 0.55,
-    "capacity_usd": 350.0
-  },
-  "sol_micro": {
-    "enabled": true,
-    "sandbox": false,
-    "max_concurrent": 1,
-    "confidence": 0.5,
-    "capacity_usd": 250.0
+  "strategies": {
+    "btc_micro": {
+      "id": "btc_micro",
+      "module": "strategies.momentum",
+      "enabled": true,
+      "sandbox": false,
+      "max_concurrent": 1,
+      "confidence": 0.65,
+      "capacity_usd": 500.0,
+      "symbols": [
+        "BTCUSDT"
+      ],
+      "tags": [
+        "majors"
+      ]
+    },
+    "eth_micro": {
+      "id": "eth_micro",
+      "module": "strategies.momentum",
+      "enabled": true,
+      "sandbox": false,
+      "max_concurrent": 1,
+      "confidence": 0.55,
+      "capacity_usd": 350.0,
+      "symbols": [
+        "ETHUSDT"
+      ],
+      "tags": [
+        "majors"
+      ]
+    },
+    "sol_micro": {
+      "id": "sol_micro",
+      "module": "strategies.momentum",
+      "enabled": true,
+      "sandbox": false,
+      "max_concurrent": 1,
+      "confidence": 0.5,
+      "capacity_usd": 250.0,
+      "symbols": [
+        "SOLUSDT"
+      ],
+      "tags": [
+        "alts"
+      ]
+    },
+    "link_micro": {
+      "id": "link_micro",
+      "module": "strategies.momentum",
+      "enabled": false,
+      "sandbox": false,
+      "max_concurrent": 0,
+      "confidence": 1.0,
+      "capacity_usd": null,
+      "symbols": [
+        "LINKUSDT"
+      ],
+      "tags": [
+        "alts",
+        "experimental"
+      ]
+    },
+    "ltc_micro": {
+      "id": "ltc_micro",
+      "module": "strategies.momentum",
+      "enabled": false,
+      "sandbox": false,
+      "max_concurrent": 0,
+      "confidence": 1.0,
+      "capacity_usd": null,
+      "symbols": [
+        "LTCUSDT"
+      ],
+      "tags": [
+        "experimental"
+      ]
+    },
+    "sui_micro": {
+      "id": "sui_micro",
+      "module": "strategies.momentum",
+      "enabled": false,
+      "sandbox": false,
+      "max_concurrent": 0,
+      "confidence": 1.0,
+      "capacity_usd": null,
+      "symbols": [
+        "SUIUSDT"
+      ],
+      "tags": [
+        "alts",
+        "experimental"
+      ]
+    },
+    "wif_micro": {
+      "id": "wif_micro",
+      "module": "strategies.momentum",
+      "enabled": false,
+      "sandbox": false,
+      "max_concurrent": 0,
+      "confidence": 1.0,
+      "capacity_usd": null
+      "symbols": [
+        "WIFUSDT"
+      ],
+      "tags": [
+        "alts",
+        "experimental"
+      ]
+    }
   }
 }

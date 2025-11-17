@@ -173,3 +173,42 @@ def test_router_policy_prefer_taker_overrides_maker(monkeypatch) -> None:
     assert calls["maker"] == 0
     assert calls["taker"] == 1
     assert router_ctx.get("routed_as") == "taker"
+
+
+def test_route_order_router_meta_fallback(monkeypatch) -> None:
+    calls: dict[str, int] = {"maker": 0, "taker": 0}
+
+    monkeypatch.setattr(ex, "set_dry_run", lambda flag: None)
+    monkeypatch.setattr(ex, "get_symbol_filters", lambda _s: {})
+
+    def fake_send_order(**payload: Any) -> Dict[str, Any]:
+        calls["taker"] += 1
+        return {"orderId": 777, "status": "NEW", "avgPrice": payload.get("price"), "executedQty": payload.get("quantity")}
+
+    def fail_submit_limit(symbol: str, price: float, qty: float, side: str) -> PlaceOrderResult:
+        calls["maker"] += 1
+        raise RuntimeError("maker failed")
+
+    monkeypatch.setattr(ex, "send_order", fake_send_order)
+    monkeypatch.setattr("execution.order_router.submit_limit", fail_submit_limit)
+    monkeypatch.setattr(
+        "execution.order_router.router_policy",
+        lambda _s: RouterPolicy(maker_first=True, taker_bias="balanced", quality="ok", reason="test"),
+    )
+    monkeypatch.setattr(
+        "execution.order_router.suggest_maker_offset_bps",
+        lambda _s: 0.0,
+    )
+
+    intent = {"symbol": "BTCUSDT", "side": "BUY", "quantity": "0.1", "type": "MARKET"}
+    router_ctx = {"maker_first": True, "maker_qty": "0.1", "maker_price": 100.0}
+
+    result = route_order(intent, router_ctx, dry_run=False)
+
+    assert calls["maker"] == 1
+    assert calls["taker"] == 1
+    meta = result.get("router_meta") or {}
+    assert meta.get("maker_started") is True
+    assert meta.get("is_maker_final") is False
+    assert meta.get("used_fallback") is True
+    assert meta.get("router_policy", {}).get("reason") == "test"

@@ -190,6 +190,42 @@ def _per_symbol_leverage(risk_cfg: Dict[str, Any]) -> Dict[str, float]:
     return out
 
 
+def _normalize_pct(value: Any) -> float:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if 0.0 < pct <= 1.0:
+        return pct * 100.0
+    return pct
+
+
+def _per_symbol_limits_cfg(risk_cfg: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    raw = risk_cfg.get("per_symbol_limits") or {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        entry: Dict[str, float] = {}
+        max_order = value.get("max_order_notional")
+        max_nav_pct = value.get("max_nav_pct")
+        try:
+            if max_order is not None:
+                num = float(max_order)
+                if num > 0.0:
+                    entry["max_order_notional"] = num
+        except Exception:
+            pass
+        normalized_pct = _normalize_pct(max_nav_pct)
+        if normalized_pct > 0.0:
+            entry["max_nav_pct"] = normalized_pct
+        if entry:
+            out[str(key).upper()] = entry
+    return out
+
+
 def suggest_gross_usd(
     symbol: str,
     nav_usd: float,
@@ -247,23 +283,35 @@ def suggest_gross_usd(
         bucket_used = current_bucket.get(bucket_name, 0.0)
         remaining_bucket = max(0.0, bucket_cap_abs - bucket_used)
         gross = min(gross, remaining_bucket)
-    symbol_caps_pct = float(risk_cfg.get("max_symbol_exposure_pct") or 0.0)
+    symbol_caps_pct = _normalize_pct(risk_cfg.get("max_symbol_exposure_pct") or 0.0)
     current_symbol_gross = _current_symbol_gross(risk_cfg)
     symbol_used = current_symbol_gross.get(symbol_upper, 0.0)
     if symbol_caps_pct > 0.0:
         symbol_cap_abs = nav * (symbol_caps_pct / 100.0)
         remaining_symbol = max(0.0, symbol_cap_abs - symbol_used)
         gross = min(gross, remaining_symbol)
-    max_trade_pct = float(risk_cfg.get("max_trade_nav_pct") or 0.0)
+    trade_equity_pct = _normalize_pct(risk_cfg.get("trade_equity_nav_pct") or 0.0)
+    if trade_equity_pct > 0.0 and nav > 0.0:
+        trade_equity_cap_abs = nav * (trade_equity_pct / 100.0)
+        gross = min(gross, trade_equity_cap_abs)
+    max_trade_pct = _normalize_pct(risk_cfg.get("max_trade_nav_pct") or 0.0)
     if max_trade_pct > 0.0:
         trade_cap_abs = nav * (max_trade_pct / 100.0)
         gross = min(gross, trade_cap_abs)
-    portfolio_cap_pct = float(risk_cfg.get("max_gross_exposure_pct") or 0.0)
+    portfolio_cap_pct = _normalize_pct(risk_cfg.get("max_gross_exposure_pct") or 0.0)
     if portfolio_cap_pct > 0.0:
         portfolio_cap_abs = nav * (portfolio_cap_pct / 100.0)
         current_portfolio_gross = float(risk_cfg.get("current_portfolio_gross") or 0.0)
         remaining_portfolio = max(0.0, portfolio_cap_abs - current_portfolio_gross)
         gross = min(gross, remaining_portfolio)
+    per_symbol_limits = _per_symbol_limits_cfg(risk_cfg)
+    sym_limits = per_symbol_limits.get(symbol_upper, {})
+    max_order_cap = sym_limits.get("max_order_notional")
+    if max_order_cap is not None and max_order_cap > 0.0:
+        gross = min(gross, max_order_cap)
+    max_nav_pct = sym_limits.get("max_nav_pct")
+    if max_nav_pct is not None and max_nav_pct > 0.0 and nav > 0.0:
+        gross = min(gross, nav * (max_nav_pct / 100.0))
     leverage_caps = _per_symbol_leverage(risk_cfg)
     default_leverage = float(risk_cfg.get("default_leverage") or 1.0)
     leverage_cap = leverage_caps.get(symbol_upper, default_leverage)
@@ -282,6 +330,12 @@ def suggest_gross_usd(
         "vol_target_bps": float(vol_target_bps),
         "leverage_cap": float(leverage_cap),
     }
+    if trade_equity_pct > 0.0:
+        result["trade_equity_nav_pct"] = float(trade_equity_pct)
+    if max_order_cap:
+        result["max_order_notional"] = float(max_order_cap)
+    if max_nav_pct:
+        result["max_nav_pct"] = float(max_nav_pct)
     if gross <= 0.0:
         reason = "bucket_cap" if bucket_name else "sizer_cap"
         result["reason"] = reason

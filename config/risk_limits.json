@@ -7,10 +7,29 @@
     "max_gross_exposure_pct": 150,
     "max_symbol_exposure_pct": 40,
     "max_nav_drawdown_pct": 10,
+    "max_concurrent_positions": 4,
     "max_leverage": 4,
-    "min_notional_usdt": 100
+    "min_notional_usdt": 100,
+    "max_trade_nav_pct": 0.2,
+    "trade_equity_nav_pct": 0.15,
+    "symbol_notional_share_cap_pct": 25.0,
+    "symbol_drawdown_cap_pct": 3.0,
+    "tiers": {
+      "CORE": {
+        "per_symbol_nav_pct": 30.0
+      },
+      "SATELLITE": {
+        "per_symbol_nav_pct": 20.0
+      },
+      "TACTICAL": {
+        "per_symbol_nav_pct": 10.0
+      },
+      "ALT-EXT": {
+        "per_symbol_nav_pct": 5.0
+      }
+    }
   },
-  "nav_freshness_seconds": 90,
+  "nav_freshness_seconds": 150,
   "fail_closed_on_nav_stale": true,
   "reset_timezone": "UTC",
   "quote_symbols": [
@@ -18,23 +37,50 @@
     "USDC"
   ],
   "restricted_symbols": [],
-    "per_symbol": {
-      "BTCUSDT": {
-        "min_notional": 100,
-        "max_order_notional": 80000,
-        "max_leverage": 3
-      },
-      "ETHUSDT": {
-        "min_notional": 100,
-        "max_order_notional": 50000,
-        "max_leverage": 3
-      },
-      "SOLUSDT": {
-        "min_notional": 100,
-        "max_order_notional": 25000,
-        "max_leverage": 2
-      }
+  "per_symbol": {
+    "BTCUSDT": {
+      "min_notional": 100,
+      "max_order_notional": 80000,
+      "max_leverage": 4,
+      "max_nav_pct": 0.25
     },
+    "ETHUSDT": {
+      "min_notional": 100,
+      "max_order_notional": 50000,
+      "max_leverage": 4,
+      "max_nav_pct": 0.2
+    },
+    "SOLUSDT": {
+      "min_notional": 100,
+      "max_order_notional": 25000,
+      "max_leverage": 3,
+      "max_nav_pct": 0.15
+    },
+    "LINKUSDT": {
+      "min_notional": 100,
+      "max_order_notional": 25000,
+      "max_leverage": 3,
+      "max_nav_pct": 0.15
+    },
+    "LTCUSDT": {
+      "min_notional": 100,
+      "max_order_notional": 25000,
+      "max_leverage": 3,
+      "max_nav_pct": 0.15
+    },
+    "SUIUSDT": {
+      "min_notional": 100,
+      "max_order_notional": 15000,
+      "max_leverage": 3,
+      "max_nav_pct": 0.1
+    },
+    "WIFUSDT": {
+      "min_notional": 100,
+      "max_order_notional": 15000,
+      "max_leverage": 3,
+      "max_nav_pct": 0.1
+    }
+  },
   "non_prod": {
     "require_dry_run": true
   }

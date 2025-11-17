@@ -15,13 +15,15 @@ def test_strategy_config_exists_and_parses():
     assert SCFG.exists()
     cfg = _load(SCFG)
     assert cfg.get("use_futures") is True
-    universe = cfg.get("universe", [])
-    assert isinstance(universe, list) and len(universe) >= 1
-    sizing = cfg.get("sizing", {})
-    assert sizing.get("capital_per_trade_usdt") is not None
-    assert sizing.get("default_leverage") is not None
-    risk = cfg.get("risk", {})
-    assert risk.get("daily_loss_limit_pct") is not None
+    strategies = cfg.get("strategies", [])
+    assert isinstance(strategies, list) and strategies
+    allowed_keys = {"id", "label", "enabled", "symbol", "timeframe", "tags", "params"}
+    for entry in strategies:
+        assert set(entry.keys()).issubset(allowed_keys)
+        params = entry.get("params") or {}
+        assert isinstance(params, dict)
+        assert "entry" in params
+        assert "capital_per_trade" in params
 
 
 def test_risk_limits_exists_and_parses():
@@ -56,11 +58,16 @@ def test_per_symbol_caps_defined():
 
 
 def test_caps_consistency_between_files():
-    cfg = _load(SCFG)
     risk_cfg = _load(RISK)
-    global_cfg = risk_cfg.get("global", {})
-    sizing = cfg.get("sizing", {})
-    risk = cfg.get("risk", {})
-    assert global_cfg["max_gross_exposure_pct"] <= sizing["max_gross_exposure_pct"]
-    assert global_cfg["max_symbol_exposure_pct"] <= sizing["max_symbol_exposure_pct"]
-    assert global_cfg["daily_loss_limit_pct"] <= risk["daily_loss_limit_pct"]
+    pairs = _load(ROOT / "config" / "pairs_universe.json")
+    per_symbol = risk_cfg.get("per_symbol", {})
+    for entry in pairs.get("universe", []):
+        sym = entry.get("symbol")
+        caps = entry.get("caps", {})
+        if not sym or sym not in per_symbol:
+            continue
+        sym_caps = per_symbol[sym]
+        if "max_nav_pct" in caps:
+            assert caps["max_nav_pct"] == sym_caps.get("max_nav_pct")
+        if "max_order_notional" in caps:
+            assert caps["max_order_notional"] == sym_caps.get("max_order_notional")

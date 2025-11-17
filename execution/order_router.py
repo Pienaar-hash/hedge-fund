@@ -479,6 +479,12 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     maker_qty = _to_float(risk_ctx.get("maker_qty"))
     maker_price = _to_float(risk_ctx.get("maker_price") or price)
     policy = router_policy(symbol)
+    policy_snapshot = {
+        "maker_first": policy.maker_first,
+        "taker_bias": policy.taker_bias,
+        "quality": policy.quality,
+        "reason": policy.reason,
+    }
     taker_bias = str(getattr(policy, "taker_bias", "") or "").lower()
     prefer_taker_bias = taker_bias == "prefer_taker"
     effective_maker_first = bool(risk_ctx.get("maker_first")) and policy.maker_first and not prefer_taker_bias
@@ -574,6 +580,12 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
 
     accepted = is_ack_ok(status) or bool(resp.get("dryRun"))
 
+    router_meta = {
+        "maker_started": bool(maker_enabled),
+        "is_maker_final": bool(maker_used),
+        "used_fallback": bool(maker_enabled and not maker_used),
+        "router_policy": policy_snapshot,
+    }
     result: Dict[str, Any] = {
         "accepted": accepted,
         "reason": reason,
@@ -587,6 +599,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         "exchange_filters_used": filters_snapshot,
         "client_order_id": request_id,
         "transact_time": resp.get("transactTime"),
+        "router_meta": router_meta,
     }
     return result
 
@@ -632,6 +645,17 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
             "fees_usd": None,
             "slippage_bps": None,
         }
+        policy_meta = router_ctx.get("router_policy") or {}
+        router_metrics["policy"] = {
+            "maker_first": bool(policy_meta.get("maker_first")),
+            "taker_bias": policy_meta.get("taker_bias"),
+            "quality": policy_meta.get("quality"),
+            "reason": policy_meta.get("reason"),
+        }
+        started_maker = bool(router_ctx.get("maker_first")) and bool(router_ctx.get("maker_qty"))
+        router_metrics["started_maker"] = bool(started_maker)
+        router_metrics["is_maker_final"] = False
+        router_metrics["used_fallback"] = False
         raise
 
     side = str(base_intent.get("side") or base_intent.get("signal") or "").upper()
@@ -679,5 +703,27 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
         },
         "fees_usd": fees,
         "slippage_bps": slippage,
+    }
+    router_meta = exchange_response.get("router_meta") or {}
+    started_maker = bool(router_meta.get("maker_started"))
+    is_maker_final = bool(router_meta.get("is_maker_final"))
+    used_fallback = bool(router_meta.get("used_fallback"))
+    if not router_meta:
+        started_maker = bool(router_ctx.get("maker_first"))
+        is_maker_final = False
+        used_fallback = False
+    router_metrics["started_maker"] = started_maker
+    router_metrics["is_maker_final"] = is_maker_final
+    router_metrics["used_fallback"] = used_fallback
+    policy_meta = (
+        router_meta.get("router_policy")
+        if isinstance(router_meta, Mapping)
+        else None
+    ) or router_ctx.get("router_policy") or {}
+    router_metrics["policy"] = {
+        "maker_first": bool(policy_meta.get("maker_first")),
+        "taker_bias": policy_meta.get("taker_bias"),
+        "quality": policy_meta.get("quality"),
+        "reason": policy_meta.get("reason"),
     }
     return exchange_response, router_metrics

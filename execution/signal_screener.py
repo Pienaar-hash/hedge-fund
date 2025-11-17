@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import time
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple, Mapping
 
 import os
 from .exchange_utils import get_klines, get_price, get_symbol_filters
@@ -14,7 +14,14 @@ from .signal_generator import (
     allow_trade,
     size_for,
 )
-from .universe_resolver import resolve_allowed_symbols, symbol_tier, is_listed_on_futures
+from .universe_resolver import (
+    resolve_allowed_symbols,
+    symbol_tier,
+    is_listed_on_futures,
+    symbol_min_gross,
+    symbol_min_notional,
+    symbol_target_leverage,
+)
 from .risk_limits import (
     check_order,
     RiskState,
@@ -33,6 +40,7 @@ LOG_TAG = "[screener]"
 _DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
 _DEDUP_MAX_SIZE = 2048
 _ENTRY_GATE_NAME = "orderbook"
+ORDERBOOK_ALIGNMENT_THRESHOLD = 0.20
 
 
 def _tf_seconds(tf: str | None) -> float:
@@ -103,6 +111,27 @@ def _entry_gate_result(symbol: str, side: str, *, enabled: bool) -> tuple[bool, 
     return bool(veto), info
 
 
+def _normalize_pct(value: Any) -> float:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if 0.0 < pct <= 1.0:
+        return pct * 100.0
+    return pct
+
+
+def _extract_trade_nav_caps(risk_cfg: Mapping[str, Any] | None) -> Tuple[float, float]:
+    if not isinstance(risk_cfg, Mapping):
+        return 0.0, 0.0
+    global_cfg = risk_cfg.get("global")
+    if not isinstance(global_cfg, Mapping):
+        global_cfg = {}
+    trade_equity = _normalize_pct(global_cfg.get("trade_equity_nav_pct") or 0.0)
+    max_trade = _normalize_pct(global_cfg.get("max_trade_nav_pct") or 0.0)
+    return trade_equity, max_trade
+
+
 def _positions_by_side(
     positions: Iterable[Dict[str, Any]]
 ) -> Dict[str, Dict[str, Dict[str, float]]]:
@@ -171,6 +200,13 @@ _SCREENER_RISK_STATE = RiskState()
 _SCREENER_GATE = RiskGate({"sizing": {}, "risk": {}})
 
 
+def _strategy_params(entry: Mapping[str, Any]) -> Dict[str, Any]:
+    params = entry.get("params")
+    if isinstance(params, Mapping):
+        return dict(params)
+    return {}
+
+
 def _update_screener_risk_state(
     snapshot: PortfolioSnapshot,
     open_notional: float,
@@ -192,12 +228,20 @@ def _risk_cfg_path() -> str:
 
 def _load_strategy_list() -> List[Dict[str, Any]]:
     scfg = json.load(open("config/strategy_config.json"))
-    raw = scfg.get("strategies", scfg)
-    lst = (
-        raw
-        if isinstance(raw, list)
-        else (list(raw.values()) if isinstance(raw, dict) else [])
-    )
+    raw = scfg.get("strategies") or []
+    if isinstance(raw, dict):
+        iterable = list(raw.values())
+    elif isinstance(raw, list):
+        iterable = raw
+    else:
+        iterable = []
+    lst = []
+    for entry in iterable:
+        if not isinstance(entry, dict) or not entry.get("enabled"):
+            continue
+        strat = dict(entry)
+        strat["params"] = _strategy_params(entry)
+        lst.append(strat)
     # Prefer universe_resolver for allowed symbols (handles listing + throttles)
     try:
         allowed, _ = resolve_allowed_symbols()
@@ -212,14 +256,64 @@ def _load_strategy_list() -> List[Dict[str, Any]]:
     except Exception:
         # If resolver fails (offline), fall through; we'll veto not_listed later
         pass
-    return [s for s in lst if isinstance(s, dict) and s.get("enabled")]
+    return lst
+
+
+def _load_registry_entries() -> Dict[str, Dict[str, Any]]:
+    try:
+        payload = json.load(open("config/strategy_registry.json"))
+    except Exception:
+        return {}
+    raw = payload.get("strategies") if isinstance(payload, Mapping) else payload
+    if not isinstance(raw, Mapping):
+        return {}
+    entries: Dict[str, Dict[str, Any]] = {}
+    for key, value in raw.items():
+        if isinstance(value, Mapping):
+            entries[str(key)] = dict(value)
+    return entries
+
+
+def _strategy_concurrency_budget() -> int:
+    registry = _load_registry_entries()
+    total = 0
+    if registry:
+        for entry in registry.values():
+            if not entry.get("enabled") or entry.get("sandbox"):
+                continue
+            try:
+                val = int(float(entry.get("max_concurrent", 0) or 0))
+            except Exception:
+                val = 0
+            if val <= 0:
+                val = 1
+            total += val
+    if total <= 0:
+        strategies = _load_strategy_list()
+        for entry in strategies:
+            if not entry.get("enabled"):
+                continue
+            total += 1
+    return max(total, 0)
 
 
 def _load_risk_cfg() -> Dict[str, Any]:
     try:
-        return json.load(open(_risk_cfg_path()))
+        cfg = json.load(open(_risk_cfg_path()))
     except Exception:
-        return {}
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    derived = _strategy_concurrency_budget()
+    if derived > 0:
+        global_cfg = cfg.setdefault("global", {})
+        try:
+            existing = int(float(global_cfg.get("max_concurrent_positions") or 0))
+        except Exception:
+            existing = 0
+        if existing <= 0 or derived < existing:
+            global_cfg["max_concurrent_positions"] = derived
+    return cfg
 
 
 def would_emit(
@@ -255,8 +349,8 @@ def would_emit(
         reasons.append("ob_adverse")
         extra["metric"] = metric
     else:
-        if (side.upper() in ("BUY", "LONG") and metric > 0.20) or (
-            side.upper() in ("SELL", "SHORT") and metric < -0.20
+        if (side.upper() in ("BUY", "LONG") and metric > ORDERBOOK_ALIGNMENT_THRESHOLD) or (
+            side.upper() in ("SELL", "SHORT") and metric < -ORDERBOOK_ALIGNMENT_THRESHOLD
         ):
             extra["flag"] = "ob_aligned"
             extra["metric"] = metric
@@ -285,11 +379,42 @@ def would_emit(
             extra["ml_error"] = str(exc)
 
     cfg = _load_risk_cfg()
+    trade_equity_cap, max_trade_cap = _extract_trade_nav_caps(cfg)
     tname = symbol_tier(sym)
     temp_state = RiskState()
     temp_state.daily_pnl_pct = _SCREENER_RISK_STATE.daily_pnl_pct
     temp_state.open_notional = float(current_gross_notional)
     temp_state.open_positions = int(open_positions_count)
+    nav_f = float(nav) if isinstance(nav, (int, float)) else float(nav or 0.0)
+    try:
+        gross_request = float(notional) * float(lev)
+    except Exception:
+        gross_request = float(notional)
+    trade_obs_pct = None
+    if nav_f > 0.0:
+        trade_obs_pct = (gross_request / nav_f) * 100.0
+    trade_meta: Dict[str, Any] = {}
+    if trade_equity_cap > 0.0:
+        trade_meta["trade_equity_nav_pct"] = trade_equity_cap
+    if max_trade_cap > 0.0:
+        trade_meta["max_trade_nav_pct"] = max_trade_cap
+    if trade_obs_pct is not None:
+        trade_meta["trade_equity_nav_obs"] = trade_obs_pct
+        trade_meta["max_trade_nav_obs"] = trade_obs_pct
+    if trade_meta:
+        extra.setdefault("trade_nav", {}).update(trade_meta)
+    clamp_reasons: List[str] = []
+    if trade_obs_pct is not None:
+        if trade_equity_cap > 0.0 and trade_obs_pct > trade_equity_cap:
+            clamp_reasons.append("trade_gt_equity_cap")
+        if max_trade_cap > 0.0 and trade_obs_pct > max_trade_cap:
+            clamp_reasons.append("trade_gt_max_trade_nav_pct")
+    if clamp_reasons:
+        for reason in clamp_reasons:
+            if reason not in reasons:
+                reasons.append(reason)
+        return False, reasons, extra
+
     risk_veto, details = check_order(
         symbol=sym,
         side=side,
@@ -306,7 +431,12 @@ def would_emit(
         tier_name=tname,
         current_tier_gross_notional=float(current_tier_gross_notional),
     )
-    rs = [str(r) for r in (details.get("reasons") or [])]
+    detail_dict = details if isinstance(details, dict) else {}
+    if isinstance(details, dict):
+        extra["risk"] = detail_dict
+    elif details is not None:
+        extra["risk"] = {"detail": details}
+    rs = [str(r) for r in (detail_dict.get("reasons") or [])]
     for reason in rs:
         if reason and reason not in reasons:
             reasons.append(reason)
@@ -365,18 +495,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     except Exception:
         base_cfg = {}
     sizing_cfg = (base_cfg.get("sizing") or {})
-    try:
-        min_gross_floor = float((sizing_cfg.get("min_gross_usd_per_order", 0.0)) or 0.0)
-    except Exception:
-        min_gross_floor = 0.0
-    per_symbol_gross_floor: Dict[str, float] = {}
-    per_symbol_cfg = sizing_cfg.get("per_symbol_min_gross_usd") or {}
-    if isinstance(per_symbol_cfg, dict):
-        for key, value in per_symbol_cfg.items():
-            try:
-                per_symbol_gross_floor[str(key).upper()] = float(value)
-            except Exception:
-                continue
+    min_gross_floor = 0.0
     ml_cfg = (base_cfg.get("ml") or {})
     ml_enabled = bool(ml_cfg.get("enabled")) and _score_symbol is not None
     out = []
@@ -391,6 +510,8 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         tier_by = {}
     # Risk cfg + portfolio snapshot (best effort)
     rlc = _load_risk_cfg()
+    risk_global = (rlc.get("global") or {}) if isinstance(rlc, Mapping) else {}
+    trade_equity_cap, max_trade_cap = _extract_trade_nav_caps(rlc)
     kill_switch = os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on")
     snapshot = PortfolioSnapshot(base_cfg)
     try:
@@ -431,7 +552,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     except Exception:
         pass
     _update_screener_risk_state(snapshot, current_portfolio_gross, open_positions_count)
-    cap_pct = float(sizing_cfg.get("max_gross_exposure_pct", 0.0) or 0.0)
+    cap_pct = float(risk_global.get("max_gross_exposure_pct", 0.0) or 0.0)
     if os.environ.get("EVENT_GUARD", "0") == "1":
         cap_pct *= 0.8
     cap_usd = nav * (cap_pct / 100.0) if nav > 0 and cap_pct > 0 else 0.0
@@ -441,14 +562,15 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         sym = scfg.get("symbol")
         sym_key = str(sym).upper()
         tf = scfg.get("timeframe", "15m")
-        cap_cfg = float(scfg.get("capital_per_trade", 0) or 0) or 10.0
-        lev = float(scfg.get("leverage", 1) or 1) or 20.0
+        params = scfg.get("params") or {}
+        cap_cfg = float(params.get("capital_per_trade", 0) or 0) or 10.0
+        lev = float(params.get("leverage") or symbol_target_leverage(sym_key) or 1.0)
         if lev <= 0:
             lev = 1.0
         gross_cap = cap_cfg * lev
-        sym_floor = per_symbol_gross_floor.get(sym_key, 0.0)
+        sym_floor = max(symbol_min_gross(sym_key), 0.0)
         config_floor = max(gross_cap, min_gross_floor, sym_floor)
-        entry_forced = (scfg.get("entry", {}) or {}).get("type") == "always_on"
+        entry_forced = (params.get("entry", {}) or {}).get("type") == "always_on"
         if kill_switch:
             print(
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["kill_switch_on"]}}'
@@ -482,12 +604,15 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         except Exception as e:
             print(f"{LOG_TAG} {sym} {tf} error: {e}")
             continue
-        cfg_min_notional = float(
-            (rlc.get("global") or {}).get("min_notional_usdt", 0.0) or 0.0
+        cfg_min_notional = float(risk_global.get("min_notional_usdt", 0.0) or 0.0)
+        sym_min_notional = symbol_min_notional(sym_key)
+        floor_notional = max(
+            config_floor,
+            cfg_min_notional,
+            sym_min_notional,
+            exch_min_notional,
+            min_qty_notional,
         )
-        if cfg_min_notional <= 0:
-            cfg_min_notional = float(base_cfg.get("min_notional_usdt", 0.0) or 0.0)
-        floor_notional = max(config_floor, cfg_min_notional, exch_min_notional, min_qty_notional)
         requested_notional = floor_notional
         cap = requested_notional / lev
         if cap_usd > 0:
@@ -503,7 +628,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 )
                 continue
         effective_notional = requested_notional
-        min_notional = max(exch_min_notional, cfg_min_notional)
+        min_notional = max(exch_min_notional, cfg_min_notional, sym_min_notional)
         vetoes = []
         if effective_notional < min_notional:
             vetoes.append("min_notional")
@@ -519,18 +644,39 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             )
             continue
 
+        trade_obs_pct = None
+        trade_vetoes: List[str] = []
+        if nav > 0.0:
+            trade_obs_pct = (effective_notional / nav) * 100.0
+            if trade_equity_cap > 0.0 and trade_obs_pct > trade_equity_cap:
+                trade_vetoes.append("trade_gt_equity_cap")
+            if max_trade_cap > 0.0 and trade_obs_pct > max_trade_cap:
+                trade_vetoes.append("trade_gt_max_trade_nav_pct")
+        if trade_vetoes:
+            detail_payload = {
+                "trade_equity_nav_pct": trade_equity_cap if trade_equity_cap > 0.0 else None,
+                "max_trade_nav_pct": max_trade_cap if max_trade_cap > 0.0 else None,
+                "trade_equity_nav_obs": trade_obs_pct,
+                "max_trade_nav_obs": trade_obs_pct,
+            }
+            detail_payload = {k: v for k, v in detail_payload.items() if v is not None}
+            print(
+                f'[decision] {json.dumps({"symbol": sym, "tf": tf, "veto": trade_vetoes, "detail": detail_payload})}'
+            )
+            continue
+
         # Execution hardening gates
         if not allow_trade(sym_key):
             print(
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["signal_gate"]}}'
             )
             continue
-        if not symbol_notional_guard(sym_key):
+        if not symbol_notional_guard(sym_key, cfg=rlc):
             print(
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["symbol_notional_cap"]}}'
             )
             continue
-        if not symbol_dd_guard(sym_key):
+        if not symbol_dd_guard(sym_key, cfg=rlc):
             print(
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["symbol_drawdown_cap"]}}'
             )
@@ -557,7 +703,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             )
             continue
         # Optional orderbook entry gate (veto/boost)
-        feat = scfg.get("features", {}) if isinstance(scfg, dict) else {}
+        feat = params.get("features", {}) if isinstance(params, dict) else {}
         ob_enabled = bool(feat.get("orderbook_gate"))
         veto, info = _entry_gate_result(sym, signal, enabled=ob_enabled)
         if veto:
@@ -569,7 +715,9 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             continue
         else:
             m = float(info.get("metric", 0.0) or 0.0)
-            if (signal == "BUY" and m > 0.20) or (signal == "SELL" and m < -0.20):
+            if (signal == "BUY" and m > ORDERBOOK_ALIGNMENT_THRESHOLD) or (
+                signal == "SELL" and m < -ORDERBOOK_ALIGNMENT_THRESHOLD
+            ):
                 print(
                     f'[decision] {{"symbol":"{sym}","tf":"{tf}","flag":"ob_aligned","metric":{round(m,3)}}}'
                 )
@@ -644,7 +792,13 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                     current_portfolio_gross,
                     open_positions_count,
                 )
-            print(f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":{json.dumps(rs)}}}')
+            veto_payload = {
+                "symbol": sym,
+                "tf": tf,
+                "veto": rs,
+                "detail": details if isinstance(details, dict) else {"detail": details},
+            }
+            print(f'[decision] {json.dumps(veto_payload)}')
             continue
         if reduce_intents:
             for ri in reduce_intents:
@@ -680,9 +834,13 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 f"[sigdbg] {sym} tf={tf} z={round(z,3)} rsi={round(rsi,1)} cap={cap} lev={lev} ok"
             )
         print(f"{LOG_TAG} {sym} {tf} z={round(z, 3)} rsi={round(rsi, 1)}")
-        print(
-            f'[decision] {{"symbol":"{sym}","tf":"{tf}","z":{round(z, 4)},"rsi":{round(rsi, 1)},"cap":{cap},"lev":{lev}}}'
-        )
+        decision_payload = {
+            "symbol": sym,
+            "tf": tf,
+            "intent": intent,
+            "detail": details if isinstance(details, dict) else {},
+        }
+        print(f'[decision] {json.dumps(decision_payload)}')
         out.append(intent)
         current_portfolio_gross += effective_notional
         tier_gross[tier_key] = adj_tier_gross + effective_notional

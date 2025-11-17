@@ -1,21 +1,126 @@
 {
+  "version": "v6.0",
   "symbols": [
     "BTCUSDT",
     "ETHUSDT",
-    "SOLUSDT"
+    "LINKUSDT",
+    "LTCUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "WIFUSDT"
   ],
-  "overrides": {
-    "BTCUSDT": {
-      "target_leverage": 20,
-      "min_notional": 100
+  "universe": [
+    {
+      "symbol": "BTCUSDT",
+      "tier": "CORE",
+      "bucket": "CORE",
+      "enabled": true,
+      "status": "enabled",
+      "target_leverage": 20.0,
+      "max_leverage": 4,
+      "min_notional": 100,
+      "min_gross_usd": 15.0,
+      "caps": {
+        "max_nav_pct": 0.25,
+        "max_order_notional": 80000,
+        "max_concurrent_positions": 1
+      }
     },
-    "ETHUSDT": {
-      "target_leverage": 4,
-      "min_notional": 100
+    {
+      "symbol": "ETHUSDT",
+      "tier": "CORE",
+      "bucket": "CORE",
+      "enabled": true,
+      "status": "enabled",
+      "target_leverage": 4.0,
+      "max_leverage": 4,
+      "min_notional": 100,
+      "min_gross_usd": 10.0,
+      "caps": {
+        "max_nav_pct": 0.2,
+        "max_order_notional": 50000,
+        "max_concurrent_positions": 1
+      }
     },
-    "SOLUSDT": {
-      "target_leverage": 3,
-      "min_notional": 100
+    {
+      "symbol": "LINKUSDT",
+      "tier": "SATELLITE",
+      "bucket": "SATELLITE",
+      "enabled": false,
+      "status": "disabled",
+      "target_leverage": 3.0,
+      "max_leverage": 4,
+      "min_notional": 100,
+      "min_gross_usd": 10.0,
+      "caps": {
+        "max_nav_pct": 0.15,
+        "max_order_notional": 25000,
+        "max_concurrent_positions": 0
+      }
+    },
+    {
+      "symbol": "LTCUSDT",
+      "tier": "SATELLITE",
+      "bucket": "SATELLITE",
+      "enabled": false,
+      "status": "disabled",
+      "target_leverage": 2.0,
+      "max_leverage": 4,
+      "min_notional": 100,
+      "min_gross_usd": 10.0,
+      "caps": {
+        "max_nav_pct": 0.15,
+        "max_order_notional": 25000,
+        "max_concurrent_positions": 0
+      }
+    },
+    {
+      "symbol": "SOLUSDT",
+      "tier": "SATELLITE",
+      "bucket": "SATELLITE",
+      "enabled": true,
+      "status": "enabled",
+      "target_leverage": 3.0,
+      "max_leverage": 3,
+      "min_notional": 100,
+      "min_gross_usd": 10.0,
+      "caps": {
+        "max_nav_pct": 0.15,
+        "max_order_notional": 25000,
+        "max_concurrent_positions": 1
+      }
+    },
+    {
+      "symbol": "SUIUSDT",
+      "tier": "SATELLITE",
+      "bucket": "SATELLITE",
+      "enabled": false,
+      "status": "disabled",
+      "target_leverage": 2.0,
+      "max_leverage": 4,
+      "min_notional": 100,
+      "min_gross_usd": 10.0,
+      "caps": {
+        "max_nav_pct": 0.10,
+        "max_order_notional": 15000,
+        "max_concurrent_positions": 0
+      }
+    },
+    {
+      "symbol": "WIFUSDT",
+      "tier": "SATELLITE",
+      "bucket": "SATELLITE",
+      "enabled": false,
+      "status": "disabled",
+      "target_leverage": 2.0,
+      "max_leverage": 4,
+      "min_notional": 100,
+      "min_gross_usd": 10.0,
+      "caps": {
+        "max_nav_pct": 0.10,
+        "max_order_notional": 15000,
+        "max_concurrent_positions": 0
+      }
     }
-  }
+  ]
 }

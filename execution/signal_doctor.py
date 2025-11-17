@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from .risk_limits import RiskState, check_order
 from .universe_resolver import symbol_tier, is_listed_on_futures
@@ -160,10 +160,20 @@ def diagnose_symbols(env: str, testnet: bool, symbols: List[str]) -> int:
             scfg = json.load(open("config/strategy_config.json"))
             arr = scfg.get("strategies", []) if isinstance(scfg, dict) else []
             for row in arr:
-                if isinstance(row, dict) and str(row.get("symbol", "")).upper() == s:
-                    cap = float(row.get("capital_per_trade", cap) or cap)
-                    lev = float(row.get("leverage", lev) or lev)
-                    break
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("symbol", "")).upper() != s:
+                    continue
+                params = row.get("params") if isinstance(row.get("params"), Mapping) else {}
+                try:
+                    cap = float((params or {}).get("capital_per_trade", cap) or cap)
+                except Exception:
+                    cap = cap
+                try:
+                    lev = float((params or {}).get("leverage", lev) or lev)
+                except Exception:
+                    lev = lev
+                break
         except Exception:
             pass
 

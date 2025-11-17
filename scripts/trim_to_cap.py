@@ -27,8 +27,9 @@ def main() -> None:
     nav_usd = float(snapshot.current_nav_usd())
     gross_usd = float(snapshot.current_gross_usd())
 
-    sizing = (cfg.get("sizing") or {})
-    cap_pct = float(sizing.get("max_gross_exposure_pct", 0.0) or 0.0)
+    risk_cfg = load_json("config/risk_limits.json") or {}
+    risk_global = (risk_cfg.get("global") or {}) if isinstance(risk_cfg, dict) else {}
+    cap_pct = float(risk_global.get("max_gross_exposure_pct", 0.0) or 0.0)
     if os.environ.get("EVENT_GUARD", "0") == "1":
         cap_pct *= 0.8
     cap_usd = nav_usd * (cap_pct / 100.0) if nav_usd > 0 and cap_pct > 0 else 0.0

@@ -21,6 +21,7 @@ from execution.nav import (
     get_nav_age as _nav_get_nav_age,
 )
 from execution.utils import load_json, get_live_positions
+from execution.universe_resolver import symbol_min_gross, universe_by_symbol
 from .utils.metrics import (
     notional_7d_by_symbol,
     total_notional_7d,
@@ -33,9 +34,10 @@ from execution.log_utils import get_logger, log_event, safe_dump
 
 LOGGER = logging.getLogger("risk_limits")
 
-SYMBOL_NOTIONAL_CAP = 0.25
-SYM_DD_CAP_PCT = 3.0
+DEFAULT_SYMBOL_SHARE_CAP = 0.25  # 25% of 7d notional
+DEFAULT_SYMBOL_DD_CAP_PCT = 3.0
 COOLDOWN_H = 24
+REASON_TRADE_EQUITY_CAP = "trade_gt_equity_cap"
 
 
 _GLOBAL_KEYS = {
@@ -71,6 +73,7 @@ _NAV_SNAPSHOT_PATHS: List[str] = [
 DEFAULT_NAV_FRESHNESS_SECONDS = int(os.environ.get("NAV_FRESHNESS_SECONDS", "90"))
 DEFAULT_FAIL_CLOSED_ON_NAV_STALE = os.environ.get("FAIL_CLOSED_ON_NAV_STALE", "1") != "0"
 PEAK_STATE_MAX_AGE_SEC = int(os.environ.get("PEAK_STATE_MAX_AGE_SEC", str(24 * 3600)))
+DEFAULT_TRADE_EQUITY_NAV_PCT = 15.0
 
 
 def get_nav_freshness_snapshot() -> Tuple[Optional[float], bool]:
@@ -280,6 +283,7 @@ REASONS = {
     "day_loss_limit": "daily_loss",
     "trade_gt_max_trade_nav_pct": "max_trade_nav",
     "trade_gt_10pct_equity": "max_trade_nav",
+    REASON_TRADE_EQUITY_CAP: "max_trade_nav",
     "symbol_cap": "symbol_cap",
     "portfolio_cap": "portfolio_cap",
     "max_gross_nav_pct": "portfolio_cap",
@@ -732,6 +736,8 @@ def check_order(
     """
     cfg = _normalize_risk_cfg(cfg)
 
+    detail_payload: Dict[str, Any] = {}
+    nav_fresh_flag: Optional[bool] = None
     sym = str(symbol)
     s_cfg = _cfg_get(cfg, ["per_symbol", sym], {}) or {}
     g_cfg = _cfg_get(cfg, ["global"], {}) or {}
@@ -836,6 +842,23 @@ def check_order(
         "fail_closed_on_nav_stale": nav_fail_closed,
     }
 
+    nav_age_val: Optional[float] = None
+    try:
+        if nav_age is not None:
+            nav_age_val = float(nav_age)
+        elif nav_age_s is not None:
+            nav_age_val = float(nav_age_s)
+    except Exception:
+        nav_age_val = None
+    nav_sources_bool = bool(nav_sources_ok) if nav_sources_ok is not None else False
+    nav_is_fresh = bool(
+        nav_sources_bool
+        and nav_age_val is not None
+        and nav_age_val < float(nav_threshold_s)
+    )
+    nav_fresh_flag = nav_is_fresh
+    detail_payload["nav_fresh"] = nav_is_fresh
+
     nav_ok = enforce_nav_freshness_or_veto(
         {
             "symbol": sym,
@@ -849,12 +872,21 @@ def check_order(
         nav_guard_cfg,
     )
 
+    nav_warning = False
     if not nav_ok:
         if nav_fail_closed:
             reasons.append("nav_stale")
         else:
-            warnings = details.setdefault("warnings", [])
+            nav_warning = True
+    elif (not nav_is_fresh) and not nav_fail_closed:
+        nav_warning = True
+
+    if nav_warning:
+        warnings = details.setdefault("warnings", [])
+        if "nav_stale" not in warnings:
             warnings.append("nav_stale")
+        detail_payload["nav_fresh"] = False
+        nav_fresh_flag = False
 
     # Block duplicate exposure if a live position already exists
     try:
@@ -1040,15 +1072,39 @@ def check_order(
             thresholds.setdefault("burst_limit", {"max_orders": burst_max, "window_sec": burst_win})
 
     # Per-trade NAV cap
-    try:
-        max_trade_pct = float(g_cfg.get("max_trade_nav_pct", 10.0) or 0.0)
-    except Exception:
-        max_trade_pct = 0.0
-    if max_trade_pct > 0.0 and float(nav) > 0.0:
-        if req_notional > float(nav) * (max_trade_pct / 100.0):
-            reasons.append("trade_gt_max_trade_nav_pct")
-            reasons.append("trade_gt_10pct_equity")
-            thresholds.setdefault("max_trade_nav_pct", max_trade_pct)
+    def _normalized_pct(value: Any, default: float = 0.0) -> float:
+        try:
+            pct_val = float(value)
+        except Exception:
+            pct_val = default
+        return _normalize_pct(pct_val if pct_val is not None else default)
+
+    max_trade_pct_raw = g_cfg.get("max_trade_nav_pct", 10.0)
+    max_trade_pct = _normalized_pct(max_trade_pct_raw, 10.0)
+    equity_nav_pct_raw = (
+        g_cfg.get("trade_equity_nav_pct")
+        or g_cfg.get("equity_nav_pct")
+        or g_cfg.get("equity_clamp_nav_pct")
+        or DEFAULT_TRADE_EQUITY_NAV_PCT
+    )
+    equity_nav_pct = _normalized_pct(equity_nav_pct_raw, DEFAULT_TRADE_EQUITY_NAV_PCT)
+    thresholds.setdefault("trade_equity_nav_pct", float(equity_nav_pct))
+    thresholds.setdefault("max_trade_nav_pct", float(max_trade_pct))
+    trade_nav_obs_pct = None
+    if nav_f > 0.0:
+        trade_nav_obs_pct = (req_notional / nav_f) * 100.0
+    details["trade_equity_nav_obs"] = trade_nav_obs_pct
+    details["max_trade_nav_obs"] = trade_nav_obs_pct
+    if nav_f > 0.0:
+        if equity_nav_pct > 0.0:
+            equity_limit = nav_f * (equity_nav_pct / 100.0)
+            if req_notional > equity_limit:
+                if REASON_TRADE_EQUITY_CAP not in reasons:
+                    reasons.append(REASON_TRADE_EQUITY_CAP)
+        if max_trade_pct > 0.0:
+            trade_limit = nav_f * (max_trade_pct / 100.0)
+            if req_notional > trade_limit:
+                reasons.append("trade_gt_max_trade_nav_pct")
 
     # Gross exposure cap (global) — accept legacy/new keys
     max_gross_nav_pct = float(
@@ -1093,79 +1149,82 @@ def check_order(
                 thresholds.setdefault("tier_cap", {"tier": tier_name, "per_symbol_nav_pct": per_sym_pct})
 
     if not reasons:
-        return False, {}
+        return False, detail_payload
 
-        try:
-            qty_req = (
-                float(req_notional / float(price))
-                if price not in (None, 0, 0.0) and float(price or 0.0) != 0.0
-                else None
-            )
-        except Exception:
-            qty_req = None
-        try:
-            nav_f = float(nav)
-        except Exception:
-            nav_f = 0.0
-        try:
-            current_gross_f = float(current_gross_notional)
-        except Exception:
-            current_gross_f = 0.0
-        try:
-            open_qty_f = float(open_qty)
-        except Exception:
-            open_qty_f = 0.0
-        try:
-            lev_f = float(lev)
-        except Exception:
-            lev_f = 0.0
-        try:
-            now_f = float(now)
-        except Exception:
-            now_f = time.time()
-        try:
-            tier_gross_f = float(current_tier_gross_notional)
-        except Exception:
-            tier_gross_f = 0.0
-        context = {
-            "nav": nav_f,
-            "requested_notional": req_notional,
-            "current_gross_notional": current_gross_f,
-            "open_qty": open_qty_f,
-            "lev": lev_f,
-            "now": now_f,
-            "open_positions_count": open_positions_count,
-            "tier": tier_name,
-            "current_tier_gross_notional": tier_gross_f,
-        }
-        if nav_f > 0.0:
-            context["post_trade_exposure_pct"] = ((current_gross_f + req_notional) / nav_f) * 100.0
-        detail_payload: Dict[str, Any] = {
-            "gate": "risk_limits",
-            "limit": reasons[0],
-            "reasons": list(reasons),
-            "thresholds": thresholds,
-            "notional": float(req_notional),
-        }
-        value = thresholds.get(reasons[0])
-        if value is not None:
-            detail_payload["value"] = value
-        extra = {
-            k: v
-            for k, v in details.items()
-            if k not in ("reasons", "thresholds")
-        }
-        if extra:
-            detail_payload["observations"] = extra
-        _emit_veto(
-            symbol,
-            reasons[0],
-            detail=detail_payload,
-            context=context,
-            strategy=strategy_name,
-            signal_ts=signal_ts,
-            qty=qty_req,
+    try:
+        qty_req = (
+            float(req_notional / float(price))
+            if price not in (None, 0, 0.0) and float(price or 0.0) != 0.0
+            else None
         )
+    except Exception:
+        qty_req = None
+    try:
+        nav_f = float(nav)
+    except Exception:
+        nav_f = 0.0
+    try:
+        current_gross_f = float(current_gross_notional)
+    except Exception:
+        current_gross_f = 0.0
+    try:
+        open_qty_f = float(open_qty)
+    except Exception:
+        open_qty_f = 0.0
+    try:
+        lev_f = float(lev)
+    except Exception:
+        lev_f = 0.0
+    try:
+        now_f = float(now)
+    except Exception:
+        now_f = time.time()
+    try:
+        tier_gross_f = float(current_tier_gross_notional)
+    except Exception:
+        tier_gross_f = 0.0
+    context = {
+        "nav": nav_f,
+        "requested_notional": req_notional,
+        "current_gross_notional": current_gross_f,
+        "open_qty": open_qty_f,
+        "lev": lev_f,
+        "now": now_f,
+        "open_positions_count": open_positions_count,
+        "tier": tier_name,
+        "current_tier_gross_notional": tier_gross_f,
+    }
+    if nav_f > 0.0:
+        context["post_trade_exposure_pct"] = ((current_gross_f + req_notional) / nav_f) * 100.0
+    nav_flag_snapshot = detail_payload.get("nav_fresh")
+    detail_payload = {
+        "gate": "risk_limits",
+        "limit": reasons[0],
+        "reasons": list(reasons),
+        "thresholds": thresholds,
+        "notional": float(req_notional),
+    }
+    if nav_flag_snapshot is not None:
+        detail_payload["nav_fresh"] = nav_flag_snapshot
+    value = thresholds.get(reasons[0])
+    if value is not None:
+        detail_payload["value"] = value
+    extra = {
+        k: v
+        for k, v in details.items()
+        if k not in ("reasons", "thresholds")
+    }
+    if extra:
+        detail_payload["observations"] = extra
+    _emit_veto(
+        symbol,
+        reasons[0],
+        detail=detail_payload,
+        context=context,
+        strategy=strategy_name,
+        signal_ts=signal_ts,
+        qty=qty_req,
+    )
     return True, detail_payload
 
 
@@ -1201,6 +1260,13 @@ class RiskGate:
                     self.per_symbol_min_gross_usd[str(key).upper()] = float(value)
                 except Exception:
                     continue
+        for sym_key in universe_by_symbol().keys():
+            try:
+                floor_val = float(symbol_min_gross(sym_key))
+            except Exception:
+                floor_val = 0.0
+            if floor_val > 0:
+                self.per_symbol_min_gross_usd.setdefault(sym_key.upper(), floor_val)
         self._last_stop_ts = 0.0
         self._trade_counts: Dict[tuple[str, int], int] = {}
 
@@ -1490,23 +1556,74 @@ class RiskGate:
         return True, ""
 
 
-def symbol_notional_guard(symbol: str) -> bool:
+def _effective_guard_cfg(cfg: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if isinstance(cfg, Mapping):
+        return cfg
+    loaded = load_json("config/risk_limits.json") or {}
+    return loaded if isinstance(loaded, Mapping) else {}
+
+
+def _normalize_ratio(value: Any, default: float) -> float:
+    try:
+        val = float(value)
+    except Exception:
+        return default
+    if val <= 0:
+        return default
+    if val > 1.0:
+        return val / 100.0
+    return val
+
+
+def _normalize_pct_value(value: Any, default: float) -> float:
+    try:
+        val = float(value)
+    except Exception:
+        return default
+    return val if val > 0 else default
+
+
+def _guard_thresholds(symbol: str, cfg: Mapping[str, Any]) -> tuple[float, float]:
+    sym_key = str(symbol).upper()
+    global_cfg = cfg.get("global") if isinstance(cfg, Mapping) else {}
+    if not isinstance(global_cfg, Mapping):
+        global_cfg = {}
+    per_symbol_cfg = cfg.get("per_symbol") if isinstance(cfg, Mapping) else {}
+    entry = per_symbol_cfg.get(sym_key) if isinstance(per_symbol_cfg, Mapping) else {}
+    share_raw = (
+        (entry or {}).get("symbol_notional_share_cap_pct")
+        or global_cfg.get("symbol_notional_share_cap_pct")
+        or DEFAULT_SYMBOL_SHARE_CAP
+    )
+    dd_raw = (
+        (entry or {}).get("symbol_drawdown_cap_pct")
+        or global_cfg.get("symbol_drawdown_cap_pct")
+        or DEFAULT_SYMBOL_DD_CAP_PCT
+    )
+    return _normalize_ratio(share_raw, DEFAULT_SYMBOL_SHARE_CAP), _normalize_pct_value(
+        dd_raw, DEFAULT_SYMBOL_DD_CAP_PCT
+    )
+
+
+def symbol_notional_guard(symbol: str, cfg: Mapping[str, Any] | None = None) -> bool:
     if not is_in_asset_universe(symbol):
         return False
     total = total_notional_7d() or 0.0
     if total <= 0:
         return True
     share = (notional_7d_by_symbol(symbol) or 0.0) / max(total, 1e-9)
-    return share <= SYMBOL_NOTIONAL_CAP
+    share_cap, _ = _guard_thresholds(symbol, _effective_guard_cfg(cfg))
+    return share <= share_cap
 
 
-def symbol_dd_guard(symbol: str) -> bool:
+def symbol_dd_guard(symbol: str, cfg: Mapping[str, Any] | None = None) -> bool:
     if is_symbol_disabled(symbol):
         return False
     if not is_in_asset_universe(symbol):
         return False
+    _, dd_cap = _guard_thresholds(symbol, _effective_guard_cfg(cfg))
     dd = dd_today_pct(symbol) or 0.0
-    if dd <= -SYM_DD_CAP_PCT:
+    if dd <= -dd_cap:
         disable_symbol_temporarily(symbol, ttl_hours=COOLDOWN_H, reason="dd_cap_hit")
         return False
     return True

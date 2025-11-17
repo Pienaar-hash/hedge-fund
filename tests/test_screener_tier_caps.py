@@ -1,4 +1,5 @@
 import json
+import pytest
 
 
 def _risk_cfg(tmp_path):
@@ -7,6 +8,8 @@ def _risk_cfg(tmp_path):
             "min_notional_usdt": 10.0,
             "max_portfolio_gross_nav_pct": 15.0,
             "max_concurrent_positions": 3,
+            "trade_equity_nav_pct": 0.15,
+            "max_trade_nav_pct": 0.2,
             "tiers": {
                 "CORE": {"per_symbol_nav_pct": 8.0},
                 "SATELLITE": {"per_symbol_nav_pct": 4.0},
@@ -46,14 +49,14 @@ def test_portfolio_cap_veto(monkeypatch, tmp_path):
     monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
-    # Portfolio cap 15% of 1000 => 150. Current gross=149, request gross=10*20=200 -> block
+    # Portfolio cap 15% of 2000 => 300. Current gross=299, request gross=10*20=200 -> block
     ok, reasons, _ = sc.would_emit(
         "BTCUSDT",
         "BUY",
         notional=10.0,
         lev=20.0,
-        nav=1000.0,
-        current_gross_notional=149.0,
+        nav=2000.0,
+        current_gross_notional=299.0,
     )
     assert ok is False
     assert ("portfolio_cap" in reasons) or ("max_gross_nav_pct" in reasons)
@@ -64,14 +67,14 @@ def test_tier_cap_veto(monkeypatch, tmp_path):
     monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
     monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
     monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
-    # CORE per-symbol cap 8% of 1000 => 80. current tier gross=79, req gross=200 -> block
+    # CORE per-symbol cap 8% of 2000 => 160. current tier gross=159, req gross=200 -> block
     ok, reasons, _ = sc.would_emit(
         "BTCUSDT",
         "BUY",
         notional=10.0,
         lev=20.0,
-        nav=1000.0,
-        current_tier_gross_notional=79.0,
+        nav=2000.0,
+        current_tier_gross_notional=159.0,
     )
     assert ok is False
     assert "tier_cap" in reasons
@@ -87,7 +90,7 @@ def test_max_concurrent_positions_veto(monkeypatch, tmp_path):
         "BUY",
         notional=10.0,
         lev=20.0,
-        nav=1000.0,
+        nav=2000.0,
         open_positions_count=3,
     )
     assert ok is False
@@ -104,3 +107,44 @@ def test_orderbook_adverse_veto(monkeypatch, tmp_path):
     ok, reasons, _ = sc.would_emit("BTCUSDT", "BUY", notional=10.0, lev=20.0, nav=1000.0)
     assert ok is False
     assert "ob_adverse" in reasons
+
+
+def test_trade_equity_nav_veto(monkeypatch, tmp_path):
+    from execution import signal_screener as sc
+
+    monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
+    monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
+    monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
+    ok, reasons, extra = sc.would_emit(
+        "BTCUSDT",
+        "BUY",
+        notional=160.0,
+        lev=1.0,
+        nav=1000.0,
+    )
+    assert ok is False
+    assert "trade_gt_equity_cap" in reasons
+    trade_meta = extra.get("trade_nav", {})
+    assert pytest.approx(trade_meta.get("trade_equity_nav_pct")) == 15.0
+    assert trade_meta.get("trade_equity_nav_obs") > 15.0
+
+
+def test_trade_max_nav_veto(monkeypatch, tmp_path):
+    from execution import signal_screener as sc
+
+    monkeypatch.setenv("RISK_LIMITS_CONFIG", _risk_cfg(tmp_path))
+    monkeypatch.setenv("SYMBOL_TIERS_CONFIG", _tiers_cfg(tmp_path))
+    monkeypatch.setattr(sc, "is_listed_on_futures", lambda s: True, raising=True)
+    ok, reasons, extra = sc.would_emit(
+        "BTCUSDT",
+        "BUY",
+        notional=250.0,
+        lev=1.0,
+        nav=1000.0,
+    )
+    assert ok is False
+    assert "trade_gt_max_trade_nav_pct" in reasons
+    assert "trade_gt_equity_cap" in reasons
+    trade_meta = extra.get("trade_nav", {})
+    assert pytest.approx(trade_meta.get("max_trade_nav_pct")) == 20.0
+    assert trade_meta.get("max_trade_nav_obs") > 20.0

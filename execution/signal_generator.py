@@ -80,10 +80,11 @@ def _load_registry() -> Dict[str, Dict[str, Any]]:
     payload = {}
     try:
         data = load_json(str(_REGISTRY_PATH)) or {}
-        if isinstance(data, dict):
+        raw = data.get("strategies") if isinstance(data, Mapping) and "strategies" in data else data
+        if isinstance(raw, Mapping):
             payload = {
                 str(k): (dict(v) if isinstance(v, Mapping) else {})
-                for k, v in data.items()
+                for k, v in raw.items()
             }
     except Exception:
         payload = {}

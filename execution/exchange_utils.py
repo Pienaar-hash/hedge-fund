@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover - optional dependency
     UMFutures = None
 
 from execution.utils import get_coingecko_prices, load_json
+from execution.universe_resolver import symbol_min_gross
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s [exutil] %(message)s"
@@ -1322,14 +1323,12 @@ def place_market_order_sized(  # noqa: F811
 
     floor_gross = 0.0
     try:
-        cfg = load_json("config/strategy_config.json")
-        sizing_cfg = (cfg.get("sizing") or {})
-        floor_gross = float((sizing_cfg.get("min_gross_usd_per_order", 0.0)) or 0.0)
-        per_symbol_cfg = sizing_cfg.get("per_symbol_min_gross_usd") or {}
-        if isinstance(per_symbol_cfg, dict):
-            sym_override = per_symbol_cfg.get(str(symbol).upper())
-            if sym_override is not None:
-                floor_gross = max(floor_gross, float(sym_override or 0.0))
+        risk_cfg = load_json("config/risk_limits.json") or {}
+        risk_global = (risk_cfg.get("global") or {}) if isinstance(risk_cfg, Mapping) else {}
+        floor_gross = max(
+            symbol_min_gross(symbol),
+            float(risk_global.get("min_notional_usdt", 0.0) or 0.0),
+        )
     except Exception:
         floor_gross = max(floor_gross, 0.0)
     desired_gross = max(desired_gross, floor_gross)

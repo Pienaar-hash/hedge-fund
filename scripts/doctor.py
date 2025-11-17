@@ -732,9 +732,30 @@ def main():
     out["env"]["testnet"] = os.getenv("BINANCE_TESTNET","")
     out["env"]["use_futures"] = os.getenv("USE_FUTURES","")
 
-    for name, scfg in (cfg.get("strategies") or {}).items():
-        sym = scfg["symbol"]
-        tf  = scfg.get("timeframe","30m")
+    raw_strats = cfg.get("strategies") or []
+    if isinstance(raw_strats, Mapping):
+        strat_iter = list(raw_strats.items())
+    elif isinstance(raw_strats, Sequence):
+        strat_iter = []
+        for idx, entry in enumerate(raw_strats):
+            if not isinstance(entry, Mapping):
+                continue
+            name = str(entry.get("id") or entry.get("name") or f"strategy_{idx}")
+            strat_iter.append((name, entry))
+    else:
+        strat_iter = []
+
+    for name, scfg in strat_iter:
+        sym = scfg.get("symbol")
+        if not sym:
+            continue
+        tf = scfg.get("timeframe", "30m")
+        params = scfg.get("params") if isinstance(scfg.get("params"), Mapping) else {}
+        cfg_view: Dict[str, Any] = dict(params)
+        cfg_view.setdefault("entry", params.get("entry", {}))
+        cfg_view.setdefault("features", params.get("features", {}))
+        cfg_view["symbol"] = sym
+        cfg_view["timeframe"] = tf
         pxs = _series(st, sym, tf)
         meta= _meta(st, sym, tf)
         prev_z = meta.get("prev_z", None)
@@ -744,12 +765,12 @@ def main():
 
         inds: Dict[str, Any] = {}
         if pxs:
-            inds = sc._fetch_indicators_from_your_stack(sym, tf, scfg) or sc._compute_indicators_from_series(pxs, scfg)
+            inds = sc._fetch_indicators_from_your_stack(sym, tf, cfg_view) or sc._compute_indicators_from_series(pxs, cfg_view)
         z   = float(inds.get("z", 0.0))
         rsi = float(inds.get("rsi", 50.0))
         atr = float(inds.get("atr_proxy", 0.0))
 
-        entry = scfg.get("entry",{})
+        entry = params.get("entry",{}) if isinstance(params, Mapping) else {}
         zmin  = float(entry.get("zscore_min", 0.8))
         rband = entry.get("rsi_band", [0,100])
         rlo, rhi = float(rband[0]), float(rband[1])

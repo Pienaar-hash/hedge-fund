@@ -1,10 +1,10 @@
-2025-11-15 21:53:45,712 INFO [exutil] [exutil] .env loaded (override=True)
-2025-11-15 21:53:45,713 INFO [exutil] [exutil] ENV context testnet=False dry_run=False
+2025-11-16 14:53:42,641 INFO [exutil] [exutil] .env loaded (override=True)
+2025-11-16 14:53:42,642 INFO [exutil] [exutil] ENV context testnet=False dry_run=False
 [doctor] fallback load ok (no loader)
 [doctor] safe_load missing path, returning default
 [doctor] state fallback (empty)
-2025-11-15 21:53:46,766 INFO [exutil] [binance] server_time_offset_ms=-124
-2025-11-15 21:53:47,534 INFO [exutil] [um_client] UMFutures client initialised (testnet=False)
+2025-11-16 14:53:43,187 INFO [exutil] [binance] server_time_offset_ms=-118
+2025-11-16 14:53:43,478 INFO [exutil] [um_client] UMFutures client initialised (testnet=False)
 [doctor] nav_freshness integrated (is_nav_fresh + get_nav_age)
 {
   "env": {
@@ -18,14 +18,14 @@
   },
   "strategies": []
 }
-[doctor] NAV check: 4,402.77 USD (source=nav_log.json)
-[doctor] NAV freshness: FRESH (age=96.6s)
-[doctor] Drawdown: dd=1.44% (abs=$64.32, peak=$4,467.09, nav=$4,402.77)
+[doctor] NAV check: 4,403.06 USD (source=nav_log.json)
+[doctor] NAV freshness: FRESH (age=227.5s)
+[doctor] Drawdown: dd=1.43% (abs=$64.04, peak=$4,467.09, nav=$4,403.06)
 [doctor] Positions [none]: 0 open
-[doctor] NAV: $4,402.77
-[doctor] Total Equity: $4,402.77
-[doctor] ZAR conversion @ 17.08 (api) status=FRESH age=0.0h → NAV≈R75,199 | Total≈R75,199
+[doctor] NAV: $4,403.06
+[doctor] Total Equity: $4,403.06
+[doctor] ZAR conversion @ 17.08 (api) status=FRESH age=0.0h → NAV≈R75,204 | Total≈R75,204
 [doctor] Firestore: DISABLED (age=n/as)
 [doctor] Heartbeat: executor≈1m sync_state=n/a (stale)
 [doctor] Router: slip_p50=1.35bps slip_p95=90.93bps lat_p50=0ms lat_p95=0ms fill_rate=100.0% attempted=0 emitted=0 vetoed=0
-[doctor] summary NAV: $4,402.77 | NAV Freshness: FRESH | Drawdown: 1.44% | Positions: 0 | Firestore: DISABLED | Total Equity: $4,402.77 | Heartbeat: stale | Router slip50=1.35bps slip95=90.93bps | Total ZAR≈R75,199
+[doctor] summary NAV: $4,403.06 | NAV Freshness: FRESH | Drawdown: 1.43% | Positions: 0 | Firestore: DISABLED | Total Equity: $4,403.06 | Heartbeat: stale | Router slip50=1.35bps slip95=90.93bps | Total ZAR≈R75,204
