@@ -5,6 +5,8 @@ import json
 import os
 from functools import lru_cache
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+import time
+from pathlib import Path
 
 try:
     from .exchange_utils import get_symbol_filters  # online listing check
@@ -238,6 +240,53 @@ def symbol_target_leverage(symbol: str) -> float:
     return val
 
 
+def build_universe_snapshot() -> Dict[str, Any]:
+    now = time.time()
+    entries = []
+    for entry in load_pairs_universe():
+        if not isinstance(entry, Mapping):
+            continue
+        sym = entry.get("symbol")
+        if not sym:
+            continue
+        caps = entry.get("caps") if isinstance(entry.get("caps"), Mapping) else {}
+        entries.append(
+            {
+                "symbol": sym,
+                "tier": entry.get("tier"),
+                "max_leverage": entry.get("max_leverage"),
+                "target_leverage": entry.get("target_leverage"),
+                "min_notional": entry.get("min_notional"),
+                "caps": caps,
+                "enabled": entry.get("enabled", True),
+                "status": entry.get("status"),
+            }
+        )
+    return {"updated_ts": now, "universe": entries}
+
+
+def write_universe_snapshot(path: Optional[str] = None) -> Dict[str, Any]:
+    payload = build_universe_snapshot()
+    try:
+        if path is None:
+            from execution.state_publish import write_universe_state
+
+            write_universe_state(payload)
+            return payload
+    except Exception:
+        pass
+    target = Path(path) if path else Path("logs/state/universe.json")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        tmp.replace(target)
+    except Exception:
+        pass
+    return payload
+
+
 def resolve_allowed_symbols() -> Tuple[List[str], Dict[str, str]]:
     """Return (allowed_symbols, tier_by_symbol).
 
@@ -308,6 +357,8 @@ __all__ = [
     "symbol_min_gross",
     "symbol_min_notional",
     "symbol_target_leverage",
+    "build_universe_snapshot",
+    "write_universe_snapshot",
     "get_symbol_price",
 ]
 

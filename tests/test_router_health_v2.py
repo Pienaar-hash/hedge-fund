@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import pandas as pd
 
 import dashboard.router_health as rh
@@ -110,3 +112,28 @@ def test_router_health_confidence_and_sharpe(tmp_path, monkeypatch) -> None:
     # Ensure per-symbol frame keeps numeric Sharpe content
     sharpe_series = pd.to_numeric(data.per_symbol["normalized_sharpe"], errors="coerce")
     assert sharpe_series.notna().any()
+
+
+def test_router_health_uses_state_snapshot(tmp_path, monkeypatch) -> None:
+    payload = {
+        "updated_ts": 123.0,
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "maker_fill_rate": 0.7,
+                "fallback_rate": 0.1,
+                "slippage_p50": 1.0,
+                "slippage_p95": 2.0,
+                "policy": {"maker_first": True, "taker_bias": "balanced", "quality": "good"},
+            }
+        ],
+    }
+    path = tmp_path / "router_health.json"
+    path.write_text(json.dumps(payload))
+    monkeypatch.setattr(rh, "ROUTER_HEALTH_STATE_PATH", path)
+
+    data = rh.load_router_health()
+
+    assert data.summary["updated_ts"] == 123.0
+    assert not data.per_symbol.empty
+    assert float(data.per_symbol.iloc[0]["maker_fill_rate"]) == pytest.approx(0.7)

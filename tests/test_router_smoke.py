@@ -208,7 +208,7 @@ def test_route_order_router_meta_fallback(monkeypatch) -> None:
     assert calls["maker"] == 1
     assert calls["taker"] == 1
     meta = result.get("router_meta") or {}
-    assert meta.get("maker_started") is True
+    assert meta.get("maker_start") is True
     assert meta.get("is_maker_final") is False
     assert meta.get("used_fallback") is True
     assert meta.get("router_policy", {}).get("reason") == "test"

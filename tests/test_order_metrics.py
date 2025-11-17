@@ -56,7 +56,7 @@ def test_route_intent_metrics_buy(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _approx_equal(metrics["slippage_bps"], expected_slippage)
     assert metrics["timing_ms"]["decision"] == pytest.approx(150.0)
     assert metrics["result"]["status"] == "FILLED"
-    assert metrics["started_maker"] is False
+    assert metrics["maker_start"] is False
     assert metrics["is_maker_final"] is False
     assert metrics["used_fallback"] is False
     assert metrics["policy"]["quality"] == "ok"
@@ -71,7 +71,7 @@ def test_route_intent_metrics_sell_slippage(monkeypatch: pytest.MonkeyPatch) -> 
             "latency_ms": 12.0,
             "raw": {"status": "FILLED"},
             "router_meta": {
-                "maker_started": True,
+                "maker_start": True,
                 "is_maker_final": False,
                 "used_fallback": True,
                 "router_policy": {
@@ -101,7 +101,7 @@ def test_route_intent_metrics_sell_slippage(monkeypatch: pytest.MonkeyPatch) -> 
     # Better fill for SELL should give positive slippage
     assert metrics["slippage_bps"] == pytest.approx(100.0)
     assert metrics["timing_ms"]["decision"] == pytest.approx(80.0)
-    assert metrics["started_maker"] is True
+    assert metrics["maker_start"] is True
     assert metrics["is_maker_final"] is False
     assert metrics["used_fallback"] is True
     assert metrics["policy"]["taker_bias"] == "prefer_taker"

@@ -60,6 +60,7 @@ _LAST_SIGNAL_PULL = 0.0
 _LAST_QUEUE_DEPTH = 0
 SIGNAL_METRICS_PATH = Path("logs/execution/signal_metrics.jsonl")
 ORDER_METRICS_PATH = Path("logs/execution/order_metrics.jsonl")
+ROUTER_METRICS_MIRROR_PATH = Path("logs/execution/router_metrics.jsonl")
 LOGS_ROOT = Path(repo_root) / "logs"
 POSITIONS_CACHE_PATH = LOGS_ROOT / "positions.json"
 NAV_LOG_CACHE_PATH = LOGS_ROOT / "nav_log.json"
@@ -76,6 +77,11 @@ EXEC_ALERT_INTERVAL_S = float(os.getenv("EXEC_ALERT_INTERVAL_S", "60") or 60)
 _LAST_EXEC_ALERT_EVAL: Dict[str, float] = {}
 EXEC_INTEL_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_INTEL_PUBLISH_INTERVAL_S", "300") or 300)
 _LAST_INTEL_PUBLISH: Dict[str, float] = {}
+ROUTER_HEALTH_REFRESH_INTERVAL_S = float(os.getenv("ROUTER_HEALTH_REFRESH_INTERVAL_S", "60") or 60)
+_LAST_ROUTER_HEALTH_PUBLISH = 0.0
+_LAST_RISK_PUBLISH = 0.0
+_LAST_RISK_CACHE: Dict[str, Dict[str, Any]] = {}
+_LAST_ALERT_TS: Dict[str, float] = {}
 
 
 def mk_id(prefix: str) -> str:
@@ -97,20 +103,160 @@ def _append_order_metrics(record: Mapping[str, Any]) -> None:
         LOG.debug("[metrics] order_metrics_append_failed: %s", exc)
 
 
+def _write_router_metrics_local(record: Mapping[str, Any]) -> None:
+    try:
+        append_jsonl(ROUTER_METRICS_MIRROR_PATH, record)
+    except Exception as exc:
+        LOG.debug("[metrics] router_metrics_append_failed: %s", exc)
+
+
+def _build_router_health_snapshot() -> Dict[str, Any]:
+    from execution.universe_resolver import universe_by_symbol
+    from execution.utils.metrics import router_effectiveness_7d
+    from execution.intel.router_policy import router_policy
+
+    entries: List[Dict[str, Any]] = []
+    now = time.time()
+    symbols = sorted(universe_by_symbol().keys())
+    for sym in symbols:
+        try:
+            eff = router_effectiveness_7d(sym) or {}
+        except Exception as exc:
+            LOG.debug("[metrics] router_effectiveness_failed symbol=%s err=%s", sym, exc)
+            eff = {}
+        try:
+            policy = router_policy(sym)
+            policy_payload = {
+                "maker_first": policy.maker_first,
+                "taker_bias": policy.taker_bias,
+                "quality": policy.quality,
+                "reason": policy.reason,
+            }
+        except Exception:
+            policy_payload = {
+                "maker_first": None,
+                "taker_bias": None,
+                "quality": None,
+                "reason": None,
+            }
+        entries.append(
+            {
+                "symbol": sym,
+                "maker_fill_rate": eff.get("maker_fill_ratio"),
+                "fallback_rate": eff.get("fallback_ratio"),
+                "slippage_p50": eff.get("slip_q50"),
+                "slippage_p95": eff.get("slip_q95"),
+                "policy": policy_payload,
+                "updated_ts": now,
+            }
+        )
+    return {"updated_ts": now, "symbols": entries}
+
+
+def _collect_execution_health() -> Dict[str, Any]:
+    from execution.universe_resolver import universe_by_symbol
+    from execution.utils.execution_health import compute_execution_health
+
+    snapshot_entries: List[Dict[str, Any]] = []
+    now = time.time()
+    for sym in sorted(universe_by_symbol().keys()):
+        try:
+            entry = compute_execution_health(sym)
+        except Exception as exc:
+            LOG.debug("[metrics] execution_health_failed symbol=%s err=%s", sym, exc)
+            continue
+        entry["updated_ts"] = now
+        snapshot_entries.append(entry)
+    return {"updated_ts": now, "symbols": snapshot_entries}
+
+
 def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
-    return None
+    global _LAST_ROUTER_HEALTH_PUBLISH
+    _write_router_metrics_local(event)
+    now = time.time()
+    if (now - _LAST_ROUTER_HEALTH_PUBLISH) < ROUTER_HEALTH_REFRESH_INTERVAL_S:
+        return
+    try:
+        snapshot = _build_router_health_snapshot()
+    except Exception as exc:
+        LOG.debug("[metrics] router_health_snapshot_failed: %s", exc)
+        return
+    try:
+        from execution.state_publish import write_router_health_state
+
+        write_router_health_state(snapshot)
+        _LAST_ROUTER_HEALTH_PUBLISH = now
+    except Exception as exc:
+        LOG.debug("[metrics] router_health_state_write_failed: %s", exc)
 
 
 def _maybe_publish_execution_health(symbol: str) -> None:
-    return None
+    global _LAST_RISK_PUBLISH, _LAST_RISK_CACHE
+    now = time.time()
+    if (now - _LAST_RISK_PUBLISH) < EXEC_HEALTH_PUBLISH_INTERVAL_S:
+        return
+    try:
+        snapshot = _collect_execution_health()
+    except Exception as exc:
+        LOG.debug("[metrics] execution_health_collect_failed: %s", exc)
+        return
+    try:
+        from execution.state_publish import write_risk_snapshot_state
+
+        write_risk_snapshot_state(snapshot)
+    except Exception as exc:
+        LOG.debug("[metrics] risk_snapshot_state_write_failed: %s", exc)
+    cache: Dict[str, Dict[str, Any]] = {}
+    for entry in snapshot.get("symbols", []):
+        sym = entry.get("symbol")
+        if sym:
+            cache[str(sym)] = entry
+    _LAST_RISK_CACHE = cache
+    _LAST_RISK_PUBLISH = now
 
 
 def _maybe_emit_execution_alerts(symbol: str) -> None:
-    return None
+    if not symbol:
+        return
+    entry = _LAST_RISK_CACHE.get(symbol)
+    if not entry:
+        return
+    router_part = entry.get("router") or {}
+    risk_part = entry.get("risk") or {}
+    warnings = router_part.get("router_warnings") or []
+    risk_flags = risk_part.get("risk_flags") or []
+    if not warnings and not risk_flags:
+        return
+    now = time.time()
+    key = f"{symbol}:{','.join(sorted(warnings + risk_flags))}"
+    last_ts = _LAST_ALERT_TS.get(key, 0.0)
+    if (now - last_ts) < EXEC_ALERT_INTERVAL_S:
+        return
+    payload = {
+        "symbol": symbol,
+        "router_warnings": warnings,
+        "risk_flags": risk_flags,
+        "ts": now,
+    }
+    try:
+        append_jsonl(LOGS_ROOT / "execution" / "execution_alerts.jsonl", payload)
+        _LAST_ALERT_TS[key] = now
+    except Exception as exc:
+        LOG.debug("[metrics] execution_alert_write_failed: %s", exc)
 
 
 def _maybe_publish_execution_intel(symbol: str) -> None:
-    return None
+    now = time.time()
+    last = _LAST_INTEL_PUBLISH.get("universe", 0.0)
+    if (now - last) < EXEC_INTEL_PUBLISH_INTERVAL_S:
+        return
+    try:
+        from execution.universe_resolver import write_universe_snapshot
+
+        write_universe_snapshot()
+        _LAST_INTEL_PUBLISH["universe"] = now
+    except Exception as exc:
+        LOG.debug("[metrics] universe_snapshot_failed: %s", exc)
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (

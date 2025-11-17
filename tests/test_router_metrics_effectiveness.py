@@ -8,7 +8,7 @@ def _sample_events():
             "symbol": "BTCUSDC",
             "ts": 1707345600,
             "is_maker_final": True,
-            "started_maker": True,
+            "maker_start": True,
             "used_fallback": False,
             "slippage_bps": -1.0,
         },
@@ -16,7 +16,7 @@ def _sample_events():
             "symbol": "BTCUSDC",
             "ts": 1707349200,
             "is_maker_final": False,
-            "started_maker": True,
+            "maker_start": True,
             "used_fallback": True,
             "slippage_bps": 3.0,
         },
@@ -24,7 +24,7 @@ def _sample_events():
             "symbol": "BTCUSDC",
             "ts": 1707352800,
             "is_maker_final": True,
-            "started_maker": False,
+            "maker_start": False,
             "used_fallback": False,
             "slippage_bps": 0.5,
         },
@@ -32,7 +32,7 @@ def _sample_events():
             "symbol": "BTCUSDC",
             "ts": 1707356400,
             "is_maker_final": False,
-            "started_maker": True,
+            "maker_start": True,
             "used_fallback": True,
             "slippage_bps": 5.0,
         },
@@ -58,3 +58,5 @@ def test_router_effectiveness_7d_ratios_and_quartiles_execution_hardening(monkey
     assert q25 is not None and q50 is not None and q75 is not None
     assert q25 <= q50 <= q75
     assert q25 < q50 < q75
+    assert eff["slip_q95"] is not None
+    assert eff["slip_q95"] >= eff["slip_q75"]

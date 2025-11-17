@@ -581,7 +581,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     accepted = is_ack_ok(status) or bool(resp.get("dryRun"))
 
     router_meta = {
-        "maker_started": bool(maker_enabled),
+        "maker_start": bool(maker_enabled),
         "is_maker_final": bool(maker_used),
         "used_fallback": bool(maker_enabled and not maker_used),
         "router_policy": policy_snapshot,
@@ -653,7 +653,7 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
             "reason": policy_meta.get("reason"),
         }
         started_maker = bool(router_ctx.get("maker_first")) and bool(router_ctx.get("maker_qty"))
-        router_metrics["started_maker"] = bool(started_maker)
+        router_metrics["maker_start"] = bool(started_maker)
         router_metrics["is_maker_final"] = False
         router_metrics["used_fallback"] = False
         raise
@@ -703,16 +703,17 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
         },
         "fees_usd": fees,
         "slippage_bps": slippage,
+        "ack_latency_ms": exchange_response.get("latency_ms"),
     }
     router_meta = exchange_response.get("router_meta") or {}
-    started_maker = bool(router_meta.get("maker_started"))
+    started_maker = bool(router_meta.get("maker_start"))
     is_maker_final = bool(router_meta.get("is_maker_final"))
     used_fallback = bool(router_meta.get("used_fallback"))
     if not router_meta:
         started_maker = bool(router_ctx.get("maker_first"))
         is_maker_final = False
         used_fallback = False
-    router_metrics["started_maker"] = started_maker
+    router_metrics["maker_start"] = started_maker
     router_metrics["is_maker_final"] = is_maker_final
     router_metrics["used_fallback"] = used_fallback
     policy_meta = (

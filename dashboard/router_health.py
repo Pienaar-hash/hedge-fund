@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
+import os
 
 import pandas as pd
 
@@ -17,7 +18,39 @@ DEFAULT_HISTORY = 500
 SIGNAL_METRICS_PATH = Path("logs/execution/signal_metrics.jsonl")
 ORDER_METRICS_PATH = Path("logs/execution/order_metrics.jsonl")
 ORDER_EVENTS_PATH = Path("logs/execution/orders_executed.jsonl")
+STATE_DIR = Path(os.getenv("STATE_DIR") or "logs/state")
+ROUTER_HEALTH_STATE_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))
 LOG = logging.getLogger("dash.router")
+
+
+def _load_state_router_health(path: Optional[Path] = None) -> Optional[RouterHealthData]:
+    path = path or ROUTER_HEALTH_STATE_PATH
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    symbols = payload.get("symbols")
+    if not isinstance(symbols, list):
+        return None
+    now_iso = datetime.utcnow().isoformat()
+    per_symbol_df = pd.DataFrame.from_records(symbols) if symbols else pd.DataFrame()
+    trades_df = pd.DataFrame(columns=["time", "symbol", "pnl_usd"])
+    pnl_df = pd.DataFrame(columns=["time", "cum_pnl"])
+    summary = {
+        "updated_ts": payload.get("updated_ts"),
+        "generated_at": now_iso,
+    }
+    return RouterHealthData(
+        trades=trades_df,
+        per_symbol=per_symbol_df,
+        pnl_curve=pnl_df,
+        summary=summary,
+        overlays={},
+    )
 
 
 def _tail_jsonl(path: Path, limit: int) -> list[Mapping[str, Any]]:
@@ -217,6 +250,10 @@ def load_router_health(
     snapshot: Optional[Mapping[str, Any]] = None,
     trades_snapshot: Optional[Mapping[str, Any]] = None,
 ) -> RouterHealthData:
+    if signal_path is None and order_path is None and snapshot is None and trades_snapshot is None:
+        state_view = _load_state_router_health()
+        if state_view is not None:
+            return state_view
     sig_path = signal_path or SIGNAL_METRICS_PATH
     ord_path = order_path or ORDER_METRICS_PATH
     signal_rows = _tail_jsonl(sig_path, window * 2)

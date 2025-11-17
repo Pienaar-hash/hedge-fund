@@ -220,7 +220,7 @@ def router_effectiveness_7d(symbol: Optional[str] = None) -> Dict[str, Optional[
 
     for event in events:
         is_maker_final = bool(event.get("is_maker_final"))
-        started_maker = bool(event.get("started_maker"))
+        started_maker = bool(event.get("maker_start") or event.get("started_maker"))
         used_fallback = bool(event.get("used_fallback"))
         slip_bps = event.get("slippage_bps")
 
@@ -241,19 +241,19 @@ def router_effectiveness_7d(symbol: Optional[str] = None) -> Dict[str, Optional[
             return None
         return float(sum(values) / len(values))
 
-    def _quartiles(values: List[float]) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    def _quartiles(values: List[float]) -> tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
         if not values:
-            return (None, None, None)
+            return (None, None, None, None)
         arr = np.array(values, dtype=float)
         try:
             q25 = float(np.percentile(arr, 25))
             q50 = float(np.percentile(arr, 50))
             q75 = float(np.percentile(arr, 75))
-            return (q25, q50, q75)
+            q95 = float(np.percentile(arr, 95))
+            return (q25, q50, q75, q95)
         except Exception:
-            return (None, None, None)
-
-    q25, q50, q75 = _quartiles(slippages)
+            return (None, None, None, None)
+    q25, q50, q75, q95 = _quartiles(slippages)
 
     return {
         "maker_fill_ratio": _ratio(maker_flags),
@@ -261,4 +261,5 @@ def router_effectiveness_7d(symbol: Optional[str] = None) -> Dict[str, Optional[
         "slip_q25": q25,
         "slip_q50": q50,
         "slip_q75": q75,
+        "slip_q95": q95,
     }

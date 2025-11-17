@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 # - Loads .env from repo root (override=True) so ad-hoc runs see keys.
 # - Filters positions to non-zero qty and to symbols in pairs_universe.json (if present).
 # - Debounces writes (executor can call this every loop safely).
+import logging
 import os
 import pathlib
 import time
@@ -41,7 +42,9 @@ if ENV.lower() == "prod":
 FS_ROOT = f"hedge/{ENV}/state"
 LOG_DIR = ROOT_DIR / "logs"
 EXEC_LOG_DIR = LOG_DIR / "execution"
+STATE_DIR = LOG_DIR / "state"
 _EXEC_STATS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+LOG = logging.getLogger("state_publish")
 
 
 def _ensure_keys() -> None:
@@ -60,6 +63,51 @@ def _ensure_keys() -> None:
 
 
 _ensure_keys()
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (datetime,)):
+        return value.isoformat()
+    try:
+        return float(value)
+    except Exception:
+        return str(value)
+
+
+def _state_path(name: str) -> pathlib.Path:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return STATE_DIR / name
+
+
+def _write_state_file(name: str, payload: Dict[str, Any]) -> None:
+    try:
+        path = _state_path(name)
+        tmp = path.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, default=_json_default)
+        tmp.replace(path)
+    except Exception as exc:
+        LOG.debug("state_write_failed name=%s err=%s", name, exc)
+
+
+def write_positions_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("positions.json", payload)
+
+
+def write_nav_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("nav.json", payload)
+
+
+def write_router_health_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("router_health.json", payload)
+
+
+def write_risk_snapshot_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("risk_snapshot.json", payload)
+
+
+def write_universe_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("universe.json", payload)
 
 
 def _normalize_status(value: Any) -> str:
@@ -357,6 +405,10 @@ def publish_positions(rows: List[Dict[str, Any]]) -> None:
     payload = {"rows": rows, "updated": time.time(), "exec_stats": stats}
     if not _firestore_enabled():
         _append_local_jsonl("positions", payload)
+        try:
+            write_positions_state(payload)
+        except Exception as exc:
+            LOG.debug("write_positions_state_failed: %s", exc)
         return
     cli = _fs_client()
     cli.document(f"{FS_ROOT}/positions").set(payload, merge=True)
@@ -379,7 +431,12 @@ def publish_nav_value(
     now = time.time()
     stats = _compute_exec_stats()
     if not _firestore_enabled():
-        _append_local_jsonl("nav", {"t": now, "nav": float(nav), "exec_stats": stats})
+        payload = {"ts": now, "nav": float(nav), "exec_stats": stats}
+        _append_local_jsonl("nav", payload)
+        try:
+            write_nav_state({"nav": float(nav), "updated_ts": now, "exec_stats": stats})
+        except Exception as exc:
+            LOG.debug("write_nav_state_failed: %s", exc)
         return
     cli = _fs_client()
     doc = cli.document(f"{FS_ROOT}/nav")

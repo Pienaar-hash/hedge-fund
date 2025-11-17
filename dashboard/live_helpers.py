@@ -31,6 +31,10 @@ from execution.intel.symbol_score import compute_symbol_score
 from execution.intel.expectancy_map import hourly_expectancy as intel_hourly_expectancy
 
 STABLES = {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}
+STATE_DIR = Path(os.getenv("STATE_DIR") or "logs/state")
+NAV_STATE_PATH = Path(os.getenv("NAV_STATE_PATH") or (STATE_DIR / "nav.json"))
+UNIVERSE_STATE_PATH = Path(os.getenv("UNIVERSE_STATE_PATH") or (STATE_DIR / "universe.json"))
+ROUTER_HEALTH_STATE_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))
 
 
 def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
@@ -81,6 +85,22 @@ def _try_json(path: str) -> Any:
         return None
 
 
+def _load_state_json(path: Path) -> Any:
+    try:
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception:
+        return None
+    return None
+
+
+def load_universe_state() -> List[Dict[str, Any]]:
+    payload = _load_state_json(UNIVERSE_STATE_PATH)
+    if isinstance(payload, dict) and isinstance(payload.get("universe"), list):
+        return [dict(item) for item in payload["universe"] if isinstance(item, dict)]
+    return []
+
+
 def _read_strategy_cfg() -> Dict[str, Any]:
     cfg = load_json("config/strategy_config.json")
     return cfg if isinstance(cfg, dict) else {}
@@ -96,6 +116,24 @@ def get_nav_snapshot(nav_path: str | None = None) -> Dict[str, float]:
     Return a coarse NAV snapshot sourced from logs/nav.jsonl when available.
     Falls back to strategy config based NAV calculations; never raises.
     """
+    state_payload = _load_state_json(NAV_STATE_PATH)
+    now_ts = time.time()
+    if isinstance(state_payload, dict):
+        try:
+            nav_val = float(state_payload.get("nav") or state_payload.get("wallet", 0.0) or 0.0)
+        except Exception:
+            nav_val = 0.0
+        try:
+            equity_val = float(state_payload.get("equity") or nav_val)
+        except Exception:
+            equity_val = nav_val
+        ts_val = state_payload.get("updated_ts") or state_payload.get("ts")
+        try:
+            ts_float = float(ts_val) if ts_val is not None else now_ts
+        except Exception:
+            ts_float = now_ts
+        return {"nav": nav_val, "equity": equity_val, "ts": ts_float}
+
     default_path = os.getenv("NAV_LOG_PATH", "logs/nav.jsonl")
     path = Path(nav_path or default_path)
     now_ts = time.time()
@@ -135,6 +173,21 @@ def get_caps() -> Dict[str, float]:
         "max_symbol_exposure_pct": 0.0,
         "min_notional": 0.0,
     }
+    universe_entries = load_universe_state()
+    if universe_entries:
+        min_vals: List[float] = []
+        for entry in universe_entries:
+            try:
+                raw = entry.get("min_notional")
+                if raw is None:
+                    continue
+                min_vals.append(float(raw))
+            except Exception:
+                continue
+        positive = [val for val in min_vals if val > 0]
+        target_vals = positive or min_vals
+        if target_vals:
+            caps["min_notional"] = min(target_vals)
     try:
         cfg = _read_risk_cfg()
         gate = RiskGate(cfg)
@@ -143,7 +196,8 @@ def get_caps() -> Dict[str, float]:
         gross_pct = sizing.get("max_gross_exposure_pct") or sizing.get("max_portfolio_gross_nav_pct")
         caps["max_gross_exposure_pct"] = float(gross_pct or 0.0)
         caps["max_symbol_exposure_pct"] = float(sizing.get("max_symbol_exposure_pct") or 0.0)
-        caps["min_notional"] = float(getattr(gate, "min_notional", 0.0) or 0.0)
+        if not caps["min_notional"]:
+            caps["min_notional"] = float(getattr(gate, "min_notional", 0.0) or 0.0)
     except Exception:
         pass
     return caps
