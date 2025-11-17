@@ -62,3 +62,10 @@ def test_publish_positions_writes_state_snapshot(tmp_path, monkeypatch) -> None:
     assert state_file.exists()
     payload = json.loads(state_file.read_text())
     assert payload["rows"][0]["symbol"] == "BTCUSDT"
+
+
+def test_write_risk_allocation_suggestions_state(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(state_publish, "STATE_DIR", tmp_path / "state")
+    state_publish.write_risk_allocation_suggestions_state({"suggestions": []})
+    out_path = state_publish.STATE_DIR / "risk_allocation_suggestions_v6.json"
+    assert out_path.exists()

@@ -1,4 +1,11 @@
-from execution.intel.router_policy import classify_router_quality, router_policy
+import pytest
+
+from execution.intel.router_policy import (
+    classify_router_quality,
+    classify_router_regime,
+    compute_router_summary,
+    router_policy,
+)
 
 
 def test_classify_router_quality_tiers_execution_intelligence():
@@ -32,3 +39,30 @@ def test_router_policy_prefers_maker_when_good_execution_intelligence(monkeypatc
     assert policy.quality == "good"
     assert policy.maker_first is True
     assert policy.taker_bias == "prefer_maker"
+
+
+def test_classify_router_regime_variants():
+    assert (
+        classify_router_regime({"maker_fill_rate": 0.8, "fallback_rate": 0.1, "slippage_p95": 3.0})
+        == "maker_strong"
+    )
+    assert (
+        classify_router_regime({"maker_fill_rate": 0.4, "fallback_rate": 0.65, "slippage_p95": 4.0})
+        == "fallback_heavy"
+    )
+    assert (
+        classify_router_regime({"maker_fill_rate": 0.5, "fallback_rate": 0.2, "slippage_p95": 14.0})
+        == "slippage_hot"
+    )
+
+
+def test_compute_router_summary_normalizes_inputs():
+    events = [
+        {"is_maker_final": True, "maker_start": True, "used_fallback": False, "slippage_bps": 1.0, "latency_ms": 400},
+        {"is_maker_final": False, "maker_start": True, "used_fallback": True, "slippage_bps": 12.0, "latency_ms": 800},
+    ]
+    summary = compute_router_summary(events)
+    assert summary["maker_fill_rate"] == 0.5
+    assert summary["fallback_rate"] == 0.5
+    assert summary["slippage_p50"] == pytest.approx(6.5)
+    assert summary["slippage_p95"] == pytest.approx(11.45)

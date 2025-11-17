@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import time
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, List, Tuple, Mapping
+from typing import Any, Dict, Iterable, List, Tuple, Mapping, Optional
 
 import os
 from .exchange_utils import get_klines, get_price, get_symbol_filters
@@ -29,6 +29,7 @@ from .risk_limits import (
     symbol_notional_guard,
     symbol_dd_guard,
 )
+from .risk_engine_v6 import OrderIntent, RiskEngineV6
 from .nav import PortfolioSnapshot
 
 try:
@@ -198,6 +199,9 @@ def _reduce_plan(
 
 _SCREENER_RISK_STATE = RiskState()
 _SCREENER_GATE = RiskGate({"sizing": {}, "risk": {}})
+RISK_ENGINE_V6_ENABLED = os.getenv("RISK_ENGINE_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+_RISK_ENGINE_V6: Optional[RiskEngineV6] = None
+_RISK_ENGINE_V6_CFG_DIGEST: Optional[str] = None
 
 
 def _strategy_params(entry: Mapping[str, Any]) -> Dict[str, Any]:
@@ -316,6 +320,28 @@ def _load_risk_cfg() -> Dict[str, Any]:
     return cfg
 
 
+def _pairs_cfg_path() -> str:
+    return os.getenv("PAIRS_UNIVERSE_CONFIG", "config/pairs_universe.json")
+
+
+def _load_pairs_cfg() -> Dict[str, Any]:
+    try:
+        payload = json.load(open(_pairs_cfg_path()))
+    except Exception:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _get_risk_engine_v6(risk_cfg: Mapping[str, Any]) -> Optional[RiskEngineV6]:
+    global _RISK_ENGINE_V6, _RISK_ENGINE_V6_CFG_DIGEST
+    digest = json.dumps(risk_cfg, sort_keys=True, default=str)
+    if _RISK_ENGINE_V6 is None or _RISK_ENGINE_V6_CFG_DIGEST != digest:
+        pairs_cfg = _load_pairs_cfg()
+        _RISK_ENGINE_V6 = RiskEngineV6.from_configs(risk_cfg, pairs_cfg)
+        _RISK_ENGINE_V6_CFG_DIGEST = digest
+    return _RISK_ENGINE_V6
+
+
 def would_emit(
     symbol: str,
     side: str,
@@ -415,22 +441,43 @@ def would_emit(
                 reasons.append(reason)
         return False, reasons, extra
 
-    risk_veto, details = check_order(
-        symbol=sym,
-        side=side,
-        requested_notional=float(notional) * float(lev),
-        price=0.0,
-        nav=float(nav),
-        open_qty=0.0,
-        now=time.time(),
-        cfg=cfg,
-        state=temp_state,
-        current_gross_notional=float(current_gross_notional),
-        lev=float(lev),
-        open_positions_count=int(open_positions_count),
-        tier_name=tname,
-        current_tier_gross_notional=float(current_tier_gross_notional),
-    )
+    engine = _get_risk_engine_v6(cfg) if RISK_ENGINE_V6_ENABLED else None
+
+    if engine is not None and RISK_ENGINE_V6_ENABLED:
+        intent_payload = OrderIntent(
+            symbol=sym,
+            side=side,
+            qty=float(notional),
+            quote_notional=float(notional) * float(lev),
+            leverage=float(lev),
+            price=0.0,
+            tier_name=tname,
+            tier_gross_notional=float(current_tier_gross_notional),
+            current_gross_notional=float(current_gross_notional),
+            symbol_open_qty=0.0,
+            nav_usd=float(nav),
+            open_positions_count=int(open_positions_count),
+        )
+        decision = engine.check_order(intent_payload, temp_state)
+        risk_veto = not decision.allowed
+        details = decision.diagnostics or {}
+    else:
+        risk_veto, details = check_order(
+            symbol=sym,
+            side=side,
+            requested_notional=float(notional) * float(lev),
+            price=0.0,
+            nav=float(nav),
+            open_qty=0.0,
+            now=time.time(),
+            cfg=cfg,
+            state=temp_state,
+            current_gross_notional=float(current_gross_notional),
+            lev=float(lev),
+            open_positions_count=int(open_positions_count),
+            tier_name=tname,
+            current_tier_gross_notional=float(current_tier_gross_notional),
+        )
     detail_dict = details if isinstance(details, dict) else {}
     if isinstance(details, dict):
         extra["risk"] = detail_dict

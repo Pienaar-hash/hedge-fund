@@ -118,6 +118,14 @@ def write_symbol_scores_state(payload: Dict[str, Any]) -> None:
     _write_state_file("symbol_scores_v6.json", payload)
 
 
+def write_router_policy_suggestions_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("router_policy_suggestions_v6.json", payload)
+
+
+def write_risk_allocation_suggestions_state(payload: Dict[str, Any]) -> None:
+    _write_state_file("risk_allocation_suggestions_v6.json", payload)
+
+
 def _normalize_status(value: Any) -> str:
     if not value:
         return "UNKNOWN"

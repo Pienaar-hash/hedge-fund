@@ -84,6 +84,15 @@ _LAST_RISK_CACHE: Dict[str, Dict[str, Any]] = {}
 _LAST_ALERT_TS: Dict[str, float] = {}
 INTEL_V6_ENABLED = os.getenv("INTEL_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 INTEL_V6_REFRESH_INTERVAL_S = float(os.getenv("INTEL_V6_REFRESH_INTERVAL_S", "600") or 600)
+ROUTER_AUTOTUNE_V6_ENABLED = os.getenv("ROUTER_AUTOTUNE_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+ROUTER_AUTOTUNE_V6_REFRESH_INTERVAL_S = float(os.getenv("ROUTER_AUTOTUNE_V6_REFRESH_INTERVAL_S", "900") or 900)
+_LAST_ROUTER_AUTOTUNE_PUBLISH = 0.0
+FEEDBACK_ALLOCATOR_V6_ENABLED = os.getenv("FEEDBACK_ALLOCATOR_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+FEEDBACK_ALLOCATOR_V6_REFRESH_INTERVAL_S = float(os.getenv("FEEDBACK_ALLOCATOR_V6_REFRESH_INTERVAL_S", "1800") or 1800)
+_LAST_FEEDBACK_ALLOCATOR_PUBLISH = 0.0
+RISK_ENGINE_V6_ENABLED = os.getenv("RISK_ENGINE_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+_RISK_ENGINE_V6: Optional[RiskEngineV6] = None
+_RISK_ENGINE_V6_CFG_DIGEST: Optional[str] = None
 
 
 def mk_id(prefix: str) -> str:
@@ -172,6 +181,31 @@ def _collect_execution_health() -> Dict[str, Any]:
     return {"updated_ts": now, "symbols": snapshot_entries}
 
 
+def _pairs_cfg_path() -> str:
+    return os.getenv("PAIRS_UNIVERSE_CONFIG", "config/pairs_universe.json")
+
+
+def _load_pairs_cfg() -> Dict[str, Any]:
+    try:
+        payload = json.loads(Path(_pairs_cfg_path()).read_text())
+    except Exception:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _get_risk_engine_v6() -> Optional[RiskEngineV6]:
+    global _RISK_ENGINE_V6, _RISK_ENGINE_V6_CFG_DIGEST
+    try:
+        digest = json.dumps(_RISK_CFG, sort_keys=True, default=str)
+    except Exception:
+        digest = None
+    if _RISK_ENGINE_V6 is None or _RISK_ENGINE_V6_CFG_DIGEST != digest:
+        pairs_cfg = _load_pairs_cfg()
+        _RISK_ENGINE_V6 = RiskEngineV6.from_configs(_RISK_CFG, pairs_cfg)
+        _RISK_ENGINE_V6_CFG_DIGEST = digest
+    return _RISK_ENGINE_V6
+
+
 def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
     global _LAST_ROUTER_HEALTH_PUBLISH
     _write_router_metrics_local(event)
@@ -198,7 +232,14 @@ def _maybe_publish_execution_health(symbol: str) -> None:
     if (now - _LAST_RISK_PUBLISH) < EXEC_HEALTH_PUBLISH_INTERVAL_S:
         return
     try:
-        snapshot = _collect_execution_health()
+        engine = _get_risk_engine_v6()
+    except Exception:
+        engine = None
+    try:
+        if engine is not None:
+            snapshot = engine.build_risk_snapshot()
+        else:
+            snapshot = _collect_execution_health()
     except Exception as exc:
         LOG.debug("[metrics] execution_health_collect_failed: %s", exc)
         return
@@ -264,8 +305,13 @@ def _maybe_publish_execution_intel(symbol: str) -> None:
     if (now - last_analysis) < INTEL_V6_REFRESH_INTERVAL_S:
         return
     try:
-        from execution.intel import expectancy_v6, symbol_score_v6
-        from execution.state_publish import write_expectancy_state, write_symbol_scores_state
+        from execution.intel import expectancy_v6, symbol_score_v6, router_autotune_v6, feedback_allocator_v6
+        from execution.state_publish import (
+            write_expectancy_state,
+            write_symbol_scores_state,
+            write_router_policy_suggestions_state,
+            write_risk_allocation_suggestions_state,
+        )
 
         trades = expectancy_v6.load_trade_records(lookback_hours=48.0)
         router_metrics = expectancy_v6.load_router_metrics(lookback_hours=48.0)
@@ -276,6 +322,33 @@ def _maybe_publish_execution_intel(symbol: str) -> None:
         router_health = _build_router_health_snapshot()
         scores_snapshot = symbol_score_v6.build_symbol_scores(expectancy_snapshot, router_health)
         write_symbol_scores_state(scores_snapshot)
+        router_suggestions_payload = None
+        if ROUTER_AUTOTUNE_V6_ENABLED:
+            global _LAST_ROUTER_AUTOTUNE_PUBLISH
+            if (now - _LAST_ROUTER_AUTOTUNE_PUBLISH) >= ROUTER_AUTOTUNE_V6_REFRESH_INTERVAL_S:
+                lookback_hours = float(expectancy_snapshot.get("lookback_hours") or 0.0)
+                lookback_days_val = lookback_hours / 24.0 if lookback_hours > 0 else 7.0
+                suggestions = router_autotune_v6.build_suggestions(
+                    expectancy_snapshot=expectancy_snapshot,
+                    symbol_scores_snapshot=scores_snapshot,
+                    router_health_snapshot=router_health,
+                    risk_config=_RISK_CFG,
+                    lookback_days=lookback_days_val,
+                )
+                write_router_policy_suggestions_state(suggestions)
+                _LAST_ROUTER_AUTOTUNE_PUBLISH = now
+                router_suggestions_payload = suggestions
+        if FEEDBACK_ALLOCATOR_V6_ENABLED:
+            global _LAST_FEEDBACK_ALLOCATOR_PUBLISH
+            if (now - _LAST_FEEDBACK_ALLOCATOR_PUBLISH) >= FEEDBACK_ALLOCATOR_V6_REFRESH_INTERVAL_S:
+                allocator_payload = feedback_allocator_v6.build_suggestions(
+                    expectancy_snapshot=expectancy_snapshot,
+                    symbol_scores_snapshot=scores_snapshot,
+                    router_policy_snapshot=router_suggestions_payload,
+                    risk_config=_RISK_CFG,
+                )
+                write_risk_allocation_suggestions_state(allocator_payload)
+                _LAST_FEEDBACK_ALLOCATOR_PUBLISH = now
         _LAST_INTEL_PUBLISH["analysis"] = now
     except Exception as exc:
         LOG.debug("[intel] analysis_publish_failed: %s", exc)
@@ -316,6 +389,7 @@ from execution.risk_limits import (
     symbol_notional_guard,
     symbol_dd_guard,
 )
+from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
 from execution.risk_autotune import RiskAutotuner
 from execution.nav import compute_nav_pair, PortfolioSnapshot
 from execution import size_model
@@ -381,7 +455,10 @@ except Exception as e:
 
 
 def _load_registry_entries() -> Dict[str, Dict[str, Any]]:
-    payload = load_json("config/strategy_registry.json") or {}
+    try:
+        payload = load_json("config/strategy_registry.json") or {}
+    except Exception:
+        payload = {}
     raw = payload.get("strategies") if isinstance(payload, Mapping) else payload
     if not isinstance(raw, Mapping):
         return {}
@@ -1328,6 +1405,101 @@ def _current_bucket_gross(symbol_gross: Mapping[str, float], buckets: Mapping[st
     return totals
 
 
+def _build_order_intent_for_executor(
+    symbol: str,
+    side: str,
+    *,
+    gross_notional: float,
+    nav: float,
+    sym_open_qty: float,
+    current_gross: float,
+    open_positions_count: int,
+    tier_name: Optional[str],
+    current_tier_gross: float,
+    lev: float,
+    intent: Mapping[str, Any],
+) -> OrderIntent:
+    qty = float(intent.get("qty") or intent.get("quantity") or 0.0)
+    price = float(intent.get("price") or 0.0)
+    if qty <= 0.0 and price > 0.0:
+        qty = gross_notional / price
+    return OrderIntent(
+        symbol=str(symbol).upper(),
+        side=str(side).upper(),
+        qty=qty,
+        quote_notional=float(gross_notional),
+        leverage=float(lev),
+        price=price,
+        tier_name=tier_name,
+        tier_gross_notional=float(current_tier_gross),
+        current_gross_notional=float(current_gross),
+        symbol_open_qty=float(sym_open_qty),
+        nav_usd=float(nav),
+        open_positions_count=int(open_positions_count),
+        strategy_id=str(intent.get("strategy_id") or intent.get("strategy") or "") or None,
+        account_mode=str(intent.get("account_mode") or intent.get("marginMode") or "") or None,
+        metadata={"intent": dict(intent)},
+    )
+
+
+def _evaluate_order_risk(
+    symbol: str,
+    side: str,
+    *,
+    gross_target: float,
+    nav: float,
+    sym_open_qty: float,
+    current_gross: float,
+    open_positions_count: int,
+    tier_name: Optional[str],
+    current_tier_gross: float,
+    lev: float,
+    reduce_only: bool,
+    intent: Mapping[str, Any],
+) -> tuple[bool, Mapping[str, Any]]:
+    if reduce_only:
+        return False, {}
+    engine: Optional[RiskEngineV6] = None
+    if RISK_ENGINE_V6_ENABLED:
+        try:
+            engine = _get_risk_engine_v6()
+        except Exception:
+            engine = None
+    if engine is not None and RISK_ENGINE_V6_ENABLED:
+        order_intent = _build_order_intent_for_executor(
+            symbol,
+            side,
+            gross_notional=gross_target,
+            nav=nav,
+            sym_open_qty=sym_open_qty,
+            current_gross=current_gross,
+            open_positions_count=open_positions_count,
+            tier_name=tier_name,
+            current_tier_gross=current_tier_gross,
+            lev=lev,
+            intent=intent,
+        )
+        decision = engine.check_order(order_intent, _RISK_STATE)
+        return (not decision.allowed), decision.diagnostics or {}
+    risk_veto, details = check_order(
+        symbol=symbol,
+        side=side,
+        requested_notional=gross_target,
+        price=float(intent.get("price") or 0.0),
+        nav=nav,
+        open_qty=sym_open_qty,
+        now=time.time(),
+        cfg=_RISK_CFG,
+        state=_RISK_STATE,
+        current_gross_notional=current_gross,
+        lev=lev,
+        open_positions_count=open_positions_count,
+        tier_name=tier_name,
+        current_tier_gross_notional=current_tier_gross,
+    )
+    return risk_veto, details
+
+
 # NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     symbol = intent["symbol"]
@@ -1454,42 +1626,43 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         float((_RISK_CFG.get("global") or {}).get("min_notional_usdt", 0.0) or 0.0),
     )
     gross_target = max(gross_target, floor_gross)
-    if not reduce_only:
-        risk_global_caps = _RISK_CFG.get("global") if isinstance(_RISK_CFG, Mapping) else {}
-        if not isinstance(risk_global_caps, Mapping):
-            risk_global_caps = {}
-        raw_per_symbol = _RISK_CFG.get("per_symbol") if isinstance(_RISK_CFG, Mapping) else {}
-        risk_per_symbol: Dict[str, Mapping[str, Any]] = {}
-        if isinstance(raw_per_symbol, Mapping):
-            for key, value in raw_per_symbol.items():
-                if isinstance(value, Mapping):
-                    risk_per_symbol[str(key).upper()] = value
-        symbol_buckets.clear()
-        for sym_key, info in universe_by_symbol().items():
-            bucket = info.get("tier") or info.get("bucket")
-            if bucket:
-                symbol_buckets[sym_key] = str(bucket)
-        for strat in cfg.get("strategies") or []:
-            if not isinstance(strat, Mapping):
-                continue
-            sym = str(strat.get("symbol") or "").upper()
-            if not sym or sym in symbol_buckets:
-                continue
-            params = strat.get("params") if isinstance(strat.get("params"), Mapping) else {}
-            bucket = (params or {}).get("bucket") or strat.get("bucket")
-            if bucket:
-                symbol_buckets[sym] = str(bucket)
-        symbol_buckets.setdefault(symbol_upper, symbol_buckets.get(symbol_upper, "UNASSIGNED"))
-        tier_gross_map = _current_bucket_gross(symbol_gross_map, symbol_buckets)
-        if not tier_name:
-            tier_name = symbol_buckets.get(symbol_upper)
-        if tier_name:
-            current_tier_gross = tier_gross_map.get(tier_name, 0.0) or 0.0
+    try:
+        if not reduce_only:
+            risk_global_caps = _RISK_CFG.get("global") if isinstance(_RISK_CFG, Mapping) else {}
+            if not isinstance(risk_global_caps, Mapping):
+                risk_global_caps = {}
+            raw_per_symbol = _RISK_CFG.get("per_symbol") if isinstance(_RISK_CFG, Mapping) else {}
+            risk_per_symbol: Dict[str, Mapping[str, Any]] = {}
+            if isinstance(raw_per_symbol, Mapping):
+                for key, value in raw_per_symbol.items():
+                    if isinstance(value, Mapping):
+                        risk_per_symbol[str(key).upper()] = value
+            symbol_buckets.clear()
+            for sym_key, info in universe_by_symbol().items():
+                bucket = info.get("tier") or info.get("bucket")
+                if bucket:
+                    symbol_buckets[sym_key] = str(bucket)
+            for strat in cfg.get("strategies") or []:
+                if not isinstance(strat, Mapping):
+                    continue
+                sym = str(strat.get("symbol") or "").upper()
+                if not sym or sym in symbol_buckets:
+                    continue
+                params = strat.get("params") if isinstance(strat.get("params"), Mapping) else {}
+                bucket = (params or {}).get("bucket") or strat.get("bucket")
+                if bucket:
+                    symbol_buckets[sym] = str(bucket)
+            symbol_buckets.setdefault(symbol_upper, symbol_buckets.get(symbol_upper, "UNASSIGNED"))
+            tier_gross_map = _current_bucket_gross(symbol_gross_map, symbol_buckets)
+            if not tier_name:
+                tier_name = symbol_buckets.get(symbol_upper)
+            if tier_name:
+                current_tier_gross = tier_gross_map.get(tier_name, 0.0) or 0.0
 
-        def _merge_caps(*values: Any) -> float:
-            caps: List[float] = []
-            for candidate in values:
-                normalized = _normalize_pct_value(candidate)
+            def _merge_caps(*values: Any) -> float:
+                caps: List[float] = []
+                for candidate in values:
+                    normalized = _normalize_pct_value(candidate)
                     if normalized > 0.0:
                         caps.append(normalized)
                 return min(caps) if caps else 0.0
@@ -1904,26 +2077,20 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     except Exception:
         pass
 
-    if reduce_only:
-        risk_veto = False
-        details: Dict[str, Any] = {}
-    else:
-        risk_veto, details = check_order(
-            symbol=symbol,
-            side=side,
-            requested_notional=gross_target,
-            price=0.0,
-            nav=nav,
-            open_qty=sym_open_qty,
-            now=time.time(),
-            cfg=_RISK_CFG,
-            state=_RISK_STATE,
-            current_gross_notional=current_gross,
-            lev=lev,
-            open_positions_count=open_positions_count,
-            tier_name=tier_name,
-            current_tier_gross_notional=current_tier_gross,
-        )
+    risk_veto, details = _evaluate_order_risk(
+        symbol,
+        side,
+        gross_target=gross_target,
+        nav=nav,
+        sym_open_qty=sym_open_qty,
+        current_gross=current_gross,
+        open_positions_count=open_positions_count,
+        tier_name=tier_name,
+        current_tier_gross=current_tier_gross,
+        lev=lev,
+        reduce_only=reduce_only,
+        intent=intent,
+    )
     reasons = details.get("reasons", []) if isinstance(details, dict) else []
     if risk_veto:
         reason = reasons[0] if reasons else "blocked"
