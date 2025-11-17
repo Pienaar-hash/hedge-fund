@@ -82,6 +82,8 @@ _LAST_ROUTER_HEALTH_PUBLISH = 0.0
 _LAST_RISK_PUBLISH = 0.0
 _LAST_RISK_CACHE: Dict[str, Dict[str, Any]] = {}
 _LAST_ALERT_TS: Dict[str, float] = {}
+INTEL_V6_ENABLED = os.getenv("INTEL_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+INTEL_V6_REFRESH_INTERVAL_S = float(os.getenv("INTEL_V6_REFRESH_INTERVAL_S", "600") or 600)
 
 
 def mk_id(prefix: str) -> str:
@@ -248,15 +250,35 @@ def _maybe_emit_execution_alerts(symbol: str) -> None:
 def _maybe_publish_execution_intel(symbol: str) -> None:
     now = time.time()
     last = _LAST_INTEL_PUBLISH.get("universe", 0.0)
-    if (now - last) < EXEC_INTEL_PUBLISH_INTERVAL_S:
+    if (now - last) >= EXEC_INTEL_PUBLISH_INTERVAL_S:
+        try:
+            from execution.universe_resolver import write_universe_snapshot
+
+            write_universe_snapshot()
+            _LAST_INTEL_PUBLISH["universe"] = now
+        except Exception as exc:
+            LOG.debug("[metrics] universe_snapshot_failed: %s", exc)
+    if not INTEL_V6_ENABLED:
+        return
+    last_analysis = _LAST_INTEL_PUBLISH.get("analysis", 0.0)
+    if (now - last_analysis) < INTEL_V6_REFRESH_INTERVAL_S:
         return
     try:
-        from execution.universe_resolver import write_universe_snapshot
+        from execution.intel import expectancy_v6, symbol_score_v6
+        from execution.state_publish import write_expectancy_state, write_symbol_scores_state
 
-        write_universe_snapshot()
-        _LAST_INTEL_PUBLISH["universe"] = now
+        trades = expectancy_v6.load_trade_records(lookback_hours=48.0)
+        router_metrics = expectancy_v6.load_router_metrics(lookback_hours=48.0)
+        trades = expectancy_v6.merge_trades_with_policy(trades, router_metrics)
+        expectancy_snapshot = expectancy_v6.build_expectancy_snapshot(trades, 48.0)
+        if expectancy_snapshot.get("symbols"):
+            write_expectancy_state(expectancy_snapshot)
+        router_health = _build_router_health_snapshot()
+        scores_snapshot = symbol_score_v6.build_symbol_scores(expectancy_snapshot, router_health)
+        write_symbol_scores_state(scores_snapshot)
+        _LAST_INTEL_PUBLISH["analysis"] = now
     except Exception as exc:
-        LOG.debug("[metrics] universe_snapshot_failed: %s", exc)
+        LOG.debug("[intel] analysis_publish_failed: %s", exc)
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (

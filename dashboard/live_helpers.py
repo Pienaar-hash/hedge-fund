@@ -35,6 +35,8 @@ STATE_DIR = Path(os.getenv("STATE_DIR") or "logs/state")
 NAV_STATE_PATH = Path(os.getenv("NAV_STATE_PATH") or (STATE_DIR / "nav.json"))
 UNIVERSE_STATE_PATH = Path(os.getenv("UNIVERSE_STATE_PATH") or (STATE_DIR / "universe.json"))
 ROUTER_HEALTH_STATE_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))
+EXPECTANCY_STATE_PATH = Path(os.getenv("EXPECTANCY_STATE_PATH") or (STATE_DIR / "expectancy_v6.json"))
+SYMBOL_SCORES_STATE_PATH = Path(os.getenv("SYMBOL_SCORES_STATE_PATH") or (STATE_DIR / "symbol_scores_v6.json"))
 
 
 def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
@@ -99,6 +101,41 @@ def load_universe_state() -> List[Dict[str, Any]]:
     if isinstance(payload, dict) and isinstance(payload.get("universe"), list):
         return [dict(item) for item in payload["universe"] if isinstance(item, dict)]
     return []
+
+
+def load_expectancy_v6_state() -> Dict[str, Any]:
+    payload = _load_state_json(EXPECTANCY_STATE_PATH)
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_symbol_scores_v6_state() -> Dict[str, Any]:
+    payload = _load_state_json(SYMBOL_SCORES_STATE_PATH)
+    return payload if isinstance(payload, dict) else {}
+
+
+def get_symbol_intel_table(limit: int = 20) -> List[Dict[str, Any]]:
+    scores_snapshot = load_symbol_scores_v6_state()
+    expectancy_snapshot = load_expectancy_v6_state()
+    expectancy_map = expectancy_snapshot.get("symbols") if isinstance(expectancy_snapshot.get("symbols"), dict) else {}
+    rows: List[Dict[str, Any]] = []
+    for entry in scores_snapshot.get("symbols", []) if isinstance(scores_snapshot.get("symbols"), list) else []:
+        symbol = entry.get("symbol")
+        if not symbol:
+            continue
+        exp_entry = expectancy_map.get(symbol)
+        row = {
+            "symbol": symbol,
+            "score": entry.get("score"),
+            "expectancy": (exp_entry or {}).get("expectancy"),
+            "hit_rate": (exp_entry or {}).get("hit_rate"),
+            "max_drawdown": (exp_entry or {}).get("max_drawdown"),
+            "components": entry.get("components"),
+        }
+        rows.append(row)
+    rows.sort(key=lambda item: item.get("score") or 0.0, reverse=True)
+    if limit > 0:
+        rows = rows[:limit]
+    return rows
 
 
 def _read_strategy_cfg() -> Dict[str, Any]:
