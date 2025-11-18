@@ -1,0 +1,73 @@
+## 1️⃣ Batch 3 Review Checklist (Telemetry v2 Foundations)
+
+Use this as a quick “pre-merge sanity” list for what Codex claims it did.
+
+### A. Files & structure
+
+* [x] `execution/state_publish.py`
+
+  * [x] Has helpers for **positions/nav/router_health/risk/universe** snapshots.
+  * [x] Writes both **JSONL history** and **logs/state/*.json** state docs.
+  * [x] No Firestore or external side-effects beyond local filesystem.
+
+* [x] `execution/universe_resolver.py`
+
+  * [x] Exposes a clear **build_universe_snapshot()** and **write_universe_snapshot()** or equivalent.
+  * [x] Snapshot entries include at least:
+
+    * symbol
+    * tier
+    * max_leverage
+    * min_notional
+    * caps (per-symbol caps, e.g. max_nav_pct / max_order_notional / concurrency)
+    * updated_ts
+
+* [x] `execution/executor_live.py`
+
+  * [x] Telemetry hooks are **no longer stubs**:
+
+    * `_mirror_router_metrics`
+    * `_maybe_publish_execution_health`
+    * `_maybe_publish_execution_intel`
+    * `_maybe_emit_execution_alerts`
+  * [x] These functions:
+
+    * call into **state_publish** helpers (not ad-hoc writers),
+    * produce / refresh `logs/state/nav.json`, `logs/state/positions.json`, `logs/state/router_health.json`, `logs/state/universe.json`, `logs/state/risk_snapshot.json`,
+    * append to JSONL logs like `execution_alerts.jsonl` without changing order flow.
+
+* [x] `execution/order_router.py`
+
+  * [x] Router metrics for each routed order include:
+
+    * `maker_start`
+    * `is_maker_final`
+    * `used_fallback`
+    * `ack_latency_ms`
+    * slippage fields (e.g. `slippage_bps`)
+    * current **router policy metadata** (quality/maker_first/bias).
+  * [x] Return shape is still compatible with caller expectations (executor, metrics, tests).
+
+* [x] `execution/utils/metrics.py`
+
+  * [x] Consumers accept **legacy** metrics as well as enriched v2 metrics.
+  * [x] New stats include at least **slippage p95** (or similar) and use new fields when present.
+
+* [x] Dashboard helpers
+
+  * [x] `dashboard/live_helpers.py`:
+
+    * prefers `logs/state/nav.json` and `logs/state/universe.json`,
+    * gracefully falls back to legacy sources if state files missing,
+    * does not read strategy configs directly for live NAV/universe.
+  * [x] `dashboard/router_health.py`:
+
+    * reads `logs/state/router_health.json` first,
+    * falls back to legacy JSONL router metrics.
+
+* [x] Tests
+
+  * [x] `tests/test_state_publish_stats.py` asserts that **publish_positions** (and/or nav) produce the state docs.
+  * [x] `tests/test_dashboard_metrics.py` asserts the dashboard prefers state docs.
+  * [x] `tests/test_router_health_v2.py` checks dashboard uses `router_health.json`.
+  * [x] Router metric tests (`test_router_smoke.py`, `test_order_metrics.py`, `test_router_metrics_effectiveness.py`) assert the new maker/fallback fields.

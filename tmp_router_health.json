@@ -1,0 +1,1 @@
+{"updated_ts": 123.0, "symbols": [{"symbol": "BTCUSDT", "maker_fill_rate": 0.7, "fallback_rate": 0.1, "slippage_p50": 1.0, "slippage_p95": 2.0, "policy": {"maker_first": true, "taker_bias": "balanced", "quality": "good"}}]}

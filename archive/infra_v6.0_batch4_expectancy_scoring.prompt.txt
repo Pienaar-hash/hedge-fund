@@ -1,0 +1,168 @@
+You are my Execution Intelligence patch agent for the hedge-fund repo.
+
+Stage: v6.0-alpha1, after Batches 0–3.
+- Docs: v6.0_Master_Architecture_Map.md, v6.0_architecture_brief.md, ARCHITECTURE_CURRENT.md,
+        infra_v6.0_repo_topology.md are aligned.
+- Configs: strategy_config.json, risk_limits.json, pairs_universe.json, strategy_registry.json are normalized.
+- Execution + risk: executor_live, risk_limits, order_router, metrics, router_policy are using shared risk config
+  and enriched router metrics.
+- Telemetry: state_publish.py and executor telemetry hooks write canonical logs/state/*.json snapshots plus JSONL histories.
+  Dashboard reads nav.json, universe.json, router_health.json with fallbacks.
+
+OBJECTIVE — Batch 4 (Execution Intelligence v6, Expectancy + Scoring):
+- Build *analysis-only* v6 surfaces for:
+  1) expectancy (per-symbol, per-strategy, per-router policy)
+  2) symbol scoring (inputs for screener, size adapters, later router autotune)
+- NO changes to:
+  - live sizing,
+  - risk caps,
+  - router policy decisions,
+  - order emission pathways.
+- This batch must be safe to run in live environments as *observation only*.
+
+SCOPE
+
+New / primary modules:
+- execution/intel/expectancy_v6.py
+- execution/intel/symbol_score_v6.py
+
+Existing modules to integrate:
+- execution/utils/metrics.py
+- execution/order_router.py (for metric/plumbing only, not behavior)
+- execution/state_publish.py
+- execution/executor_live.py (for optional logging hooks only)
+- tests:
+  - tests/test_expectancy_v6.py (new)
+  - tests/test_symbol_score_v6.py (new)
+  - tests/test_router_metrics_effectiveness.py (extend if appropriate)
+
+DATA SOURCES
+
+Use the following as inputs:
+- Trade / order metrics JSONL (whatever Batch 2/3 defined as the canonical router metrics log).
+- logs/state/nav.json
+- logs/state/positions.json
+- logs/state/router_health.json
+- logs/state/universe.json
+- Any existing trade logs referenced in infra_v6.0_repo_topology.md §4 (test_router_metrics_effectiveness etc).
+
+Design requirements
+
+1) expectancy_v6.py
+   - Provide functions to compute expectancy surfaces over configurable lookbacks:
+     - symbol-level expectancy
+     - strategy-level expectancy (if strategy id is in logs)
+     - router-policy / regime level expectancy (e.g. maker-first vs taker-heavy regimes)
+   - Metrics:
+     - avg R (mean trade return)
+     - hit rate
+     - expectancy per unit risk
+     - drawdown-aware expectancy (e.g. penalizing clusters of losses)
+   - Input interfaces:
+     - Functions should take *pure data* inputs (e.g. list of trade/metrics dicts or pandas-like records),
+       OR read directly from canonical JSONL/log paths via thin loader helpers.
+   - Output:
+     - Python dicts/records suitable for:
+       - state_publish integration (e.g. writing logs/state/expectancy_v6.json),
+       - dashboard consumption,
+       - later RiskEngine/size adapter integration.
+   - No dependency on live Binance calls or exchange adapters.
+
+2) symbol_score_v6.py
+   - Build a **scoring model** per symbol that can be used for screener, sizing, and router biasing later.
+   - Inputs:
+     - expectancy signals from expectancy_v6
+     - router health stats from router_health.json
+     - liquidity and volatility proxies (if available from existing metrics)
+   - Example scoring components:
+     - recent expectancy (higher = better)
+     - hit rate
+     - realized slippage (lower = better)
+     - router quality (maker fill, fallback rate)
+   - Output:
+     - score per symbol in a stable range, e.g. [-1.0, +1.0] or [0.0, 1.0]
+     - supportive breakdown fields (subscores) for debugging.
+   - Provide helper(s) to:
+     - write logs/state/symbol_scores_v6.json
+     - optionally expose top-N ranked symbols for the dashboard.
+
+3) State publishing hooks (analysis-only)
+   - In execution/state_publish.py:
+     - Add optional helpers to write:
+       - logs/state/expectancy_v6.json
+       - logs/state/symbol_scores_v6.json
+   - In execution/executor_live.py:
+     - If safe and low-cost, add a periodic (throttled) hook that:
+       - reads recent metrics/trades, computes expectancy_v6 + symbol_score_v6,
+       - publishes state docs via state_publish helpers.
+     - This must be:
+       - behind a configuration toggle (e.g. settings/intel_enabled),
+       - resilient if logs are missing (no crashes, just skip).
+
+4) Dashboard integration (minimal)
+   - In dashboard/live_helpers.py or a dedicated intel module:
+     - Add helper(s) to read:
+       - logs/state/expectancy_v6.json
+       - logs/state/symbol_scores_v6.json
+     - Provide functions that:
+       - return a per-symbol table (symbol, score, expectancy, hit rate, slippage, router quality).
+   - In the dashboard (e.g. a new “Intelligence” tab/page file if one exists):
+       - OPTIONAL: Only add minimal wiring (e.g. return data structures) if the UI is not yet ready.
+       - It is acceptable in this batch to just implement helpers and tests without exposing a full UI.
+
+5) Tests
+
+   Create:
+   - tests/test_expectancy_v6.py:
+     - Build synthetic trade/metric data with known outcomes.
+     - Assert:
+       - computed expectancy matches expected values,
+       - lookback handling is correct (e.g. last N trades),
+       - edge cases: zero trades, all winners, all losers.
+
+   - tests/test_symbol_score_v6.py:
+     - Use synthetic expectancy + router_health inputs.
+     - Assert:
+       - scores follow expected ordering (higher expectancy / better router health -> higher score),
+       - scores stay within defined range,
+       - missing inputs are handled gracefully (e.g. default neutral score or exclusion).
+
+   Extend if appropriate:
+   - tests/test_router_metrics_effectiveness.py:
+     - Confirm that the new v6 intel functions consume enriched router metrics correctly
+       (maker/fallback flags, slippage, policy metadata).
+
+CONSTRAINTS
+
+- NO changes to:
+  - execution sizing logic,
+  - risk veto logic,
+  - router policy decisions,
+  - order emission.
+- The new modules must be pure-analysis; any integration in executor_live is:
+  - optional,
+  - behind a clear config flag,
+  - safe to disable without breaking anything.
+- Avoid heavy dependencies (no database, no external services). Local files + in-memory only.
+
+VALIDATION
+
+- Run:
+
+  python -m pytest \
+    tests/test_expectancy_v6.py \
+    tests/test_symbol_score_v6.py \
+    tests/test_router_metrics_effectiveness.py -q
+
+- Then re-run the core suite:
+
+  python -m pytest \
+    tests/test_risk_limits.py \
+    tests/test_screener_tier_caps.py \
+    tests/test_exchange_dry_run.py \
+    tests/test_router_smoke.py \
+    tests/test_router_policy.py \
+    tests/test_router_metrics_effectiveness.py \
+    tests/test_order_router_ack.py \
+    tests/test_order_metrics.py \
+    tests/test_config_parsing.py -q

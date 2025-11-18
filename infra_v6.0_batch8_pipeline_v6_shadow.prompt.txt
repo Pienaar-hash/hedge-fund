@@ -1,0 +1,220 @@
+You are the Quant & Infra patch agent for the hedge-fund repo.
+
+Stage
+- Batches 0–7 are merged and green:
+  - v6 docs & topology aligned.
+  - Config schemas normalized; universe_resolver + risk_limits stable.
+  - Execution & risk contracts clarified; RiskEngineV6 wraps legacy risk.
+  - Telemetry v2 (state_publish + logs/state/*.json).
+  - Intel v6: expectancy, symbol scores, router auto-tune, feedback allocator.
+- Screener + executor can call RiskEngineV6 via RISK_ENGINE_V6_ENABLED without behavior changes.
+- Router auto-tune and Feedback allocator produce *_suggestions_v6.json (router/risk).
+
+Goal — Batch 8: v6 Dual Pipeline in Shadow Mode (No live orders)
+- Implement a v6-style execution pipeline that:
+  - uses:
+    - strategy metadata
+    - OrderIntent
+    - RiskEngineV6
+    - size model
+    - router
+  - but runs **only in shadow**, producing telemetry/logs:
+    - v6 pipeline “would-have” decisions.
+- Live behavior must remain **unchanged**:
+  - v5 pipeline is still the only path that sends orders.
+  - v6 pipeline is strictly simulation and telemetry.
+
+======================================================================
+1) v6 Shadow Pipeline Module
+======================================================================
+
+Create:
+
+- execution/pipeline_v6_shadow.py
+
+Responsibilities:
+
+- Define a pure orchestrator function, e.g.:
+
+  run_pipeline_v6_shadow(
+      symbol: str,
+      strategy_id: str,
+      signal: dict,
+      positions_state: dict,
+      nav_state: dict,
+      config: dicts (strategy_config, risk_limits, pairs_universe, strategy_registry),
+      router_ctx: dict (if needed),
+  ) -> dict
+
+- The orchestrator should:
+
+  1) Build a v6-style StrategyIntent / OrderIntent:
+     - Use the same intent shape as RiskEngineV6.OrderIntent (reuse the dataclass if appropriate).
+     - Map strategy params + signal outputs into:
+       - desired qty / quote_notional
+       - side (BUY/SELL)
+       - leverage
+       - tier_name
+       - open positions counts and tier gross
+       - nav context
+
+  2) Call RiskEngineV6.check_order(intent, positions_state, nav_state)
+
+  3) If allowed:
+     - Pass into the same sizing model used by v5 executor (do NOT modify the sizing logic, just call it).
+     - Pass sized order into a “router decision” step that:
+       - calls the existing router/order_router in a *dry* or “decide-only” mode if available,
+       - OR replicates the decision logic without sending any real orders.
+     - Produce a structured result:
+
+       {
+         "intent": {...},
+         "risk_decision": {...RiskDecision...},
+         "size_decision": {...},
+         "router_decision": {...},   # e.g. maker vs taker choice, offset, policy
+         "timestamp": ...
+       }
+
+  4) If not allowed:
+     - Return a result with allowed=False and reason(s), without running sizing/router steps.
+
+- No actual Binance/exchange calls are allowed in this module.
+- Any exchange helpers must be used only in a dry/inference mode if such exists (e.g. to compute min_notional or contract specs).
+
+======================================================================
+2) Shadow Logging & State
+======================================================================
+
+Create:
+
+- A canonical shadow log path, e.g.:
+  - logs/pipeline_v6_shadow.jsonl
+- Optionally, a state summary:
+  - logs/state/pipeline_v6_shadow_head.json
+
+Update:
+
+- execution/state_publish.py:
+  - Add helper to write a small “head” snapshot containing:
+    - last N shadow decisions
+    - aggregated metrics (e.g. num allowed/vetoed, average size, etc.)
+
+- execution/pipeline_v6_shadow.py:
+  - Provide:
+    - append_shadow_decision(decision: dict) -> None
+    - build_shadow_summary(decisions: Iterable[dict]) -> dict
+
+Constraints:
+
+- Shadow logs must be purely additive:
+  - appending new entries only; no mutation of live state.
+- State head file may be overwritten atomically (safe for dashboard).
+
+======================================================================
+3) Integration: Executor (Flag-Gated)
+======================================================================
+
+Update:
+
+- execution/executor_live.py
+
+Tasks:
+
+- Introduce a new flag: PIPELINE_V6_SHADOW_ENABLED (read from env/config).
+- In the main loop where strategies/signals are processed:
+
+  - Keep the existing v5 flow as-is:
+    - signal → legacy risk_limit checks / RiskEngineV6 (if enabled) → sizing → router → exchange.
+
+  - Add an optional, parallel call:
+
+    if PIPELINE_V6_SHADOW_ENABLED:
+        - Gather the same signal, positions_state, nav_state used for the live decision.
+        - Call pipeline_v6_shadow.run_pipeline_v6_shadow(...).
+        - Append the resulting decision to logs/pipeline_v6_shadow.jsonl
+          and update the state head via state_publish helper.
+        - This must be non-blocking:
+          - Wrap in try/except.
+          - Log but ignore intel errors.
+
+Constraints:
+
+- DO NOT:
+  - change the live order-routing path.
+  - mutate any live routing or sizing decisions based on v6 shadow output.
+- v5 orders must be exactly as before with the flag off or on.
+
+======================================================================
+4) Tests
+======================================================================
+
+Create:
+
+- tests/test_pipeline_v6_shadow.py
+
+Test scenarios:
+
+1) Basic parity scenario:
+   - Synthetic positions/nav.
+   - A simple strategy/signal that would produce a BUY.
+   - Simulate the v5 path (in test) and v6 shadow pipeline:
+     - Use the same input configs and signal.
+   - Assert:
+     - v6 RiskDecision.allowed == legacy check_order allowed.
+     - Sized notional/qty is equal or within rounding tolerance.
+     - Router decision (maker vs taker; offset) matches what v5 router would choose
+       given the same router_policy/metrics context.
+
+   (You can partially mock or patch out actual send_order calls to inspect router decisions.)
+
+2) Veto scenario:
+   - Construct an OrderIntent that hits a risk cap.
+   - Assert:
+     - v6 shadow RiskDecision.allowed == False.
+     - Reasons include the same code/strings as legacy.
+
+3) Logging:
+   - Run a small synthetic “shadow-run” in the test:
+     - Call run_pipeline_v6_shadow() a few times and append decisions.
+   - Assert:
+     - logs/pipeline_v6_shadow.jsonl entries have the expected fields.
+     - state head summary contains aggregated counts and metrics.
+
+Extend (if appropriate):
+
+- tests/test_state_publish_stats.py:
+  - Add checks for pipeline_v6_shadow_head.json (if you implement it).
+
+Validation commands:
+
+- Shadow suite:
+
+  python -m pytest \
+    tests/test_risk_engine_v6.py \
+    tests/test_pipeline_v6_shadow.py -q
+
+- Full regression:
+
+  python -m pytest \
+    tests/test_risk_limits.py \
+    tests/test_screener_tier_caps.py \
+    tests/test_exchange_dry_run.py \
+    tests/test_router_smoke.py \
+    tests/test_router_policy.py \
+    tests/test_router_metrics_effectiveness.py \
+    tests/test_order_router_ack.py \
+    tests/test_order_metrics.py \
+    tests/test_config_parsing.py \
+    tests/test_expectancy_v6.py \
+    tests/test_symbol_score_v6.py \
+    tests/test_router_autotune_v6.py \
+    tests/test_feedback_allocator_v6.py \
+    tests/test_risk_engine_v6.py \
+    tests/test_pipeline_v6_shadow.py -q
+
+Constraints:
+
+- Do NOT call the real exchange client in the v6 shadow pipeline.
+- Any use of order_router must be dry/inference only.
+- The system’s live behavior must remain identical with PIPELINE_V6_SHADOW_ENABLED=False or True.
+- Shadow logs must be deterministic given the same inputs.

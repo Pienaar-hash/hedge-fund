@@ -1,0 +1,651 @@
+1. **Repo-level Codex pre-sprint audit prompt**
+2. **Schema of what to upload into the GPT hedge project folder**
+3. **v6.0 master architecture map**
+4. **v6.0 directory + module structure**
+5. **v6.0 sprint plan**
+6. **v6.0 Codex patch prompts (modular)**
+7. **v6.0 kickstart branch (v6.0-alpha1) plan**
+
+---
+
+## 1️⃣ Repo-level Codex pre-sprint audit prompt
+
+Use this as your **single pre-sprint audit prompt** to Codex CLI (no patching yet, just analysis).
+
+```text
+You are my Quant & Infra Auditor for the "hedge-fund" repo.
+
+Context
+- We are on v5.10 with hardened execution: dual-side hedge mode, config-driven risk limits, screener veto loop, router policy engine, and Binance UM Futures live trading.
+- GPT is coordinating the sprint, but ONLY YOU (Codex) have direct repo access. Do NOT assume GPT can see your replies.
+- Goal: prepare for v6.0 (“quant breakthrough”) by auditing current code and configs, WITHOUT applying any patches yet.
+
+Scope
+1) Confirm current v5.10 health:
+   - Execution: execution/executor_live.py, execution/exchange_utils.py, execution/size_model.py.
+   - Risk & screener: execution/risk_limits.py, execution/signal_screener.py, scripts/screener_probe.py.
+   - Router & policy: execution/order_router.py, execution/utils/execution_health.py (if present).
+   - Configs: config/strategy_config.json, config/risk_limits.json, config/pairs_universe.json, config/settings.json, config/strategy_registry.json.
+   - Tests: tests/test_risk_limits.py, tests/test_screener_tier_caps.py, tests/test_exchange_dry_run.py, tests/test_router_smoke.py, tests/test_order_router_ack.py, tests/test_order_metrics.py, tests/test_config_parsing.py.
+
+2) Verify contracts:
+   - check_order: must return (veto: bool, detail: dict) with nav_fresh and clear, normalized trade-nav/equity caps.
+   - Screener: would_emit() and screener_probe must use those caps consistently and emit structured detail.
+   - Sizer: suggest_gross_usd and executor sizing should clamp by the same risk limits as check_order.
+   - Router: RouterPolicy, maker_first, taker_bias, and router_ctx must reflect final maker/taker decisions.
+
+3) Identify *only* these issues for v6.0 pre-sprint:
+   - Any remaining hard-coded thresholds (e.g. 10% equity) that should be config-driven.
+   - Any mismatch between strategy_config vs risk_limits vs screener behaviour (sizing, max_concurrent_positions, symbol caps).
+   - Any missing or inconsistent telemetry needed for:
+     * Time-of-day expectancy / trade expectancy
+     * Symbol scoring (Sharpe, fee drag, slippage regime, router KPIs)
+     * Router health / maker-taker effectiveness
+   - Any remaining USDC-specific hacks, assumptions, or branches.
+
+Deliverables
+- A single markdown report (infra_v6.0_presprint_codex_audit.md) at repo root that includes:
+  1) “BLOCKERS” – anything that MUST be fixed before v6.0 features are layered on.
+  2) “WARNINGS” – risky or confusing behaviour, but not outright blockers.
+  3) “SAFE” – parts of the pipeline that are clean and ready to be extended.
+  4) “V6.0 INPUT GAPS” – specific telemetry or code hooks that you believe we should expose for:
+     - expectancy models
+     - symbol scoring
+     - router auto-tuning
+     - feedback allocator
+  5) “RECOMMENDED PATCH BATCHES” – grouped, but DO NOT PATCH:
+     - Batch A: risk/screener contract or config fixes
+     - Batch B: router/telemetry exposure
+     - Batch C: expectancy + scoring hooks
+
+Important
+- DO NOT modify any files in this audit step.
+- Be precise in file:line references so we can give GPT narrow patch prompts later.
+- Assume v5.10 is production-adjacent; safety and clarity > cleverness.
+```
+• Audit Summary
+
+  - Dropped full report at infra_v6.0_presprint_codex_audit.md outlining blockers, warnings, safe areas, v6.0 input gaps, and patch batches.
+  - Found executor is not supplying concurrency/tier context to check_order (execution/executor_live.py:1717) so the guards in execution/
+    risk_limits.py:1124-1144 never run—live trades ignore max_concurrent_positions and tier caps.
+  - Router metrics only log prices/qty (execution/order_router.py:620-682), so execution/utils/metrics.py:222-239 never receives the maker/taker/
+    fallback fields required for router_policy to adapt.
+  - All execution telemetry publisher hooks are stubbed (execution/executor_live.py:94-107), meaning router health, expectancy, and alerts never leave
+    the box.
+  - Also captured config/contract mismatches (hard-coded 10% trade cap string, orderbook thresholds, min-notional discrepancies, USDC closePosition
+    gaps) plus the parts that are still solid (risk detail contract, screener wiring, sizer parity, router-policy hooks, config/tests).
+
+  Next Steps
+
+  - Review the Blockers section in infra_v6.0_presprint_codex_audit.md first (concurrency gating, router metrics enrichment, telemetry publishers) and
+    decide which fixes land before v6.0 feature work.
+  - Use the Batch A/B/C recommendations in the same file to scope focused patch PRs and add any testing you deem necessary once implementation begins.
+
+---
+
+## 2️⃣ Schema: what to upload into the GPT “hedge” project folder
+
+This is the **minimal but rich set** of files / artifacts that help me reason in-sync with Codex, without needing your full repo.
+
+### A. Core execution / risk / screener
+
+Upload **current snapshots** of:
+
+* `execution/executor_live.py`
+* `execution/exchange_utils.py`
+* `execution/size_model.py`
+* `execution/risk_limits.py`
+* `execution/signal_screener.py`
+* `execution/order_router.py`
+* `execution/universe_resolver.py` (if present)
+* `scripts/screener_probe.py`
+* `scripts/doctor.py` (if exists / relevant)
+
+### B. Key configs
+
+* `config/strategy_config.json`
+* `config/risk_limits.json`
+* `config/pairs_universe.json`
+* `config/settings.json`
+* `config/strategy_registry.json`
+* `config/dashboard.yml`
+* `config/assets.json` / `config/reserves.json` (for treasury / NAV context)
+
+### C. Tests (interfaces + expectations)
+
+* `tests/test_risk_limits.py`
+* `tests/test_screener_tier_caps.py`
+* `tests/test_exchange_dry_run.py`
+* `tests/test_router_smoke.py`
+* `tests/test_order_router_ack.py`
+* `tests/test_order_metrics.py`
+* `tests/test_config_parsing.py`
+
+### D. Recent audit / telemetry docs
+
+* Latest Codex audit report: e.g. `infra_v5.10_RC1_report.md` or `infra_v6.0_presprint_codex_audit.md`
+* “Close out” or “Before freezing v5.10” docs
+* Any NAV / router / risk-state snapshots in markdown: e.g. `doctor_v5.10_final.txt`, `v5.10 close out.txt`
+
+### E. v6-specific docs
+
+* `v6.0 architecture brief` (we generate now)
+* `v6.0 quant breakthrough sprint.txt` (already uploaded)
+* Any future `v6.0_architecture.md` or `v6.0_sprint_plan.md` we create
+
+Think of it as:
+
+```text
+/docs
+  infra_*.md
+  v6.0_architecture.md
+  v6.0_sprint_plan.md
+
+/config
+  strategy_config.json
+  risk_limits.json
+  pairs_universe.json
+  settings.json
+  strategy_registry.json
+  dashboard.yml
+  assets.json
+  reserves.json
+
+/execution
+  executor_live.py
+  exchange_utils.py
+  size_model.py
+  risk_limits.py
+  signal_screener.py
+  order_router.py
+  universe_resolver.py
+
+/scripts
+  screener_probe.py
+  doctor.py
+
+/tests
+  test_risk_limits.py
+  test_screener_tier_caps.py
+  test_exchange_dry_run.py
+  test_router_smoke.py
+  test_order_router_ack.py
+  test_order_metrics.py
+  test_config_parsing.py
+```
+
+We don’t need **every** helper; we need the “contract surfaces” plus representative tests and configs.
+
+• Snapshot bundle is ready. I copied every file on your schema list (execution core, configs, tests, and the two scripts) into gpt_schema/ so you can
+  inspect them without crawling the full repo; see the listing above for verification. I also tarred it for easy upload to the GPT “hedge” project
+  folder: hedge_gpt_schema_snapshot.tgz at repo root contains those exact paths with their current v5.10 content. Drag that archive upstream and
+  you’ll have all the contract surfaces/tests/configs you asked for, perfectly in sync with Codex’s working tree.
+
+---
+
+## 3️⃣ v6.0 Master Architecture Map
+
+High-level components and data flow:
+
+```text
+            +------------------+
+            |  Market Data     |
+            |  (Binance UM)    |
+            +---------+--------+
+                      |
+                      v
+         +------------+--------------+
+         |  Data & Feature Layer     |
+         |---------------------------|
+         | - OHLCV, orderbook        |
+         | - NAV snapshots           |
+         | - Trades & PnL            |
+         | - Router snapshots        |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         |  Signal & Screener Layer  |
+         |---------------------------|
+         | - Strategy signals        |
+         | - Screener veto loop      |
+         | - check_order() risk gate |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         |  Sizing & Risk Layer      |
+         |---------------------------|
+         | - suggest_gross_usd       |
+         | - per-symbol caps         |
+         | - leverage & NAV clamps   |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         | Execution & Router Layer  |
+         |---------------------------|
+         | - order_router + policy   |
+         | - maker/taker selection   |
+         | - Binance UMFutures I/O   |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         |  Learning / v6.0 Layer    |
+         |---------------------------|
+         | - Time-of-day expectancy  |
+         | - Trade expectancy        |
+         | - Symbol scoring          |
+         | - Router auto-tuning      |
+         | - Feedback allocator      |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         | Telemetry & Dashboards    |
+         |---------------------------|
+         | - doctor, screener_probe  |
+         | - router health, NAV      |
+         | - v6.0 policy snapshots   |
+         +---------------------------+
+```
+
+**Key v6.0 additions:**
+
+* **Expectancy Engine** — aggregates trades by symbol / hour / regime, outputs expectancy tables.
+* **Symbol Scoring** — turns expectancy + volatility + router KPIs into a 0–1 score per symbol.
+* **Router Auto-Tuner** — uses symbol score + router metrics to set maker_first, taker_bias, offsets.
+* **Feedback Allocator** — uses scores + risk state to tweak:
+
+  * per-symbol caps
+  * concurrency
+  * max_trade_nav_pct
+  * strategy enable/disable hints
+* **Policy Snapshots** — write policy state to JSON for dashboards and audits.
+
+---
+
+## 4️⃣ v6.0 Directory + Module Structure
+
+This is an additive structure on top of your current repo:
+
+```text
+hedge-fund/
+  docs/
+    v6.0_architecture.md
+    v6.0_sprint_plan.md
+    v6.0_feedback_allocator.md
+
+  execution/
+    __init__.py
+    executor_live.py
+    exchange_utils.py
+    size_model.py
+    risk_limits.py
+    signal_screener.py
+    order_router.py
+    universe_resolver.py
+
+    symbol_scoring.py          # NEW: scoring per symbol (Sharpe, router KPIs, fee drag)
+    expectancy_engine.py       # NEW: time-of-day & trade expectancy aggregation
+    router_autotune.py         # NEW: automates maker/taker & router policy updates
+    feedback_allocator.py      # NEW: adjusts caps & concurrency based on scores
+
+  scripts/
+    doctor.py
+    screener_probe.py
+    expectancy_builder.py      # NEW: batch job to build expectancy tables to disk
+    scoring_probe.py           # NEW: dumps symbol scores & regimes
+    allocator_probe.py         # NEW: dry-run of allocator decisions
+
+  config/
+    strategy_config.json
+    risk_limits.json
+    pairs_universe.json
+    settings.json
+    strategy_registry.json
+    # optional:
+    v6_policies.json           # NEW: persisted allocator/router policy snapshots
+
+  tests/
+    test_risk_limits.py
+    test_screener_tier_caps.py
+    test_exchange_dry_run.py
+    test_router_smoke.py
+    test_order_router_ack.py
+    test_order_metrics.py
+    test_config_parsing.py
+
+    test_expectancy_engine.py  # NEW
+    test_symbol_scoring.py     # NEW
+    test_router_autotune.py    # NEW
+    test_feedback_allocator.py # NEW
+```
+
+We’ll keep **all v6 components behind config switches** (e.g. `settings.v6_enabled`, `allocator.enabled`) and/or non-invasive until you’re ready to flip.
+
+---
+
+## 5️⃣ v6.0 Sprint Plan (1–2 weeks)
+
+### Phase 0 — Branch & Safety (0.5 day)
+
+* Create `feature/v6.0-alpha1` branch from the now-stable v5.10.
+* Run full test suite + doctor + screener_probe and snapshot outputs into `docs/v5.10_baseline_*`.
+
+### Phase 1 — Expectancy & Scoring (2–3 days)
+
+**Objectives:**
+
+* Implement `execution/expectancy_engine.py` + `scripts/expectancy_builder.py`.
+* Implement `execution/symbol_scoring.py` + `scripts/scoring_probe.py`.
+* Add tests (`test_expectancy_engine.py`, `test_symbol_scoring.py`).
+
+**Outcome:**
+We have per-symbol, per-regime metrics and a 0–1 score per symbol, with CLI probes.
+
+### Phase 2 — Router Auto-Tune (2–3 days)
+
+**Objectives:**
+
+* Implement `execution/router_autotune.py` that:
+
+  * reads router health / slippage history
+  * uses symbol scores to adjust maker_first, taker_bias, offsets
+* Wire it into `executor_live` via a periodic “policy refresh” (no hard realtime).
+* Add tests for policy transitions in `test_router_autotune.py` and extend `test_router_smoke.py`.
+
+**Outcome:**
+Router decisions become adaptive but still constrained by policy bounds.
+
+### Phase 3 — Feedback Allocator (3–4 days)
+
+**Objectives:**
+
+* Implement `execution/feedback_allocator.py`:
+
+  * consumes symbol scores, expectancy, risk state
+  * proposes updated per-symbol caps, max_trade_nav_pct, concurrency, strategy hints
+* Add dry-run pipeline via `scripts/allocator_probe.py`.
+* Add tests for clamps and policy changes (`test_feedback_allocator.py`).
+
+**Outcome:**
+We can simulate how allocations *would* shift under v6 policies — before enabling live writes.
+
+### Phase 4 — Integration & Dash (1–2 days)
+
+**Objectives:**
+
+* Add `v6_policies.json` snapshots for:
+
+  * current scores
+  * current router policy
+  * current allocator state
+* Integrate into dashboard (if desired) in a separate mini-sprint.
+* Final v6.0-alpha1 close-out doc.
+
+---
+
+## 6️⃣ v6.0 Codex Patch Prompts (modular)
+
+These are **ready-to-use prompts** for Codex when you’re at each phase.
+
+### A) Expectancy Engine
+
+```text
+You are my Quant Engineering patch agent for the hedge-fund repo.
+
+Task: Implement a Time-of-Day & Trade Expectancy Engine for v6.0.
+
+Scope:
+- Create execution/expectancy_engine.py
+- Create scripts/expectancy_builder.py
+- Create tests/test_expectancy_engine.py
+
+Requirements:
+1) expectancy_engine:
+   - Provide functions to:
+     * load historical trades from existing trade logs / PnL logs.
+     * bucket trades by:
+       - symbol
+       - UTC hour-of-day
+       - regime tag (e.g. 'normal', 'high_vol', 'low_liq') if available, else 'default'.
+     * compute expectancy metrics per bucket:
+       - average PnL per trade (in quote)
+       - win rate
+       - average R-multiple (if available)
+   - Expose a simple API, e.g.:
+     * build_expectancy(trades) -> dict[(symbol, hour, regime)] = {metrics}
+     * save_expectancy(path, table) and load_expectancy(path)
+
+2) expectancy_builder script:
+   - CLI tool:
+     * Reads a configurable history window (e.g. last N days) from existing log files.
+     * Calls expectancy_engine.build_expectancy.
+     * Writes JSON to e.g. "logs/expectancy_table.json".
+   - Log clear INFO output so we can see how many trades and buckets were processed.
+
+3) Tests:
+   - Use synthetic trades to:
+     * validate aggregation per symbol and hour.
+     * validate metrics are computed correctly.
+     * assert the JSON round-trip (save/load) preserves data shape.
+
+Constraints:
+- Do NOT change existing executor, screener, or risk logic in this patch.
+- Prefer small, composable functions with docstrings.
+- Keep dependencies standard library only (no new external libs).
+```
+
+---
+
+### B) Symbol Scoring
+
+```text
+You are my Quant Engineering patch agent for the hedge-fund repo.
+
+Task: Implement a symbol scoring module for v6.0.
+
+Scope:
+- Create execution/symbol_scoring.py
+- Create scripts/scoring_probe.py
+- Create tests/test_symbol_scoring.py
+
+Requirements:
+1) symbol_scoring:
+   - Load:
+     * expectancy_table from logs/expectancy_table.json (output of expectancy_builder).
+     * any existing symbol-level metrics (Sharpe, drawdown, router KPIs) if available via existing utils;
+       if not, stub the interface to accept them as a dict.
+
+   - Implement:
+     * score_symbol(symbol, metrics) -> float in [0, 1]
+       where metrics may include:
+         - expectancy
+         - volatility regime
+         - slippage penalty
+         - fee drag
+     * score_universe(symbol_metrics) -> dict[symbol] = score
+
+   - Provide clear docstrings and keep the scoring function transparent and deterministic.
+
+2) scoring_probe:
+   - CLI that:
+     * loads expectancy_table.json and any basic metrics,
+     * computes symbol scores,
+     * prints a JSON summary per symbol.
+
+3) Tests:
+   - Use synthetic metrics to:
+     * ensure higher expectancy ⇒ higher scores.
+     * ensure heavy slippage / fee drag lowers scores.
+     * verify scores stay within [0, 1].
+
+Constraints:
+- No changes to risk_limits or screener in this patch.
+- Keep configuration (weights, penalties) in a small in-module config dict or read from config/settings.json if appropriate.
+```
+
+---
+
+### C) Router Auto-Tune
+
+```text
+You are my Quant Engineering patch agent for the hedge-fund repo.
+
+Task: Add a router auto-tuning layer that adjusts RouterPolicy using symbol scores and router health.
+
+Scope:
+- Create execution/router_autotune.py
+- Update execution/order_router.py minimally to read updated RouterPolicy.
+- Add tests/test_router_autotune.py
+
+Requirements:
+1) router_autotune module:
+   - Input:
+     * symbol scores from execution/symbol_scoring (interface only, do not hard depend if not present).
+     * router health stats from existing router telemetry (slippage, fill rate, latency).
+   - Output:
+     * updated RouterPolicy per symbol:
+       - maker_first
+       - taker_bias
+       - adaptive offset magnitude tier (e.g. LOW/MED/HIGH)
+
+   - Provide a function:
+     * tune_policy(symbol, current_policy, metrics) -> RouterPolicy
+
+2) Integration:
+   - Add a lightweight function in executor_live or a dedicated script that:
+     * periodically runs tune_policy for active symbols.
+     * writes updated policies into the same structures order_router already uses.
+     * logs changes in a structured way.
+
+3) Tests:
+   - Synthetic test:
+     * good maker fill / low slippage ⇒ maker_first remains or becomes True.
+     * bad maker fill / high slippage ⇒ taker_bias and maker_first adjust accordingly.
+     * ensure hysteresis or thresholds avoid flip-flopping on small changes.
+
+Constraints:
+- Do NOT break existing RouterPolicy or router_ctx contracts.
+- No network calls in tests; use synthetic metrics.
+```
+
+---
+
+### D) Feedback Allocator
+
+```text
+You are my Quant Engineering patch agent for the hedge-fund repo.
+
+Task: Implement a feedback allocator that proposes updated risk caps based on symbol scores and expectancy.
+
+Scope:
+- Create execution/feedback_allocator.py
+- Create scripts/allocator_probe.py
+- Add tests/test_feedback_allocator.py
+
+Requirements:
+1) feedback_allocator:
+   - Input:
+     * symbol scores (from symbol_scoring)
+     * expectancy metrics
+     * current risk_limits (config/risk_limits.json)
+     * current strategy_config (config/strategy_config.json)
+
+   - Output:
+     * A proposed policy object:
+       - per_symbol.max_nav_pct
+       - per_symbol.max_order_notional (or equivalent metric)
+       - global max_concurrent_positions & per-strategy max_concurrent_positions
+     * No direct writes to config files in this patch; pure functions only.
+
+   - API:
+     * propose_policy(nav, scores, risk_cfg, strategy_cfg) -> policy_dict
+
+2) allocator_probe:
+   - CLI that:
+     * loads current configs and scores,
+     * runs propose_policy with a sample NAV,
+     * prints JSON diff between current and proposed caps.
+
+3) Tests:
+   - Ensure:
+     * higher-scoring symbols get equal or higher caps (within configured bounds).
+     * low-scoring symbols have caps reduced but not zeroed unless explicitly allowed.
+     * global constraints (max gross, max concurrent) are not violated by the proposed policy.
+
+Constraints:
+- No direct I/O mutations of config files here; future patches can wire this into a manual or scheduled workflow.
+- Keep behaviour conservative and fully explainable.
+```
+
+---
+
+## 7️⃣ v6.0 Kickstart Branch (v6.0-alpha1)
+
+Use this as the **branching + initial workflow** template.
+
+### A) Create the branch
+
+```bash
+cd ~/hedge-fund
+git checkout main
+git pull origin main
+
+git checkout -b feature/v6.0-alpha1
+```
+
+### B) Snapshot v5.10 baseline
+
+* Run and save:
+
+```bash
+python -m pytest -q
+python -m scripts.doctor -v > docs/doctor_v5.10_baseline.txt
+python -m scripts.screener_probe > docs/screener_probe_v5.10_baseline.jsonl
+```
+
+* Commit:
+
+```bash
+git add docs/doctor_v5.10_baseline.txt docs/screener_probe_v5.10_baseline.jsonl
+git commit -m "[v5.10] Baseline doctor+screener snapshots before v6.0 work"
+```
+
+### C) Apply v6.0 patches in phases
+
+For each Codex patch batch:
+
+1. Run Codex CLI with the specific patch prompt (A, B, C, D above).
+2. Review diffs manually.
+3. Run focused tests (e.g. for expectancy → `pytest tests/test_expectancy_engine.py`).
+4. Then run the “core” regression bundle:
+
+```bash
+python -m pytest \
+  tests/test_risk_limits.py \
+  tests/test_screener_tier_caps.py \
+  tests/test_exchange_dry_run.py \
+  tests/test_router_smoke.py \
+  tests/test_order_router_ack.py \
+  tests/test_order_metrics.py \
+  tests/test_config_parsing.py -q
+```
+
+5. Commit with clear tags, e.g.:
+
+```bash
+git commit -am "[v6.0-alpha1] Add expectancy engine + scoring probes"
+git commit -am "[v6.0-alpha1] Router auto-tune scaffolding"
+git commit -am "[v6.0-alpha1] Feedback allocator (dry-run only)"
+```
+
+### D) Keep v5.10 safety guarantees
+
+* No live allocator writes to configs until:
+
+  * allocator tests are green
+  * allocator_probe outputs look sane
+  * we’ve done at least one doctor+screener+router health pass with v6 features enabled in dry-run mode.

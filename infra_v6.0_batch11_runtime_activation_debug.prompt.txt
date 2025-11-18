@@ -1,0 +1,219 @@
+## 🧩 Batch 11 – “Runtime v6 Activation & Telemetry Sanity” (Codex prompt)
+
+Here’s the Codex-ready prompt you can drop in as
+`infra_v6.0_batch11_runtime_activation_debug.prompt.txt` (or similar) and run against the live repo:
+
+---
+
+**Title:** Batch 11 — Runtime v6 Activation & Telemetry Sanity Audit
+
+**Context (from operator run):**
+
+* Runtime env:
+
+  * Repo root: `/root/hedge-fund`
+  * Executor command (via supervisor):
+    `/root/hedge-fund/venv/bin/python3 -u execution/executor_live.py`
+  * `cwd` for pid: `/root/hedge-fund`
+  * `execution.__file__`: `/root/hedge-fund/execution/__init__.py`
+  * `sys.path`: `['', '/usr/lib/python3.10', ..., '/root/hedge-fund/venv/lib/python3.10/site-packages']`
+  * `.env loaded (override=True)` on startup.
+
+* `.env` *does* contain these flags now (confirmed by human):
+
+  ```env
+  INTEL_V6_ENABLED=1
+  RISK_ENGINE_V6_ENABLED=1
+  PIPELINE_V6_SHADOW_ENABLED=1
+  ROUTER_AUTOTUNE_V6_ENABLED=1
+  FEEDBACK_ALLOCATOR_V6_ENABLED=1
+
+  ROUTER_AUTOTUNE_V6_APPLY_ENABLED=0
+  ROUTER_AUTOTUNE_V6_SYMBOL_ALLOWLIST=[]
+  ROUTER_AUTOTUNE_V6_MAX_BIAS_DELTA=0.05
+  ROUTER_AUTOTUNE_V6_MAX_OFFSET_STEP_BPS=2
+  ROUTER_AUTOTUNE_V6_MAX_OFFSET_ABS_BPS=8
+  ROUTER_AUTOTUNE_V6_REQUIRE_QUALITY=["good","ok"]
+  ```
+
+* Executor logs currently look like:
+
+  ```text
+  2025-11-17 20:37:44,575 INFO [exutil] [exutil] .env loaded (override=True)
+  [exutil] base=https://fapi.binance.com testnet=False
+  2025-11-17 20:37:44,575 INFO [exutil] [exutil] ENV context testnet=False dry_run=False
+  2025-11-17 20:37:45,288 INFO [exutil] [executor] starting loop ENV=prod DRY_RUN=False commit=v5.10-final-8-gc41be104 signal_source=generate_intents unified=True
+  2025-11-17 20:37:45,288 INFO [exutil] [live] ENV=prod DRY_RUN=0 testnet=False base=https://fapi.binance.com FIRESTORE=OFF
+  ...
+  2025-11-17 20:38:37,759 INFO [exutil] [screener] attempted=3 emitted=n/a submitted=0
+  ```
+
+* Despite flags and new code having been added in earlier batches, the following are **not** present at runtime:
+
+  * No v6-specific log lines (RiskEngineV6, pipeline_v6_shadow, intel v6, router autotune v6, feedback allocator v6).
+  * No new v6 state files in `logs/state/` apart from:
+
+    * `pipeline_v6_compare_summary.json`
+    * `universe.json`
+  * No `order_metrics.jsonl`.
+
+**Goal for this batch:**
+
+1. **Verify that all v6 modules and wiring described in the v6.0 docs actually exist in this checkout** and match the expected names:
+
+   * `execution/risk_engine_v6.py`
+   * `execution/pipeline_v6_shadow.py`
+   * `execution/intel/expectancy_v6.py`
+   * `execution/intel/symbol_score_v6.py`
+   * `execution/intel/router_policy.py` (v6 helpers)
+   * `execution/intel/router_autotune_v6.py` / `router_autotune_apply_v6.py` (if split)
+   * `execution/intel/feedback_allocator_v6.py`
+   * `execution/state_publish.py` with v2 writers
+   * `tests/test_risk_engine_v6.py`, `tests/test_pipeline_v6_shadow.py`, `tests/test_expectancy_v6.py`, etc.
+
+2. **Audit how v6 flags are read and used** across:
+
+   * `execution/exutil.py` (env loading)
+   * `execution/executor_live.py`
+   * `execution/signal_screener.py`
+   * `execution/state_publish.py`
+   * `execution/intel/*v6*.py`
+   * Any config loaders that gate risk engine, intel, or telemetry.
+
+   Specifically:
+
+   * Where are `INTEL_V6_ENABLED`, `RISK_ENGINE_V6_ENABLED`, `PIPELINE_V6_SHADOW_ENABLED`, `ROUTER_AUTOTUNE_V6_ENABLED`, `FEEDBACK_ALLOCATOR_V6_ENABLED`, `ROUTER_AUTOTUNE_V6_APPLY_ENABLED` read?
+   * Are the env var names identical to those in `.env`?
+   * Are they parsed as booleans correctly (e.g. `"1"`, `"true"`, `"True"` etc.)?
+   * Are there *other* flags or config gates that must be enabled (e.g. config JSON keys, debug modes, etc.) before v6 code runs?
+
+3. **Trace the runtime wiring** for each v6 surface:
+
+   For each of the following, confirm whether the executor actually calls into it when flags are set:
+
+   * **RiskEngine v6**
+
+     * Where is `RiskEngineV6` constructed?
+     * Where is it invoked from `executor_live` and `signal_screener`?
+     * What conditions must be met for it to run vs falling back to `risk_limits.check_order`?
+
+   * **Telemetry v2 & state_publish**
+
+     * Where do we write:
+
+       * `logs/state/nav.json`
+       * `logs/state/positions.json`
+       * `logs/state/router_health.json`
+       * `logs/state/risk_snapshot.json`
+     * Where are the v6 intel state files supposed to be written:
+
+       * `logs/state/expectancy_v6.json`
+       * `logs/state/symbol_scores_v6.json`
+       * `logs/state/router_policy_suggestions_v6.json`
+       * `logs/state/risk_allocation_suggestions_v6.json`
+       * `logs/state/pipeline_v6_shadow_head.json`
+       * `logs/order_metrics.jsonl`
+     * Are these writes gated behind additional flags, thresholds, or debug toggles?
+
+   * **Pipeline v6 shadow**
+
+     * Where is the shadow pipeline invoked from `executor_live`?
+     * What conditions must be true for it to log anything?
+     * Confirm that when `PIPELINE_V6_SHADOW_ENABLED=1` (env) it will *always* produce some minimal output even if there are zero screener emissions (e.g. at least an empty head state).
+
+   * **Intel v6 (expectancy, scores, router autotune, feedback allocator)**
+
+     * How are their refresh intervals determined?
+     * Do they require pre-existing legacy files/logs (`orders_executed.jsonl`, `order_metrics.jsonl`, etc.) before writing state?
+     * What is the minimal set of inputs required for them to touch `logs/state/`?
+
+4. **Add extremely cheap, explicit v6 startup logging** in executor_live so we can *visibly* see:
+
+   On startup, a single line like:
+
+   ```text
+   [v6] flags INTEL_V6_ENABLED=1 RISK_ENGINE_V6_ENABLED=1 PIPELINE_V6_SHADOW_ENABLED=1 ROUTER_AUTOTUNE_V6_ENABLED=1 FEEDBACK_ALLOCATOR_V6_ENABLED=1 ROUTER_AUTOTUNE_V6_APPLY_ENABLED=0
+   ```
+
+   plus a `v6_runtime_probe` log after modules are wired, for example:
+
+   ```text
+   [v6] runtime probe: risk_engine_v6_loaded=True pipeline_shadow_loaded=True telemetry_v2_enabled=True intel_v6_enabled=True
+   ```
+
+   This gives us definitive evidence from logs that:
+
+   * v6 modules are imported successfully,
+   * flags are parsed the way we expect.
+
+5. **Ensure that at least one v6 state file is written regardless of market activity**, when flags are on:
+
+   * Even if there are zero trades and zero screener emissions, the executor should still:
+
+     * write a basic `logs/state/risk_snapshot.json`,
+     * and a basic `logs/state/pipeline_v6_shadow_head.json` (or similar),
+     * and at least one router-health or intel probe file if the associated flags are enabled.
+
+   If this is not currently the case, introduce a **lightweight heartbeat writer** in the executor telemetry loop when `INTEL_V6_ENABLED=1` so that we get:
+
+   ```text
+   logs/state/v6_runtime_probe.json
+   ```
+
+   containing something like:
+
+   ```json
+   {
+     "ts": 1763412000.0,
+     "risk_engine_v6_enabled": true,
+     "pipeline_shadow_enabled": true,
+     "router_autotune_v6_enabled": true,
+     "feedback_allocator_v6_enabled": true
+   }
+   ```
+
+6. **Tests:**
+
+   * Add or extend a small, focused test suite to validate the flag → behavior wiring end-to-end (without needing Binance):
+
+     * `tests/test_v6_runtime_activation.py`
+
+       * Mocks env vars and asserts:
+
+         * v6 flags parse to `True`.
+         * executor bootstrap (or a factored-out bootstrap helper) constructs the v6 components when flags are set.
+         * state_publish helpers are invoked at least once in a minimal simulated loop.
+
+   * Re-run the existing v6-related tests to ensure no regressions:
+
+     * `tests/test_risk_engine_v6.py`
+     * `tests/test_pipeline_v6_shadow.py`
+     * `tests/test_state_publish_stats.py`
+     * `tests/test_expectancy_v6.py`
+     * `tests/test_symbol_score_v6.py`
+     * `tests/test_router_autotune_v6.py`
+     * `tests/test_feedback_allocator_v6.py`
+     * plus the core v5.10 baseline tests we’ve been using throughout.
+
+7. **Deliverables:**
+
+   * A short markdown report at `docs/infra_v6.0_runtime_activation_report.md` containing:
+
+     * Which v6 modules are present and their paths.
+     * Exact flag names and how they map to behavior.
+     * Any discrepancies between the v6 architecture docs and real code.
+     * A list of minimal state files that *must* appear when v6 flags are enabled, even with no market activity.
+     * A summary of code changes made in this batch (explicit v6 logs, heartbeat writer, flag parsing fixes, etc.).
+   * Updated code:
+
+     * Minimal, explicit v6 debug logging on executor startup.
+     * Any necessary fixes to env var names / flag parsing.
+     * A safe, lightweight v6 heartbeat state write so ops can confirm v6 is live.
+
+**Important constraints:**
+
+* Do **not** change live risk, sizing, or router behavior beyond what was already introduced in Batches 5–10. This batch is **diagnostic only**:
+
+  * we want visibility, not new behavior.
+* Keep all v6 apply paths (router auto-tune, etc.) strictly gated by existing env flags.
+* Prefer pure-function helpers wherever you need to factor out logic for tests.

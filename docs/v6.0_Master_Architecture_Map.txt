@@ -1,0 +1,61 @@
+            +------------------+
+            |  Market Data     |
+            |  (Binance UM)    |
+            +---------+--------+
+                      |
+                      v
+         +------------+--------------+
+         |  Data & Feature Layer     |
+         |---------------------------|
+         | - OHLCV, orderbook        |
+         | - NAV snapshots           |
+         | - Trades & PnL            |
+         | - Router snapshots        |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         |  Signal & Screener Layer  |
+         |---------------------------|
+         | - Strategy signals        |
+         | - Screener veto loop      |
+         | - check_order() risk gate |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         |  Sizing & Risk Layer      |
+         |---------------------------|
+         | - suggest_gross_usd       |
+         | - per-symbol caps         |
+         | - leverage & NAV clamps   |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         | Execution & Router Layer  |
+         |---------------------------|
+         | - order_router + policy   |
+         | - maker/taker selection   |
+         | - Binance UMFutures I/O   |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         |  Learning / v6.0 Layer    |
+         |---------------------------|
+         | - Time-of-day expectancy  |
+         | - Trade expectancy        |
+         | - Symbol scoring          |
+         | - Router auto-tuning      |
+         | - Feedback allocator      |
+         +------------+--------------+
+                      |
+                      v
+         +------------+--------------+
+         | Telemetry & Dashboards    |
+         |---------------------------|
+         | - doctor, screener_probe  |
+         | - router health, NAV      |
+         | - v6.0 policy snapshots   |
+         +---------------------------+

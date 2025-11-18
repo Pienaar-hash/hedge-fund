@@ -1,0 +1,235 @@
+You are the Quant & Infra patch agent for the hedge-fund repo.
+
+Stage
+- Batches 0–5 are merged and green.
+- We now have:
+  - v6 docs & topology aligned.
+  - Normalized configs (strategy_config, risk_limits, pairs_universe, strategy_registry).
+  - Execution & risk contract clarity.
+  - Telemetry v2: logs/state/*.json snapshots + JSONL histories.
+  - Expectancy v6 + Symbol scoring v6 (intel-only, behind INTEL_V6_ENABLED).
+  - Router Auto-Tune v6 (router_policy_suggestions_v6.json) and canonical regime/quality classifiers.
+
+Goal — Batch 6: Feedback Allocator v6 (Suggestion-Only)
+- Build a pure-intel layer that produces:
+  - risk allocation suggestions
+  - symbol/strategy weight suggestions
+  - optional per-symbol cap suggestions
+- No live changes to:
+  - risk_limits.json
+  - pairs_universe.json
+  - sizing logic
+  - router behavior
+- Outputs must be:
+  - deterministic
+  - bounded by config
+  - test-covered
+  - safe to ignore
+
+======================================================================
+1) Feedback Allocator Module
+======================================================================
+
+Create:
+
+- execution/intel/feedback_allocator_v6.py
+
+Inputs (via state files and config):
+
+- logs/state/expectancy_v6.json
+- logs/state/symbol_scores_v6.json
+- logs/state/router_policy_suggestions_v6.json
+- logs/state/nav.json
+- logs/state/risk_snapshot.json    (from Telemetry v2; if missing, handle gracefully)
+- config/risk_limits.json
+- config/pairs_universe.json
+- optionally strategy registry if useful (for per-strategy caps)
+
+Outputs:
+
+- logs/state/risk_allocation_suggestions_v6.json
+
+Example output schema:
+
+{
+  "generated_ts": "...",
+  "lookback_days": 7,
+  "global": {
+    "current_equity_usd": ...,
+    "current_drawdown_pct": ...,
+    "risk_mode": "normal" | "cautious" | "aggressive"
+  },
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "score": 0.87,
+      "expectancy": {
+        "avg_r": ...,
+        "hit_rate": ...,
+        "regime": "maker_strong"
+      },
+      "router_policy": {
+        "current": { ...from router_policy_suggestions_v6 or router_health... },
+        "proposed": { ... if available ... }
+      },
+      "caps": {
+        "current_max_nav_pct": ...,
+        "current_max_trade_nav_pct": ...,
+        "current_max_concurrent_positions": ...
+      },
+      "suggested_caps": {
+        "max_nav_pct": ...,
+        "max_trade_nav_pct": ...,
+        "max_concurrent_positions": ...
+      },
+      "suggested_weight": 0.18,
+      "rationale": [
+        "High score + good router quality in normal risk mode → modestly increase symbol weight.",
+        "Respecting upper bound from risk_limits.json."
+      ]
+    },
+    ...
+  ]
+}
+
+Logic requirements:
+
+- Use symbol score + expectancy to propose **relative weights**:
+  - higher score → higher suggested_weight.
+- Use global risk mode:
+  - derive from current drawdown and risk_limits:
+    - e.g., dd < 5% → "normal",
+         5–10% → "cautious",
+         >10% → "defensive" (you can pick labels).
+- In "cautious"/"defensive" modes:
+  - cap suggested weights (and caps) more aggressively,
+  - optionally reduce suggested max_nav_pct / max_trade_nav_pct.
+
+Bounds:
+
+- suggested_weight must be ∈ [0, 1] and sum of all suggested weights ≤ 1.0.
+- suggested max_nav_pct must be within [min_cap, global_max_cap_from_config].
+- max_trade_nav_pct suggestions should not increase beyond config-defined maxima; they may suggest reductions or unchanged values.
+- max_concurrent_positions suggestions must be integer and within config-defined min/max.
+
+Do NOT:
+- Modify configs.
+- Enforce any suggestions.
+- Assume any particular execution pipeline; this is intel only.
+
+======================================================================
+2) Probe Script
+======================================================================
+
+Create:
+
+- scripts/feedback_allocator_probe_v6.py
+
+Behavior:
+
+- Reads the inputs from logs/state and config:
+  - expectancy_v6.json
+  - symbol_scores_v6.json
+  - router_policy_suggestions_v6.json (if present)
+  - nav.json
+  - risk_snapshot.json (if present)
+  - risk_limits.json
+  - pairs_universe.json
+- Calls feedback_allocator_v6.build_suggestions() (or similar).
+- Writes logs/state/risk_allocation_suggestions_v6.json using state_publish helpers.
+- Prints a concise table to stdout:
+
+  SYMBOL | SCORE | EXPECTANCY | RISK_MODE | CURRENT max_nav_pct | SUGGESTED max_nav_pct | CURRENT weight? | SUGGESTED weight
+
+- Handle missing intel inputs gracefully:
+  - If no expectancy or symbol_scores, produce either empty suggestions or conservative defaults (documented in tests).
+
+======================================================================
+3) State Publisher & Executor Hooks (Flag-Gated)
+======================================================================
+
+Update:
+
+- execution/state_publish.py
+  - Add helper to write logs/state/risk_allocation_suggestions_v6.json.
+
+- execution/executor_live.py
+  - Add an optional intel hook (behind FEEDBACK_ALLOCATOR_V6_ENABLED):
+    - Periodically calls the feedback_allocator_v6 engine.
+    - Writes suggestions via state_publish.
+    - Never alters live risk state, risk_limits, universe, or positions.
+    - Catches and logs any intel errors (no impact on trading loop).
+
+======================================================================
+4) Tests
+======================================================================
+
+Create:
+
+- tests/test_feedback_allocator_v6.py
+
+Test scenarios:
+
+1) Normal risk mode:
+   - synthetic nav/risk state with low drawdown.
+   - symbol A: high score, good expectancy.
+   - symbol B: low score, poor expectancy.
+   - Assert:
+     - suggested_weight(A) > suggested_weight(B),
+     - suggested caps for A are ≥ B (within allowed bounds),
+     - total weight ≤ 1.0.
+
+2) Cautious/defensive mode:
+   - synthetic nav with higher drawdown.
+   - assert:
+     - absolute suggested weights are lower for both A and B vs normal mode,
+     - suggested max_nav_pct never exceeds config values,
+     - suggestions reduce or hold caps, never increase beyond config.
+
+3) Missing intel:
+   - no symbol_scores or expectancy present.
+   - assert:
+     - allocator returns empty suggestions or conservative defaults,
+     - no exceptions.
+
+Extend (if appropriate):
+
+- tests/test_state_publish_stats.py
+  - ensure state_publish writes risk_allocation_suggestions_v6.json.
+
+Validation commands:
+
+- Local intel suite:
+
+  python -m pytest \
+    tests/test_expectancy_v6.py \
+    tests/test_symbol_score_v6.py \
+    tests/test_router_autotune_v6.py \
+    tests/test_feedback_allocator_v6.py -q
+
+- Full regression:
+
+  python -m pytest \
+    tests/test_risk_limits.py \
+    tests/test_screener_tier_caps.py \
+    tests/test_exchange_dry_run.py \
+    tests/test_router_smoke.py \
+    tests/test_router_policy.py \
+    tests/test_router_metrics_effectiveness.py \
+    tests/test_order_router_ack.py \
+    tests/test_order_metrics.py \
+    tests/test_config_parsing.py \
+    tests/test_expectancy_v6.py \
+    tests/test_symbol_score_v6.py \
+    tests/test_router_autotune_v6.py \
+    tests/test_feedback_allocator_v6.py -q
+
+Constraints:
+
+- DO NOT:
+  - modify any production config files,
+  - change live risk calculations,
+  - change router behavior,
+  - alter execution or position sizing.
+- The system must behave exactly as before when FEEDBACK_ALLOCATOR_V6_ENABLED is unset/false.
+- Output must be deterministic given the same inputs.

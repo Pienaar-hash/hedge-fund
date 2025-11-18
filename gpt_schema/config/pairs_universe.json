@@ -1,0 +1,21 @@
+{
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "overrides": {
+    "BTCUSDT": {
+      "target_leverage": 20,
+      "min_notional": 100
+    },
+    "ETHUSDT": {
+      "target_leverage": 4,
+      "min_notional": 100
+    },
+    "SOLUSDT": {
+      "target_leverage": 3,
+      "min_notional": 100
+    }
+  }
+}

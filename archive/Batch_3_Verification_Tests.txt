@@ -1,0 +1,35 @@
+## 2️⃣ Batch 3 Verification Tests (what to actually run / inspect)
+
+Think of these as “sanity drills” rather than just `pytest` green.
+
+### A. Automated tests (CLI)
+
+You already ran the ones Codex listed; I’d re-run them once after any manual tweaks:
+
+```bash
+# Core risk / router integrity
+python -m pytest \
+  tests/test_risk_limits.py \
+  tests/test_screener_tier_caps.py \
+  tests/test_router_smoke.py \
+  tests/test_router_policy.py \
+  tests/test_router_metrics_effectiveness.py -q
+
+# Core execution & config surface
+python -m pytest \
+  tests/test_risk_limits.py \
+  tests/test_screener_tier_caps.py \
+  tests/test_exchange_dry_run.py \
+  tests/test_router_smoke.py \
+  tests/test_order_router_ack.py \
+  tests/test_order_metrics.py \
+  tests/test_config_parsing.py -q
+
+# Telemetry/dashboard-focused (if not part of a suite above)
+python -m pytest \
+  tests/test_state_publish_stats.py \
+  tests/test_dashboard_metrics.py \
+  tests/test_router_health_v2.py -q
+```
+
+If any of these fail, we treat that as a hard stop before Batch 4.

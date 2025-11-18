@@ -1,0 +1,99 @@
+You are the Quant & Infra patch agent for the hedge-fund repo.
+
+Context:
+- v6.0 architecture defines a canonical telemetry layer: universe.json, positions.json, nav.json,
+  router_health.json, risk_snapshot.json, and enriched router metrics.
+- topology audit (infra_v6.0_repo_topology.md §§2.1, 2.4, 4) shows:
+    * all telemetry publishers in executor_live.py are no-ops,
+    * router metrics omit required fields for v6,
+    * dashboard relies on config fallbacks and legacy JSONL formats,
+    * no canonical universe snapshot exists,
+    * Firestore utils can remain stubbed, but local telemetry must be fully working.
+
+TASK: Implement “Telemetry v2 foundations” for v6.0-alpha1.
+Zero behavioral changes to execution, router, risk.
+Purely additive, safe, fully tested.
+
+SCOPE (strict):
+
+1. Add canonical telemetry outputs:
+
+   a) Create logs/state/universe.json
+      - produced by execution/universe_resolver.py
+      - fields:
+          {
+            "symbol": ...,
+            "tier": ...,
+            "max_leverage": ...,
+            "min_notional": ...,
+            "caps": { per-symbol caps },
+            "updated_ts": ...
+          }
+
+   b) Extend state_publish.py to write:
+      - nav.json
+      - positions.json
+      - router_health.json
+      - universe.json
+      - risk_snapshot.json
+      All local-only, no Firestore writes required.
+
+2. Unstub executor telemetry hooks:
+
+   Implement in execution/executor_live.py:
+     - _mirror_router_metrics()
+     - _maybe_publish_execution_health()
+     - _maybe_publish_execution_intel()
+     - _maybe_emit_execution_alerts()
+   Requirements:
+     * local file writes only (JSON or JSONL)
+     * preserve existing call signatures
+     * do not change execution flow or trading behavior
+     * ensure router_meta and policy metadata are included
+
+3. Enrich router metrics:
+   In execution/order_router.py:
+     - Add fields:
+         maker_start
+         is_maker_final
+         used_fallback
+         ack_latency_ms
+         slippage_bps
+     - Extend execution/utils/metrics.py readers to expect these fields.
+     - Ensure compatibility with test_router_smoke, test_order_metrics, and router health dashboard.
+
+4. Canonical router_health.json:
+   Create a consolidated structure:
+     {
+       "symbol": ...,
+       "maker_fill_rate": ...,
+       "fallback_rate": ...,
+       "slippage_p50": ...,
+       "slippage_p95": ...,
+       "policy": {
+         "maker_first": ...,
+         "taker_bias": ...,
+         "quality": ...
+       },
+       "updated_ts": ...
+     }
+
+5. Dashboard alignment:
+   Update dashboard/live_helpers.py & dashboard/router_health.py to:
+     - read universe.json instead of configs
+     - read router_health.json instead of raw JSONL
+     - fallback logic preserved for missing fields
+
+6. Testing:
+   Update/extend:
+     - tests/test_router_health_events.py
+     - tests/test_router_health_v2.py
+     - tests/test_state_publish_stats.py
+     - tests/test_dashboard_metrics.py
+   Ensure old tests expecting legacy JSONL formats still pass.
+
+NOTES:
+- No changes to risk_limits, size_model, order_router behavior, or actual trading logic.
+- Maintain backward compatibility with existing telemetry readers.
+- Firestore functions remain no-ops; local publishers must be fully functional.
+- Keep patches minimal, additive, deterministic.
