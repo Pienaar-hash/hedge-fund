@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections import OrderedDict
 from typing import Any, Dict, Iterable, List, Tuple, Mapping, Optional
@@ -31,7 +32,7 @@ from .risk_limits import (
 )
 from .risk_engine_v6 import OrderIntent, RiskEngineV6
 from .nav import PortfolioSnapshot
-from execution.v6_flags import get_flags
+from execution.v6_flags import get_flags, log_v6_flag_snapshot
 
 try:
     from .ml.predict import score_symbol as _score_symbol
@@ -39,6 +40,7 @@ except Exception:  # pragma: no cover - optional dependency
     _score_symbol = None
 
 LOG_TAG = "[screener]"
+LOGGER = logging.getLogger("signal_screener")
 _DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
 _DEDUP_MAX_SIZE = 2048
 _ENTRY_GATE_NAME = "orderbook"
@@ -201,6 +203,10 @@ def _reduce_plan(
 _SCREENER_RISK_STATE = RiskState()
 _SCREENER_GATE = RiskGate({"sizing": {}, "risk": {}})
 _V6_FLAGS = get_flags()
+try:
+    log_v6_flag_snapshot(LOGGER)
+except Exception:
+    LOGGER.debug("v6 flag snapshot logging failed", exc_info=True)
 RISK_ENGINE_V6_ENABLED = _V6_FLAGS.risk_engine_v6_enabled
 _RISK_ENGINE_V6: Optional[RiskEngineV6] = None
 _RISK_ENGINE_V6_CFG_DIGEST: Optional[str] = None

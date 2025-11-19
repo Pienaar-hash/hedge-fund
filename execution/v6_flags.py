@@ -64,8 +64,13 @@ def log_v6_flag_snapshot(logger: logging.Logger, *, level: int = logging.INFO, f
     if logger is None:
         return
     snapshot = flags_to_dict(flags)
-    payload = " ".join(f"{key}={int(value)}" for key, value in snapshot.items())
-    logger.log(level, "[v6] flags %s", payload)
+    context = _runtime_context()
+    parts = [f"{key}={int(value)}" for key, value in snapshot.items()]
+    for key, value in context.items():
+        if value == "":
+            continue
+        parts.append(f"{key}={value}")
+    logger.log(level, "[v6] flags %s", " ".join(parts))
 
 
 def enrich_payload(base: Mapping[str, bool] | None = None, *, flags: V6Flags | None = None) -> Dict[str, bool]:
@@ -75,4 +80,27 @@ def enrich_payload(base: Mapping[str, bool] | None = None, *, flags: V6Flags | N
     return dict(payload)
 
 
-__all__ = ["V6Flags", "get_flags", "flags_to_dict", "log_v6_flag_snapshot", "enrich_payload"]
+def _runtime_context() -> Dict[str, str]:
+    env = (os.getenv("ENV") or os.getenv("ENVIRONMENT") or "").strip()
+    dry_run = (os.getenv("DRY_RUN") or "0").strip()
+    testnet = (os.getenv("BINANCE_TESTNET") or "0").strip()
+    return {
+        "ENV": env or "",
+        "DRY_RUN": dry_run or "0",
+        "BINANCE_TESTNET": testnet or "0",
+    }
+
+
+def get_runtime_context() -> Dict[str, str]:
+    """Expose the runtime context used in flag logging (ENV/DRY_RUN/TESTNET)."""
+    return dict(_runtime_context())
+
+
+__all__ = [
+    "V6Flags",
+    "get_flags",
+    "flags_to_dict",
+    "log_v6_flag_snapshot",
+    "enrich_payload",
+    "get_runtime_context",
+]

@@ -9,6 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from execution.log_utils import get_logger
 from execution.pipeline_v6_shadow import PIPELINE_SHADOW_LOG
 from execution.state_publish import write_pipeline_v6_compare_summary
 
@@ -102,9 +103,9 @@ def compare_pipeline_v6(
         diffs.append(diff)
     summary = _summarize_diffs(diffs)
     try:
-        with COMPARE_LOG_PATH.open("w", encoding="utf-8") as handle:
-            for diff in diffs:
-                handle.write(json.dumps(diff) + "\n")
+        logger = get_logger(str(COMPARE_LOG_PATH))
+        for diff in diffs:
+            logger.write(diff)
     except Exception:
         pass
     write_pipeline_v6_compare_summary(summary)

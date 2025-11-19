@@ -55,6 +55,7 @@ LOG_ATTEMPTS = get_logger("logs/execution/orders_attempted.jsonl")
 LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
 LOG_POSITION = get_logger("logs/execution/position_state.jsonl")
 LOG_HEART = get_logger("logs/execution/sync_heartbeats.jsonl")
+ROUTER_HEALTH_LOG = get_logger("logs/router_health.jsonl")
 _HEARTBEAT_INTERVAL = 60.0
 _LAST_HEARTBEAT = 0.0
 _LAST_SIGNAL_PULL = 0.0
@@ -109,6 +110,12 @@ _PIPELINE_V6_COMPARE_INTERVAL_S = float(os.getenv("PIPELINE_V6_COMPARE_INTERVAL_
 _LAST_PIPELINE_V6_COMPARE = 0.0
 _LAST_NAV_STATE: Dict[str, Any] = {}
 _LAST_POSITIONS_STATE: Dict[str, Any] = {}
+_LAST_RISK_SNAPSHOT: Dict[str, Any] | None = None
+
+try:
+    _ENGINE_VERSION = (Path(repo_root) / "VERSION").read_text(encoding="utf-8").strip()
+except Exception:
+    _ENGINE_VERSION = "v6.0-beta-preview"
 
 
 def get_v6_flag_snapshot() -> Dict[str, bool]:
@@ -254,6 +261,10 @@ def _maybe_emit_router_health_snapshot(force: bool = False) -> None:
         LOG.debug("[metrics] router_health_snapshot_failed: %s", exc)
         return
     try:
+        ROUTER_HEALTH_LOG.write({"ts": now, "snapshot": snapshot})
+    except Exception as exc:
+        LOG.debug("[metrics] router_health_log_failed: %s", exc)
+    try:
         write_router_health_state(snapshot)
         _LAST_ROUTER_HEALTH_PUBLISH = now
     except Exception as exc:
@@ -266,7 +277,7 @@ def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
 
 
 def _maybe_emit_risk_snapshot(force: bool = False) -> None:
-    global _LAST_RISK_PUBLISH, _LAST_RISK_CACHE
+    global _LAST_RISK_PUBLISH, _LAST_RISK_CACHE, _LAST_RISK_SNAPSHOT
     now = time.time()
     if not force and (now - _LAST_RISK_PUBLISH) < EXEC_HEALTH_PUBLISH_INTERVAL_S:
         return
@@ -286,6 +297,7 @@ def _maybe_emit_risk_snapshot(force: bool = False) -> None:
         write_risk_snapshot_state(snapshot)
     except Exception as exc:
         LOG.debug("[metrics] risk_snapshot_state_write_failed: %s", exc)
+    _LAST_RISK_SNAPSHOT = snapshot
     cache: Dict[str, Dict[str, Any]] = {}
     for entry in snapshot.get("symbols", []):
         sym = entry.get("symbol")
@@ -444,6 +456,7 @@ from execution.signal_generator import (
 )
 from execution import signal_doctor
 from execution.state_publish import (
+    build_synced_state_payload,
     write_nav_state,
     write_pipeline_v6_shadow_state,
     write_positions_state,
@@ -1644,7 +1657,8 @@ def _maybe_run_pipeline_v6_shadow_heartbeat() -> None:
     now = time.time()
     if (now - _LAST_PIPELINE_V6_HEARTBEAT) < _PIPELINE_V6_HEARTBEAT_INTERVAL_S:
         return
-    positions_rows = list(_LAST_POSITIONS_STATE.get("positions") or [])
+    raw_positions = _LAST_POSITIONS_STATE.get("items") or _LAST_POSITIONS_STATE.get("positions") or []
+    positions_rows = list(raw_positions)
     symbol = _select_shadow_symbol(positions_rows)
     if not symbol:
         return
@@ -3290,7 +3304,29 @@ def _pub_tick() -> None:
         write_positions_state(positions_payload)
     except Exception as exc:
         LOG.debug("[telemetry] positions_state_write_failed: %s", exc)
-    synced_payload = {"positions": rows, "updated_at": now}
+    risk_payload = _LAST_RISK_SNAPSHOT or {"updated_ts": now, "symbols": []}
+    try:
+        write_risk_snapshot_state(risk_payload)
+    except Exception as exc:
+        LOG.debug("[telemetry] risk_snapshot_write_failed: %s", exc)
+    flag_snapshot = get_v6_flag_snapshot()
+    try:
+        synced_payload = build_synced_state_payload(
+            items=rows,
+            nav=nav_float,
+            engine_version=_ENGINE_VERSION,
+            flags=flag_snapshot,
+            updated_at=now,
+        )
+    except Exception as exc:
+        LOG.debug("[telemetry] build_synced_state_payload_failed: %s", exc)
+        synced_payload = {
+            "items": [dict(row) for row in rows],
+            "nav": nav_float,
+            "engine_version": _ENGINE_VERSION,
+            "v6_flags": flag_snapshot,
+            "updated_at": now,
+        }
     try:
         write_synced_state(synced_payload)
     except Exception as exc:

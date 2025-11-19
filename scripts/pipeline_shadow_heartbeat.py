@@ -9,6 +9,7 @@ import logging
 
 from execution import pipeline_v6_shadow
 from execution.state_publish import write_pipeline_v6_shadow_state
+from execution.v6_flags import log_v6_flag_snapshot
 
 LOG = logging.getLogger("pipeline_shadow_heartbeat")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -25,6 +26,10 @@ def _write_summary() -> None:
 
 def main() -> None:
     interval = float(os.getenv("PIPELINE_SHADOW_HEARTBEAT_INTERVAL", "600") or 600)
+    try:
+        log_v6_flag_snapshot(LOG)
+    except Exception:
+        LOG.debug("v6 flag snapshot logging failed", exc_info=True)
     while True:
         try:
             _write_summary()

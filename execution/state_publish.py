@@ -14,7 +14,7 @@ import logging
 import os
 import pathlib
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from utils.firestore_client import get_db
 
@@ -74,14 +74,15 @@ def _json_default(value: Any) -> Any:
         return str(value)
 
 
-def _state_path(name: str) -> pathlib.Path:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    return STATE_DIR / name
+def _state_path(name: str, state_dir: pathlib.Path | None = None) -> pathlib.Path:
+    target_dir = state_dir or STATE_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / name
 
 
-def _write_state_file(name: str, payload: Dict[str, Any]) -> None:
+def _write_state_file(name: str, payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     try:
-        path = _state_path(name)
+        path = _state_path(name, state_dir)
         tmp = path.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, default=_json_default)
@@ -90,64 +91,102 @@ def _write_state_file(name: str, payload: Dict[str, Any]) -> None:
         LOG.debug("state_write_failed name=%s err=%s", name, exc)
 
 
-def write_positions_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("positions.json", payload)
+def write_positions_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("positions.json", payload, state_dir)
 
 
-def write_nav_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("nav.json", payload)
+def write_nav_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("nav.json", payload, state_dir)
 
 
-def write_router_health_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("router_health.json", payload)
+def write_router_health_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("router_health.json", payload, state_dir)
 
 
-def write_risk_snapshot_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("risk_snapshot.json", payload)
+def write_risk_snapshot_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("risk_snapshot.json", payload, state_dir)
 
 
-def write_universe_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("universe.json", payload)
+def write_universe_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("universe.json", payload, state_dir)
 
 
-def write_expectancy_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("expectancy_v6.json", payload)
+def write_expectancy_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("expectancy_v6.json", payload, state_dir)
 
 
-def write_symbol_scores_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("symbol_scores_v6.json", payload)
+def write_symbol_scores_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("symbol_scores_v6.json", payload, state_dir)
 
 
-def write_router_policy_suggestions_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("router_policy_suggestions_v6.json", payload)
+def write_router_policy_suggestions_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("router_policy_suggestions_v6.json", payload, state_dir)
 
 
-def write_risk_allocation_suggestions_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("risk_allocation_suggestions_v6.json", payload)
+def write_risk_allocation_suggestions_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("risk_allocation_suggestions_v6.json", payload, state_dir)
 
 
-def write_pipeline_v6_shadow_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("pipeline_v6_shadow_head.json", payload)
+def write_pipeline_v6_shadow_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("pipeline_v6_shadow_head.json", payload, state_dir)
 
 
-def write_pipeline_v6_compare_summary(payload: Dict[str, Any]) -> None:
-    _write_state_file("pipeline_v6_compare_summary.json", payload)
+def write_pipeline_v6_compare_summary(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("pipeline_v6_compare_summary.json", payload, state_dir)
 
 
-def write_v6_runtime_probe_state(payload: Dict[str, Any]) -> None:
-    _write_state_file("v6_runtime_probe.json", payload)
+def write_v6_runtime_probe_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("v6_runtime_probe.json", payload, state_dir)
 
 
-def write_synced_state(payload: Dict[str, Any]) -> None:
-    path = LOG_DIR / "synced_state.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+def _coerce_synced_items(items: Any) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    if isinstance(items, Mapping):
+        items = [items]
+    for entry in items or []:
+        if not isinstance(entry, Mapping):
+            continue
+        normalized.append(dict(entry))
+    return normalized
+
+
+def build_synced_state_payload(
+    *,
+    items: Any,
+    nav: float,
+    engine_version: str | None,
+    flags: Mapping[str, Any] | None,
+    updated_at: float,
+) -> Dict[str, Any]:
+    snapshot = {
+        "items": _coerce_synced_items(items or []),
+        "nav": float(nav),
+        "engine_version": (engine_version or "v6.0-beta-preview"),
+        "v6_flags": dict(flags or {}),
+        "updated_at": float(updated_at),
+    }
+    return snapshot
+
+
+def write_synced_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     try:
-        with tmp.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, default=_json_default)
-        tmp.replace(path)
+        snapshot = build_synced_state_payload(
+            items=payload.get("items") or payload.get("positions") or [],
+            nav=payload.get("nav", payload.get("nav_usd", 0.0)),
+            engine_version=payload.get("engine_version"),
+            flags=payload.get("v6_flags"),
+            updated_at=payload.get("updated_at", time.time()),
+        )
     except Exception as exc:
-        LOG.debug("write_synced_state_failed: %s", exc)
+        LOG.debug("build_synced_state_payload_failed: %s", exc)
+        snapshot = {
+            "items": _coerce_synced_items(payload.get("items") or []),
+            "nav": float(payload.get("nav", 0.0) or 0.0),
+            "engine_version": str(payload.get("engine_version") or "v6.0-beta-preview"),
+            "v6_flags": dict(payload.get("v6_flags") or {}),
+            "updated_at": float(payload.get("updated_at", time.time())),
+        }
+    _write_state_file("synced_state.json", snapshot, state_dir)
 
 
 def _normalize_status(value: Any) -> str:

@@ -12,6 +12,7 @@ from execution.firestore_utils import (
     get_db as _firestore_get_db,
     publish_heartbeat as _firestore_publish_heartbeat,
 )
+from execution.v6_flags import log_v6_flag_snapshot
 
 # --- Ensure repo root is importable & files are read from repo root ---
 # /root/hedge-fund/execution/sync_state.py -> repo_root=/root/hedge-fund
@@ -159,7 +160,7 @@ from execution.exchange_utils import get_income_history  # noqa: E402
 LOGS_DIR = os.path.join(REPO_ROOT, "logs")
 NAV_LOG: str = os.path.join(LOGS_DIR, "nav_log.json")
 PEAK_STATE: str = os.path.join(LOGS_DIR, "cache", "peak_state.json")
-SYNCED_STATE: str = os.path.join(LOGS_DIR, "synced_state.json")
+SYNCED_STATE: str = os.path.join(LOGS_DIR, "state", "synced_state.json")
 SPOT_CACHE_PATH: str = os.path.join(LOGS_DIR, "spot_state.json")
 TREASURY_CACHE_PATH: str = os.path.join(LOGS_DIR, "cache", "treasury_sync.json")
 POLYMARKET_CACHE_PATH: str = os.path.join(LOGS_DIR, "polymarket.json")
@@ -1378,6 +1379,10 @@ def run() -> None:
     )
     _ensure_heartbeat_thread(flags.get("env", "prod"))
     _publish_startup_heartbeat(flags)
+    try:
+        log_v6_flag_snapshot(LOGGER)
+    except Exception:
+        LOGGER.debug("v6 flag snapshot logging failed", exc_info=True)
     print(
         f"[sync] startup context: ENV={env}, DRY_RUN={dry_run}, repo_root={REPO_ROOT}",
         flush=True,
