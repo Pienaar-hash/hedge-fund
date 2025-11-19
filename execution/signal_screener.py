@@ -31,6 +31,7 @@ from .risk_limits import (
 )
 from .risk_engine_v6 import OrderIntent, RiskEngineV6
 from .nav import PortfolioSnapshot
+from execution.v6_flags import get_flags
 
 try:
     from .ml.predict import score_symbol as _score_symbol
@@ -199,7 +200,8 @@ def _reduce_plan(
 
 _SCREENER_RISK_STATE = RiskState()
 _SCREENER_GATE = RiskGate({"sizing": {}, "risk": {}})
-RISK_ENGINE_V6_ENABLED = os.getenv("RISK_ENGINE_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+_V6_FLAGS = get_flags()
+RISK_ENGINE_V6_ENABLED = _V6_FLAGS.risk_engine_v6_enabled
 _RISK_ENGINE_V6: Optional[RiskEngineV6] = None
 _RISK_ENGINE_V6_CFG_DIGEST: Optional[str] = None
 

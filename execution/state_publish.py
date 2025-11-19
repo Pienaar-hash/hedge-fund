@@ -138,6 +138,18 @@ def write_v6_runtime_probe_state(payload: Dict[str, Any]) -> None:
     _write_state_file("v6_runtime_probe.json", payload)
 
 
+def write_synced_state(payload: Dict[str, Any]) -> None:
+    path = LOG_DIR / "synced_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, default=_json_default)
+        tmp.replace(path)
+    except Exception as exc:
+        LOG.debug("write_synced_state_failed: %s", exc)
+
+
 def _normalize_status(value: Any) -> str:
     if not value:
         return "UNKNOWN"

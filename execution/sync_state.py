@@ -8,7 +8,10 @@ import threading
 import time
 from copy import deepcopy
 
-from execution.firestore_utils import publish_heartbeat as _simple_publish_heartbeat
+from execution.firestore_utils import (
+    get_db as _firestore_get_db,
+    publish_heartbeat as _firestore_publish_heartbeat,
+)
 
 # --- Ensure repo root is importable & files are read from repo root ---
 # /root/hedge-fund/execution/sync_state.py -> repo_root=/root/hedge-fund
@@ -35,7 +38,16 @@ def _dry_run_mode() -> str:
 
 
 def _firestore_enabled() -> bool:
-    return False
+    flag = os.getenv("FIRESTORE_ENABLED")
+    if flag is not None:
+        return flag.strip().lower() in {"1", "true", "yes", "on"}
+    env = _ENV.lower()
+    if env == "prod":
+        allow = os.getenv("ALLOW_PROD_SYNC") or os.getenv("ALLOW_PROD_WRITE")
+        if allow is None:
+            return False
+        return allow.strip().lower() in {"1", "true", "yes", "on"}
+    return True
 
 
 def _repo_root_log() -> None:
@@ -101,16 +113,8 @@ class _NoopFirestore:
         return _NoopDoc()
 
 
-def get_db(strict: bool = True):
+def _noop_db() -> _NoopFirestore:
     return _NoopFirestore()
-
-
-def write_doc(*_args, **_kwargs):
-    return False
-
-
-def publish_heartbeat(*_args, **_kwargs):
-    return False
 
 # Make relative file reads (nav_log.json, etc.) deterministic under Supervisor
 try:
@@ -1235,7 +1239,10 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """
     global _FIRESTORE_FAIL_COUNT, _LAST_SUCCESS_TS
     try:
-        db = get_db(strict=False)
+        if _firestore_enabled():
+            db = _firestore_get_db(strict=False)
+        else:
+            db = _noop_db()
         result = _sync_once_with_db(db)
         _LAST_SUCCESS_TS = time.time()
         _FIRESTORE_FAIL_COUNT = 0
@@ -1265,7 +1272,7 @@ def _heartbeat_worker(env: str, stop_event: threading.Event) -> None:
     LOGGER.info("[heartbeat] thread starting (ENV=%s)", env)
     while not stop_event.is_set():
         try:
-            _simple_publish_heartbeat(service="sync_state", status="ok", env=env)
+            _firestore_publish_heartbeat(service="sync_state", status="ok", env=env)
             LOGGER.info("[heartbeat] sync_state published ok")
         except Exception as exc:
             LOGGER.warning("[heartbeat] sync_state failed: %s", exc, exc_info=True)
@@ -1276,6 +1283,8 @@ def _heartbeat_worker(env: str, stop_event: threading.Event) -> None:
 def _ensure_heartbeat_thread(env: str) -> None:
     global _HEARTBEAT_THREAD, _HEARTBEAT_STOP
     with _HEARTBEAT_LOCK:
+        if not _firestore_enabled():
+            return
         if _HEARTBEAT_STOP is not None and _HEARTBEAT_STOP.is_set():
             return
         if _HEARTBEAT_THREAD is not None and _HEARTBEAT_THREAD.is_alive():

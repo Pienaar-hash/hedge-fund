@@ -11,12 +11,61 @@ try:
 except Exception:  # pragma: no cover
     _firestore_client = None  # type: ignore
 
-from utils.firestore_client import get_db
-
 LOGGER = logging.getLogger("firestore")
 
 _DIRECT_CLIENT = None
 _FIRESTORE_WRITES_DISABLED = True  # local-only mode disables all remote publishes
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+class _NoopDoc:
+    _is_noop = True
+
+    def __init__(self, path: str = "noop") -> None:
+        self.path = path
+
+    def set(self, *_args, **_kwargs):
+        return None
+
+    def update(self, *_args, **_kwargs):
+        return None
+
+    def get(self):
+        class _Empty:
+            exists = False
+
+            def to_dict(self_inner):
+                return {}
+
+        return _Empty()
+
+
+class _NoopFirestore:
+    _is_noop = True
+
+    def __init__(self, root: str = "noop") -> None:
+        self.root = root
+
+    def collection(self, name: str):
+        return self
+
+    def document(self, name: str):
+        return self
+
+    def set(self, *_args, **_kwargs):
+        return None
+
+    def get(self):
+        return _NoopDoc().get()
+
+    def batch(self):
+        return self
+
+    def commit(self):
+        return None
+
+
+_NOOP_DB = _NoopFirestore()
 
 
 def _env() -> str:
@@ -45,7 +94,26 @@ def _firestore_available(db: Any) -> bool:
 
 
 def _direct_client() -> Any:
-    return None
+    global _DIRECT_CLIENT
+    if _DIRECT_CLIENT is not None:
+        return _DIRECT_CLIENT
+    if _firestore_client is None:
+        return None
+    try:
+        _DIRECT_CLIENT = _firestore_client.Client()
+    except Exception as exc:  # pragma: no cover - optional dependency
+        LOGGER.warning("[firestore] client_init_failed: %s", exc)
+        _DIRECT_CLIENT = None
+    return _DIRECT_CLIENT
+
+
+def get_db(strict: bool = True) -> Any:
+    client = _direct_client()
+    if client is None:
+        if strict:
+            raise RuntimeError("Firestore client unavailable")
+        return _NOOP_DB
+    return client
 
 
 def publish_router_metrics(doc_id: str, payload: Dict[str, Any], *, env: Optional[str] = None) -> None:
@@ -243,7 +311,26 @@ def publish_heartbeat(
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Publish lightweight heartbeat under hedge/{env}/telemetry/health."""
-    return None
+    db = get_db(strict=False)
+    if not _firestore_available(db):
+        return
+    env_name = env or _env()
+    payload = {
+        "status": status,
+        "ts": _utcnow_iso(),
+    }
+    if extra:
+        payload.update(extra)
+    try:
+        doc = (
+            db.collection("hedge")
+            .document(env_name)
+            .collection("telemetry")
+            .document("health")
+        )
+        doc.set({service: payload, "updated_at": _utcnow_iso()}, merge=True)
+    except Exception as exc:
+        LOGGER.debug("[firestore] heartbeat_publish_failed env=%s service=%s err=%s", env_name, service, exc)
 
 
 def safe_publish_health(payload: Dict[str, Any]) -> None:

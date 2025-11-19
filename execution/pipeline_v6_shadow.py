@@ -11,6 +11,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from execution.intel.router_policy import router_policy
 from execution.intel.maker_offset import suggest_maker_offset_bps
+from execution.log_utils import get_logger
 from execution.order_router import effective_px
 from execution.risk_engine_v6 import OrderIntent, RiskDecision, RiskEngineV6
 from execution.risk_limits import RiskState
@@ -20,6 +21,7 @@ from execution.utils import load_json
 
 PIPELINE_SHADOW_LOG = Path("logs/pipeline_v6_shadow.jsonl")
 PIPELINE_SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
+PIPELINE_SHADOW_LOGGER = get_logger(str(PIPELINE_SHADOW_LOG))
 
 
 def _load_config(path: str) -> Mapping[str, Any]:
@@ -140,10 +142,8 @@ def run_pipeline_v6_shadow(
 
 
 def append_shadow_decision(decision: Mapping[str, Any]) -> None:
-    PIPELINE_SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with PIPELINE_SHADOW_LOG.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(decision) + "\n")
+        PIPELINE_SHADOW_LOGGER.write(decision)
     except Exception:
         pass
 

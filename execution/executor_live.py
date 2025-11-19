@@ -33,6 +33,7 @@ from execution.universe_resolver import (
 
 import requests
 from execution.intel.router_policy import router_policy
+from execution.v6_flags import get_flags, flags_to_dict, log_v6_flag_snapshot
 # Optional .env so Supervisor doesn't need to export everything
 try:
     from dotenv import load_dotenv
@@ -61,6 +62,9 @@ _LAST_QUEUE_DEPTH = 0
 SIGNAL_METRICS_PATH = Path("logs/execution/signal_metrics.jsonl")
 ORDER_METRICS_PATH = Path("logs/execution/order_metrics.jsonl")
 ROUTER_METRICS_MIRROR_PATH = Path("logs/execution/router_metrics.jsonl")
+SIGNAL_METRICS_LOG = get_logger(str(SIGNAL_METRICS_PATH))
+ORDER_METRICS_LOG = get_logger(str(ORDER_METRICS_PATH))
+ROUTER_METRICS_LOG = get_logger(str(ROUTER_METRICS_MIRROR_PATH))
 LOGS_ROOT = Path(repo_root) / "logs"
 POSITIONS_CACHE_PATH = LOGS_ROOT / "positions.json"
 NAV_LOG_CACHE_PATH = LOGS_ROOT / "nav_log.json"
@@ -82,33 +86,33 @@ _LAST_ROUTER_HEALTH_PUBLISH = 0.0
 _LAST_RISK_PUBLISH = 0.0
 _LAST_RISK_CACHE: Dict[str, Dict[str, Any]] = {}
 _LAST_ALERT_TS: Dict[str, float] = {}
-INTEL_V6_ENABLED = os.getenv("INTEL_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+_V6_FLAGS = get_flags()
+INTEL_V6_ENABLED = _V6_FLAGS.intel_v6_enabled
 INTEL_V6_REFRESH_INTERVAL_S = float(os.getenv("INTEL_V6_REFRESH_INTERVAL_S", "600") or 600)
-ROUTER_AUTOTUNE_V6_ENABLED = os.getenv("ROUTER_AUTOTUNE_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+ROUTER_AUTOTUNE_V6_ENABLED = _V6_FLAGS.router_autotune_v6_enabled
 ROUTER_AUTOTUNE_V6_REFRESH_INTERVAL_S = float(os.getenv("ROUTER_AUTOTUNE_V6_REFRESH_INTERVAL_S", "900") or 900)
 _LAST_ROUTER_AUTOTUNE_PUBLISH = 0.0
-FEEDBACK_ALLOCATOR_V6_ENABLED = os.getenv("FEEDBACK_ALLOCATOR_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+FEEDBACK_ALLOCATOR_V6_ENABLED = _V6_FLAGS.feedback_allocator_v6_enabled
 FEEDBACK_ALLOCATOR_V6_REFRESH_INTERVAL_S = float(os.getenv("FEEDBACK_ALLOCATOR_V6_REFRESH_INTERVAL_S", "1800") or 1800)
 _LAST_FEEDBACK_ALLOCATOR_PUBLISH = 0.0
-RISK_ENGINE_V6_ENABLED = os.getenv("RISK_ENGINE_V6_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+RISK_ENGINE_V6_ENABLED = _V6_FLAGS.risk_engine_v6_enabled
 _RISK_ENGINE_V6: Optional[RiskEngineV6] = None
 _RISK_ENGINE_V6_CFG_DIGEST: Optional[str] = None
-PIPELINE_V6_SHADOW_ENABLED = os.getenv("PIPELINE_V6_SHADOW_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+PIPELINE_V6_SHADOW_ENABLED = _V6_FLAGS.pipeline_v6_shadow_enabled
 PIPELINE_V6_SHADOW_RECENT = int(os.getenv("PIPELINE_V6_SHADOW_RECENT", "50") or 50)
-ROUTER_AUTOTUNE_V6_APPLY_ENABLED = os.getenv("ROUTER_AUTOTUNE_V6_APPLY_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+ROUTER_AUTOTUNE_V6_APPLY_ENABLED = _V6_FLAGS.router_autotune_v6_apply_enabled
 _V6_RUNTIME_PROBE_INTERVAL = float(os.getenv("V6_RUNTIME_PROBE_INTERVAL", "300") or 300)
 _LAST_V6_RUNTIME_PROBE = 0.0
+_PIPELINE_V6_HEARTBEAT_INTERVAL_S = float(os.getenv("PIPELINE_V6_SHADOW_HEARTBEAT_INTERVAL_S", "600") or 600)
+_LAST_PIPELINE_V6_HEARTBEAT = 0.0
+_PIPELINE_V6_COMPARE_INTERVAL_S = float(os.getenv("PIPELINE_V6_COMPARE_INTERVAL_S", "900") or 900)
+_LAST_PIPELINE_V6_COMPARE = 0.0
+_LAST_NAV_STATE: Dict[str, Any] = {}
+_LAST_POSITIONS_STATE: Dict[str, Any] = {}
 
 
 def get_v6_flag_snapshot() -> Dict[str, bool]:
-    return {
-        "INTEL_V6_ENABLED": INTEL_V6_ENABLED,
-        "RISK_ENGINE_V6_ENABLED": RISK_ENGINE_V6_ENABLED,
-        "PIPELINE_V6_SHADOW_ENABLED": PIPELINE_V6_SHADOW_ENABLED,
-        "ROUTER_AUTOTUNE_V6_ENABLED": ROUTER_AUTOTUNE_V6_ENABLED,
-        "FEEDBACK_ALLOCATOR_V6_ENABLED": FEEDBACK_ALLOCATOR_V6_ENABLED,
-        "ROUTER_AUTOTUNE_V6_APPLY_ENABLED": ROUTER_AUTOTUNE_V6_APPLY_ENABLED,
-    }
+    return flags_to_dict(get_flags())
 
 
 def mk_id(prefix: str) -> str:
@@ -118,21 +122,21 @@ def mk_id(prefix: str) -> str:
 
 def _append_signal_metrics(record: Mapping[str, Any]) -> None:
     try:
-        append_jsonl(SIGNAL_METRICS_PATH, record)
+        SIGNAL_METRICS_LOG.write(record)
     except Exception as exc:
         LOG.debug("[metrics] signal_metrics_append_failed: %s", exc)
 
 
 def _append_order_metrics(record: Mapping[str, Any]) -> None:
     try:
-        append_jsonl(ORDER_METRICS_PATH, record)
+        ORDER_METRICS_LOG.write(record)
     except Exception as exc:
         LOG.debug("[metrics] order_metrics_append_failed: %s", exc)
 
 
 def _write_router_metrics_local(record: Mapping[str, Any]) -> None:
     try:
-        append_jsonl(ROUTER_METRICS_MIRROR_PATH, record)
+        ROUTER_METRICS_LOG.write(record)
     except Exception as exc:
         LOG.debug("[metrics] router_metrics_append_failed: %s", exc)
 
@@ -239,11 +243,10 @@ def _maybe_write_v6_runtime_probe(force: bool = False) -> None:
         LOG.debug("[v6] runtime_probe_write_failed err=%s", exc)
 
 
-def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
+def _maybe_emit_router_health_snapshot(force: bool = False) -> None:
     global _LAST_ROUTER_HEALTH_PUBLISH
-    _write_router_metrics_local(event)
     now = time.time()
-    if (now - _LAST_ROUTER_HEALTH_PUBLISH) < ROUTER_HEALTH_REFRESH_INTERVAL_S:
+    if not force and (now - _LAST_ROUTER_HEALTH_PUBLISH) < ROUTER_HEALTH_REFRESH_INTERVAL_S:
         return
     try:
         snapshot = _build_router_health_snapshot()
@@ -251,18 +254,21 @@ def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
         LOG.debug("[metrics] router_health_snapshot_failed: %s", exc)
         return
     try:
-        from execution.state_publish import write_router_health_state
-
         write_router_health_state(snapshot)
         _LAST_ROUTER_HEALTH_PUBLISH = now
     except Exception as exc:
         LOG.debug("[metrics] router_health_state_write_failed: %s", exc)
 
 
-def _maybe_publish_execution_health(symbol: str) -> None:
+def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
+    _write_router_metrics_local(event)
+    _maybe_emit_router_health_snapshot(force=True)
+
+
+def _maybe_emit_risk_snapshot(force: bool = False) -> None:
     global _LAST_RISK_PUBLISH, _LAST_RISK_CACHE
     now = time.time()
-    if (now - _LAST_RISK_PUBLISH) < EXEC_HEALTH_PUBLISH_INTERVAL_S:
+    if not force and (now - _LAST_RISK_PUBLISH) < EXEC_HEALTH_PUBLISH_INTERVAL_S:
         return
     try:
         engine = _get_risk_engine_v6()
@@ -277,8 +283,6 @@ def _maybe_publish_execution_health(symbol: str) -> None:
         LOG.debug("[metrics] execution_health_collect_failed: %s", exc)
         return
     try:
-        from execution.state_publish import write_risk_snapshot_state
-
         write_risk_snapshot_state(snapshot)
     except Exception as exc:
         LOG.debug("[metrics] risk_snapshot_state_write_failed: %s", exc)
@@ -321,7 +325,7 @@ def _maybe_emit_execution_alerts(symbol: str) -> None:
         LOG.debug("[metrics] execution_alert_write_failed: %s", exc)
 
 
-def _maybe_publish_execution_intel(symbol: str) -> None:
+def _maybe_publish_execution_intel() -> None:
     now = time.time()
     last = _LAST_INTEL_PUBLISH.get("universe", 0.0)
     if (now - last) >= EXEC_INTEL_PUBLISH_INTERVAL_S:
@@ -350,8 +354,7 @@ def _maybe_publish_execution_intel(symbol: str) -> None:
         router_metrics = expectancy_v6.load_router_metrics(lookback_hours=48.0)
         trades = expectancy_v6.merge_trades_with_policy(trades, router_metrics)
         expectancy_snapshot = expectancy_v6.build_expectancy_snapshot(trades, 48.0)
-        if expectancy_snapshot.get("symbols"):
-            write_expectancy_state(expectancy_snapshot)
+        write_expectancy_state(expectancy_snapshot)
         router_health = _build_router_health_snapshot()
         scores_snapshot = symbol_score_v6.build_symbol_scores(expectancy_snapshot, router_health)
         write_symbol_scores_state(scores_snapshot)
@@ -440,7 +443,15 @@ from execution.signal_generator import (
     size_for,
 )
 from execution import signal_doctor
-from execution.state_publish import write_pipeline_v6_shadow_state, write_v6_runtime_probe_state
+from execution.state_publish import (
+    write_nav_state,
+    write_pipeline_v6_shadow_state,
+    write_positions_state,
+    write_risk_snapshot_state,
+    write_router_health_state,
+    write_synced_state,
+    write_v6_runtime_probe_state,
+)
 try:
     from execution.signal_screener import run_once as run_screener_once
 except ImportError:  # pragma: no cover - optional dependency
@@ -1545,6 +1556,33 @@ def _evaluate_order_risk(
     return risk_veto, details
 
 
+def _record_shadow_decision(result: Mapping[str, Any]) -> None:
+    pipeline_v6_shadow.append_shadow_decision(result)
+    summary = pipeline_v6_shadow.build_shadow_summary(
+        pipeline_v6_shadow.load_shadow_decisions(limit=PIPELINE_V6_SHADOW_RECENT)
+    )
+    summary["last_decision"] = result
+    write_pipeline_v6_shadow_state(summary)
+
+
+def _select_shadow_symbol(positions: Iterable[Mapping[str, Any]]) -> Optional[str]:
+    for entry in positions or []:
+        try:
+            sym = str(entry.get("symbol") or "").upper()
+        except Exception:
+            sym = ""
+        if sym:
+            return sym
+    try:
+        universe = universe_by_symbol()
+        for sym in sorted(universe.keys()):
+            if sym:
+                return sym
+    except Exception:
+        return None
+    return None
+
+
 def _maybe_run_pipeline_v6_shadow(
     symbol: str,
     side: str,
@@ -1592,13 +1630,75 @@ def _maybe_run_pipeline_v6_shadow(
             sizing_cfg,
             risk_engine=_get_risk_engine_v6() if RISK_ENGINE_V6_ENABLED else None,
         )
-        pipeline_v6_shadow.append_shadow_decision(result)
-        summary = pipeline_v6_shadow.build_shadow_summary(
-            pipeline_v6_shadow.load_shadow_decisions(limit=PIPELINE_V6_SHADOW_RECENT)
-        )
-        write_pipeline_v6_shadow_state(summary)
+        _record_shadow_decision(result)
     except Exception as exc:
         LOG.debug("[shadow] pipeline_v6_failed symbol=%s err=%s", symbol, exc)
+
+
+def _maybe_run_pipeline_v6_shadow_heartbeat() -> None:
+    global _LAST_PIPELINE_V6_HEARTBEAT
+    if not PIPELINE_V6_SHADOW_ENABLED:
+        return
+    if not _LAST_NAV_STATE or not _LAST_POSITIONS_STATE:
+        return
+    now = time.time()
+    if (now - _LAST_PIPELINE_V6_HEARTBEAT) < _PIPELINE_V6_HEARTBEAT_INTERVAL_S:
+        return
+    positions_rows = list(_LAST_POSITIONS_STATE.get("positions") or [])
+    symbol = _select_shadow_symbol(positions_rows)
+    if not symbol:
+        return
+    nav_state = dict(_LAST_NAV_STATE)
+    nav_state.setdefault(
+        "nav_usd",
+        float(nav_state.get("nav_usd") or nav_state.get("nav") or 0.0),
+    )
+    nav_state.setdefault("portfolio_gross_usd", nav_state.get("portfolio_gross_usd") or 0.0)
+    nav_state.setdefault("symbol_open_qty", 0.0)
+    signal_payload = {
+        "side": "BUY",
+        "notional": 0.0,
+        "price": 0.0,
+        "leverage": 1.0,
+        "tier": None,
+        "open_positions_count": len(positions_rows),
+        "tier_gross_notional": 0.0,
+        "current_gross_notional": nav_state.get("portfolio_gross_usd") or 0.0,
+        "symbol_open_qty": 0.0,
+        "signal_strength": 0.0,
+    }
+    try:
+        sizing_cfg = _RISK_CFG.get("sizing", {}) if isinstance(_RISK_CFG, Mapping) else {}
+        result = pipeline_v6_shadow.run_pipeline_v6_shadow(
+            symbol,
+            signal_payload,
+            nav_state,
+            {"positions": positions_rows},
+            _RISK_CFG,
+            _PAIRS_CFG,
+            sizing_cfg,
+            risk_engine=_get_risk_engine_v6() if RISK_ENGINE_V6_ENABLED else None,
+        )
+        heartbeat_result = dict(result)
+        heartbeat_result["heartbeat"] = True
+        _record_shadow_decision(heartbeat_result)
+        _LAST_PIPELINE_V6_HEARTBEAT = now
+    except Exception as exc:
+        LOG.debug("[shadow] pipeline_v6_heartbeat_failed symbol=%s err=%s", symbol, exc)
+
+
+def _maybe_run_pipeline_v6_compare(force: bool = False) -> None:
+    global _LAST_PIPELINE_V6_COMPARE
+    now = time.time()
+    if not force and (now - _LAST_PIPELINE_V6_COMPARE) < _PIPELINE_V6_COMPARE_INTERVAL_S:
+        return
+    try:
+        from execution.intel import pipeline_v6_compare
+
+        pipeline_v6_compare.compare_pipeline_v6()
+        _LAST_PIPELINE_V6_COMPARE = now
+    except Exception as exc:
+        LOG.debug("[shadow] pipeline_v6_compare_failed: %s", exc)
 
 
 # NOTE: _send_order must only pass canonical order fields into send_order.
@@ -2826,7 +2926,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     router_metrics["ts"] = time.time()
     _append_order_metrics(router_metrics)
     _mirror_router_metrics(router_metrics)
-    _maybe_publish_execution_health(symbol)
+    _maybe_emit_risk_snapshot(force=True)
     _INTENT_REGISTRY[intent_id] = {
         "order_id": ack_info.order_id if ack_info else resp.get("orderId"),
         "symbol": symbol,
@@ -3172,11 +3272,31 @@ def _persist_spot_state() -> None:
 
 
 def _pub_tick() -> None:
+    global _LAST_NAV_STATE, _LAST_POSITIONS_STATE
     nav_val = _compute_nav_snapshot()
     rows = _collect_rows()
     _persist_positions_cache(rows)
     _persist_nav_log(nav_val, rows)
     _persist_spot_state()
+    now = time.time()
+    nav_float = float(nav_val) if nav_val is not None else 0.0
+    nav_payload = {"nav": nav_float, "nav_usd": nav_float, "updated_ts": now}
+    try:
+        write_nav_state(nav_payload)
+    except Exception as exc:
+        LOG.debug("[telemetry] nav_state_write_failed: %s", exc)
+    positions_payload = {"rows": rows, "updated": now}
+    try:
+        write_positions_state(positions_payload)
+    except Exception as exc:
+        LOG.debug("[telemetry] positions_state_write_failed: %s", exc)
+    synced_payload = {"positions": rows, "updated_at": now}
+    try:
+        write_synced_state(synced_payload)
+    except Exception as exc:
+        LOG.debug("[telemetry] synced_state_write_failed: %s", exc)
+    _LAST_NAV_STATE = nav_payload
+    _LAST_POSITIONS_STATE = synced_payload
     return None
 
 
@@ -3196,9 +3316,11 @@ def _loop_once(i: int) -> None:
         for pos in baseline_positions
         if isinstance(pos, Mapping) and pos.get("symbol")
     }
+    _maybe_emit_router_health_snapshot()
+    _maybe_emit_risk_snapshot()
     for symbol in sorted(active_symbols):
         _maybe_emit_execution_alerts(symbol)
-        _maybe_publish_execution_intel(symbol)
+    _maybe_publish_execution_intel()
 
     if INTENT_TEST:
         intent = {
@@ -3282,6 +3404,10 @@ def _loop_once(i: int) -> None:
         LOG.info("[screener] attempted=%d emitted=%d", attempted, emitted)
 
     _pub_tick()
+    _maybe_run_pipeline_v6_shadow_heartbeat()
+    _maybe_emit_router_health_snapshot()
+    _maybe_emit_risk_snapshot()
+    _maybe_run_pipeline_v6_compare()
 
 
 def main(argv: Optional[Sequence[str]] | None = None) -> None:
@@ -3307,11 +3433,7 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
 
     _sync_dry_run()
     LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
-    v6_flags = get_v6_flag_snapshot()
-    LOG.info(
-        "[v6] flags %s",
-        " ".join(f"{key}={int(bool(value))}" for key, value in v6_flags.items()),
-    )
+    log_v6_flag_snapshot(LOG)
     _maybe_write_v6_runtime_probe(force=True)
     try:
         if not _is_dual_side():

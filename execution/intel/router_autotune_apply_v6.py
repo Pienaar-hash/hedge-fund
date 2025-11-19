@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from execution.v6_flags import get_flags
+
 def _env_flag(name: str, default: str = "0") -> bool:
     return (os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -22,7 +24,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-APPLY_ENABLED = _env_flag("ROUTER_AUTOTUNE_V6_APPLY_ENABLED", "0")
+APPLY_ENABLED = get_flags().router_autotune_v6_apply_enabled
 def _parse_allowlist(raw: str) -> set[str]:
     if not raw:
         return set()
