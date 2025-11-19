@@ -1,0 +1,68 @@
+## ⚙️ Batch 12 — Runtime Beta Hardening Fixes
+
+This prompt packages the fixes that fell out of the v6.0-beta preview audit (`docs/infra_v6.0_beta_preview_runtime_audit.md`). Execute from repo root (`/root/hedge-fund`).
+
+---
+
+### 🎯 Objectives
+
+1. **Centralize v6 flag handling + logging**
+   * Create a single source of truth for all v6 booleans (e.g., `execution/v6_flags.py`) that parses the env once, exposes `get_flag_snapshot()`, and provides `_log_v6_flag_snapshot(logger)` plus a helper to enrich the runtime probe payload.
+   * Refactor `execution/executor_live.py`, `execution/signal_screener.py`, and `execution/intel/router_autotune_apply_v6.py` to import from that helper instead of re-reading env vars.
+   * Make the executor log the snapshot via the new helper at startup and when the runtime probe writes.
+
+2. **Telemetry heartbeat (nav/positions/router-health/risk/intel)**
+   * Update `_pub_tick()` to write `logs/state/nav.json`, `logs/state/positions.json`, and `logs/synced_state.json` via `execution.state_publish` on every loop. Keep the legacy `logs/nav_log.json` / `logs/positions.json` caches for backwards compatibility.
+   * Add background hooks (e.g., `_maybe_emit_router_health_snapshot()` and `_maybe_emit_risk_snapshot()`) invoked from `_loop_once()` so `router_health.json` and `risk_snapshot.json` update on a timer even if no orders were attempted.
+   * Move `_maybe_publish_execution_intel()` outside the `active_symbols` loop and ensure it writes empty payloads (with `sample_count=0`) when there is no data, so `expectancy_v6.json`, `symbol_scores_v6.json`, router autotune suggestions, and risk allocator outputs exist in zero-trade scenarios.
+   * Switch JSONL emitters that need rotation (`logs/execution/router_metrics.jsonl`, pipeline shadow log, etc.) to `execution.log_utils.get_logger()` so files do not grow unbounded.
+
+3. **Shadow pipeline + comparison resilience**
+   * Introduce a timer that runs `pipeline_v6_shadow` even when `_send_order()` is never called (e.g., synthesize a heartbeat signal derived from the last NAV snapshot). Every interval should refresh `pipeline_v6_shadow_head.json`.
+   * Extend the head writer so it includes the last decision payload (intent, risk_decision, size, router info) instead of counts only.
+   * Schedule `execution.intel.pipeline_v6_compare.compare_pipeline_v6()` from the executor or a lightweight script so `logs/state/pipeline_v6_compare_summary.json` is produced continually.
+
+4. **sync_state / supervisor integration**
+   * Have `_pub_tick()` also maintain `logs/synced_state.json` (`{"positions": [...], "updated_at": ts}`) so `execution/sync_state.py` and `execution/sync_daemon.py` can consume it.
+   * Re-enable Firestore writes inside `execution/sync_state.py` (respect existing guards such as `ALLOW_PROD_WRITE` / `ALLOW_PROD_SYNC`).
+   * Update `ops/hedge.conf` to include the sync daemon/service, add `stdout_logfile_maxbytes` / `stderr_logfile_maxbytes`, and pass `ALLOW_PROD_WRITE=1` (or relax the guard in executor) so `ENV="prod"` does not crash the service.
+
+5. **Legacy cleanup**
+   * Remove or clearly quarantine `execution/hedge_sync.py`, `execution/firestore_mirror.py`, and other dead v5.10-era telemetry shims. Update docs to point at the new telemetry path (executor → state_publish → synced_state → sync_daemon).
+
+---
+
+### ✅ Acceptance Checklist
+
+* `execution/executor_live.py` logs the v6 flag snapshot at startup, writes nav/positions/synced-state every loop, emits router-health/risk snapshots on timers, and runs intel + shadow pipeline + pipeline comparison even in idle markets.
+* The runtime probe JSON (`logs/state/v6_runtime_probe.json`) now includes the same snapshot used for the log helper.
+* `router_health.json`, `risk_snapshot.json`, `expectancy_v6.json`, `symbol_scores_v6.json`, `router_policy_suggestions_v6.json`, `risk_allocation_suggestions_v6.json`, `pipeline_v6_shadow_head.json`, and `pipeline_v6_compare_summary.json` are created within the first loop when the respective flags are enabled—even if there are zero screener emissions.
+* `logs/synced_state.json` exists and reflects the latest positions.
+* Supervisor config starts executor + dashboard + sync daemon, rotates logs, and no longer trips the `ENV="prod"` guard.
+* Removed (or documented as legacy) modules are no longer imported anywhere.
+
+---
+
+### 🧪 Tests to Run
+
+```bash
+pytest \
+  tests/test_v6_runtime_activation.py \
+  tests/test_state_publish_stats.py \
+  tests/test_pipeline_v6_shadow.py \
+  tests/test_pipeline_v6_compare.py \
+  tests/test_router_autotune_apply_v6.py \
+  tests/test_feedback_allocator_v6.py \
+  tests/test_expectancy_v6.py \
+  tests/test_symbol_score_v6.py
+```
+
+Also run targeted smoke scripts if needed:
+
+```bash
+python scripts/pipeline_v6_compare_probe.py --shadow-limit 10
+python scripts/router_autotune_v6_probe.py --limit 5
+python scripts/feedback_allocator_probe_v6.py --limit 5
+```
+
+Ensure the executor can start under Supervisor (or via `python -m execution.executor_live --max-loops 1`) without raising the `ENV=prod` guard and that the new state files appear under `logs/state/`.
