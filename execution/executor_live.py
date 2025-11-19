@@ -3298,20 +3298,28 @@ def _pub_tick() -> None:
     now = time.time()
     nav_float = float(nav_val) if nav_val is not None else 0.0
     nav_payload = {"nav": nav_float, "nav_usd": nav_float, "updated_ts": now}
+    nav_written = False
+    positions_written = False
+    risk_written = False
+    scores_written = False
+    synced_written = False
     try:
         write_nav_state(nav_payload)
+        nav_written = True
     except Exception as exc:
-        LOG.debug("[telemetry] nav_state_write_failed: %s", exc)
+        LOG.error("[telemetry] nav_state_write_failed: %s", exc)
     positions_payload = {"rows": rows, "updated": now}
     try:
         write_positions_state(positions_payload)
+        positions_written = True
     except Exception as exc:
-        LOG.debug("[telemetry] positions_state_write_failed: %s", exc)
+        LOG.error("[telemetry] positions_state_write_failed: %s", exc)
     risk_payload = _LAST_RISK_SNAPSHOT or {"updated_ts": now, "symbols": []}
     try:
         write_risk_snapshot_state(risk_payload)
+        risk_written = True
     except Exception as exc:
-        LOG.debug("[telemetry] risk_snapshot_write_failed: %s", exc)
+        LOG.error("[telemetry] risk_snapshot_write_failed: %s", exc)
     scores_payload = (
         dict(_LAST_SYMBOL_SCORES_STATE)
         if isinstance(_LAST_SYMBOL_SCORES_STATE, Mapping)
@@ -3319,8 +3327,9 @@ def _pub_tick() -> None:
     )
     try:
         write_symbol_scores_state(scores_payload)
+        scores_written = True
     except Exception as exc:
-        LOG.debug("[telemetry] symbol_scores_write_failed: %s", exc)
+        LOG.error("[telemetry] symbol_scores_write_failed: %s", exc)
     flag_snapshot = get_v6_flag_snapshot()
     try:
         synced_payload = build_synced_state_payload(
@@ -3341,9 +3350,17 @@ def _pub_tick() -> None:
         }
     try:
         write_synced_state(synced_payload)
+        synced_written = True
     except Exception as exc:
-        LOG.debug("[telemetry] synced_state_write_failed: %s", exc)
-    LOG.debug("[v6-runtime] pub_tick wrote state: nav, positions, risk_snapshot, synced_state, symbol_scores")
+        LOG.error("[telemetry] synced_state_write_failed: %s", exc)
+    LOG.info(
+        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions=%s risk=%s symbol_scores=%s synced=%s",
+        nav_written,
+        positions_written,
+        risk_written,
+        scores_written,
+        synced_written,
+    )
     _LAST_NAV_STATE = nav_payload
     _LAST_POSITIONS_STATE = synced_payload
     return None

@@ -88,7 +88,7 @@ def _write_state_file(name: str, payload: Dict[str, Any], state_dir: pathlib.Pat
             json.dump(payload, handle, default=_json_default)
         tmp.replace(path)
     except Exception as exc:
-        LOG.debug("state_write_failed name=%s err=%s", name, exc)
+        LOG.error("state_write_failed name=%s err=%s", name, exc)
 
 
 def write_positions_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:

@@ -8,6 +8,7 @@ def test_pub_tick_writes_state(monkeypatch):
     positions_values = []
     synced_values = []
     risk_values = []
+    log_messages = []
     monkeypatch.setattr(executor_live, "_compute_nav_snapshot", lambda: 123.45)
     monkeypatch.setattr(
         executor_live,
@@ -33,6 +34,19 @@ def test_pub_tick_writes_state(monkeypatch):
         "write_risk_snapshot_state",
         lambda payload: risk_values.append(payload),
     )
+    monkeypatch.setattr(
+        executor_live,
+        "LOG",
+        type(
+            "Dummy",
+            (),
+            {
+                "info": lambda _self, msg, *a, **k: log_messages.append(msg % a if a else msg),
+                "error": lambda *_a, **_k: None,
+                "debug": lambda *_a, **_k: None,
+            },
+        )(),
+    )
     executor_live._pub_tick()
     assert nav_values and nav_values[0]["nav"] == 123.45
     assert positions_values and positions_values[0]["rows"][0]["symbol"] == "BTCUSDT"
@@ -42,3 +56,4 @@ def test_pub_tick_writes_state(monkeypatch):
     assert "v6_flags" in synced_values[0]
     assert executor_live._LAST_NAV_STATE["nav"] == 123.45
     assert executor_live._LAST_POSITIONS_STATE["items"][0]["symbol"] == "BTCUSDT"
+    assert any("state write complete" in msg for msg in log_messages)
