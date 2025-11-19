@@ -3343,6 +3343,7 @@ def _pub_tick() -> None:
         write_synced_state(synced_payload)
     except Exception as exc:
         LOG.debug("[telemetry] synced_state_write_failed: %s", exc)
+    LOG.debug("[v6-runtime] pub_tick wrote state: nav, positions, risk_snapshot, synced_state, symbol_scores")
     _LAST_NAV_STATE = nav_payload
     _LAST_POSITIONS_STATE = synced_payload
     return None

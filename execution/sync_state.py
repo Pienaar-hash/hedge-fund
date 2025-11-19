@@ -8,10 +8,14 @@ import threading
 import time
 from copy import deepcopy
 
-from execution.firestore_utils import (
-    get_db as _firestore_get_db,
-    publish_heartbeat as _firestore_publish_heartbeat,
-)
+try:
+    from execution.firestore_utils import (
+        get_db as _firestore_get_db,
+        publish_heartbeat as _firestore_publish_heartbeat,
+    )
+except ModuleNotFoundError:
+    _firestore_get_db = None  # type: ignore
+    _firestore_publish_heartbeat = None  # type: ignore
 from execution.v6_flags import log_v6_flag_snapshot
 
 # --- Ensure repo root is importable & files are read from repo root ---
@@ -86,6 +90,12 @@ def _log_startup_summary() -> Dict[str, Any]:
 
 
 def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
+    if _firestore_publish_heartbeat:
+        try:
+            _firestore_publish_heartbeat(flags)
+            return
+        except Exception as exc:
+            LOGGER.warning("[sync] firestore heartbeat failed: %s", exc)
     print(f"[{flags.get('prefix', 'live')}] Firestore heartbeat skipped (disabled)", flush=True)
 
 # --- Force package import path when launched via Supervisor ---
@@ -1240,7 +1250,7 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """
     global _FIRESTORE_FAIL_COUNT, _LAST_SUCCESS_TS
     try:
-        if _firestore_enabled():
+        if _firestore_enabled() and _firestore_get_db is not None:
             db = _firestore_get_db(strict=False)
         else:
             db = _noop_db()

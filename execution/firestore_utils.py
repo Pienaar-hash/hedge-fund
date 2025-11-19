@@ -11,6 +11,11 @@ try:
 except Exception:  # pragma: no cover
     _firestore_client = None  # type: ignore
 
+try:
+    from utils.firestore_client import get_db as _client_factory
+except ModuleNotFoundError:
+    _client_factory = None
+
 LOGGER = logging.getLogger("firestore")
 
 _DIRECT_CLIENT = None
@@ -97,6 +102,12 @@ def _direct_client() -> Any:
     global _DIRECT_CLIENT
     if _DIRECT_CLIENT is not None:
         return _DIRECT_CLIENT
+    if _client_factory is not None:
+        try:
+            _DIRECT_CLIENT = _client_factory(strict=False)
+            return _DIRECT_CLIENT
+        except Exception as exc:
+            LOGGER.warning("[firestore] client_factory_failed: %s", exc)
     if _firestore_client is None:
         return None
     try:
