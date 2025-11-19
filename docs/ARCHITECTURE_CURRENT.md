@@ -1,50 +1,36 @@
-# ARCHITECTURE_CURRENT.md — v5.10 / v6-pre Reality Map
+# Hedge v6 Runtime Architecture (current repo snapshot)
 
-This document is the **current-state** companion to the v6 blueprint in `docs/v6.0_Master_Architecture_Map.md` and the rollout intent in `docs/v6.0_architecture_brief.md`. It distills the point-in-time repo topology captured in `docs/infra_v6.0_repo_topology.md` so Batch 0 has an explicit source of truth.
+## Core execution loop
+- `execution/executor_live.py:1-1745` hosts the only live executor; it bootstraps PATH/env, loads configs, and orchestrates signal ingestion, risk checking, routing, telemetry, and background probes. The runtime wires together NAV sampling, universe metadata, router policy, and risk gating in one loop so there are no hidden services.
+- V6 feature flags live in `execution/v6_flags.py:18-92`; `get_v6_flag_snapshot()` is called across the executor, telemetry writers, and CLI probes to guarantee every process logs the same Intel/Risk/Pipeline/Router toggles.
+- Order intents flow through generator/screener modules (`execution/signal_generator.py:1-210`, `execution/signal_screener.py:1-145`) before routing. The generator enforces ATR/expectancy vetoes while `signal_screener` uses `RiskState` + `OrderIntent` objects to dry‑run risk caps prior to committing fills.
+- Exchanges are accessed exclusively through `execution/exchange_utils.py:1-210`; this module wraps Binance UMFutures, enforces DRY_RUN/testnet toggles, and ensures deterministic request signing. Nothing else reaches the REST client directly.
 
-## 1. Repo Layout
+## Risk + sizing stack
+- `execution/risk_limits.py:1-210` guards NAV freshness, global caps, and per-symbol share/drawdown rules. `check_order()` is still the authoritative veto and feeds both the legacy gates and the V6 risk engine.
+- V6 introduces a structured engine in `execution/risk_engine_v6.py:1-114`. `OrderIntent` aggregates nav, leverage, and exposure metadata; `RiskDecision` records allow/veto reasons. `RiskEngineV6.check_order()` simply wraps `risk_limits.check_order()` but always returns typed diagnostics for downstream telemetry.
+- Adaptive throttles are centralized in `execution/risk_autotune.py:1-210`. The autotuner loads cached metrics (`logs/execution/order_metrics.jsonl`, `logs/cache/risk_state.json`) and mutates `RiskGate` burst limits based on slippage and doctor confidence, ensuring the executor loop inherits updated risk caps every cycle.
+- Feedback-driven allocation lives in `execution/intel/feedback_allocator_v6.py:260-402`. It combines expectancy, symbol scores, router health, and risk snapshots into suggested NAV/weight caps, writing the result to `logs/state/risk_allocation_suggestions_v6.json` via `write_risk_allocation_suggestions_state()`.
 
-- **execution/** – Live trading stack. `executor_live.py` runs the intent → risk → sizing → router → exchange loop with telemetry hooks mostly stubbed; supporting modules handle risk gates (`risk_limits.py`), routers (`order_router.py`), exchange adapters (`exchange_utils.py`), size math (`size_model.py`, `capital_allocator.py`), and telemetry emitters (`state_publish.py`, `sync_state.py`).
-- **core/** – Shared abstractions, currently only `strategy_base.py` for basic Strategy objects used by signal generators.
-- **dashboard/** – Streamlit operator UI (`app.py`, `main.py`) with helpers (`live_helpers.py`, `router_health.py`, `dashboard_utils.py`, `nav_helpers.py`, `async_cache.py`) that read telemetry JSONL plus risk config.
-- **scripts/** – Operator tooling such as `screener_probe.py`, `registry_ctl.py`, doctor/diagnostic utilities (`doctor.py`, `balance_doctor.py`, `fs_doctor.py`), ML retrain scripts, and release helpers (`go_live_now.sh`, `run_executor_once.sh`).
-- **config/** – Runtime JSON/YAML describing strategies (`strategy_config.json`), risk knobs (`risk_limits.json`), registry (`strategy_registry.json`), universe/tier metadata (`pairs_universe.json`, `symbol_tiers.json`), dashboard settings, reserves/assets, and toggles in `settings.json`.
-- **tests/** – Pytest suite covering risk gates, screener tier caps, routers, telemetry formatters, dashboard helpers, exchange dry-runs, and Firestore stubs (e.g., `tests/test_risk_limits.py`, `tests/test_router_smoke.py`, `tests/test_state_publish_stats.py`).
-- **research/**, **ml/**, **models/** – Notebooks and experimental code for factor fusion, RL sizing, telemetry tooling, and serialized model payloads referenced by scripts.
-- **docs/** – Architecture, operations, and audit notes including the v6 blueprint/brief, pre-flight checklists, and historical infra reports.
-- **DevOps & supporting roots** – `deploy/` supervisor configs, `ops/hedge.conf`, `cron/rotate_exec_logs.sh`, service wrappers in `bin/`, `.github/workflows/ci.yml`, placeholder `infrastructure/` docker assets, and operational data/telemetry roots (`data/`, `logs/`, `reports/`, `telegram/`).
+## Routing + intel
+- Router behavior is encapsulated in `execution/order_router.py:1-210` with helpers for maker/taker offsets, POST_ONLY retries, and effective price math. Router policy inputs (quality, bias, offset) come from `execution/intel/router_policy.py:1-120` and router effectiveness metrics in `execution/utils/metrics.py:1-150`.
+- The intel surface is refreshed by `_maybe_publish_execution_intel()` in `execution/executor_live.py:341-405`. When `INTEL_V6_ENABLED` is set, it builds expectancy snapshots (`execution/intel/expectancy_v6.py:1-333`), symbol scores (`execution/intel/symbol_score_v6.py:1-137`), router policy suggestions (`execution/intel/router_autotune_v6.py:1-200`), and risk allocation suggestions in one pass.
+- Router auto‑tune application is guarded by `execution/intel/router_autotune_apply_v6.py:1-155`. It reads suggestions from `logs/state/router_policy_suggestions_v6.json`, clamps maker/taker bias deltas, and respects `ROUTER_AUTOTUNE_V6_APPLY_ENABLED` plus quality/allowlist gates before mutating live policy objects inside `execution/order_router.py`.
 
-## 2. v5.10 Pipeline Summary
+## Telemetry + state
+- Every canonical state file sits under `logs/state/` and is written through `execution/state_publish.py:77-190`. `write_nav_state`, `write_positions_state`, `write_risk_snapshot_state`, `write_router_health_state`, `write_symbol_scores_state`, `write_router_policy_suggestions_state`, `write_risk_allocation_suggestions_state`, `write_pipeline_v6_shadow_state`, `write_pipeline_v6_compare_summary`, and `write_v6_runtime_probe_state` all call `_write_state_file()` to guarantee atomic JSON updates.
+- `_pub_tick()` in `execution/executor_live.py:3291-3358` is the only place the live loop persists nav, positions, risk snapshots, intel payloads, and the `synced_state.json` bundle. It composes the schema via `build_synced_state_payload()` (`execution/state_publish.py:153-190`) so downstream readers always see `{items, nav, engine_version, v6_flags, updated_at}`.
+- `execution/sync_state.py:21-1258` is the lone process that republishes local telemetry into Firestore and dashboard caches. It reads `logs/nav_log.json`, `logs/state/synced_state.json`, and router/risk caches, enforces NAV cutoffs, and mirrors leaderboard + drawdown stats back into both Firestore and `logs/state/`.
+- JSONL logging is standardized through `execution/log_utils.py:1-150` (`JsonlLogger`) and `execution/events.py:1-70`. Order ACK/FILL/CLOSE events land in `logs/execution/orders_executed.jsonl`, while auxiliary routers metrics and risk vetoes stream into `logs/execution/order_metrics.jsonl` and `logs/execution/risk_vetoes.jsonl`.
 
-`execution/executor_live.py` (see `_run_executor`) drives the production path:
+## Pipeline shadow + compare
+- The pipeline shadow engine (`execution/pipeline_v6_shadow.py:1-116`) replays signals through `RiskEngineV6`, the sizing model, and router policy without touching the exchange. Results are written via `append_shadow_decision()` to `logs/pipeline_v6_shadow.jsonl`.
+- Background maintenance runs inside the executor (`execution/executor_live.py:1660-1705`) and two Supervisor-managed daemons: `scripts/pipeline_shadow_heartbeat.py:1-38` emits head/tail metrics into `logs/state/pipeline_v6_shadow_head.json`, while `scripts/pipeline_compare_service.py:1-33` calls `execution.intel.pipeline_v6_compare.compare_pipeline_v6()` (`execution/intel/pipeline_v6_compare.py:1-98`) to align shadow decisions with live `orders_executed.jsonl` fills, flushing diffs to `logs/pipeline_v6_compare.jsonl` and `logs/state/pipeline_v6_compare_summary.json`.
 
-1. **Signal ingestion** – `execution/signal_generator.py` pulls configured strategy modules, applies screeners, and produces intents annotated with volatility/tier metadata.
-2. **Risk gate** – Intents call into module-level helpers in `execution/risk_limits.py` (no `RiskEngine` class yet) via `check_order`, but executor fails to forward tier/concurrency context, so caps are partially enforced.
-3. **Sizing** – `execution/size_model.py` along with `capital_allocator.py` convert approved intents into USD notionals, bucket caps, leverage, and quantity payloads.
-4. **Routing** – `execution/order_router.py` uses `execution/intel/router_policy.py`, `execution/intel/maker_offset.py`, and `execution/intel/symbol_score.py` to pick maker/taker paths; router metrics omit several v6-required fields.
-5. **Exchange adapter** – `execution/exchange_utils.py` normalizes payloads and calls Binance REST/UM-F endpoints; reduce-only and close-position helpers are implemented but tuned for a single venue.
-6. **State/telemetry** – `execution/state_publish.py` and `_maybe_publish_*` hooks exist but default to no-ops, so telemetry relies on JSONL files without remote sinks. `execution/sync_state.py` mirrors files locally with Firestore disabled.
+## Ops topology
+- `ops/hedge.conf:1-52` is the authoritative Supervisor manifest. It boots five processes (executor, dashboard, sync_state, pipeline shadow heartbeat, pipeline compare) with `PYTHONPATH=/root/hedge-fund` so imports resolve the repo root, `ENV=prod`, and explicit `ALLOW_PROD_WRITE/ALLOW_PROD_SYNC` gates.
+- The dashboard (`dashboard/app.py:1-130`) consumes only the local caches under `logs/state/` plus Streamlit-specific config, so the runtime never depends on remote Firestore data for UI rendering.
+- Configuration lives in `config/` (`risk_limits.json:1-74`, `pairs_universe.json:1-80`, `runtime.yaml:1-25`). `execution/universe_resolver.py:1-140` memoizes these files so every module shares the same universe/tier metadata. No other directory copies configs.
+- Tests in `tests/` cover each contract: e.g., `tests/test_executor_state_files.py:1-38` asserts `_pub_tick()` populates nav/positions/risk/synced payloads with v6 flag metadata, `tests/test_pipeline_v6_shadow.py:1-64` and `tests/test_pipeline_v6_compare_runtime.py:1-33` validate the shadow/compare loop, `tests/test_router_autotune_v6.py:1-60` and `tests/test_router_autotune_apply_v6.py:1-80` verify router suggestions and apply bounds, and `tests/test_feedback_allocator_v6.py:1-120` exercises the risk allocator.
 
-## 3. Known Gaps vs v6.0 Blueprint
-
-- **RiskEngine abstraction** – Current risk module exposes free functions, yet the v6 blueprint expects a `RiskEngine` object with cached limits and explicit APIs (`docs/v6.0_Master_Architecture_Map.md#4.-risk-engine`, `infra_v6.0_repo_topology.md §6`).
-- **StrategyRegistry & Strategy package** – Config files exist (`config/strategy_registry.json`) but there is no `strategies/` implementation directory; `execution/signal_generator.py` hard-codes modules, so the registry cannot load real strategy classes.
-- **Canonical universe snapshot** – Config drift across `strategy_config.json`, `risk_limits.json`, and `pairs_universe.json` persists, and no `universe.json` output exists despite being required for dashboard + telemetry parity.
-- **Telemetry publishers** – `_mirror_router_metrics`, `_maybe_publish_execution_health`, `_maybe_emit_execution_alerts`, and `_maybe_publish_execution_intel` short-circuit with `return None`, so telemetry consumers get stale or missing data.
-- **Feedback allocator & router autotune** – No modules consume expectancy metrics or router outcomes to tune offsets; v6’s feedback loop is entirely absent.
-- **Multi-venue/DevOps scaffolding** – `infrastructure/*` files are empty placeholders; `.github/workflows/ci.yml` references requirement files that do not exist, and there is no `.env.example` enumerating runtime controls.
-- **Legacy Firestore surfaces** – `execution/firestore_utils.py` intentionally no-ops remote publishing and `execution/firestore_mirror.py` remains unused, so v6 telemetry contracts lack real storage destinations.
-
-## 4. Test Coverage Overview
-
-- **Strong anchors** – Risk gating (`tests/test_risk_limits.py`), screener tier enforcement (`tests/test_screener_tier_caps.py`), router flows (`tests/test_router_smoke.py`, `tests/test_order_router_ack.py`), and exchange dry-runs (`tests/test_exchange_dry_run.py`) bind the current contracts tightly. Intel math (`tests/test_expectancy_map.py`, `tests/test_symbol_score.py`, `tests/test_maker_offset.py`) and dashboard helpers (`tests/test_dashboard_equity.py`, `tests/test_dashboard_metrics.py`) also have coverage.
-- **Moderate coverage** – Telemetry metric shaping and state publishing via `tests/test_router_health_events.py`, `tests/test_router_health_v2.py`, and `tests/test_state_publish_stats.py` exercise data readers but still rely on stubbed publishers.
-- **Weak spots** – Firestore utilities (`tests/test_firestore_publish.py` is xfailed), executor telemetry hooks, sync daemons, DevOps scripts, strategy registry loading, and universe resolver flows lack meaningful tests. These gaps mean v6 migrations in telemetry, config schemas, and registry layers will need fresh regression suites.
-
-## 5. Legacy / Deprecated Surfaces
-
-- `execution/hedge_sync.py`, `execution/pipeline_probe.py`, and scripts like `scripts/polymarket_insiders.py` / `scripts/replay_logs.py` are flagged as deprecated in the audit.
-- Archived strategy and ML assets live under `archive/deprecated_v5.9.5/*` and `archive/deprecated_v5.7/*`; they are not imported anywhere else but remain in-tree.
-- `execution/firestore_mirror.py` is effectively dead because `execution/firestore_utils.py` turns every publish into a no-op.
-- DevOps scaffolds (`infrastructure/docker-compose.yml`, `infrastructure/Dockerfile`, `infrastructure/startup.sh`) are zero-byte placeholders waiting for Batch 4.
-- Dashboard router health code consumes legacy JSONL formats that omit the new maker/taker/fallback fields, meaning telemetry consumers will require adapters during the v6 rollout.
+All components above operate on the working tree files you see now—there are no legacy multi-strategy dashboards or v5 pipelines left in the loop, and every state hand-off is visible inside the repo under `execution/`, `scripts/`, `config/`, `ops/`, and `docs/`.
