@@ -22,15 +22,48 @@ def test_compare_pipeline_summary(tmp_path, monkeypatch):
         {"symbol": "BTCUSDT"},
     ]
     shadow_log = tmp_path / "pipeline_v6_shadow.jsonl"
+    orig_shadow = compare.PIPELINE_SHADOW_LOG
+    orig_log = compare.COMPARE_LOG_PATH
+    orig_state = compare.COMPARE_STATE_PATH
     compare.PIPELINE_SHADOW_LOG = shadow_log
     compare.COMPARE_LOG_PATH = tmp_path / "pipeline_v6_compare.jsonl"
     compare.COMPARE_STATE_PATH = tmp_path / "state/pipeline_v6_compare_summary.json"
     _write_jsonl(shadow_log, shadow)
     _write_jsonl(tmp_path / "orders.jsonl", orders)
-    summary = compare.compare_pipeline_v6(
-        shadow_limit=10,
-        orders_path=tmp_path / "orders.jsonl",
-        metrics_path=tmp_path / "metrics.jsonl",
-    )
+    try:
+        summary = compare.compare_pipeline_v6(
+            shadow_limit=10,
+            orders_path=tmp_path / "orders.jsonl",
+            metrics_path=tmp_path / "metrics.jsonl",
+        )
+    finally:
+        compare.PIPELINE_SHADOW_LOG = orig_shadow
+        compare.COMPARE_LOG_PATH = orig_log
+        compare.COMPARE_STATE_PATH = orig_state
     assert summary["sample_size"] == 2
     assert "veto_mismatch_pct" in summary
+    log_contents = (tmp_path / "pipeline_v6_compare.jsonl").read_text().strip().splitlines()
+    assert log_contents, "expected diff/heartbeat entries in pipeline compare log"
+
+
+def test_compare_pipeline_writes_heartbeat_when_empty(tmp_path, monkeypatch):
+    shadow_log = tmp_path / "pipeline_v6_shadow.jsonl"
+    orig_shadow = compare.PIPELINE_SHADOW_LOG
+    orig_log = compare.COMPARE_LOG_PATH
+    orig_state = compare.COMPARE_STATE_PATH
+    compare.PIPELINE_SHADOW_LOG = shadow_log
+    compare.COMPARE_LOG_PATH = tmp_path / "pipeline_v6_compare.jsonl"
+    compare.COMPARE_STATE_PATH = tmp_path / "state/pipeline_v6_compare_summary.json"
+    try:
+        summary = compare.compare_pipeline_v6(
+            shadow_limit=10,
+            orders_path=tmp_path / "orders.jsonl",
+            metrics_path=tmp_path / "metrics.jsonl",
+        )
+    finally:
+        compare.PIPELINE_SHADOW_LOG = orig_shadow
+        compare.COMPARE_LOG_PATH = orig_log
+        compare.COMPARE_STATE_PATH = orig_state
+    assert summary["sample_size"] == 0
+    log_lines = (tmp_path / "pipeline_v6_compare.jsonl").read_text().strip().splitlines()
+    assert log_lines and len(log_lines[-1])

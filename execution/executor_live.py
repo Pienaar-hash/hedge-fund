@@ -111,6 +111,7 @@ _LAST_PIPELINE_V6_COMPARE = 0.0
 _LAST_NAV_STATE: Dict[str, Any] = {}
 _LAST_POSITIONS_STATE: Dict[str, Any] = {}
 _LAST_RISK_SNAPSHOT: Dict[str, Any] | None = None
+_LAST_SYMBOL_SCORES_STATE: Dict[str, Any] | None = None
 
 try:
     _ENGINE_VERSION = (Path(repo_root) / "VERSION").read_text(encoding="utf-8").strip()
@@ -338,6 +339,7 @@ def _maybe_emit_execution_alerts(symbol: str) -> None:
 
 
 def _maybe_publish_execution_intel() -> None:
+    global _LAST_SYMBOL_SCORES_STATE
     now = time.time()
     last = _LAST_INTEL_PUBLISH.get("universe", 0.0)
     if (now - last) >= EXEC_INTEL_PUBLISH_INTERVAL_S:
@@ -370,6 +372,7 @@ def _maybe_publish_execution_intel() -> None:
         router_health = _build_router_health_snapshot()
         scores_snapshot = symbol_score_v6.build_symbol_scores(expectancy_snapshot, router_health)
         write_symbol_scores_state(scores_snapshot)
+        _LAST_SYMBOL_SCORES_STATE = dict(scores_snapshot)
         router_suggestions_payload = None
         if ROUTER_AUTOTUNE_V6_ENABLED:
             global _LAST_ROUTER_AUTOTUNE_PUBLISH
@@ -3309,6 +3312,15 @@ def _pub_tick() -> None:
         write_risk_snapshot_state(risk_payload)
     except Exception as exc:
         LOG.debug("[telemetry] risk_snapshot_write_failed: %s", exc)
+    scores_payload = (
+        dict(_LAST_SYMBOL_SCORES_STATE)
+        if isinstance(_LAST_SYMBOL_SCORES_STATE, Mapping)
+        else {"symbols": [], "updated_ts": now, "intel_enabled": bool(INTEL_V6_ENABLED)}
+    )
+    try:
+        write_symbol_scores_state(scores_payload)
+    except Exception as exc:
+        LOG.debug("[telemetry] symbol_scores_write_failed: %s", exc)
     flag_snapshot = get_v6_flag_snapshot()
     try:
         synced_payload = build_synced_state_payload(

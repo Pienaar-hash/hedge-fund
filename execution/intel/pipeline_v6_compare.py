@@ -104,8 +104,17 @@ def compare_pipeline_v6(
     summary = _summarize_diffs(diffs)
     try:
         logger = get_logger(str(COMPARE_LOG_PATH))
+        wrote_diff = False
         for diff in diffs:
             logger.write(diff)
+            wrote_diff = True
+        heartbeat = {
+            "ts": summary.get("generated_ts"),
+            "diff_count": len(diffs),
+            "heartbeat": not wrote_diff,
+            "summary": summary,
+        }
+        logger.write(heartbeat)
     except Exception:
         pass
     write_pipeline_v6_compare_summary(summary)

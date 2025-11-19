@@ -41,6 +41,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 LOG_TAG = "[screener]"
 LOGGER = logging.getLogger("signal_screener")
+LOGGER.setLevel(logging.INFO)
 _DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
 _DEDUP_MAX_SIZE = 2048
 _ENTRY_GATE_NAME = "orderbook"

@@ -21,3 +21,13 @@ def test_get_flags_and_snapshot(monkeypatch, caplog):
     v6_flags.log_v6_flag_snapshot(logger, flags=flags)
     assert "INTEL_V6_ENABLED=1" in caplog.text
     assert "PIPELINE_V6_SHADOW_ENABLED=0" in caplog.text
+
+
+def test_log_v6_flag_snapshot_includes_runtime_context(monkeypatch, caplog):
+    monkeypatch.setenv("ENV", "prod")
+    monkeypatch.setenv("DRY_RUN", "0")
+    monkeypatch.setenv("BINANCE_TESTNET", "0")
+    logger = logging.getLogger("test_v6_flags_context")
+    caplog.set_level(logging.INFO, logger="test_v6_flags_context")
+    v6_flags.log_v6_flag_snapshot(logger)
+    assert "ENV=prod" in caplog.text
