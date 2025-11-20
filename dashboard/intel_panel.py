@@ -15,8 +15,8 @@ def _risk_mode_badge(mode: Optional[str]) -> str:
     }
     color = color_map.get(label, "#95a5a6")
     return (
-        f'<span style="display:inline-block;padding:0.25em 0.7em;border-radius:0.6em;'
-        f'font-weight:700;color:#fff;background:{color};text-transform:uppercase;">{label}</span>'
+        f'<span style="display:inline-block;padding:0.25em 0.7em;'
+        f'border-radius:0.6em;font-weight:700;color:#fff;background:{color};text-transform:uppercase;">{label}</span>'
     )
 
 
