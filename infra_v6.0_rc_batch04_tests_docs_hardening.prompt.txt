@@ -1,0 +1,78 @@
+You are a coding assistant working on the GPT-Hedge v6.0-rc branch.
+
+Objective
+- Harden documentation and tests to reflect the v6.0-rc runtime after the VERSION, router auto-apply resilience, and pipeline warmup patches.
+- Reduce drift risk by explicitly encoding key invariants in tests and updating the v6 docs/audits.
+
+Context
+- Previous batches:
+    - Batch01: VERSION file bump and basic engine_version checks.
+    - Batch02: router_autotune_apply_v6 more robust to missing/stale risk allocation state.
+    - Batch03: pipeline_v6_compare_summary gains warmup semantics (is_warmup, warmup_reason).
+- v6 contracts:
+    - v6_runtime_telemetry_contract.md
+    - v6_state_contract.md
+    - v6_risk_engine_contract.md
+    - v6_intel_contract.md
+    - v6_router_autotune_contract.md
+    - v6_pipeline_shadow_compare_contract.md
+- Audits:
+    - infra_v6.0_runtime_final_audit.md
+    - infra_v6.0_telemetry_audit.md
+    - infra_v6.0_intel_audit.md
+    - infra_v6.0_pipeline_audit.md
+    - v6.0_known_issues.md
+
+Files in scope
+1) Docs
+   - v6_runtime_release_notes.md
+   - v6.0_known_issues.md
+       - Remove or soften items that are fully addressed by earlier batches:
+           - VERSION mismatch in telemetry.
+           - Router auto-apply stalls without allocator state, once the resilience patch is in place.
+           - Pipeline compare sample cap warmup semantics, once is_warmup is implemented.
+       - Keep the sync_state zero-equity behaviour either as-is (if unchanged) or reword as a low-severity operational caveat.
+   - v6_runtime_telemetry_contract.md
+       - Ensure engine_version and v6_flags are explicitly listed as required fields in synced_state.json and nav telemetry, aligning with the updated tests.
+   - v6_pipeline_shadow_compare_contract.md
+       - Document the is_warmup/warmup_reason fields and usage.
+   - v6_router_autotune_contract.md or infra_v6.0_intel_audit.md
+       - Document the new router auto-apply behaviour for missing/stale risk allocation state.
+   - infra_v6.0_runtime_final_audit.md
+       - Add short notes that:
+           - VERSION mislabel has been fixed and now forms part of the test gate.
+           - Router auto-apply resilience has been improved with explicit logging for missing/stale allocator state.
+           - Pipeline compare summary now distinguishes warmup vs steady-state metrics.
+
+2) Tests
+   - tests/test_v6_runtime_activation.py
+       - Assert v6_runtime_probe.json contains:
+           - A non-empty engine_version in the synced_state (if this test reads synced_state) OR
+           - At least that v6 flags are present as today; do not over-constrain to specific tag strings.
+   - tests/test_executor_state_files.py
+       - Assert that synced_state.json includes:
+           - items list
+           - nav float
+           - engine_version (non-empty)
+           - v6_flags dict
+           - updated_at
+   - tests/test_pipeline_v6_compare_runtime.py
+       - Ensure tests align with the new warmup semantics added in Batch03.
+   - tests/test_router_autotune_apply_v6.py
+       - Ensure coverage for:
+           - Missing allocator file (resilient behaviour).
+           - Stale allocator file (resilient behaviour).
+           - Fresh allocator file with defensive risk_mode (hard block preserved).
+
+Constraints
+- Do not introduce brittle tests that hard-code specific VERSION tag strings.
+- Keep doc changes minimal and focused: annotate new behaviour and remove obsolete warnings, but do not rewrite large sections.
+
+Acceptance criteria
+- pytest for the following passes:
+    - tests/test_v6_runtime_activation.py
+    - tests/test_executor_state_files.py
+    - tests/test_pipeline_v6_compare_runtime.py
+    - tests/test_router_autotune_apply_v6.py
+- v6.0_known_issues.md only lists issues that remain genuinely open.
+- Runtime + telemetry docs match the actual behaviour of the patched code: engine_version presence, router apply resilience, and pipeline warmup fields.

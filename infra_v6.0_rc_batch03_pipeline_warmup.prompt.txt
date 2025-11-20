@@ -1,0 +1,58 @@
+You are a coding assistant working on the GPT-Hedge v6.0-rc branch.
+
+Objective
+- Make the pipeline compare summary explicitly indicate when it is in a "warmup" state (small sample_size) so ops does not over-interpret early metrics immediately after restart.
+
+Context
+- execution/pipeline_v6_shadow.py writes shadow decisions to logs/pipeline_v6_shadow.jsonl.
+- execution/intel/pipeline_v6_compare.py:
+    - Reads a tail of the shadow log (limited by shadow_limit, default 500).
+    - Aligns them with logs/execution/orders_executed.jsonl and logs/execution/order_metrics.jsonl.
+    - Computes:
+        - sample_size
+        - veto_mismatch_pct
+        - size_diff_stats
+        - slippage_diff_bps
+    - Writes:
+        - logs/pipeline_v6_compare.jsonl (per diff)
+        - logs/state/pipeline_v6_compare_summary.json (aggregates)
+- Known Issues note that immediately after restart, sample_size is small due to reading only the tail, but the summary currently has no explicit "this is warmup" flag.
+- The pipeline shadow/compare contract is used to gate v6 parity, so we want a clear signal for "metrics are not yet statistically meaningful".
+
+Files in scope
+1) execution/intel/pipeline_v6_compare.py
+   - Introduce constants:
+       - MIN_SAMPLE_SIZE_FOR_STEADY_STATE (e.g. 200; choose a reasonable default and make it easy to adjust).
+   - Extend the summary dict written to logs/state/pipeline_v6_compare_summary.json to include:
+       - "is_warmup": bool
+       - "warmup_reason": str or null
+       - "min_sample_size": int (optional; helpful for observability).
+   - Logic:
+       - If sample_size < MIN_SAMPLE_SIZE_FOR_STEADY_STATE:
+           - is_warmup = True
+           - warmup_reason = "sample_size_below_min"
+       - Else:
+           - is_warmup = False
+           - warmup_reason = null or "".
+   - Keep existing numeric stats exactly as they are today.
+2) v6_pipeline_shadow_compare_contract.md
+   - Update the "Contract expectations" section to:
+       - Document the new is_warmup/warmup_reason fields.
+       - Clarify how ops should interpret warmup vs steady-state metrics.
+3) infra_v6.0_pipeline_audit.md
+   - Add a short paragraph noting:
+       - The new warmup semantics.
+       - That early pipeline metrics (is_warmup=true) should not be used to flip production flags.
+4) tests/test_pipeline_v6_compare_runtime.py
+   - Extend tests to:
+       - Assert that when sample_size is low (you can mock data), the summary JSON includes is_warmup=True and warmup_reason="sample_size_below_min".
+       - Assert that when sample_size is above the threshold, is_warmup=False and warmup_reason is empty/None.
+
+Constraints
+- Do not change the shape of individual diff entries in logs/pipeline_v6_compare.jsonl.
+- Do not break existing consumers of pipeline_v6_compare_summary.json: only append new fields, do not remove or rename existing ones.
+
+Acceptance criteria
+- pytest tests/test_pipeline_v6_compare_runtime.py passes.
+- A freshly restarted system with limited data produces a summary JSON with is_warmup=True.
+- Once enough samples accumulate, the summary JSON flips to is_warmup=False without changing the existing numeric stats.

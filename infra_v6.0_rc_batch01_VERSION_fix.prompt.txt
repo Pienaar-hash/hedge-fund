@@ -1,0 +1,39 @@
+You are a coding assistant working on the GPT-Hedge v6.0-rc branch.
+
+Objective
+- Fix the engine VERSION mismatch so telemetry and dashboards correctly show the v6.0-rc engine label instead of the old "v0.3.0-testnet-exit 2025-08-24" fallback.
+
+Context
+- The runtime executor reads the VERSION file into _ENGINE_VERSION in execution/executor_live.py and embeds it into synced_state and nav telemetry.
+- Current audits and v6.0 Known Issues highlight that VERSION still points at an old tag, so all telemetry is mislabeled.
+- v6 contracts require engine_version in state files to be accurate for auditability.
+
+Files in scope
+1) VERSION
+   - Update the contents to the desired tag, e.g. "v6.0-rc 2025-11-XX" (keep the pattern: "<tag> <date>").
+2) execution/executor_live.py
+   - Inspect _ENGINE_VERSION to ensure it reads VERSION as today (no behavioural change needed unless a hard-coded default is present).
+3) tests/test_v6_runtime_activation.py
+   - Loosen / extend the test so that:
+     - It asserts engine_version is present in v6_runtime_probe/synced_state.
+     - It asserts engine_version != "v6.0-beta-preview" and != empty.
+     - It does NOT pin to a specific tag string, to avoid breaking future releases.
+4) tests/test_executor_state_files.py
+   - Confirm that synced_state.json includes engine_version and v6_flags, and that engine_version is non-empty.
+
+Changes to make
+- Bump VERSION to a v6.0-rc tag.
+- Ensure executor_live.py does not override VERSION with a hard-coded fallback except when VERSION is genuinely missing.
+- Strengthen tests as described so we catch missing or fallback engine_version without freezing the exact tag string.
+
+Out of scope
+- No behavioural changes to trading logic, risk, router, or intel.
+- No changes to Supervisor or config files.
+
+Acceptance criteria
+- Running pytest on:
+    tests/test_v6_runtime_activation.py
+    tests/test_executor_state_files.py
+  passes.
+- At runtime, logs/state/synced_state.json shows engine_version matching the new VERSION file and includes v6_flags.
+- v6_runtime_probe.json continues to record the same flag set as before.

@@ -1,0 +1,111 @@
+diff --git a/execution/sync_state.py b/execution/sync_state.py
+index 28b374d7..9085e4d2 100644
+--- a/execution/sync_state.py
++++ b/execution/sync_state.py
+@@ -8,10 +8,14 @@ import threading
+ import time
+ from copy import deepcopy
+ 
+-from execution.firestore_utils import (
+-    get_db as _firestore_get_db,
+-    publish_heartbeat as _firestore_publish_heartbeat,
+-)
++try:
++    from execution.firestore_utils import (
++        get_db as _firestore_get_db,
++        publish_heartbeat as _firestore_publish_heartbeat,
++    )
++except ModuleNotFoundError:
++    _firestore_get_db = None  # type: ignore
++    _firestore_publish_heartbeat = None  # type: ignore
+ from execution.v6_flags import log_v6_flag_snapshot
+ 
+ # --- Ensure repo root is importable & files are read from repo root ---
+@@ -86,6 +90,12 @@ def _log_startup_summary() -> Dict[str, Any]:
+ 
+ 
+ def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
++    if _firestore_publish_heartbeat:
++        try:
++            _firestore_publish_heartbeat(flags)
++            return
++        except Exception as exc:
++            LOGGER.warning("[sync] firestore heartbeat failed: %s", exc)
+     print(f"[{flags.get('prefix', 'live')}] Firestore heartbeat skipped (disabled)", flush=True)
+ 
+ # --- Force package import path when launched via Supervisor ---
+@@ -1240,7 +1250,7 @@ def sync_once() -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+     """
+     global _FIRESTORE_FAIL_COUNT, _LAST_SUCCESS_TS
+     try:
+-        if _firestore_enabled():
++        if _firestore_enabled() and _firestore_get_db is not None:
+             db = _firestore_get_db(strict=False)
+         else:
+             db = _noop_db()
+diff --git a/ops/hedge.conf b/ops/hedge.conf
+index 5b84e97f..0f23f50d 100644
+--- a/ops/hedge.conf
++++ b/ops/hedge.conf
+@@ -14,10 +14,10 @@ stderr_logfile=/var/log/hedge-executor.err.log
+ stderr_logfile_maxbytes=50MB
+ stderr_logfile_backups=5
+ user=root
+-environment=PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1",ALLOW_PROD_SYNC="1",PYTHONPATH=""
++environment=PYTHONPATH="/root/hedge-fund",PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1",ALLOW_PROD_SYNC="1"
+ 
+ [program:hedge-dashboard]
+-command=/bin/bash -lc 'cd /root/hedge-fund && exec /root/hedge-fund/venv/bin/python3 -m streamlit run dashboard/app.py --server.port=8501 --server.address=127.0.0.1 --server.headless=true'
++command=/bin/bash -lc 'cd /root/hedge-fund && exec /root/hedge-fund/venv/bin/python3 -m streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true'
+ directory=/root/hedge-fund
+ autostart=true
+ autorestart=true
+@@ -28,7 +28,7 @@ stderr_logfile=/var/log/hedge-dashboard.err.log
+ stderr_logfile_maxbytes=25MB
+ stderr_logfile_backups=5
+ user=root
+-environment=PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1",PYTHONPATH=""
++environment=PYTHONPATH="/root/hedge-fund",PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1"
+ 
+ [program:hedge-sync_state]
+ command=/bin/bash -lc 'cd /root/hedge-fund && exec ./venv/bin/python execution/sync_state.py'
+@@ -42,24 +42,24 @@ stderr_logfile=/var/log/hedge-sync_state.err.log
+ stderr_logfile_maxbytes=10MB
+ stderr_logfile_backups=5
+ user=root
+-environment=PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1",ALLOW_PROD_SYNC="1",PYTHONPATH=""
++environment=PYTHONPATH="/root/hedge-fund",PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1",ALLOW_PROD_SYNC="1"
+ 
+ [program:hedge-pipeline-shadow-heartbeat]
+-command=/bin/bash -lc 'cd /root/hedge-fund && exec ./venv/bin/python scripts/pipeline_shadow_heartbeat.py'
++command=/bin/bash -lc 'cd /root/hedge-fund && exec /root/hedge-fund/venv/bin/python3 scripts/pipeline_shadow_heartbeat.py'
+ directory=/root/hedge-fund
+ autostart=true
+ autorestart=true
+-stdout_logfile=/var/log/hedge-pipeline-shadow-heartbeat.out.log
++stdout_logfile=/var/log/supervisor/pipeline_shadow.out.log
+ stdout_logfile_maxbytes=5MB
+ stdout_logfile_backups=3
+-stderr_logfile=/var/log/hedge-pipeline-shadow-heartbeat.err.log
++stderr_logfile=/var/log/supervisor/pipeline_shadow.err.log
+ stderr_logfile_maxbytes=5MB
+ stderr_logfile_backups=3
+ user=root
+-environment=PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1",PYTHONPATH=""
++environment=PYTHONPATH="/root/hedge-fund",PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1"
+ 
+ [program:hedge-pipeline-compare]
+-command=/bin/bash -lc 'cd /root/hedge-fund && exec ./venv/bin/python scripts/pipeline_compare_service.py'
++command=/bin/bash -lc 'cd /root/hedge-fund && exec /root/hedge-fund/venv/bin/python3 scripts/pipeline_compare_service.py'
+ directory=/root/hedge-fund
+ autostart=true
+ autorestart=true
+@@ -70,7 +70,7 @@ stderr_logfile=/var/log/hedge-pipeline-compare.err.log
+ stderr_logfile_maxbytes=5MB
+ stderr_logfile_backups=3
+ user=root
+-environment=PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1",PYTHONPATH=""
++environment=PYTHONPATH="/root/hedge-fund",PYTHONUNBUFFERED="1",ENV="prod",ALLOW_PROD_WRITE="1"
+ 
+ [group:hedge]
+ programs=hedge-executor,hedge-dashboard,hedge-sync_state,hedge-pipeline-shadow-heartbeat,hedge-pipeline-compare

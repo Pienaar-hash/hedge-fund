@@ -1,0 +1,18 @@
+# 🟩 **3. v6.0-rc Git Tag Message**
+
+File: `v6.0-rc_tag_message.txt`
+
+```
+GPT-Hedge v6.0-rc
+
+This release candidate finalises the v6 runtime:
+- Correct VERSION → engine_version over telemetry/state
+- Router auto-apply resilience to missing/stale allocator state
+- Pipeline warmup semantics exposed (is_warmup)
+- Full SC/TC/RC/IC/AC/PC contract compliance
+- Tests & Docs hardened for v6 invariants
+- Supervisor topology confirmed stable
+
+Suitable for Stage deployment and final validation
+ahead of v6.0-final.
+```
