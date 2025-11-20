@@ -48,4 +48,21 @@ def test_v6_runtime_probe_writes(monkeypatch):
     )
     executor_live._maybe_write_v6_runtime_probe(force=True)
     assert "payload" in records
-    assert records["payload"]["INTEL_V6_ENABLED"] is True
+    payload = records["payload"]
+    assert payload["INTEL_V6_ENABLED"] is True
+    assert "ROUTER_AUTOTUNE_V6_APPLY_ENABLED" in payload
+    assert payload["engine_version"]
+    assert payload["engine_version"] != "v6.0-beta-preview"
+
+
+def test_synced_state_payload_carries_engine_version(monkeypatch):
+    payload = executor_live.build_synced_state_payload(
+        items=[],
+        nav=0.0,
+        engine_version=executor_live._ENGINE_VERSION,
+        flags={"INTEL_V6_ENABLED": True},
+        updated_at=0.0,
+    )
+    assert payload["engine_version"]
+    assert payload["engine_version"] != "v6.0-beta-preview"
+    assert "v6_flags" in payload

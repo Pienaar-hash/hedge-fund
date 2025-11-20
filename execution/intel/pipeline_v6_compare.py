@@ -15,6 +15,7 @@ from execution.state_publish import write_pipeline_v6_compare_summary
 
 COMPARE_LOG_PATH = Path("logs/pipeline_v6_compare.jsonl")
 COMPARE_STATE_PATH = Path("logs/state/pipeline_v6_compare_summary.json")
+MIN_SAMPLE_SIZE_FOR_STEADY_STATE = 200
 
 
 def _load_jsonl(path: Path, limit: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -68,13 +69,21 @@ def _summarize_diffs(diffs: List[Mapping[str, Any]]) -> Dict[str, Any]:
         idx_95 = int(len(values_sorted) * 0.95) - 1
         idx_95 = max(0, min(len(values_sorted) - 1, idx_95))
         return {"mean": mean, "p50": p50, "p95": values_sorted[idx_95]}
-    return {
+    summary = {
         "generated_ts": time.time(),
         "sample_size": len(diffs),
         "veto_mismatch_pct": (veto_mismatch / max(1, len(diffs))) * 100.0,
         "size_diff_stats": _stats(size_deltas),
         "slippage_diff_bps": _stats(slip_deltas),
     }
+    if summary["sample_size"] < MIN_SAMPLE_SIZE_FOR_STEADY_STATE:
+        summary["is_warmup"] = True
+        summary["warmup_reason"] = "sample_size_below_min"
+    else:
+        summary["is_warmup"] = False
+        summary["warmup_reason"] = None
+    summary["min_sample_size"] = MIN_SAMPLE_SIZE_FOR_STEADY_STATE
+    return summary
 
 
 def compare_pipeline_v6(

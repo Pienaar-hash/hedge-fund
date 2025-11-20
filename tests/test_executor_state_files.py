@@ -53,7 +53,11 @@ def test_pub_tick_writes_state(monkeypatch):
     assert risk_values and isinstance(risk_values[0], dict)
     assert synced_values and synced_values[0]["items"][0]["symbol"] == "BTCUSDT"
     assert synced_values[0]["nav"] == 123.45
+    assert synced_values[0]["engine_version"]
+    assert synced_values[0]["engine_version"] != "v6.0-beta-preview"
     assert "v6_flags" in synced_values[0]
+    assert isinstance(synced_values[0]["v6_flags"], dict)
+    assert isinstance(synced_values[0]["updated_at"], float)
     assert executor_live._LAST_NAV_STATE["nav"] == 123.45
     assert executor_live._LAST_POSITIONS_STATE["items"][0]["symbol"] == "BTCUSDT"
     assert any("state write complete" in msg for msg in log_messages)

@@ -1,29 +1,33 @@
-# Hedge Fund Ops Guide — Phase 4
+# Hedge Fund Ops Guide — v6.0-rc
 
 ## Overview
-This system runs **four Supervisor-managed processes** for live trading and reporting:
+Supervisor runs **five** processes for the v6 runtime:
 
-1. `hedge-signal` — Generates trade signals.
-2. `hedge-executor` — Executes trades, updates Firestore state.
-3. `hedge-sync` — Background sync to Firestore for NAV/positions.
-4. `hedge-dashboard` — Streamlit investor dashboard.
+1. `hedge-executor` — Executes trades, writes local `logs/state/*.json`.
+2. `hedge-sync_state` — Mirrors local state to Firestore (when enabled).
+3. `hedge-dashboard` — Streamlit dashboard reading local state.
+4. `hedge-pipeline-shadow-heartbeat` — Maintains `pipeline_v6_shadow_head.json`.
+5. `hedge-pipeline-compare` — Maintains `pipeline_v6_compare_summary.json`.
 
-All live state (Leaderboard, NAV, Positions) is stored in **Firestore** and read by the dashboard — **no local file reads**.
+Local JSON under `logs/state/` is canonical; Firestore is optional and gated by env.
 
 ---
 
 ## Environment Variables
 
-| Variable              | Purpose                                        | Example Value |
-|-----------------------|------------------------------------------------|---------------|
-| `ENV`                 | Environment label (`dev`, `prod`)              | `prod`        |
-| `PYTHONPATH`          | Python module path root                        | `.`           |
-| `FIREBASE_CREDS_PATH` | Path to Firestore credentials JSON             | `/root/hedge-fund/config/firebase_creds.json` |
-| `BINANCE_TESTNET`     | Use Binance testnet (1) or live (0)             | `1`           |
-| `TELEGRAM_ENABLED`    | Enable Telegram alerts (`1` or `0`)             | `1`           |
-| `EXECUTOR_LABEL`      | Node label for logs / monitoring                | `hetzner-fsn1`|
-| `BOT_TOKEN`           | Telegram bot token                              | *(secret)*    |
-| `CHAT_ID`             | Telegram chat/group ID                          | *(secret)*    |
+| Variable                    | Purpose                                           | Example |
+|-----------------------------|---------------------------------------------------|---------|
+| `ENV`                       | Environment label                                  | `prod`  |
+| `PYTHONPATH`                | Module path                                        | `/root/hedge-fund` |
+| `ALLOW_PROD_WRITE/SYNC`     | Gate Firestore writes                              | `1`     |
+| `FIRESTORE_ENABLED`         | Enable Firestore client                            | `1`     |
+| `FIRESTORE_CREDS_PATH`      | Firestore credentials                              | `/root/hedge-fund/config/firebase_creds.json` |
+| `INTEL_V6_ENABLED`          | Enable v6 intel loop                               | `1`     |
+| `RISK_ENGINE_V6_ENABLED`    | Use v6 risk engine                                 | `1`     |
+| `PIPELINE_V6_SHADOW_ENABLED`| Pipeline shadow on                                | `1`     |
+| `ROUTER_AUTOTUNE_V6_ENABLED`| Router intel on                                   | `1`     |
+| `FEEDBACK_ALLOCATOR_V6_ENABLED` | Allocator intel on                           | `1`     |
+| `ROUTER_AUTOTUNE_V6_APPLY_ENABLED` | Router auto-apply (0 safe / 1 live)       | `0`     |
 
 ---
 
@@ -31,14 +35,20 @@ All live state (Leaderboard, NAV, Positions) is stored in **Firestore** and read
 
 ### Restart all
 ```bash
-sudo supervisorctl restart all
+sudo supervisorctl restart hedge:
 
-sudo supervisorctl restart hedge-executor
+# individual processes
+sudo supervisorctl restart hedge:hedge-executor
+sudo supervisorctl restart hedge:hedge-sync_state
+sudo supervisorctl restart hedge:hedge-dashboard
+sudo supervisorctl restart hedge:hedge-pipeline-shadow-heartbeat
+sudo supervisorctl restart hedge:hedge-pipeline-compare
 
 sudo supervisorctl status
 
-tail -f /var/log/hedge/hedge-executor.out.log
-tail -f /var/log/hedge/hedge-dashboard.err.log
+tail -f /var/log/hedge-executor.out.log
+tail -f /var/log/hedge-executor.err.log
+tail -f /var/log/hedge-dashboard.err.log
 
 sudo supervisorctl status
 
@@ -48,7 +58,7 @@ cd /root/hedge-fund
 git fetch --all
 git checkout <tag-or-commit>
 
-sudo supervisorctl restart all
+sudo supervisorctl restart hedge:
 
 ### Reboot & Tail Logs
 Reboots are rarely required, but when kernel patches or driver updates land you can bounce the whole node and rehydrate processes quickly.
@@ -62,9 +72,9 @@ sudo supervisorctl restart all
 sudo supervisorctl status
 
 # follow critical logs
-tail -fn200 /var/log/hedge/hedge-executor.out.log
-tail -fn200 /var/log/hedge/hedge-executor.err.log
-tail -fn200 /var/log/hedge/hedge-dashboard.err.log
+tail -fn200 /var/log/hedge-executor.out.log
+tail -fn200 /var/log/hedge-executor.err.log
+tail -fn200 /var/log/hedge-dashboard.err.log
 ```
 
-The executor will emit `[send_order] USDC natural-close fallback: stripping reduceOnly+positionSide` when the Binance USDC reduce-only workaround triggers; seeing that line confirms the fallback is active after reboot.
+The executor will emit `[v6] flags ...` on startup; confirm v6 flags match your intended config after any restart.

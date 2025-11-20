@@ -1,3 +1,7 @@
+import json
+import time
+from datetime import datetime, timezone
+
 from execution.intel import router_autotune_apply_v6 as apply
 
 
@@ -65,6 +69,84 @@ def test_apply_router_suggestion_quality_filter(monkeypatch):
         suggestion=_suggestion(),
         symbol="BTCUSDT",
         risk_mode="normal",
+        current_offset_bps=2.0,
+    )
+    assert changed is False
+    assert offset == 2.0
+
+
+def _write_allocator(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
+
+
+def test_missing_allocator_state_defaults_cautious(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(apply, "RISK_ALLOC_PATH", tmp_path / "risk_alloc_missing.json")
+    monkeypatch.setattr(apply, "APPLY_ENABLED", True)
+    monkeypatch.setattr(apply, "SYMBOL_ALLOWLIST", {"BTCUSDT"})
+    caplog.set_level("WARNING")
+    risk_mode = apply.get_current_risk_mode(now=1_000_000.0)
+    assert risk_mode != "defensive"
+    assert any("router_apply_no_allocator_state" in rec.getMessage() for rec in caplog.records)
+    policy, changed, offset = apply.apply_router_suggestion(
+        _policy(),
+        suggestion=_suggestion(),
+        symbol="BTCUSDT",
+        risk_mode=risk_mode,
+        current_offset_bps=2.0,
+    )
+    assert changed is True
+    assert offset != 2.0
+
+
+def test_stale_allocator_state_logs_and_allows(monkeypatch, tmp_path, caplog):
+    alloc_path = tmp_path / "risk_alloc_stale.json"
+    monkeypatch.setattr(apply, "RISK_ALLOC_PATH", alloc_path)
+    monkeypatch.setattr(apply, "APPLY_ENABLED", True)
+    monkeypatch.setattr(apply, "SYMBOL_ALLOWLIST", {"BTCUSDT"})
+    monkeypatch.setattr(apply, "RISK_STATE_MAX_AGE_S", 10.0)
+    stale_ts = time.time() - 30.0
+    _write_allocator(
+        alloc_path,
+        {
+            "generated_ts": datetime.fromtimestamp(stale_ts, tz=timezone.utc).isoformat(),
+            "global": {"risk_mode": "defensive"},
+        },
+    )
+    caplog.set_level("WARNING")
+    risk_mode = apply.get_current_risk_mode(now=stale_ts + 31.0)
+    assert risk_mode != "defensive"
+    assert any("router_apply_stale_allocator_state" in rec.getMessage() for rec in caplog.records)
+    policy, changed, _ = apply.apply_router_suggestion(
+        _policy(),
+        suggestion=_suggestion(),
+        symbol="BTCUSDT",
+        risk_mode=risk_mode,
+        current_offset_bps=2.0,
+    )
+    assert changed is True
+
+
+def test_fresh_defensive_allocator_blocks(monkeypatch, tmp_path):
+    alloc_path = tmp_path / "risk_alloc_fresh.json"
+    monkeypatch.setattr(apply, "RISK_ALLOC_PATH", alloc_path)
+    monkeypatch.setattr(apply, "APPLY_ENABLED", True)
+    monkeypatch.setattr(apply, "SYMBOL_ALLOWLIST", {"BTCUSDT"})
+    now = time.time()
+    _write_allocator(
+        alloc_path,
+        {
+            "generated_ts": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "global": {"risk_mode": "defensive"},
+        },
+    )
+    risk_mode = apply.get_current_risk_mode(now=now)
+    assert risk_mode == "defensive"
+    policy, changed, offset = apply.apply_router_suggestion(
+        _policy(),
+        suggestion=_suggestion(),
+        symbol="BTCUSDT",
+        risk_mode=risk_mode,
         current_offset_bps=2.0,
     )
     assert changed is False

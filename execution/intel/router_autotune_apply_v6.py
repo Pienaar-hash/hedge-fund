@@ -5,10 +5,15 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
+import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from execution.v6_flags import get_flags
+
+LOG = logging.getLogger(__name__)
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return (os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -50,9 +55,11 @@ REQUIRE_QUALITY = {entry.lower() for entry in maybe_quality} if maybe_quality el
 
 SUGGESTIONS_PATH = Path(os.getenv("ROUTER_AUTOTUNE_V6_SUGGESTIONS_PATH") or "logs/state/router_policy_suggestions_v6.json")
 RISK_ALLOC_PATH = Path(os.getenv("ROUTER_AUTOTUNE_V6_RISK_STATE_PATH") or "logs/state/risk_allocation_suggestions_v6.json")
+RISK_STATE_MAX_AGE_S = _env_float("ROUTER_AUTOTUNE_V6_RISK_STATE_MAX_AGE_S", 1800.0)
+_DEFAULT_RISK_MODE = "cautious"
 
 _SUGGESTIONS_CACHE: Dict[str, Any] = {"mtime": None, "data": {}}
-_RISK_MODE_CACHE: Dict[str, Any] = {"mtime": None, "mode": "normal"}
+_RISK_MODE_CACHE: Dict[str, Any] = {}
 
 
 def _load_json(path: Path) -> Any:
@@ -64,20 +71,65 @@ def _load_json(path: Path) -> Any:
         return None
 
 
-def get_current_risk_mode() -> str:
+def _coerce_timestamp(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            return datetime.fromisoformat(text).timestamp()
+        except Exception:
+            return None
+    return None
+
+
+def get_current_risk_mode(now: Optional[float] = None) -> str:
+    now_ts = float(now if now is not None else time.time())
     mtime = RISK_ALLOC_PATH.stat().st_mtime if RISK_ALLOC_PATH.exists() else None
-    cache_mtime = _RISK_MODE_CACHE.get("mtime")
-    if mtime and mtime == cache_mtime:
-        return _RISK_MODE_CACHE.get("mode") or "normal"
-    payload = _load_json(RISK_ALLOC_PATH) or {}
-    mode = (
-        str((payload.get("global") or {}).get("risk_mode") or payload.get("risk_mode") or "normal")
+    payload = _load_json(RISK_ALLOC_PATH)
+    if not isinstance(payload, Mapping):
+        event = {"event": "router_apply_no_allocator_state", "path": str(RISK_ALLOC_PATH)}
+        if RISK_ALLOC_PATH.exists():
+            event["event"] = "router_apply_bad_allocator_state"
+        LOG.warning("%s", event)
+        _RISK_MODE_CACHE["mtime"] = mtime
+        _RISK_MODE_CACHE["mode"] = _DEFAULT_RISK_MODE
+        return _DEFAULT_RISK_MODE
+
+    risk_mode = (
+        str((payload.get("global") or {}).get("risk_mode") or payload.get("risk_mode") or _DEFAULT_RISK_MODE)
         .strip()
         .lower()
     )
+    ts = _coerce_timestamp(payload.get("updated_ts") or payload.get("generated_ts"))
+    age = None
+    if ts is not None:
+        age = max(0.0, now_ts - ts)
+    elif mtime is not None:
+        age = max(0.0, now_ts - mtime)
+    is_stale = age is not None and age > RISK_STATE_MAX_AGE_S
+    if is_stale:
+        LOG.warning(
+            "%s",
+            {
+                "event": "router_apply_stale_allocator_state",
+                "path": str(RISK_ALLOC_PATH),
+                "age_s": round(age or 0.0, 6),
+                "risk_mode": risk_mode,
+            },
+        )
+        if risk_mode == "defensive":
+            risk_mode = _DEFAULT_RISK_MODE
+    risk_mode = risk_mode or _DEFAULT_RISK_MODE
     _RISK_MODE_CACHE["mtime"] = mtime
-    _RISK_MODE_CACHE["mode"] = mode or "normal"
-    return _RISK_MODE_CACHE["mode"]
+    _RISK_MODE_CACHE["mode"] = risk_mode
+    return risk_mode
 
 
 def _load_router_suggestions() -> Dict[str, Mapping[str, Any]]:
