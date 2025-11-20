@@ -425,6 +425,20 @@ def would_emit(
         gross_request = float(notional) * float(lev)
     except Exception:
         gross_request = float(notional)
+    try:
+        threshold = max(nav_f * 10.0, 1_000_000.0)
+        if gross_request > threshold:
+            msg = (
+                f"[size_dbg] sym={sym} gross={gross_request:.4f} nav={nav_f:.4f} "
+                f"lev={float(lev):.4f} base_notional={float(notional):.4f} "
+                f"open_gross={float(current_gross_notional):.4f} "
+                f"caps_eq={trade_equity_cap:.2f}% max_trade={max_trade_cap:.2f}% "
+                f"threshold={threshold:.2f}"
+            )
+            LOGGER.warning(msg)
+            print(msg)
+    except Exception:
+        LOGGER.debug("gross request logging failed", exc_info=True)
     trade_obs_pct = None
     if nav_f > 0.0:
         trade_obs_pct = (gross_request / nav_f) * 100.0
@@ -445,6 +459,21 @@ def would_emit(
         if max_trade_cap > 0.0 and trade_obs_pct > max_trade_cap:
             clamp_reasons.append("trade_gt_max_trade_nav_pct")
     if clamp_reasons:
+        try:
+            LOGGER.warning(
+                "[screener] trade clamp %s sym=%s nav=%.4f gross_req=%.4f lev=%.4f trade_obs_pct=%.4f caps(eq=%.2f,max=%.2f) open_gross=%.4f",
+                clamp_reasons,
+                sym,
+                nav_f,
+                gross_request,
+                float(lev),
+                trade_obs_pct,
+                trade_equity_cap,
+                max_trade_cap,
+                float(current_gross_notional),
+            )
+        except Exception:
+            LOGGER.debug("trade clamp logging failed", exc_info=True)
         for reason in clamp_reasons:
             if reason not in reasons:
                 reasons.append(reason)
@@ -623,6 +652,16 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         lev = float(params.get("leverage") or symbol_target_leverage(sym_key) or 1.0)
         if lev <= 0:
             lev = 1.0
+        per_symbol_cfg = {}
+        try:
+            per_symbol_cfg = ((rlc.get("per_symbol") or {}) if isinstance(rlc, Mapping) else {}).get(sym_key, {}) or {}
+        except Exception:
+            per_symbol_cfg = {}
+        sym_max_order = 0.0
+        try:
+            sym_max_order = float(per_symbol_cfg.get("max_order_notional") or 0.0)
+        except Exception:
+            sym_max_order = 0.0
         gross_cap = cap_cfg * lev
         sym_floor = max(symbol_min_gross(sym_key), 0.0)
         config_floor = max(gross_cap, min_gross_floor, sym_floor)
@@ -669,7 +708,25 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             exch_min_notional,
             min_qty_notional,
         )
+        try:
+            print(
+                f"[sigdbg] sym={sym} tf={tf} price={price:.4f} nav={nav:.4f} "
+                f"cap_cfg={cap_cfg:.4f} lev={lev:.2f} floor_notional={floor_notional:.4f} "
+                f"cap_usd={cap_usd:.4f} open_gross={current_portfolio_gross:.4f}"
+            )
+        except Exception:
+            LOGGER.debug("sigdbg log failed", exc_info=True)
+        # Pre-risk clamp to stay within nav-based caps
         requested_notional = floor_notional
+        if nav > 0.0:
+            nav_cap = []
+            if trade_equity_cap > 0.0:
+                nav_cap.append(nav * (trade_equity_cap / 100.0))
+            if max_trade_cap > 0.0:
+                nav_cap.append(nav * (max_trade_cap / 100.0))
+            # Per-symbol max_order_notional from risk_limits is enforced later; keep floor here on nav caps
+            if nav_cap:
+                requested_notional = min(requested_notional, min(nav_cap))
         cap = requested_notional / lev
         if cap_usd > 0:
             if current_portfolio_gross >= cap_usd:
@@ -745,6 +802,16 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             )
             continue
         requested_notional = max(float(scaled_notional), min_notional)
+        if nav > 0.0:
+            cap_candidates = []
+            if trade_equity_cap > 0.0:
+                cap_candidates.append(nav * (trade_equity_cap / 100.0))
+            if max_trade_cap > 0.0:
+                cap_candidates.append(nav * (max_trade_cap / 100.0))
+            if sym_max_order > 0.0:
+                cap_candidates.append(sym_max_order)
+            if cap_candidates:
+                requested_notional = min(requested_notional, min(cap_candidates))
         effective_notional = requested_notional
         cap = requested_notional / lev if lev > 0 else requested_notional
 
@@ -882,6 +949,9 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "cap_usd": cap,
             "gross_usd": requested_notional,
             "min_notional": min_notional,
+            "trade_equity_nav_pct": trade_equity_cap if trade_equity_cap > 0 else None,
+            "max_trade_nav_pct": max_trade_cap if max_trade_cap > 0 else None,
+            "per_symbol_limits": rlc.get("per_symbol") if isinstance(rlc, Mapping) else {},
         }
         if ml_prob is not None:
             intent["ml_prob"] = ml_prob

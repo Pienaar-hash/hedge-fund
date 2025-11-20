@@ -34,15 +34,27 @@ from dashboard.dashboard_utils import (  # noqa: E402
 )
 from dashboard.async_cache import gather_once  # noqa: E402
 from dashboard.nav_helpers import signal_attempts_summary  # noqa: E402
+from dashboard.intel_panel import render_intel_panel  # noqa: E402
 from dashboard.router_health import load_router_health, RouterHealthData  # noqa: E402
+from dashboard.router_policy import render_router_policy_panel  # noqa: E402
+from dashboard.pipeline_panel import render_pipeline_parity  # noqa: E402
 from dashboard.live_helpers import (  # noqa: E402
     get_nav_snapshot,
     execution_kpis,
     execution_health,
     get_symbol_score,
     get_hourly_expectancy,
+    load_runtime_probe,
+    load_expectancy_v6,
+    load_symbol_scores_v6,
+    load_risk_allocator_v6,
+    load_router_policy_v6,
+    load_router_suggestions_v6,
+    load_shadow_head,
+    load_compare_summary,
+    ensure_timestamp,
 )
-from scripts.doctor import collect_doctor_snapshot, run_doctor_subprocess  # noqa: E402
+from scripts.doctor import run_doctor_subprocess  # noqa: E402
 from research.correlation_matrix import DEFAULT_OUTPUT_PATH as CORRELATION_CACHE_PATH  # noqa: E402
 from execution.capital_allocator import DEFAULT_OUTPUT_PATH as CAPITAL_ALLOC_CACHE_PATH  # noqa: E402
 from research.factor_fusion import (  # noqa: E402
@@ -62,18 +74,6 @@ try:
     from execution.utils import get_usd_to_zar
 except Exception:  # pragma: no cover
     get_usd_to_zar = None
-try:
-    from execution.nav import get_confirmed_nav as nav_get_confirmed_nav
-    from execution.nav import get_nav_age as nav_get_age
-    from execution.nav import is_nav_fresh as nav_is_fresh
-except Exception:  # pragma: no cover
-    nav_get_confirmed_nav = None
-    nav_get_age = None
-    nav_is_fresh = None
-try:
-    from execution.risk_limits import get_nav_age as risk_nav_get_age
-except Exception:  # pragma: no cover
-    risk_nav_get_age = None
 try:
     from ml.telemetry import aggregate_history as telemetry_aggregate, load_history as telemetry_load
 except Exception:  # pragma: no cover
@@ -123,7 +123,9 @@ def main():
     TAIL_BYTES = int(os.getenv("DASHBOARD_LOG_TAIL_BYTES", "200000"))
     TAIL_LINES = int(os.getenv("DASHBOARD_SIGNAL_LINES", "80"))
     WANT_TAGS = tuple((os.getenv("DASHBOARD_SIGNAL_TAGS") or "[screener],[screener->executor],[decision]").split(","))
-
+    STATE_DIR = Path(os.getenv("STATE_DIR") or (PROJECT_ROOT / "logs/state"))
+    NAV_STATE_PATH = Path(os.getenv("NAV_STATE_PATH") or (STATE_DIR / "nav.json"))
+    POSITIONS_STATE_PATH = Path(os.getenv("POSITIONS_STATE_PATH") or (STATE_DIR / "positions.json"))
     LATENCY_CACHE_PATH = Path(os.getenv("EXEC_LATENCY_CACHE", "logs/execution/replay_cache.json"))
     LOG_PATH = Path(os.getenv("EXECUTOR_LOG", "logs/screener_tail.log"))
     HEARTBEAT_LOG_PATH = Path(os.getenv("SYNC_HEARTBEAT_LOG", "logs/execution/sync_heartbeats.jsonl"))
@@ -182,6 +184,14 @@ def main():
         except Exception:
             return "—"
 
+    def _flag_badge(enabled: bool) -> str:
+        color = "#21ba45" if enabled else "#db2828"
+        label = "ON" if enabled else "OFF"
+        return (
+            f'<span style="display:inline-block;padding:0.2em 0.6em;border-radius:0.6em;'
+            f'font-weight:700;color:#fff;background:{color};">{label}</span>'
+        )
+
 def human_age(ts) -> str:
     if not ts:
         return "–"
@@ -199,7 +209,7 @@ def human_age(ts) -> str:
 
 def render_execution_intel(symbol: Optional[str]) -> None:
     """
-    Render the v5.10.1 Execution Intelligence view for a symbol.
+    Render the execution intelligence view for a symbol.
     """
     st.subheader("Execution Intelligence")
 
@@ -422,28 +432,27 @@ def render_execution_intel(symbol: Optional[str]) -> None:
 
     def nav_freshness_info() -> Dict[str, Any]:
         record: Dict[str, Any] = {}
-        if callable(nav_get_confirmed_nav):
-            try:
-                data = nav_get_confirmed_nav()
-                if isinstance(data, dict):
-                    record = data
-            except Exception as exc:
-                LOG.debug("[dash] get_confirmed_nav failed: %s", exc, exc_info=True)
-        if not record:
-            record = load_json("logs/cache/nav_confirmed.json", default={}) or {}
+        try:
+            state_payload = load_json(str(NAV_STATE_PATH), default={}) or {}
+            if isinstance(state_payload, dict):
+                record = state_payload
+        except Exception as exc:
+            LOG.debug("[dash] nav state read failed: %s", exc, exc_info=True)
         nav_age: Optional[float] = None
-        if callable(nav_get_age):
-            try:
-                nav_age = nav_get_age()
-            except Exception as exc:
-                LOG.debug("[dash] get_nav_age failed: %s", exc, exc_info=True)
-        if nav_age is None:
-            ts_val = record.get("ts")
-            if isinstance(ts_val, (int, float)):
-                try:
+        if isinstance(record, dict):
+            ts_candidates = []
+            ts_candidates.append(record.get("updated_at") or record.get("ts") or record.get("updated_ts"))
+            series = record.get("series")
+            if isinstance(series, list):
+                for entry in reversed(series):
+                    if isinstance(entry, dict):
+                        ts_candidates.append(entry.get("t") or entry.get("ts"))
+                        break
+            for candidate in ts_candidates:
+                ts_val = _to_epoch_seconds(candidate)
+                if ts_val is not None:
                     nav_age = max(0.0, time.time() - float(ts_val))
-                except Exception:
-                    nav_age = None
+                    break
         risk_cfg = load_json("config/risk_limits.json", default={})
         threshold = None
         if isinstance(risk_cfg, dict):
@@ -460,15 +469,7 @@ def render_execution_intel(symbol: Optional[str]) -> None:
                         break
                 except Exception:
                     continue
-        if threshold is not None and callable(nav_is_fresh):
-            try:
-                fresh = bool(nav_is_fresh(threshold))
-            except Exception:
-                fresh = nav_age is not None and nav_age <= threshold
-        elif threshold is not None:
-            fresh = nav_age is not None and nav_age <= threshold
-        else:
-            fresh = nav_age is not None
+        fresh = nav_age is not None if threshold is None else (nav_age is not None and nav_age <= threshold)
         return {"age": nav_age, "threshold": threshold, "fresh": bool(fresh)}
 
     def read_jsonl_tail(path: Path, limit: int) -> List[Dict[str, Any]]:
@@ -489,76 +490,32 @@ def render_execution_intel(symbol: Optional[str]) -> None:
 
     @st.cache_data(ttl=30, show_spinner=False)
     def load_local_nav_doc() -> Dict[str, Any]:
-        path = PROJECT_ROOT / "logs" / "nav_log.json"
-        data = load_json(str(path), [])
-        points: List[Dict[str, Any]] = []
-        if isinstance(data, list):
-            for entry in data:
-                if not isinstance(entry, dict):
-                    continue
-                ts_val = _to_epoch_seconds(entry.get("ts") or entry.get("t") or entry.get("time"))
-                eq_raw = entry.get("equity") or entry.get("nav") or entry.get("value")
-                if ts_val is None or eq_raw is None:
-                    continue
-                try:
-                    eq_val = float(eq_raw)
-                except Exception:
-                    continue
-                points.append({"ts": int(ts_val), "equity": eq_val})
-        if not points:
-            return {}
-        points.sort(key=lambda item: item["ts"])
-        latest_ts = points[-1]["ts"]
-        return {
-            "points": points,
-            "total_equity": points[-1]["equity"],
-            "updated_at": datetime.fromtimestamp(latest_ts, tz=timezone.utc).isoformat(),
-        }
+        try:
+            payload = load_json(str(NAV_STATE_PATH), default={}) or {}
+        except Exception:
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
 
     def load_local_positions() -> Dict[str, Any]:
-        path = PROJECT_ROOT / "logs" / "execution" / "position_state.jsonl"
-        entries = read_jsonl_tail(path, 2000)
-        latest: Dict[str, Dict[str, Any]] = {}
-        for entry in reversed(entries):
+        payload = load_json(str(POSITIONS_STATE_PATH), default={}) or {}
+        if not isinstance(payload, dict):
+            return {"items": []}
+        items_raw = payload.get("items") if isinstance(payload.get("items"), list) else []
+        items: List[Dict[str, Any]] = []
+        for entry in items_raw:
             if not isinstance(entry, dict):
                 continue
             sym = str(entry.get("symbol") or "").upper()
-            if not sym or sym in latest:
+            if not sym:
                 continue
-            latest[sym] = entry
-
-        items: List[Dict[str, Any]] = []
-        for sym, data in latest.items():
-            qty_raw = data.get("pos_qty") if data.get("pos_qty") is not None else data.get("qty")
-            try:
-                qty = float(qty_raw or 0.0)
-            except Exception:
-                qty = 0.0
-            if abs(qty) <= 0:
-                continue
-            try:
-                entry_px = float(data.get("entry_px") or data.get("entryPrice") or data.get("avgEntryPrice") or 0.0)
-            except Exception:
-                entry_px = 0.0
-            try:
-                mark_px_raw = data.get("mark_px") or data.get("markPrice")
-                mark_px = float(mark_px_raw) if mark_px_raw not in (None, "") else None
-            except Exception:
-                mark_px = None
-            upnl_raw = data.get("unrealized_pnl") or data.get("unrealizedPnl")
-            try:
-                upnl = float(upnl_raw if upnl_raw is not None else 0.0)
-            except Exception:
-                upnl = 0.0
-            if mark_px is None and entry_px and qty:
-                try:
-                    side = str(data.get("mode") or data.get("side") or "LONG").upper()
-                    sign = 1.0 if side in ("LONG", "BUY") else -1.0
-                    mark_px = entry_px + (upnl / (abs(qty) * sign))
-                except Exception:
-                    mark_px = entry_px
-            ts_val = _to_epoch_seconds(data.get("ts") or data.get("time") or data.get("timestamp"))
-            notional = abs(qty) * float(mark_px if mark_px is not None else entry_px)
+            qty = _maybe_float(entry.get("qty") or entry.get("positionAmt"))
+            entry_px = _maybe_float(entry.get("entry_price") or entry.get("entryPrice"))
+            mark_px = _maybe_float(entry.get("mark_price") or entry.get("markPrice"))
+            pnl_val = _maybe_float(entry.get("pnl") or entry.get("unrealizedPnl"))
+            ts_val = _to_epoch_seconds(entry.get("ts") or entry.get("updated_at"))
+            notional = entry.get("notional")
+            if notional is None and qty is not None and mark_px is not None:
+                notional = abs(qty) * mark_px
             items.append(
                 {
                     "symbol": sym,
@@ -566,13 +523,16 @@ def render_execution_intel(symbol: Optional[str]) -> None:
                     "qty": qty,
                     "entryPrice": entry_px,
                     "markPrice": mark_px,
-                    "unrealizedPnl": upnl,
-                    "leverage": data.get("leverage") or data.get("lev"),
+                    "unrealizedPnl": pnl_val,
+                    "leverage": entry.get("leverage"),
                     "updatedAt": ts_val,
                     "notional": notional,
                 }
             )
-        return {"items": items}
+        result: Dict[str, Any] = {"items": items}
+        if isinstance(payload.get("exec_stats"), dict):
+            result["exec_stats"] = payload["exec_stats"]
+        return result
 
     def load_local_leaderboard() -> Dict[str, Any]:
         path = PROJECT_ROOT / "logs" / "leaderboard.json"
@@ -652,45 +612,18 @@ def render_execution_intel(symbol: Optional[str]) -> None:
         return pd.DataFrame(rows[:limit])
 
     def load_nav_state() -> Tuple[Dict[str, Any], str]:
-        return load_local_nav_doc(), "local"
+        return load_local_nav_doc(), "state"
 
     def load_positions_state() -> Tuple[Dict[str, Any], str]:
-        return load_local_positions(), "local"
+        return load_local_positions(), "state"
 
     def load_leaderboard_state() -> Tuple[Dict[str, Any], str]:
         return load_local_leaderboard(), "local"
 
-    DOCTOR_CACHE_PATH = PROJECT_ROOT / "logs" / "cache" / "doctor.json"
     SIGNAL_METRICS_PATH = PROJECT_ROOT / "logs" / "execution" / "signal_metrics.jsonl"
     ML_CACHE_PATH = PROJECT_ROOT / "logs" / "cache" / "ml_predictions.json"
     CORRELATION_JSON_PATH = PROJECT_ROOT / CORRELATION_CACHE_PATH
     CAPITAL_ALLOC_JSON_PATH = PROJECT_ROOT / CAPITAL_ALLOC_CACHE_PATH
-
-    def _persist_payload(path: Path, payload: Dict[str, Any]) -> None:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-        except Exception:
-            pass
-
-    def _doctor_fetcher() -> Dict[str, Any]:
-        if DOCTOR_CACHE_PATH.exists():
-            try:
-                with DOCTOR_CACHE_PATH.open("r", encoding="utf-8") as handle:
-                    payload = json.load(handle)
-                if isinstance(payload, dict):
-                    return payload
-            except Exception as exc:
-                LOG.debug("[dash] doctor cache read failed: %s", exc)
-        try:
-            snapshot = collect_doctor_snapshot() or {}
-        except Exception as exc:
-            LOG.warning("[dash] doctor snapshot fallback failed: %s", exc)
-            snapshot = {}
-        if isinstance(snapshot, dict):
-            _persist_payload(DOCTOR_CACHE_PATH, snapshot)
-        return snapshot if isinstance(snapshot, dict) else {}
 
     def _router_fetcher() -> Dict[str, Any]:
         try:
@@ -742,7 +675,6 @@ def render_execution_intel(symbol: Optional[str]) -> None:
         return {}
 
     ASYNC_FETCHERS: Dict[str, Callable[[], Any]] = {
-        "doctor": _doctor_fetcher,
         "router_health": _router_fetcher,
         "telemetry": _telemetry_fetcher,
         "correlation": _correlation_fetcher,
@@ -1009,6 +941,37 @@ def render_execution_intel(symbol: Optional[str]) -> None:
 
     nav_value: Optional[float] = None
 
+    # --------------------------- Runtime Probe (v6) -----------------------------
+    probe_box = st.sidebar.container()
+    probe_box.markdown("### Runtime Probe (v6)")
+    runtime_probe = load_runtime_probe()
+    if not runtime_probe:
+        probe_box.info("Probe unavailable")
+    else:
+        engine_version = runtime_probe.get("engine_version") or "—"
+        probe_box.markdown(f"**engine_version:** `{engine_version}`")
+
+        flags = [
+            ("risk_v6_enabled", bool(runtime_probe.get("risk_v6_enabled"))),
+            ("router_autotune_v6_enabled", bool(runtime_probe.get("router_autotune_v6_enabled"))),
+            ("pipeline_v6_enabled", bool(runtime_probe.get("pipeline_v6_enabled"))),
+            ("intel_v6_enabled", bool(runtime_probe.get("intel_v6_enabled"))),
+        ]
+        for label, flag in flags:
+            probe_box.markdown(f"**{label}:** {_flag_badge(flag)}", unsafe_allow_html=True)
+
+        nav_age_ms = _maybe_float(runtime_probe.get("nav_age_ms"))
+        nav_age_warn = " ⚠️" if nav_age_ms is not None and nav_age_ms > 120000 else ""
+        nav_age_display = f"{nav_age_ms:,.0f} ms" if nav_age_ms is not None else "n/a"
+        probe_box.markdown(f"**nav_age_ms:** {nav_age_display}{nav_age_warn}")
+
+        loop_latency_ms = _maybe_float(runtime_probe.get("loop_latency_ms"))
+        loop_latency_display = f"{loop_latency_ms:,.1f} ms" if loop_latency_ms is not None else "n/a"
+        probe_box.markdown(f"**loop_latency_ms:** {loop_latency_display}")
+
+        generated_at = runtime_probe.get("generated_at") or ensure_timestamp(runtime_probe.get("ts"))
+        probe_box.markdown(f"**generated_at:** {generated_at or 'N/A'}")
+
     # --------------------------- Load Firestore ----------------------------------
     status = st.empty()
     status.info("Loading data…")
@@ -1048,6 +1011,13 @@ def render_execution_intel(symbol: Optional[str]) -> None:
     trades_snapshot = load_exec_snapshot("trades", ENV)
     signals_snapshot = load_exec_snapshot("signals", ENV)
     nav_snapshot_live = get_nav_snapshot()
+    expectancy_v6 = load_expectancy_v6()
+    symbol_scores_v6 = load_symbol_scores_v6()
+    risk_allocator_v6 = load_risk_allocator_v6()
+    router_policy_v6 = load_router_policy_v6()
+    router_suggestions_v6 = load_router_suggestions_v6()
+    pipeline_shadow_head = load_shadow_head()
+    pipeline_compare_summary = load_compare_summary()
 
     # --- ZAR guard: declare upfront so early reads never crash ---
     zar_rate: Optional[float] = None
@@ -1133,35 +1103,19 @@ def render_execution_intel(symbol: Optional[str]) -> None:
         except Exception:
             prev_nav_value = None
 
-    nav_freshness = doctor_snapshot.get("nav_freshness", {}) or {}
+    nav_freshness = nav_freshness_info()
     if not isinstance(nav_freshness, dict):
         nav_freshness = {}
     nav_status = "FRESH" if nav_freshness.get("fresh") else "STALE"
 
-    nav_info = doctor_snapshot.get("nav", {}) or {}
-    if not isinstance(nav_info, dict):
-        nav_info = {}
+    nav_info = nav_freshness
 
     nav_age_seconds: Optional[float]
     raw_age = nav_freshness.get("age")
     if isinstance(raw_age, (int, float)):
         nav_age_seconds = float(raw_age)
     else:
-        nav_age_candidate = nav_info.get("age")
-        if isinstance(nav_age_candidate, (int, float)):
-            nav_age_seconds = float(nav_age_candidate)
-        elif risk_nav_get_age is not None:
-            try:
-                nav_age_seconds = float(risk_nav_get_age())
-            except Exception:
-                nav_age_seconds = None
-        elif nav_get_age is not None:
-            try:
-                nav_age_seconds = float(nav_get_age())
-            except Exception:
-                nav_age_seconds = None
-        else:
-            nav_age_seconds = None
+        nav_age_seconds = None
 
     nav_usd_text = format_currency(nav_value, "$")
     exchange_nav_display = format_currency(exchange_nav_value, "$")
@@ -1614,6 +1568,17 @@ def render_execution_intel(symbol: Optional[str]) -> None:
                 unsafe_allow_html=True,
             )
 
+        st.markdown("---")
+        render_intel_panel(expectancy_v6, symbol_scores_v6, risk_allocator_v6)
+
+        st.markdown("---")
+        render_router_policy_panel(router_policy_v6, router_suggestions_v6, apply_enabled=False)
+
+        st.markdown("---")
+        render_pipeline_parity(pipeline_shadow_head, pipeline_compare_summary)
+
+        st.markdown("---")
+
         if nav_df.empty:
             st.info("No NAV points yet. Run executor + sync_state to populate.")
         else:
@@ -1837,7 +1802,7 @@ def render_execution_intel(symbol: Optional[str]) -> None:
             if isinstance(items, list):
                 trade_snapshot_items = items
 
-        # PATCH: robust trade snapshot handling (v5.10 stage)
+        # Patch: robust trade snapshot handling
         trade_snapshot_items = trade_snapshot_items or []
         if not isinstance(trade_snapshot_items, list):
             trade_snapshot_items = []

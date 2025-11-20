@@ -4,25 +4,20 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections import Counter
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from pandas.io.formats.style import Styler
 
-from dashboard.dashboard_utils import fetch_state_document
-
 _UNITS_FMT = "{:.6f}"
 _USD_FMT = "{:,.2f}"
 ROOT_DIR = Path(__file__).resolve().parents[1]
-ENV = os.getenv("ENV", "dev")
-LOG_DIR = ROOT_DIR / "logs"
-EXEC_LOG_DIR = LOG_DIR / "execution"
-NAV_LOG_PATH = LOG_DIR / "nav_log.json"
-NAV_CONFIRMED_PATH = LOG_DIR / "cache" / "nav_confirmed.json"
+STATE_DIR = Path(os.getenv("STATE_DIR") or ROOT_DIR / "logs" / "state")
+NAV_STATE_PATH = Path(os.getenv("NAV_STATE_PATH") or STATE_DIR / "nav.json")
+POSITIONS_STATE_PATH = Path(os.getenv("POSITIONS_STATE_PATH") or STATE_DIR / "positions.json")
 
 
 def _load_json_file(path: Path) -> Any:
@@ -49,8 +44,8 @@ def _default_exec_stats() -> Dict[str, Any]:
     return {
         "attempted_24h": 0,
         "executed_24h": 0,
-        "vetoes_24h": 0,
         "fill_rate": 0.0,
+        "vetoes_24h": 0,
         "top_vetoes": [],
         "last_heartbeats": {
             "executor_live": None,
@@ -94,41 +89,11 @@ def _normalize_exec_stats(stats: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return base
 
 
-def _safe_fetch_state(doc: str) -> Dict[str, Any]:
-    try:
-        return fetch_state_document(doc, env=ENV)
-    except Exception:
-        return {}
-
-
-def _load_exec_stats_from_firestore() -> Optional[Dict[str, Any]]:
-    for doc_name in ("positions", "nav"):
-        doc = _safe_fetch_state(doc_name)
-        if doc:
+def _load_exec_stats_from_state() -> Optional[Dict[str, Any]]:
+    for path in (POSITIONS_STATE_PATH, NAV_STATE_PATH):
+        doc = _load_json_file(path)
+        if isinstance(doc, dict):
             stats = doc.get("exec_stats")
-            if isinstance(stats, dict):
-                return stats
-    return None
-
-
-def _tail_exec_stats_from_jsonl(path: Path) -> Optional[Dict[str, Any]]:
-    if not path.exists():
-        return None
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            lines = fh.readlines()
-    except Exception:
-        return None
-    for line in reversed(lines[-5000:]):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(record, dict):
-            stats = record.get("exec_stats")
             if isinstance(stats, dict):
                 return stats
     return None
@@ -159,117 +124,10 @@ def _parse_timestamp(record: Dict[str, Any]) -> Optional[float]:
     return None
 
 
-def _iter_recent_records(path: Path, cutoff: float):
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                ts = _parse_timestamp(record)
-                if ts is None or ts < cutoff:
-                    continue
-                record["_ts"] = ts
-                yield record
-    except FileNotFoundError:
-        return
-    except Exception:
-        return
-
-
-def _last_heartbeats_from_logs() -> Dict[str, Optional[str]]:
-    path = EXEC_LOG_DIR / "sync_heartbeats.jsonl"
-    latest: Dict[str, float] = {}
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                svc = record.get("service")
-                if not svc:
-                    continue
-                ts = _parse_timestamp(record)
-                if ts is None:
-                    continue
-                latest[svc] = max(ts, latest.get(svc, float("-inf")))
-    except FileNotFoundError:
-        pass
-    except Exception:
-        pass
-    result = {}
-    for svc in ("executor_live", "sync_daemon"):
-        ts = latest.get(svc)
-        result[svc] = (
-            datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts is not None else None
-        )
-    return result
-
-
-def _aggregate_exec_stats_from_logs() -> Dict[str, Any]:
-    cutoff = time.time() - 86400.0
-    attempted = 0
-    executed = 0
-    successful = 0
-    veto_counts: Counter[str] = Counter()
-
-    attempt_path = EXEC_LOG_DIR / "orders_attempted.jsonl"
-    for _ in _iter_recent_records(attempt_path, cutoff) or []:
-        attempted += 1
-
-    executed_path = EXEC_LOG_DIR / "orders_executed.jsonl"
-    for record in _iter_recent_records(executed_path, cutoff) or []:
-        executed += 1
-        status = str(record.get("status") or record.get("order_status") or "").upper()
-        if status in {"FILLED", "SUCCESS"}:
-            successful += 1
-
-    veto_path = EXEC_LOG_DIR / "risk_vetoes.jsonl"
-    for record in _iter_recent_records(veto_path, cutoff) or []:
-        reason = str(record.get("veto_reason") or record.get("reason") or "unknown")
-        veto_counts[reason] += 1
-
-    denominator = attempted if attempted > 0 else (executed if executed > 0 else 0)
-    fill_rate = (successful / denominator) if denominator else 0.0
-
-    top_vetoes = [{"reason": reason, "count": count} for reason, count in veto_counts.most_common(5)]
-    heartbeats = _last_heartbeats_from_logs()
-
-    return {
-        "attempted_24h": attempted,
-        "executed_24h": executed,
-        "vetoes_24h": sum(veto_counts.values()),
-        "fill_rate": fill_rate,
-        "top_vetoes": top_vetoes,
-        "last_heartbeats": heartbeats,
-    }
-
-
 def load_exec_stats() -> Dict[str, Any]:
-    """Return execution statistics for dashboard use."""
-    stats = _load_exec_stats_from_firestore()
-    if stats:
-        return _normalize_exec_stats(stats)
-
-    for fallback in ("positions.jsonl", "nav.jsonl", "treasury.jsonl"):
-        local_stats = _tail_exec_stats_from_jsonl(LOG_DIR / fallback)
-        if local_stats:
-            return _normalize_exec_stats(local_stats)
-
-    aggregated = _aggregate_exec_stats_from_logs()
-    return _normalize_exec_stats(aggregated)
+    """Return execution statistics sourced from v6 state files."""
+    stats = _load_exec_stats_from_state()
+    return _normalize_exec_stats(stats)
 
 
 def heartbeat_badge(age_seconds: Optional[float]) -> str:
@@ -301,26 +159,21 @@ def heartbeat_badge(age_seconds: Optional[float]) -> str:
 
 def build_nav_dataframe() -> Tuple[pd.DataFrame, float, str]:
     """
-    Return a consolidated NAV DataFrame from confirmed snapshot + nav log.
-
-    Returns:
-        df: columns (ts, datetime, nav_usd, source, fresh)
-        latest_nav: latest numeric NAV selected
-        label: optional fallback message (e.g., "using cached NAV")
+    Build a NAV DataFrame from the v6 nav state file.
     """
 
     entries: List[Dict[str, Any]] = []
 
-    nav_log = _load_json_file(NAV_LOG_PATH)
-    if isinstance(nav_log, list):
-        for record in nav_log:
+    nav_state = _load_json_file(NAV_STATE_PATH)
+    if isinstance(nav_state, dict):
+        series = nav_state.get("series") if isinstance(nav_state.get("series"), list) else []
+        for record in series or []:
             if not isinstance(record, dict):
                 continue
             ts = _parse_timestamp(record)
             nav_val = _coerce_float(
-                record.get("nav_usd")
+                record.get("equity")
                 or record.get("nav")
-                or record.get("equity")
                 or record.get("total_equity")
             )
             if ts is None or nav_val is None:
@@ -329,31 +182,26 @@ def build_nav_dataframe() -> Tuple[pd.DataFrame, float, str]:
                 {
                     "ts": ts,
                     "nav_usd": nav_val,
-                    "source": "nav_log",
-                    "fresh": False,
+                    "source": "nav_state",
+                    "fresh": True,
                 }
             )
-
-    confirmed = _load_json_file(NAV_CONFIRMED_PATH)
-    if isinstance(confirmed, dict):
-        ts = _parse_timestamp(confirmed)
-        nav_val = _coerce_float(
-            confirmed.get("nav_usd")
-            or confirmed.get("nav")
-            or confirmed.get("total_nav")
-            or confirmed.get("total_equity")
-        )
-        if ts is None:
-            ts = time.time()
-        if nav_val is not None:
-            entries.append(
-                {
-                    "ts": ts,
-                    "nav_usd": nav_val,
-                    "source": "confirmed_nav",
-                    "fresh": bool(confirmed.get("sources_ok", False)),
-                }
+        if not entries:
+            ts = _parse_timestamp({"ts": nav_state.get("updated_at")})
+            nav_val = _coerce_float(
+                nav_state.get("total_equity")
+                or nav_state.get("portfolio_gross_usd")
+                or nav_state.get("nav")
             )
+            if ts is not None and nav_val is not None:
+                entries.append(
+                    {
+                        "ts": ts,
+                        "nav_usd": nav_val,
+                        "source": "nav_state",
+                        "fresh": True,
+                    }
+                )
 
     if entries:
         df = pd.DataFrame(entries)
@@ -382,8 +230,6 @@ def build_nav_dataframe() -> Tuple[pd.DataFrame, float, str]:
         latest = df.iloc[-1]
         latest_nav = float(latest["nav_usd"])
         label = ""
-        if latest.get("source") != "confirmed_nav" or not bool(latest.get("fresh")):
-            label = "using cached NAV"
 
     df["datetime"] = pd.to_datetime(df["ts"], unit="s", utc=True)
     df = df[["ts", "datetime", "nav_usd", "source", "fresh"]]

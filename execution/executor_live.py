@@ -113,9 +113,13 @@ _LAST_POSITIONS_STATE: Dict[str, Any] = {}
 _LAST_RISK_SNAPSHOT: Dict[str, Any] | None = None
 _LAST_SYMBOL_SCORES_STATE: Dict[str, Any] | None = None
 
-try:
-    _ENGINE_VERSION = (Path(repo_root) / "VERSION").read_text(encoding="utf-8").strip()
-except Exception:
+_VERSION_PATH = Path(repo_root) / "VERSION"
+if _VERSION_PATH.is_file():
+    try:
+        _ENGINE_VERSION = _VERSION_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        _ENGINE_VERSION = ""
+else:
     _ENGINE_VERSION = "v6.0-beta-preview"
 
 
@@ -243,6 +247,7 @@ def _maybe_write_v6_runtime_probe(force: bool = False) -> None:
     if not force and (now - _LAST_V6_RUNTIME_PROBE) < _V6_RUNTIME_PROBE_INTERVAL:
         return
     payload = dict(flag_snapshot)
+    payload["engine_version"] = _ENGINE_VERSION
     payload["ts"] = now
     try:
         write_v6_runtime_probe_state(payload)
@@ -280,7 +285,7 @@ def _mirror_router_metrics(event: Mapping[str, Any]) -> None:
 def _maybe_emit_risk_snapshot(force: bool = False) -> None:
     global _LAST_RISK_PUBLISH, _LAST_RISK_CACHE, _LAST_RISK_SNAPSHOT
     now = time.time()
-    if not force and (now - _LAST_RISK_PUBLISH) < EXEC_HEALTH_PUBLISH_INTERVAL_S:
+    if not force and (now - _LAST_RISK_PUBLISH) < _HEALTH_PUBLISH_INTERVAL_S:
         return
     try:
         engine = _get_risk_engine_v6()
@@ -465,6 +470,7 @@ from execution.state_publish import (
     write_positions_state,
     write_risk_snapshot_state,
     write_router_health_state,
+    write_symbol_scores_state,
     write_synced_state,
     write_v6_runtime_probe_state,
 )
@@ -1754,6 +1760,33 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     cap = float(intent.get("capital_per_trade", 0) or 0)
     lev = float(intent.get("leverage", 1) or 1)
     gross_target = float(intent.get("gross_usd") or (cap * lev))
+    # Clamp to caps from intent/risk config using current nav snapshot
+    nav_snapshot = _nav_snapshot()
+    nav_usd = float(nav_snapshot.get("nav_usd", 0.0) or 0.0)
+    cap_candidates = []
+    try:
+        trade_cap = float(intent.get("trade_equity_nav_pct") or 0.0)
+    except Exception:
+        trade_cap = 0.0
+    try:
+        max_trade_cap = float(intent.get("max_trade_nav_pct") or 0.0)
+    except Exception:
+        max_trade_cap = 0.0
+    per_symbol_limit = 0.0
+    try:
+        sym_limits = ((intent.get("per_symbol_limits") or {}) if isinstance(intent.get("per_symbol_limits"), dict) else {})
+        per_symbol_limit = float(sym_limits.get(str(symbol).upper(), {}).get("max_order_notional") or 0.0)
+    except Exception:
+        per_symbol_limit = 0.0
+    if nav_usd > 0.0:
+        if trade_cap > 0.0:
+            cap_candidates.append(nav_usd * (trade_cap / 100.0))
+        if max_trade_cap > 0.0:
+            cap_candidates.append(nav_usd * (max_trade_cap / 100.0))
+    if per_symbol_limit > 0.0:
+        cap_candidates.append(per_symbol_limit)
+    if cap_candidates:
+        gross_target = min(gross_target, min(cap_candidates))
     if lev <= 0:
         lev = 1.0
     price_guess = 0.0
@@ -1973,6 +2006,33 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 size_risk_cfg,
             )
             sized_gross = float(sizing_suggestion.get("gross_usd", gross_target))
+            # Clamp to nav-based caps and per-symbol max_order_notional
+            if nav_usd > 0.0:
+                cap_candidates = []
+                try:
+                    trade_equity_cap = float(size_risk_cfg.get("trade_equity_nav_pct") or 0.0)
+                except Exception:
+                    trade_equity_cap = 0.0
+                try:
+                    max_trade_cap = float(size_risk_cfg.get("max_trade_nav_pct") or 0.0)
+                except Exception:
+                    max_trade_cap = 0.0
+                try:
+                    sym_limits = (size_risk_cfg.get("per_symbol") or {}).get(symbol.upper(), {}) if isinstance(size_risk_cfg.get("per_symbol"), dict) else {}
+                except Exception:
+                    sym_limits = {}
+                try:
+                    sym_max_order = float(sym_limits.get("max_order_notional") or 0.0)
+                except Exception:
+                    sym_max_order = 0.0
+                if trade_equity_cap > 0.0:
+                    cap_candidates.append(nav_usd * (trade_equity_cap / 100.0))
+                if max_trade_cap > 0.0:
+                    cap_candidates.append(nav_usd * (max_trade_cap / 100.0))
+                if sym_max_order > 0.0:
+                    cap_candidates.append(sym_max_order)
+                if cap_candidates:
+                    sized_gross = min(sized_gross, min(cap_candidates))
             if sized_gross <= 0.0:
                 LOG.info(
                     "[sizer] sym=%s atr=%.4f blocked (reason=%s)",
@@ -2026,6 +2086,16 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             _persist_veto("sizing_zero", price_guess)
             return
         gross_target = max(float(scaled_notional), floor_gross)
+        cap_candidates = []
+        if nav_usd > 0.0:
+            if 'trade_cap' in locals() and trade_cap > 0.0:
+                cap_candidates.append(nav_usd * (trade_cap / 100.0))
+            if 'max_trade_cap' in locals() and max_trade_cap > 0.0:
+                cap_candidates.append(nav_usd * (max_trade_cap / 100.0))
+        if 'per_symbol_limit' in locals() and per_symbol_limit > 0.0:
+            cap_candidates.append(per_symbol_limit)
+        if cap_candidates:
+            gross_target = min(gross_target, min(cap_candidates))
 
     margin_target = gross_target / max(lev, 1.0)
     attempt_start_monotonic = time.monotonic()

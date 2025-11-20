@@ -1,7 +1,4 @@
-"""
-v5.9 Execution Hardening — KPI tiles
-- fill efficiency, fee/PnL ratio, realized slippage (bps), expectancy
-"""
+"""Execution Hardening — KPI tiles."""
 
 from __future__ import annotations
 
@@ -10,8 +7,8 @@ import os
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List
-from datetime import datetime
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
 
 from execution.risk_limits import RiskGate
 from execution.utils import load_json
@@ -39,6 +36,11 @@ EXPECTANCY_STATE_PATH = Path(os.getenv("EXPECTANCY_STATE_PATH") or (STATE_DIR / 
 SYMBOL_SCORES_STATE_PATH = Path(os.getenv("SYMBOL_SCORES_STATE_PATH") or (STATE_DIR / "symbol_scores_v6.json"))
 PIPELINE_COMPARE_STATE_PATH = Path(os.getenv("PIPELINE_V6_COMPARE_STATE_PATH") or (STATE_DIR / "pipeline_v6_compare_summary.json"))
 PIPELINE_COMPARE_LOG_PATH = Path(os.getenv("PIPELINE_V6_COMPARE_LOG_PATH") or "logs/pipeline_v6_compare.jsonl")
+RISK_ALLOCATOR_STATE_PATH = Path(os.getenv("RISK_ALLOC_STATE_PATH") or (STATE_DIR / "risk_allocation_suggestions_v6.json"))
+ROUTER_POLICY_STATE_PATH = Path(os.getenv("ROUTER_POLICY_STATE_PATH") or (STATE_DIR / "router_health.json"))
+ROUTER_SUGGESTIONS_STATE_PATH = Path(os.getenv("ROUTER_SUGGESTIONS_STATE_PATH") or (STATE_DIR / "router_policy_suggestions_v6.json"))
+PIPELINE_SHADOW_HEAD_STATE_PATH = Path(os.getenv("PIPELINE_SHADOW_HEAD_STATE_PATH") or (STATE_DIR / "pipeline_v6_shadow_head.json"))
+RUNTIME_PROBE_STATE_PATH = Path(os.getenv("RUNTIME_PROBE_STATE_PATH") or (STATE_DIR / "v6_runtime_probe.json"))
 
 
 def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
@@ -98,6 +100,30 @@ def _load_state_json(path: Path) -> Any:
     return None
 
 
+def ensure_timestamp(ts: Any) -> str:
+    """Best-effort conversion to ISO UTC string; returns "N/A" if unknown."""
+    if ts is None:
+        return "N/A"
+    try:
+        val = float(ts)
+        if val > 1e12:
+            val /= 1000.0
+        return datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+    if isinstance(ts, str):
+        text = ts.strip()
+        if not text:
+            return "N/A"
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            return datetime.fromisoformat(text).astimezone(timezone.utc).isoformat()
+        except Exception:
+            return "N/A"
+    return "N/A"
+
+
 def load_universe_state() -> List[Dict[str, Any]]:
     payload = _load_state_json(UNIVERSE_STATE_PATH)
     if isinstance(payload, dict) and isinstance(payload.get("universe"), list):
@@ -110,14 +136,67 @@ def load_expectancy_v6_state() -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def load_expectancy_v6() -> Optional[Dict[str, Any]]:
+    payload = _load_state_json(EXPECTANCY_STATE_PATH)
+    return payload if isinstance(payload, dict) else None
+
+
 def load_symbol_scores_v6_state() -> Dict[str, Any]:
     payload = _load_state_json(SYMBOL_SCORES_STATE_PATH)
     return payload if isinstance(payload, dict) else {}
 
 
+def load_symbol_scores_v6() -> Optional[Dict[str, Any]]:
+    payload = _load_state_json(SYMBOL_SCORES_STATE_PATH)
+    return payload if isinstance(payload, dict) else None
+
+
+def load_risk_allocator_v6() -> Optional[Dict[str, Any]]:
+    payload = _load_state_json(RISK_ALLOCATOR_STATE_PATH)
+    return payload if isinstance(payload, dict) else None
+
+
+def load_router_policy_v6() -> Optional[Dict[str, Any]]:
+    payload = _load_state_json(ROUTER_POLICY_STATE_PATH)
+    return payload if isinstance(payload, dict) else None
+
+
+def load_router_suggestions_v6() -> Dict[str, Any]:
+    payload = _load_state_json(ROUTER_SUGGESTIONS_STATE_PATH)
+    result: Dict[str, Any] = payload if isinstance(payload, dict) else {}
+    ts_raw = result.get("generated_ts")
+    ts_float: Optional[float] = None
+    if isinstance(ts_raw, (int, float)):
+        ts_float = float(ts_raw)
+    elif isinstance(ts_raw, str):
+        ts_clean = ts_raw.strip()
+        if ts_clean:
+            try:
+                ts_float = float(ts_clean)
+            except Exception:
+                try:
+                    ts_dt = datetime.fromisoformat(ts_clean.replace("Z", "+00:00"))
+                    ts_float = ts_dt.timestamp()
+                except Exception:
+                    ts_float = None
+    result["generated_ts"] = ts_float
+    if ts_float is not None:
+        result["generated_at"] = datetime.fromtimestamp(ts_float, tz=timezone.utc).isoformat()
+        result["stale"] = (time.time() - ts_float) > 3600
+    else:
+        result["generated_at"] = "N/A"
+        result["stale"] = True
+    return result
+
+
 def load_pipeline_v6_compare_summary() -> Dict[str, Any]:
     payload = _load_state_json(PIPELINE_COMPARE_STATE_PATH)
     return payload if isinstance(payload, dict) else {}
+
+
+def load_compare_summary() -> Optional[Dict[str, Any]]:
+    payload = _load_state_json(PIPELINE_COMPARE_STATE_PATH)
+    return payload if isinstance(payload, dict) else None
 
 
 def load_pipeline_v6_compare_events(limit: int = 200) -> List[Dict[str, Any]]:
@@ -142,6 +221,11 @@ def load_pipeline_v6_compare_events(limit: int = 200) -> List[Dict[str, Any]]:
         if isinstance(payload, dict):
             records.append(payload)
     return records
+
+
+def load_shadow_head() -> Optional[Dict[str, Any]]:
+    payload = _load_state_json(PIPELINE_SHADOW_HEAD_STATE_PATH)
+    return payload if isinstance(payload, dict) else None
 
 
 def get_symbol_intel_table(limit: int = 20) -> List[Dict[str, Any]]:
@@ -169,9 +253,22 @@ def get_symbol_intel_table(limit: int = 20) -> List[Dict[str, Any]]:
     return rows
 
 
-def _read_strategy_cfg() -> Dict[str, Any]:
-    cfg = load_json("config/strategy_config.json")
-    return cfg if isinstance(cfg, dict) else {}
+def load_runtime_probe() -> Dict[str, Any]:
+    payload = _load_state_json(RUNTIME_PROBE_STATE_PATH)
+    if not isinstance(payload, dict):
+        return {}
+    result: Dict[str, Any] = {
+        "engine_version": payload.get("engine_version"),
+        "risk_v6_enabled": bool(payload.get("RISK_ENGINE_V6_ENABLED")),
+        "router_autotune_v6_enabled": bool(payload.get("ROUTER_AUTOTUNE_V6_ENABLED")),
+        "pipeline_v6_enabled": bool(payload.get("PIPELINE_V6_SHADOW_ENABLED")),
+        "intel_v6_enabled": bool(payload.get("INTEL_V6_ENABLED")),
+        "nav_age_ms": payload.get("nav_age_ms"),
+        "loop_latency_ms": payload.get("loop_latency_ms"),
+        "ts": payload.get("ts"),
+    }
+    result["generated_at"] = ensure_timestamp(payload.get("ts"))
+    return result
 
 
 def _read_risk_cfg() -> Dict[str, Any]:
@@ -181,53 +278,56 @@ def _read_risk_cfg() -> Dict[str, Any]:
 
 def get_nav_snapshot(nav_path: str | None = None) -> Dict[str, float]:
     """
-    Return a coarse NAV snapshot sourced from logs/nav.jsonl when available.
-    Falls back to strategy config based NAV calculations; never raises.
+    Return a NAV snapshot sourced from logs/state/nav.json; never raises.
     """
-    state_payload = _load_state_json(NAV_STATE_PATH)
-    now_ts = time.time()
-    if isinstance(state_payload, dict):
-        try:
-            nav_val = float(state_payload.get("nav") or state_payload.get("wallet", 0.0) or 0.0)
-        except Exception:
-            nav_val = 0.0
-        try:
-            equity_val = float(state_payload.get("equity") or nav_val)
-        except Exception:
-            equity_val = nav_val
-        ts_val = state_payload.get("updated_ts") or state_payload.get("ts")
-        try:
-            ts_float = float(ts_val) if ts_val is not None else now_ts
-        except Exception:
-            ts_float = now_ts
-        return {"nav": nav_val, "equity": equity_val, "ts": ts_float}
-
-    default_path = os.getenv("NAV_LOG_PATH", "logs/nav.jsonl")
-    path = Path(nav_path or default_path)
+    _ = nav_path  # legacy param; state source is authoritative
     now_ts = time.time()
     result = {"nav": 0.0, "equity": 0.0, "ts": float(now_ts)}
 
-    try:
-        if path.exists():
-            lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
-            if lines:
-                payload = json.loads(lines[-1])
-                nav_val = float(payload.get("nav") or payload.get("wallet", 0.0) or 0.0)
-                equity_val = float(payload.get("equity") or nav_val)
-                ts_val = float(payload.get("t") or payload.get("ts") or payload.get("timestamp") or now_ts)
-                result.update({"nav": nav_val, "equity": equity_val, "ts": ts_val})
-                return result
-    except Exception:
-        pass
+    state_payload = _load_state_json(NAV_STATE_PATH) or {}
+    if isinstance(state_payload, dict):
+        series = state_payload.get("series")
+        latest_entry = None
+        if isinstance(series, list):
+            for item in reversed(series):
+                if isinstance(item, dict):
+                    latest_entry = item
+                    break
+        try:
+            nav_val = float(
+                (latest_entry or {}).get("equity")
+                or (latest_entry or {}).get("nav")
+                or state_payload.get("total_equity")
+                or state_payload.get("nav")
+                or 0.0
+            )
+        except Exception:
+            nav_val = 0.0
+        try:
+            equity_val = float(state_payload.get("total_equity") or nav_val)
+        except Exception:
+            equity_val = nav_val
 
-    try:
-        cfg = _read_strategy_cfg()
-        gate = RiskGate(cfg)
-        nav_val = float(gate._portfolio_nav())  # type: ignore[attr-defined]
-        if nav_val > 0:
-            result.update({"nav": nav_val, "equity": nav_val})
-    except Exception:
-        pass
+        ts_val = None
+        for candidate in (
+            (latest_entry or {}).get("t"),
+            (latest_entry or {}).get("ts"),
+            state_payload.get("updated_at"),
+            state_payload.get("ts"),
+        ):
+            if candidate is None:
+                continue
+            try:
+                ts_raw = float(candidate)
+                ts_val = ts_raw / 1000.0 if ts_raw > 1e12 else ts_raw
+                break
+            except Exception:
+                try:
+                    ts_val = datetime.fromisoformat(str(candidate).replace("Z", "+00:00")).timestamp()
+                    break
+                except Exception:
+                    continue
+        result.update({"nav": nav_val, "equity": equity_val, "ts": float(ts_val or now_ts)})
     return result
 
 
@@ -594,4 +694,13 @@ __all__ = [
     "get_treasury",
     "get_symbol_score",
     "get_hourly_expectancy",
+    "load_runtime_probe",
+    "load_expectancy_v6",
+    "load_symbol_scores_v6",
+    "load_risk_allocator_v6",
+    "load_router_policy_v6",
+    "load_router_suggestions_v6",
+    "load_shadow_head",
+    "load_compare_summary",
+    "ensure_timestamp",
 ]

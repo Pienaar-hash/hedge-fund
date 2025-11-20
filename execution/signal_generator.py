@@ -73,6 +73,20 @@ def size_for(symbol: str, base_size: float) -> float:
     except Exception:
         factor = 1.0
     size *= factor
+    try:
+        if base_size > 0:
+            scale = size / float(base_size)
+            if scale > 1_000.0:
+                _LOG.warning(
+                    "[size_guard] %s base=%.6f scaled=%.6f factor=%.2f",
+                    symbol,
+                    base_size,
+                    size,
+                    scale,
+                )
+                print(f'[size_dbg] symbol={symbol} base={base_size:.6f} scaled={size:.6f} factor={scale:.2f}')
+    except Exception:
+        _LOG.debug("size_for debug log failed", exc_info=True)
     return size
 
 

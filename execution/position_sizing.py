@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from execution.utils.vol import atr_pct, rolling_sigma
 
+MAX_VOL_SCALE = 100.0  # cap inverse-vol multiplier to avoid blow-ups when sigma is tiny
+MIN_SIGMA = 1e-3
+
 ATR_MED_LOOKBACK = 500
 
 
 def inverse_vol_size(symbol: str, base_size: float, lookback: int = 50) -> float:
     sigma = rolling_sigma(symbol, lookback=lookback) or 0.0
-    sigma = max(float(sigma), 1e-6)
-    return float(base_size) * (1.0 / sigma)
+    sigma = max(float(sigma), MIN_SIGMA)
+    inv_scale = 1.0 / sigma
+    inv_scale = min(inv_scale, MAX_VOL_SCALE)
+    return float(base_size) * inv_scale
 
 
 def volatility_regime_scale(symbol: str) -> float:

@@ -99,7 +99,7 @@
       "sandbox": false,
       "max_concurrent": 0,
       "confidence": 1.0,
-      "capacity_usd": null
+      "capacity_usd": null,
       "symbols": [
         "WIFUSDT"
       ],
