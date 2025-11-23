@@ -1,4 +1,20 @@
-"""v6 shadow execution pipeline (intel-only)."""
+"""v6 shadow execution pipeline (intel-only).
+
+Contract (v6.1 shadow → compare):
+* Input (per call): symbol (str, uppercase), signal mapping with at minimum side/notional
+  (or qty+price), nav_state mapping (nav_usd, portfolio_gross_usd), positions_state mapping
+  (symbol_open_qty), risk_limits_cfg/pairs_universe_cfg/sizing_cfg as dict-like.
+* Output record: {
+    "symbol": str,
+    "intent": OrderIntent as dict (qty, price, leverage, nav_usd, metadata.signal/nav_state),
+    "risk_decision": {"allowed": bool, "clamped_qty": float, "reasons": list, "hit_caps": list,
+                      "diagnostics": Mapping},
+    "timestamp": float (unix seconds, precision ~ms),
+    optional "size_decision" + "router_decision" when allowed.
+  }
+* State outputs: jsonl appended to logs/pipeline_v6_shadow.jsonl; callers may build
+  head via build_shadow_summary() → logs/state/pipeline_v6_shadow_head.json.
+"""
 
 from __future__ import annotations
 
@@ -117,11 +133,13 @@ def run_pipeline_v6_shadow(
     risk_engine: Optional[RiskEngineV6] = None,
 ) -> Dict[str, Any]:
     engine = risk_engine or RiskEngineV6.from_configs(risk_limits_cfg, pairs_universe_cfg)
-    intent = _order_intent_from_signal(symbol, signal, nav_state, risk_limits_cfg, positions_state)
+    symbol_normalized = str(symbol or "").upper()
+    intent = _order_intent_from_signal(symbol_normalized, signal, nav_state, risk_limits_cfg, positions_state)
     state = RiskState()
     decision = engine.check_order(intent, state)
+    ts = float(time.time())
     result: Dict[str, Any] = {
-        "symbol": symbol,
+        "symbol": symbol_normalized,
         "intent": asdict(intent),
         "risk_decision": {
             "allowed": decision.allowed,
@@ -130,12 +148,12 @@ def run_pipeline_v6_shadow(
             "hit_caps": decision.hit_caps,
             "diagnostics": decision.diagnostics,
         },
-        "timestamp": time.time(),
+        "timestamp": ts,
     }
     if not decision.allowed:
         return result
-    sized = _size_order(symbol, intent, sizing_cfg)
-    router_info = _router_decision(symbol, intent, sized)
+    sized = _size_order(symbol_normalized, intent, sizing_cfg)
+    router_info = _router_decision(symbol_normalized, intent, sized)
     result["size_decision"] = sized
     result["router_decision"] = router_info
     return result
