@@ -8,7 +8,7 @@ and sizing multipliers into a deterministic health payload.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from execution.utils.metrics import (
     router_effectiveness_7d,
@@ -21,6 +21,7 @@ from execution.position_sizing import volatility_regime_scale
 from execution.intel.symbol_score import symbol_size_factor
 from execution.intel.maker_offset import suggest_maker_offset_bps
 from execution.intel.router_policy import router_policy
+from execution.risk_limits import classify_drawdown_state
 
 
 def size_multiplier(_symbol: str) -> float:
@@ -44,6 +45,16 @@ _ERROR_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {}
 
 def reset_error_registry() -> None:
     _ERROR_REGISTRY.clear()
+
+
+def atr_regime_from_ratio(ratio: float) -> str:
+    if ratio < ATR_QUIET:
+        return "quiet"
+    if ratio < ATR_HOT:
+        return "normal"
+    if ratio < ATR_PANIC:
+        return "hot"
+    return "panic"
 
 
 def record_execution_error(
@@ -97,15 +108,38 @@ def classify_atr_regime(symbol: str) -> Dict[str, Any]:
     if atr_med <= 0:
         return {"atr_now": atr_now, "atr_med": atr_med, "atr_ratio": None, "atr_regime": "unknown"}
     ratio = atr_now / atr_med
-    if ratio < ATR_QUIET:
-        regime = "quiet"
-    elif ratio < ATR_HOT:
-        regime = "normal"
-    elif ratio < ATR_PANIC:
-        regime = "hot"
-    else:
-        regime = "panic"
+    regime = atr_regime_from_ratio(ratio)
     return {"atr_now": atr_now, "atr_med": atr_med, "atr_ratio": ratio, "atr_regime": regime}
+
+
+def summarize_atr_regimes(symbols: Sequence[str]) -> Dict[str, Any]:
+    entries: list[Dict[str, Any]] = []
+    ratios: list[float] = []
+    for sym in symbols:
+        entry = classify_atr_regime(sym)
+        entry["symbol"] = sym
+        entries.append(entry)
+        ratio_val = entry.get("atr_ratio")
+        try:
+            if ratio_val is not None:
+                ratios.append(float(ratio_val))
+        except Exception:
+            continue
+    median_ratio = None
+    if ratios:
+        try:
+            ratios_sorted = sorted(ratios)
+            mid = len(ratios_sorted) // 2
+            if len(ratios_sorted) % 2 == 1:
+                median_ratio = ratios_sorted[mid]
+            else:
+                median_ratio = (ratios_sorted[mid - 1] + ratios_sorted[mid]) / 2.0
+        except Exception:
+            median_ratio = None
+    regime = "unknown"
+    if median_ratio is not None:
+        regime = atr_regime_from_ratio(median_ratio)
+    return {"atr_regime": regime, "median_ratio": median_ratio, "symbols": entries}
 
 
 def classify_router_health(router_stats: Dict[str, Any]) -> Dict[str, Any]:
@@ -138,6 +172,7 @@ def classify_risk_health(symbol: str, sharpe: Optional[float]) -> Dict[str, Any]
         risk_flags.append("dd_kill_threshold")
     if disabled:
         risk_flags.append("symbol_disabled")
+    dd_state = classify_drawdown_state(dd_pct=dd, alert_pct=abs(DD_WARN_PCT), kill_pct=abs(DD_KILL_PCT))
     if sharpe is None:
         sharpe_state = "unknown"
     elif sharpe <= SHARPE_BAD:
@@ -148,6 +183,7 @@ def classify_risk_health(symbol: str, sharpe: Optional[float]) -> Dict[str, Any]
         sharpe_state = "neutral"
     return {
         "dd_today_pct": dd,
+        "dd_state": dd_state,
         "risk_flags": risk_flags,
         "sharpe_state": sharpe_state,
         "toggle_active": disabled,
@@ -244,4 +280,5 @@ __all__ = [
     "classify_risk_health",
     "record_execution_error",
     "reset_error_registry",
+    "summarize_atr_regimes",
 ]

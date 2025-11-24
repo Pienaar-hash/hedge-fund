@@ -31,7 +31,7 @@ from execution.universe_resolver import (
     universe_by_symbol,
 )
 from execution.runtime_config import load_runtime_config
-from execution.utils.execution_health import record_execution_error
+from execution.utils.execution_health import record_execution_error, summarize_atr_regimes
 
 import requests
 from execution.intel.router_policy import router_policy
@@ -134,6 +134,9 @@ _LAST_POSITIONS_STATE: Dict[str, Any] = {}
 _LAST_RISK_SNAPSHOT: Dict[str, Any] | None = None
 _LAST_EXECUTION_HEALTH: Dict[str, Any] | None = None
 _LAST_SYMBOL_SCORES_STATE: Dict[str, Any] | None = None
+_LAST_KPIS_V7: Dict[str, Any] | None = None
+_KPI_V7_PUBLISH_INTERVAL_S = float(os.getenv("KPI_V7_PUBLISH_INTERVAL_S", str(_HEALTH_PUBLISH_INTERVAL_S)) or _HEALTH_PUBLISH_INTERVAL_S)
+_LAST_KPI_PUBLISH = 0.0
 _SYMBOL_ERROR_COOLDOWN: Dict[str, float] = {}
 
 _VERSION_PATH = Path(repo_root) / "VERSION"
@@ -240,6 +243,29 @@ def _build_router_health_snapshot() -> Dict[str, Any]:
     return {"updated_ts": now, "summary": summary, "symbols": entries, "per_symbol": entries}
 
 
+def _router_quality_label(stats: Mapping[str, Any]) -> str:
+    maker = stats.get("maker_fill_ratio")
+    fallback = stats.get("fallback_ratio")
+    slip = stats.get("slip_q50")
+    quality = "unknown"
+    try:
+        if maker is not None and float(maker) < 0.35:
+            return "poor"
+        if fallback is not None and float(fallback) > 0.6:
+            return "poor"
+        if slip is not None and float(slip) > 6.0:
+            return "poor"
+        if maker is not None and float(maker) >= 0.55 and (fallback is None or float(fallback) <= 0.25):
+            quality = "good"
+        elif fallback is not None and float(fallback) > 0.35:
+            quality = "degraded"
+        else:
+            quality = "ok"
+    except Exception:
+        quality = "unknown"
+    return quality
+
+
 def _collect_execution_health() -> Dict[str, Any]:
     from execution.universe_resolver import universe_by_symbol
     from execution.utils.execution_health import compute_execution_health
@@ -255,6 +281,51 @@ def _collect_execution_health() -> Dict[str, Any]:
         entry["updated_ts"] = now
         snapshot_entries.append(entry)
     return {"updated_ts": now, "symbols": snapshot_entries}
+
+
+def _collect_v7_kpis() -> Dict[str, Any]:
+    from execution.universe_resolver import universe_by_symbol
+
+    now = time.time()
+    symbols = sorted(universe_by_symbol().keys())
+    try:
+        atr_summary = summarize_atr_regimes(symbols)
+    except Exception:
+        atr_summary = {"atr_regime": "unknown", "median_ratio": None, "symbols": []}
+    g_cfg = (_RISK_CFG.get("global") or {}) if isinstance(_RISK_CFG, Mapping) else {}
+    try:
+        dd_snapshot = drawdown_snapshot(g_cfg)
+    except Exception:
+        dd_snapshot = {}
+    dd_info = dd_snapshot.get("drawdown") if isinstance(dd_snapshot, Mapping) else {}
+    dd_pct = dd_info.get("pct") if isinstance(dd_info, Mapping) else None
+    if dd_pct is None and isinstance(dd_snapshot, Mapping):
+        dd_pct = dd_snapshot.get("dd_pct")
+    alert_pct = _to_float(g_cfg.get("drawdown_alert_pct"))
+    kill_pct = _to_float(g_cfg.get("max_nav_drawdown_pct") or g_cfg.get("daily_loss_limit_pct"))
+    dd_state = classify_drawdown_state(dd_pct=dd_pct or 0.0, alert_pct=alert_pct, kill_pct=kill_pct)
+    try:
+        fees_section = fee_pnl_ratio(symbol=None, window_days=3)
+    except Exception:
+        fees_section = {"fee_pnl_ratio": None, "fees": 0.0, "pnl": 0.0, "window_days": 3}
+    try:
+        router_stats = router_effectiveness_7d(None)
+    except Exception:
+        router_stats = {}
+    router_quality = _router_quality_label(router_stats)
+    return {
+        "ts": now,
+        "atr_regime": atr_summary.get("atr_regime"),
+        "atr": atr_summary,
+        "dd_state": dd_state,
+        "drawdown": dd_snapshot,
+        "fee_pnl_ratio": fees_section.get("fee_pnl_ratio"),
+        "fees": fees_section.get("fees"),
+        "pnl": fees_section.get("pnl"),
+        "fee_pnl": fees_section,
+        "router_quality": router_quality,
+        "router_stats": router_stats,
+    }
 
 
 def _pairs_cfg_path() -> str:
@@ -349,6 +420,12 @@ def _maybe_emit_risk_snapshot(force: bool = False) -> None:
         "daily_loss_limit_pct": (_RISK_CFG.get("global") or {}).get("daily_loss_limit_pct"),
     }
     try:
+        _maybe_emit_v7_kpis()
+        if _LAST_KPIS_V7:
+            snapshot["kpis_v7"] = _LAST_KPIS_V7
+    except Exception as exc:
+        LOG.debug("[metrics] kpis_v7_attach_failed: %s", exc)
+    try:
         write_risk_snapshot_state(snapshot)
     except Exception as exc:
         LOG.debug("[metrics] risk_snapshot_state_write_failed: %s", exc)
@@ -384,6 +461,25 @@ def _maybe_emit_execution_health_snapshot(force: bool = False) -> None:
         LOG.debug("[metrics] execution_health_state_write_failed: %s", exc)
     _LAST_EXECUTION_HEALTH = snapshot
     _LAST_EXEC_HEALTH_PUBLISH = now
+
+
+def _maybe_emit_v7_kpis(force: bool = False) -> None:
+    global _LAST_KPI_PUBLISH, _LAST_KPIS_V7
+    now = time.time()
+    if not force and (now - _LAST_KPI_PUBLISH) < _KPI_V7_PUBLISH_INTERVAL_S:
+        return
+    try:
+        payload = _collect_v7_kpis()
+    except Exception as exc:
+        LOG.debug("[metrics] kpis_v7_collect_failed: %s", exc)
+        return
+    payload.setdefault("ts", now)
+    try:
+        write_kpis_v7_state(payload)
+    except Exception as exc:
+        LOG.debug("[metrics] kpis_v7_state_write_failed: %s", exc)
+    _LAST_KPIS_V7 = payload
+    _LAST_KPI_PUBLISH = now
 
 
 def _maybe_emit_execution_alerts(symbol: str) -> None:
@@ -514,6 +610,8 @@ except Exception:
 from execution.risk_limits import (
     RiskState,
     check_order,
+    classify_drawdown_state,
+    drawdown_snapshot,
 )
 from execution.risk_loader import load_risk_config
 from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
@@ -525,6 +623,7 @@ from execution.utils import (
     save_json,
     get_live_positions,
 )
+from execution.utils.metrics import fee_pnl_ratio, router_effectiveness_7d
 
 from execution.signal_generator import (
     normalize_intent as generator_normalize_intent,
@@ -538,6 +637,7 @@ from execution.state_publish import (
     write_positions_state,
     write_risk_snapshot_state,
     write_router_health_state,
+    write_kpis_v7_state,
     write_symbol_scores_state,
     write_execution_health_state,
     write_synced_state,
@@ -2081,11 +2181,24 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
             except Exception:
                 pass
-        thresholds = {}
+        thresholds: Dict[str, Any] = {}
+        observations: Dict[str, Any] = {}
+        diag_gate = None
+        diagnostics: Dict[str, Any] = {}
         if extra:
             maybe_thresholds = extra.get("thresholds")
             if isinstance(maybe_thresholds, Mapping):
                 thresholds = dict(maybe_thresholds)
+            maybe_diag = extra.get("diagnostics")
+            if isinstance(maybe_diag, Mapping):
+                diagnostics = dict(maybe_diag)
+                diag_gate = diagnostics.get("gate")
+                diag_thresholds = diagnostics.get("thresholds")
+                diag_obs = diagnostics.get("observations")
+                if isinstance(diag_thresholds, Mapping):
+                    thresholds.update(diag_thresholds)
+                if isinstance(diag_obs, Mapping):
+                    observations = dict(diag_obs)
         log_payload = {
             "symbol": symbol,
             "side": side,
@@ -2095,6 +2208,8 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             "veto_reason": reason,
             "veto_detail": extra or {},
             "thresholds": thresholds,
+            "observations": observations,
+            "gate": diag_gate or (extra or {}).get("gate"),
             "ts": payload.get("ts"),
         }
         _record_structured_event(LOG_VETOES, "risk_veto", log_payload)
@@ -2439,6 +2554,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "intent": intent,
                 "nav_snapshot": nav_snapshot,
                 "thresholds": thresholds,
+                "diagnostics": details if isinstance(details, Mapping) else {},
             },
         )
         return

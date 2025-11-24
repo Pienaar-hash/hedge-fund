@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import time
-
 from execution.drawdown_tracker import load_peak_state, save_peak_state
 from execution.nav import (
     compute_trading_nav,
@@ -320,16 +319,32 @@ def _emit_veto(
     signal_ts: Any = None,
     qty: Any = None,
 ) -> None:
+    normalized_detail: Dict[str, Any] = {}
+    if isinstance(detail, dict):
+        normalized_detail = dict(detail)
+    if "gate" not in normalized_detail:
+        normalized_detail["gate"] = "risk_limits"
+    thresholds_section = normalized_detail.get("thresholds")
+    if not isinstance(thresholds_section, dict):
+        thresholds_section = {}
+    normalized_detail["thresholds"] = thresholds_section
+    observations_section = normalized_detail.get("observations")
+    if not isinstance(observations_section, dict):
+        observations_section = {}
+    normalized_detail["observations"] = observations_section
     try:
         payload = {
             "symbol": symbol,
             "strategy": strategy,
             "veto_reason": REASONS.get(reason, reason or "unknown"),
             "original_reason": reason,
-            "veto_detail": detail or {},
+            "veto_detail": normalized_detail,
             "signal_ts": signal_ts,
             "qty_req": qty,
             "context": context or {},
+            "thresholds": thresholds_section,
+            "observations": observations_section,
+            "gate": normalized_detail.get("gate"),
         }
         log_event(LOG_VETOES, "risk_veto", safe_dump(payload))
     except Exception:
@@ -537,6 +552,11 @@ def _drawdown_snapshot(g_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, floa
         },
         "assets": assets,
     }
+
+
+def drawdown_snapshot(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """Public wrapper exposing the current drawdown snapshot."""
+    return _drawdown_snapshot(cfg)
 
 getcontext().prec = 28
 
@@ -995,6 +1015,7 @@ def check_order(
         nav_context["nav_age"] = nav_age
 
     nav_detail_payload: Dict[str, Any] = {
+        "gate": "nav_guard",
         "reasons": ["nav_stale"],
         "thresholds": {"nav_freshness_seconds": nav_threshold_s},
         "observations": nav_observations,
@@ -1111,6 +1132,20 @@ def check_order(
         details["drawdown_nav"] = dd_nav_snapshot
     if dd_stale_flags:
         details["drawdown_stale_flags"] = dd_stale_flags
+    try:
+        dd_alert_pct = _as_float(g_cfg.get("drawdown_alert_pct"))
+    except Exception:
+        dd_alert_pct = None
+    try:
+        dd_kill_pct = _as_float(g_cfg.get("max_nav_drawdown_pct", g_cfg.get("daily_loss_limit_pct", 0.0)))
+    except Exception:
+        dd_kill_pct = None
+    dd_state = classify_drawdown_state(dd_pct=dd_pct, alert_pct=dd_alert_pct, kill_pct=dd_kill_pct)
+    details["dd_state"] = dd_state
+    if dd_alert_pct:
+        thresholds.setdefault("drawdown_alert_pct", dd_alert_pct)
+    if dd_kill_pct:
+        thresholds.setdefault("max_nav_drawdown_pct", dd_kill_pct)
 
     daily_pnl_state = getattr(state, "daily_pnl_pct", 0.0)
     try:
@@ -1376,6 +1411,12 @@ def check_order(
             if "drawdown_stale_flags" in details:
                 detail_payload["drawdown_stale_flags"] = details.get("drawdown_stale_flags")
         detail_payload = {**detail_payload, **diag_payload}
+        detail_payload.setdefault("gate", "risk_limits")
+        detail_payload.setdefault("thresholds", thresholds)
+        observations_payload = {
+            k: v for k, v in details.items() if k not in ("reasons", "thresholds")
+        }
+        detail_payload["observations"] = observations_payload or {}
         detail_payload["reasons"] = list(reasons)
         return False, detail_payload
 
@@ -1433,6 +1474,7 @@ def check_order(
         "notional": float(req_notional),
         **diag_payload,
     }
+    detail_payload.setdefault("dd_state", dd_state)
     detail_payload.setdefault("cap_cfg_raw", cap_cfg_raw)
     detail_payload.setdefault("cap_cfg_normalized", cap_cfg_normalized)
     detail_payload.setdefault("nav_total", nav_f)
@@ -1449,8 +1491,7 @@ def check_order(
         for k, v in details.items()
         if k not in ("reasons", "thresholds")
     }
-    if extra:
-        detail_payload["observations"] = extra
+    detail_payload["observations"] = extra or {}
     _emit_veto(
         symbol,
         reasons[0],
@@ -1479,6 +1520,31 @@ def _normalize_ratio(value: Any, default: float) -> float:
 def _normalize_pct_value(value: Any, default: float) -> float:
     normalized = normalize_percentage(value)
     return normalized if normalized > 0 else default
+
+
+def classify_drawdown_state(
+    dd_pct: float,
+    *,
+    alert_pct: float | None = None,
+    kill_pct: float | None = None,
+) -> str:
+    """
+    Map drawdown percent into a qualitative state.
+
+    `dd_pct` can be positive (peak-to-trough) or negative (PnL-style).
+    """
+    dd_abs = abs(float(dd_pct or 0.0))
+    alert_threshold = abs(float(alert_pct)) if alert_pct is not None else DEFAULT_SYMBOL_DD_CAP_PCT
+    kill_threshold = abs(float(kill_pct)) if kill_pct is not None else max(DEFAULT_SYMBOL_DD_CAP_PCT * 2, 3.0)
+    if kill_threshold <= 0:
+        kill_threshold = 3.0
+    if alert_threshold <= 0 or alert_threshold > kill_threshold:
+        alert_threshold = min(kill_threshold * 0.5, kill_threshold)
+    if dd_abs >= kill_threshold:
+        return "defensive"
+    if dd_abs >= alert_threshold:
+        return "cautious"
+    return "normal"
 
 
 def _guard_thresholds(symbol: str, cfg: Mapping[str, Any]) -> tuple[float, float]:

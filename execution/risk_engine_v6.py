@@ -125,6 +125,12 @@ class RiskEngineV6:
             diagnostics = dict(details)
         else:
             diagnostics = {"detail": details}
+        diagnostics.setdefault("gate", diagnostics.get("gate") or "risk_engine_v6")
+        if "thresholds" not in diagnostics or not isinstance(diagnostics.get("thresholds"), dict):
+            diagnostics["thresholds"] = {}
+        if "observations" not in diagnostics or not isinstance(diagnostics.get("observations"), dict):
+            extra_obs = {k: v for k, v in diagnostics.items() if k not in {"reasons", "thresholds", "gate"}}
+            diagnostics["observations"] = extra_obs if extra_obs else {}
         reasons = [str(reason) for reason in diagnostics.get("reasons", []) if reason]
         hit_caps = {reason: True for reason in reasons}
         if veto and not reasons:

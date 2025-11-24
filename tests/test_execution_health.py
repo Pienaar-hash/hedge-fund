@@ -52,6 +52,7 @@ def test_classify_risk_health_sharpe_states_execution_hardening(monkeypatch):
     assert "dd_kill_threshold" in res["risk_flags"]
     assert "symbol_disabled" in res["risk_flags"]
     assert res["sharpe_state"] == "poor"
+    assert res["dd_state"] == "defensive"
 
 
 def test_compute_execution_health_combines_parts_execution_hardening(monkeypatch):
@@ -120,3 +121,18 @@ def test_execution_health_includes_error_registry(monkeypatch):
     errors = snapshot["errors"]["exchange"]
     assert errors["count"] == 1
     assert errors["last_error"]["classification"]["category"] == "network"
+
+
+def test_summarize_atr_regimes(monkeypatch):
+    import execution.utils.execution_health as eh
+
+    def atr_stub(symbol, lookback_bars=50):
+        if lookback_bars == 500:
+            return 1.0
+        return 0.5 if symbol == "BTCUSDT" else 2.0
+
+    monkeypatch.setattr(eh, "atr_pct", atr_stub)
+    summary = eh.summarize_atr_regimes(["BTCUSDT", "ETHUSDT"])
+    assert summary["atr_regime"] == "normal"
+    assert summary["median_ratio"] == pytest.approx(1.25)
+    assert len(summary["symbols"]) == 2

@@ -114,6 +114,41 @@ def fees_7d(symbol: Optional[str] = None) -> float:
     return float(pnl_tracker.get_fees(symbol=symbol, window_days=7))
 
 
+def fee_pnl_ratio(symbol: Optional[str] = None, window_days: int = 7) -> Dict[str, Optional[float]]:
+    """
+    Compute fee to realized PnL ratio over a recent window.
+
+    Returns {"fee_pnl_ratio": ratio, "fees": fees, "pnl": pnl}.
+    """
+    if pnl_tracker:
+        try:
+            fees = float(
+                fees_7d(symbol=symbol)
+                if window_days == 7
+                else pnl_tracker.get_fees(symbol=symbol, window_days=window_days)  # type: ignore[arg-type]
+            )
+        except Exception:
+            fees = 0.0
+        try:
+            pnl = float(
+                gross_realized_7d(symbol=symbol)
+                if window_days == 7
+                else pnl_tracker.get_gross_realized(symbol=symbol, window_days=window_days)  # type: ignore[arg-type]
+            )
+        except Exception:
+            pnl = 0.0
+    else:
+        fees = 0.0
+        pnl = 0.0
+    ratio = None
+    try:
+        if pnl and abs(float(pnl)) > 1e-9:
+            ratio = float(fees) / abs(float(pnl))
+    except Exception:
+        ratio = None
+    return {"fee_pnl_ratio": ratio, "fees": float(fees), "pnl": float(pnl), "window_days": window_days}
+
+
 LOG_DIR = Path(os.getenv("EXEC_LOG_DIR") or "logs/execution")
 ORDER_METRICS_PATH = Path(os.getenv("ORDER_METRICS_PATH") or (LOG_DIR / "order_metrics.jsonl"))
 _READ_LIMIT = int(os.getenv("EXEC_LOG_MAX_ROWS", "5000") or 5000)

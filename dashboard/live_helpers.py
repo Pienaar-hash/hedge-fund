@@ -51,6 +51,7 @@ ROUTER_SUGGESTIONS_STATE_PATH = Path(
 )
 PIPELINE_SHADOW_HEAD_STATE_PATH = Path(os.getenv("PIPELINE_SHADOW_HEAD_STATE_PATH") or (STATE_DIR / "pipeline_v6_shadow_head.json"))
 RUNTIME_PROBE_STATE_PATH = Path(os.getenv("RUNTIME_PROBE_STATE_PATH") or (STATE_DIR / "v6_runtime_probe.json"))
+KPI_V7_STATE_PATH = Path(os.getenv("KPI_V7_STATE_PATH") or (STATE_DIR / "kpis_v7.json"))
 
 
 def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
@@ -71,7 +72,7 @@ def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
     }
 
 
-def execution_kpis(symbol: str | None = None) -> Dict[str, Any]:
+def execution_kpis(symbol: str | None = None, *, kpis_v7: Dict[str, Any] | None = None) -> Dict[str, Any]:
     base = kpi_tiles(symbol)
     eff = router_effectiveness_7d(symbol)
     if isinstance(eff, dict):
@@ -84,6 +85,33 @@ def execution_kpis(symbol: str | None = None) -> Dict[str, Any]:
                 "slip_q75": eff.get("slip_q75"),
             }
         )
+    kpis_v7 = kpis_v7 if kpis_v7 is not None else load_kpis_v7()
+    if kpis_v7:
+        base.setdefault("atr_regime", kpis_v7.get("atr_regime"))
+        base.setdefault("dd_state", kpis_v7.get("dd_state"))
+        base.setdefault("fee_pnl_ratio_v7", kpis_v7.get("fee_pnl_ratio"))
+        base.setdefault("router_quality", kpis_v7.get("router_quality"))
+        if symbol:
+            try:
+                entries = kpis_v7.get("atr", {}).get("symbols", [])
+                for entry in entries:
+                    if isinstance(entry, dict) and str(entry.get("symbol")).upper() == symbol.upper():
+                        base["atr_regime_symbol"] = entry.get("atr_regime")
+                        base["atr_ratio_symbol"] = entry.get("atr_ratio")
+                        break
+            except Exception:
+                pass
+    if symbol:
+        try:
+            health = compute_execution_health(symbol)
+            risk_part = health.get("risk") or {}
+            vol_part = health.get("vol") or {}
+            base.setdefault("dd_state_symbol", risk_part.get("dd_state"))
+            base.setdefault("dd_today_pct", risk_part.get("dd_today_pct"))
+            base.setdefault("atr_regime_symbol", vol_part.get("atr_regime"))
+            base.setdefault("atr_ratio_symbol", vol_part.get("atr_ratio"))
+        except Exception:
+            pass
     return base
 
 
@@ -117,6 +145,11 @@ def _ensure_dict(payload: Any) -> Dict[str, Any]:
 
 def _ensure_list(payload: Any) -> List[Any]:
     return payload if isinstance(payload, list) else []
+
+
+def load_kpis_v7() -> Dict[str, Any]:
+    """Load v7 KPI snapshot (ATR regime, drawdown state, fee/PnL ratio)."""
+    return _ensure_dict(_load_state_json(KPI_V7_STATE_PATH, default={}))
 
 
 def _resolve_nav_state_path() -> Path:

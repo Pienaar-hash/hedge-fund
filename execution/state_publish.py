@@ -115,6 +115,10 @@ def write_universe_state(payload: Dict[str, Any], state_dir: pathlib.Path | None
     _write_state_file("universe.json", payload, state_dir)
 
 
+def write_kpis_v7_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("kpis_v7.json", payload, state_dir)
+
+
 def write_expectancy_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     _write_state_file("expectancy_v6.json", payload, state_dir)
 

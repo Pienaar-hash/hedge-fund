@@ -1,3 +1,16 @@
+All good — let’s lock in the *audit* doc in the same voice and structure as the other v7 documents, and **crucially**, written for Codex as a *quant–infra audit coordinator*, **not** as an implementer.
+
+This is the doc you will hand to Codex when you want a **safe, repo-aligned, non-destructive audit**, where Codex maps the code to the contract, reports inconsistencies, but *does not generate patches unless you explicitly ask for them*.
+
+Here is the file:
+
+---
+
+# 📌 v7_sizing_risk_audit.md
+
+**(Codex Quant–Infra Audit Pack)**
+
+```markdown
 # 📌 v7 Sizing & Risk Audit Pack
 ### Codex — Quant Infra Auditor Mode (No Patch Generation)
 
@@ -63,3 +76,149 @@ Codex must produce a structured audit answering:
 
 Codex should inspect:
 
+```
+
+execution/
+signal_generator.py
+signal_screener.py
+executor_live.py
+risk_limits.py
+risk_engine_v6.py
+exchange_utils.py
+nav.py
+pairs_universe.json (referenced)
+strategy_config.json (referenced)
+risk_limits.json (referenced)
+
+execution/pipeline_v6_shadow.py
+dashboard/
+tests/
+config/
+docs/
+
+```
+
+And confirm the following directories are either removed or contain no live logic:
+
+```
+
+execution/size_model.py        (should not exist)
+archive/gpt_schema/execution/  (should be gone)
+
+```
+
+---
+
+## 3. Required Audit Output Format
+
+Codex should output:
+
+### ✔ SECTION A — Summary
+High-level compliance: *Compliant / Minor deviations / Major deviations*.
+
+### ✔ SECTION B — File-by-File Findings
+For each file inspected, include:
+
+- **Compliant elements**
+- **Deviations from contract**
+- **Leftover code** (unreferenced, dead)
+- **Risk of divergence**
+
+### ✔ SECTION C — NAV Consistency Check
+- All modules should use `nav_health_snapshot.nav_total`.
+- Report any module using fallback or stale NAV logic inconsistently.
+
+### ✔ SECTION D — Sizing Pipeline Verification
+Verify the exact flow:
+
+```
+
+signals → screener sizing → executor pass-through → risk engine caps → router
+
+```
+
+Identify any locations where:
+- sizing is recomputed
+- caps are duplicated
+- floors/min-notional differ
+- leverage adjusted incorrectly
+- shadow re-sizes anything
+
+### ✔ SECTION E — Config Consistency
+- `risk_limits.json` normalized to fractions.
+- `strategy_config.json` contains no size_model knobs.
+- Confirm per-symbol caps align with v7 capitalization logic.
+
+### ✔ SECTION F — Test Suite Integrity
+List:
+- Tests aligned with v7 contract.
+- Tests needing update.
+- Tests still expecting old behavior.
+
+### ✔ SECTION G — Recommended Cleanup (Optional)
+This section allows Codex to *list* small cleanup opportunities, but **NOT generate code**.
+
+---
+
+## 4. Forbidden Actions During This Audit
+
+Codex **must not**:
+
+- Generate patches.
+- Apply modifications.
+- Suggest exact code-level diffs.
+- Infer missing components.
+- Rewrite modules.
+
+Codex **may**:
+
+- Highlight inconsistencies.
+- Point to specific lines/sections where logic diverges.
+- Suggest conceptual fixes (no code).
+- Identify dead code, legacy patterns, outdated comments.
+
+---
+
+## 5. Example Output Snippet (for guidance only)
+
+```
+
+=== v7 Audit Summary ===
+Compliance: Minor deviations
+
+1. executor_live.py
+
+   * OK: No size_model usage.
+   * OK: Uses nav_health_snapshot.nav_total.
+   * Issue: Line 1183 refers to 'max_gross_exposure_pct' in comment; outdated.
+   * Issue: qty recompute path still references fallback_gross_usd (legacy).
+
+2. signal_screener.py
+
+   * OK: sizing block sets gross_usd & qty.
+   * Issue: old pre-risk veto comment block remains; should be doc-only.
+
+3. risk_limits.py
+
+   * OK: sole owner of risk gating.
+   * OK: cap normalization uses fractional caps.
+   * Issue: symbol_notional_guard still imported but unused.
+
+...
+
+=== Recommendation ===
+No functional changes required; remove stale comments and unused imports in executor & screener.
+
+```
+
+---
+
+## 6. Final Instructions for Codex
+
+Codex should operate in **audit mode**, as Quant Infra Auditor:
+
+> “Examine, map, and report.  
+> Do not patch. Do not rewrite. Do not make assumptions.  
+> Stay strictly tied to the repository contents.”  
+
+Codex should run this audit over the full repo and produce the structured output described above.

@@ -36,6 +36,8 @@ from dashboard.live_helpers import (
     load_router_suggestions_v6,
     load_shadow_head,
     load_compare_summary,
+    load_kpis_v7,
+    execution_kpis,
 )
 from dashboard.intel_panel import render_intel_panel
 from dashboard.pipeline_panel import render_pipeline_parity
@@ -164,15 +166,59 @@ def render_header(nav_doc: Dict[str, Any], nav_source: str, runtime_probe: Dict[
     )
 
 
-def render_positions_table(pos_doc: Dict[str, Any]) -> None:
+def render_kpis_v7_panel(kpis: Dict[str, Any]) -> None:
+    st.subheader("v7 Risk KPIs")
+    if not kpis:
+        st.info("v7 KPIs unavailable (waiting for executor publish).")
+        return
+    cols = st.columns(4)
+    cols[0].metric("Drawdown State", str(kpis.get("dd_state") or "unknown"))
+    cols[1].metric("ATR Regime", str(kpis.get("atr_regime") or "unknown"))
+    fee_ratio = kpis.get("fee_pnl_ratio")
+    try:
+        fee_ratio_fmt = f"{float(fee_ratio):.2f}x" if fee_ratio is not None else "n/a"
+    except Exception:
+        fee_ratio_fmt = "n/a"
+    cols[2].metric("Fee / PnL", fee_ratio_fmt)
+    cols[3].metric("Router Quality", str(kpis.get("router_quality") or "unknown"))
+    atr_entries = kpis.get("atr", {}).get("symbols") if isinstance(kpis.get("atr"), dict) else []
+    if atr_entries:
+        st.caption("Per-symbol ATR regime (last publish)")
+        try:
+            df = pd.DataFrame(atr_entries)
+            if not df.empty and "symbol" in df.columns:
+                df = df.set_index("symbol")
+            st.dataframe(df, use_container_width=True, height=220)
+        except Exception:
+            st.json(atr_entries)
+
+
+def render_positions_table(pos_doc: Dict[str, Any], kpis_v7: Dict[str, Any] | None = None) -> None:
     items = (pos_doc or {}).get("items") or []
     if not isinstance(items, list) or not items:
         st.info("No open positions.")
         return
+    enriched: List[Dict[str, Any]] = []
+    for pos in positions_sorted(items):
+        row = dict(pos)
+        try:
+            symbol = str(row.get("symbol") or "").upper()
+        except Exception:
+            symbol = ""
+        if symbol:
+            try:
+                kpi = execution_kpis(symbol, kpis_v7=kpis_v7 or {})
+            except Exception:
+                kpi = {}
+            row.setdefault("dd_state", kpi.get("dd_state_symbol") or kpi.get("dd_state"))
+            row.setdefault("dd_today_pct", kpi.get("dd_today_pct"))
+            row.setdefault("atr_regime", kpi.get("atr_regime_symbol") or kpi.get("atr_regime"))
+            row.setdefault("atr_ratio", kpi.get("atr_ratio_symbol") or kpi.get("atr_ratio"))
+        enriched.append(row)
     try:
-        df = pd.DataFrame(positions_sorted(items))
+        df = pd.DataFrame(enriched)
     except Exception:
-        df = pd.DataFrame(items)
+        df = pd.DataFrame(enriched or items)
     if df.empty:
         st.info("No open positions.")
         return
@@ -188,6 +234,7 @@ def main() -> None:
 
     nav_doc, nav_source = load_nav_state()
     synced_state = load_synced_state()
+    kpis_v7 = load_kpis_v7()
     pos_doc, pos_source = nav_doc, nav_source  # default
     pos_state = Path(os.getenv("POSITIONS_STATE_PATH") or (PROJECT_ROOT / "logs/state/positions_state.json"))
     try:
@@ -208,6 +255,7 @@ def main() -> None:
     router_health = load_router_health(snapshot=router_health_state)
 
     render_header(nav_doc, nav_source, runtime_probe)
+    render_kpis_v7_panel(kpis_v7)
 
     tabs = st.tabs(
         [
@@ -270,7 +318,7 @@ def main() -> None:
     with tabs[4]:
         st.subheader("Positions")
         st.caption(f"positions_source={pos_source}")
-        render_positions_table(pos_doc)
+        render_positions_table(pos_doc, kpis_v7=kpis_v7)
 
 
 if __name__ == "__main__":
