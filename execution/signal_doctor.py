@@ -8,9 +8,11 @@ import sys
 import time
 from typing import Any, Dict, List, Mapping
 
+from . import nav as nav_mod
 from .risk_limits import RiskState, check_order
 from .universe_resolver import symbol_tier, is_listed_on_futures
 from .nav import is_nav_fresh
+from execution.risk_loader import load_risk_config
 
 try:
     from .exchange_utils import get_price, get_symbol_filters
@@ -48,9 +50,10 @@ WL_DEFAULT = [
 
 def _load_cfg() -> Dict[str, Any]:
     try:
-        return json.load(open("config/risk_limits.json"))
+        cfg = load_risk_config()
     except Exception:
-        return {"global": {}, "per_symbol": {}}
+        cfg = {}
+    return cfg if isinstance(cfg, dict) else {"global": {}, "per_symbol": {}}
 
 
 def evaluate_signal(signal: str, symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,12 +109,17 @@ def evaluate_signal(signal: str, symbol: str, payload: Dict[str, Any]) -> Dict[s
 
 def _nav_snapshot_fallback() -> float:
     try:
-        # Best effort from executor's account snapshot if available
-        from .executor_live import _compute_nav
-
-        return float(_compute_nav())
+        snap = nav_mod.PortfolioSnapshot()
+        nav_val = float(snap.current_nav_usd())
+        if nav_val > 0:
+            return nav_val
+        confirmed = nav_mod.get_confirmed_nav()
+        nav_val = float(confirmed.get("nav") or confirmed.get("nav_usd") or 0.0)
+        if nav_val > 0:
+            return nav_val
     except Exception:
-        return 1000.0  # safe placeholder
+        return 0.0
+    return 0.0
 
 
 def diagnose_symbols(env: str, testnet: bool, symbols: List[str]) -> int:

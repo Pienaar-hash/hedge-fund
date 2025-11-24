@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from execution.utils.metrics import router_effectiveness_7d
+from execution.intel import maker_offset
 from execution.intel.maker_offset import classify_atr_regime
 
 
@@ -20,6 +21,7 @@ class RouterPolicy:
     taker_bias: str
     quality: str
     reason: str
+    offset_bps: float | None = None
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -162,6 +164,10 @@ def router_policy(symbol: str) -> RouterPolicy:
     eff = router_effectiveness_7d(symbol) or {}
     quality = classify_router_quality(eff)
     regime = classify_atr_regime(symbol)
+    try:
+        base_offset = float(maker_offset.suggest_maker_offset_bps(symbol))
+    except Exception:
+        base_offset = None
 
     maker_first = True
     taker_bias = "balanced"
@@ -190,6 +196,7 @@ def router_policy(symbol: str) -> RouterPolicy:
         taker_bias=taker_bias,
         quality=quality,
         reason="; ".join(reason_parts),
+        offset_bps=base_offset,
     )
 
 

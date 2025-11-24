@@ -10,10 +10,13 @@ can reason about risk outcomes without directly invoking risk_limits.
 from dataclasses import dataclass, field
 import json
 import time
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from execution.risk_limits import RiskState, check_order
+from execution.nav import nav_health_snapshot
+from execution.risk_loader import load_risk_config
 from execution.universe_resolver import universe_by_symbol
 from execution.utils.execution_health import compute_execution_health
 
@@ -48,12 +51,12 @@ class RiskDecision:
 
 class RiskEngineV6:
     def __init__(self, risk_limits_config: Mapping[str, Any], pairs_universe_config: Mapping[str, Any]) -> None:
-        self._risk_cfg = dict(risk_limits_config or {})
+        self._risk_cfg = dict(risk_limits_config or load_risk_config())
         self._pairs_cfg = dict(pairs_universe_config or {})
 
     @classmethod
     def from_configs(cls, risk_limits_config: Mapping[str, Any] | None, pairs_universe_config: Mapping[str, Any] | None) -> RiskEngineV6:
-        return cls(risk_limits_config or {}, pairs_universe_config or {})
+        return cls(risk_limits_config or load_risk_config(), pairs_universe_config or {})
 
     @classmethod
     def from_files(cls, risk_limits_path: str, pairs_universe_path: str) -> RiskEngineV6:
@@ -83,6 +86,9 @@ class RiskEngineV6:
 
         req_notional = float(intent.quote_notional or 0.0)
         nav_val = float(intent.nav_usd if intent.nav_usd is not None else (nav_state or {}).get("nav_usd") or 0.0)
+        if nav_val <= 0.0:
+            nav_health = nav_health_snapshot()
+            nav_val = float(nav_health.get("nav_total") or 0.0)
         symbol_open_qty = float(intent.symbol_open_qty or 0.0)
         price = float(intent.price or 0.0)
         tier_gross = float(intent.tier_gross_notional or 0.0)
@@ -91,22 +97,29 @@ class RiskEngineV6:
         tier_name = intent.tier_name
         open_positions_count = intent.open_positions_count
 
-        veto, details = check_order(
-            symbol=intent.symbol,
-            side=intent.side,
-            requested_notional=req_notional,
-            price=price,
-            nav=nav_val,
-            open_qty=symbol_open_qty,
-            now=now_ts,
-            cfg=self._risk_cfg,
-            state=state,
-            current_gross_notional=current_gross,
-            lev=float(intent.leverage or 0.0),
-            open_positions_count=open_positions_count,
-            tier_name=tier_name,
-            current_tier_gross_notional=tier_gross,
-        )
+        try:
+            veto, details = check_order(
+                symbol=intent.symbol,
+                side=intent.side,
+                requested_notional=req_notional,
+                price=price,
+                nav=nav_val,
+                open_qty=symbol_open_qty,
+                now=now_ts,
+                cfg=self._risk_cfg,
+                state=state,
+                current_gross_notional=current_gross,
+                lev=float(intent.leverage or 0.0),
+                open_positions_count=open_positions_count,
+                tier_name=tier_name,
+                current_tier_gross_notional=tier_gross,
+            )
+        except Exception as exc:
+            logging.getLogger("risk_engine_v6").warning(
+                "[risk] check_order_failed symbol=%s err=%s", intent.symbol, exc
+            )
+            veto = True
+            details = {"reasons": ["risk_engine_error"], "error": str(exc)}
         diagnostics: Dict[str, Any]
         if isinstance(details, Mapping):
             diagnostics = dict(details)
@@ -114,6 +127,9 @@ class RiskEngineV6:
             diagnostics = {"detail": details}
         reasons = [str(reason) for reason in diagnostics.get("reasons", []) if reason]
         hit_caps = {reason: True for reason in reasons}
+        if veto and not reasons:
+            reasons = ["risk_engine_error"]
+            hit_caps["risk_engine_error"] = True
         return RiskDecision(
             allowed=not veto,
             clamped_qty=float(intent.qty or 0.0),

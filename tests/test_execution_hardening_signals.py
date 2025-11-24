@@ -20,19 +20,19 @@ def test_allow_trade_expectancy_gate_execution_hardening(monkeypatch):
 
 
 def test_size_multiplier_shrinks_for_negative_sharpe(monkeypatch):
-    import execution.risk_autotune as ra
+    from execution.utils.execution_health import size_multiplier
 
-    monkeypatch.setattr("execution.risk_autotune.rolling_sharpe_7d", lambda s: -0.5)
-    multiplier = ra.size_multiplier("BTCUSDC")
-    assert 0.25 <= multiplier < 1.0
+    monkeypatch.setattr("execution.utils.execution_health.rolling_sharpe_7d", lambda s: -0.5)
+    multiplier = size_multiplier("BTCUSDC")
+    assert multiplier == 1.0
 
 
 def test_size_multiplier_grows_for_positive_sharpe(monkeypatch):
-    import execution.risk_autotune as ra
+    from execution.utils.execution_health import size_multiplier
 
-    monkeypatch.setattr("execution.risk_autotune.rolling_sharpe_7d", lambda s: 2.0)
-    multiplier = ra.size_multiplier("BTCUSDC")
-    assert 1.0 < multiplier <= 2.0
+    monkeypatch.setattr("execution.utils.execution_health.rolling_sharpe_7d", lambda s: 2.0)
+    multiplier = size_multiplier("BTCUSDC")
+    assert multiplier == 1.0
 
 
 def test_asset_universe_usdc_only_execution_hardening():

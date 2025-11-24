@@ -7,3 +7,16 @@ offpeak:
 priority:
   max_concurrent_orders: 6
   min_child_notional: 25
+execution:
+  max_transient_retries: 1
+  transient_retry_backoff_s: 1.0
+  error_cooldown_sec: 60
+nav:
+  include_assets:
+    - USDT
+    - USDC
+    - BTC
+  use_mark_price: true
+risk:
+  reset_peak_on_testnet: true
+  peak_stale_seconds: 600

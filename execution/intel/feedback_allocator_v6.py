@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from execution.utils import load_json
+from execution.risk_loader import load_risk_config
 
 
 DEFAULT_STATE_DIR = Path(os.getenv("HEDGE_STATE_DIR") or "logs/state")
@@ -261,7 +262,12 @@ def build_suggestions(
     router_snapshot = router_policy_snapshot or _read_json(Path(state_dir_path) / DEFAULT_ROUTER_POLICY_PATH.name)
     nav_payload = nav_snapshot or _read_json(Path(state_dir_path) / DEFAULT_NAV_PATH.name)
     risk_payload = risk_snapshot or _read_json(Path(state_dir_path) / DEFAULT_RISK_SNAPSHOT_PATH.name)
-    risk_cfg = risk_config or load_json(str(Path(risk_config_path) if risk_config_path else DEFAULT_RISK_CONFIG_PATH))
+    if risk_config is not None:
+        risk_cfg = risk_config
+    elif risk_config_path:
+        risk_cfg = load_json(str(Path(risk_config_path)))
+    else:
+        risk_cfg = load_risk_config()
     pairs_payload = pairs_universe or _read_json(Path(pairs_universe_path) if pairs_universe_path else DEFAULT_PAIRS_PATH)
 
     exp_map = _symbol_expectancy_map(exp_snapshot or {})

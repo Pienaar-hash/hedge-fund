@@ -136,9 +136,15 @@ def score_universe(expectancy_snapshot: Mapping[str, Any], router_health_snapsho
     return {"updated_ts": time.time(), "symbols": rows}
 
 
+def build_symbol_scores(expectancy_snapshot: Mapping[str, Any], router_health_snapshot: Mapping[str, Any]) -> Dict[str, Any]:
+    """Alias used by executor_live for publishing intel."""
+    return score_universe(expectancy_snapshot, router_health_snapshot)
+
+
 __all__ = [
     "load_expectancy_snapshot",
     "load_router_health_snapshot",
+    "build_symbol_scores",
     "score_symbol",
     "score_universe",
 ]

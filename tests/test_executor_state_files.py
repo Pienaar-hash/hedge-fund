@@ -9,7 +9,7 @@ def test_pub_tick_writes_state(monkeypatch):
     synced_values = []
     risk_values = []
     log_messages = []
-    monkeypatch.setattr(executor_live, "_compute_nav_snapshot", lambda: 123.45)
+    monkeypatch.setattr(executor_live, "_compute_nav_with_detail", lambda: (123.45, {"nav_mode": "enhanced"}))
     monkeypatch.setattr(
         executor_live,
         "_collect_rows",

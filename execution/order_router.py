@@ -12,7 +12,6 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Tuple
 
 import requests
@@ -27,11 +26,8 @@ from execution.intel.router_autotune_apply_v6 import (
     get_current_risk_mode,
     apply_router_suggestion,
 )
-
-try:  # optional dependency
-    import yaml
-except Exception:  # pragma: no cover - best-effort fallback when PyYAML absent
-    yaml = None  # type: ignore[assignment]
+from execution.runtime_config import load_runtime_config
+from execution.utils.execution_health import record_execution_error
 
 __all__ = [
     "route_order",
@@ -44,19 +40,7 @@ __all__ = [
     "monitor_and_refresh",
 ]
 
-def _load_runtime_cfg() -> Dict[str, Any]:
-    path = Path(os.getenv("RUNTIME_CONFIG") or "config/runtime.yaml")
-    if yaml is None or not path.exists():
-        return {}
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            data = yaml.safe_load(handle) or {}
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-_RUNTIME_CFG = _load_runtime_cfg()
+_RUNTIME_CFG = load_runtime_config()
 _TRADING_WINDOW = _RUNTIME_CFG.get("trading_window") or {}
 _OFFPEAK_CFG = _RUNTIME_CFG.get("offpeak") or {}
 _PRIORITY_CFG = _RUNTIME_CFG.get("priority") or {}
@@ -107,6 +91,8 @@ REJECTS_MAX = int(_runtime_flag("router_rejects_max", 2))  # post-only rejects b
 MIN_CHILD_NOTIONAL = _min_child_from_runtime(30.0)  # USDT per child
 LOW_FILL_WINDOW_S = int(_runtime_flag("low_fill_window_s", 60))
 MIN_FILL_RATIO = float(_runtime_flag("min_fill_ratio", 0.40))
+MAX_SPREAD_FOR_MAKER_BPS = float(_runtime_flag("router_max_spread_bps", 12.0))
+WIDE_SPREAD_OFFSET_CLAMP_BPS = float(_runtime_flag("router_offset_spread_clamp_bps", 6.0))
 
 # Exchange fee tier (bps). Negative for maker rebates.
 TAKER_BPS = _fee_from_runtime("taker_bps", "TAKER_FEE_BPS", 5.0)
@@ -296,6 +282,13 @@ def monitor_and_refresh(
     state = get_state(order.order_id)
     if not state:
         return
+    status_raw = getattr(state, "status", None)
+    if status_raw is None and isinstance(state, Mapping):
+        status_raw = state.get("status")
+    if status_raw:
+        status_norm = _normalize_status(status_raw)
+        if status_norm in {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}:
+            return
     placed_ts = order.placed_ts or 0.0
     age = (now or time.time()) - placed_ts
 
@@ -317,6 +310,7 @@ def monitor_and_refresh(
 
 _LOG = logging.getLogger("order_router")
 LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
+LOG_ROUTER_DECISIONS = get_logger("logs/execution/router_decisions.jsonl")
 
 _ACK_OK_STATUSES = {"NEW", "PARTIALLY_FILLED"}
 
@@ -475,6 +469,19 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     elif "reduceOnly" in payload:
         payload.pop("reduceOnly", None)
 
+    is_market_close = order_type == "MARKET" and bool(payload.get("reduceOnly"))
+    if is_market_close:
+        pos_qty = _to_float(risk_ctx.get("pos_qty"))
+        try:
+            order_qty = float(qty)
+        except Exception:
+            order_qty = pos_qty
+        testnet_flag = str(os.getenv("BINANCE_TESTNET", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        if testnet_flag and pos_qty is not None and order_qty is not None and order_qty == pos_qty:
+            reduce_only = False
+            payload.pop("reduceOnly", None)
+            _LOG.info("[router][testnet-guard] Disabling reduceOnly full-close")
+
     ex.set_dry_run(bool(dry_run))
 
     try:
@@ -482,11 +489,16 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     except Exception:
         filters_snapshot = {}
 
+    spread_bps = _to_float(
+        risk_ctx.get("spread_bps")
+        or intent.get("spread_bps")
+        or risk_ctx.get("book_spread_bps")
+    )
     maker_qty = _to_float(risk_ctx.get("maker_qty"))
     maker_price = _to_float(risk_ctx.get("maker_price") or price)
     policy = router_policy(symbol)
     try:
-        base_offset_bps = float(suggest_maker_offset_bps(symbol))
+        base_offset_bps = float(policy.offset_bps) if policy.offset_bps is not None else float(suggest_maker_offset_bps(symbol))
     except Exception:
         base_offset_bps = 2.0
     policy_snapshot = {
@@ -495,6 +507,18 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         "quality": policy.quality,
         "reason": policy.reason,
         "offset_bps": base_offset_bps,
+    }
+    router_decision: Dict[str, Any] = {
+        "symbol": symbol,
+        "side": side,
+        "route": None,
+        "maker_requested": bool(risk_ctx.get("maker_first")),
+        "policy_quality": policy.quality,
+        "policy_maker_first": policy.maker_first,
+        "policy_taker_bias": policy.taker_bias,
+        "offset_bps": base_offset_bps,
+        "spread_bps": spread_bps,
+        "reasons": [],
     }
     policy_before_snapshot = dict(policy_snapshot)
     policy_after_snapshot = dict(policy_snapshot)
@@ -526,7 +550,9 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
                 taker_bias=policy_after_snapshot["taker_bias"],
                 quality=policy.quality,
                 reason=policy.reason,
+                offset_bps=adjusted_offset_bps,
             )
+    router_decision["offset_bps"] = adjusted_offset_bps
     target_ctx = ctx_original if isinstance(ctx_original, dict) else risk_ctx
     target_ctx["router_policy"] = policy_after_snapshot
     target_ctx["autotune"] = {
@@ -537,19 +563,47 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     }
     taker_bias = str(getattr(policy, "taker_bias", "") or "").lower()
     prefer_taker_bias = taker_bias == "prefer_taker"
-    effective_maker_first = bool(risk_ctx.get("maker_first")) and policy.maker_first and not prefer_taker_bias
-    maker_enabled = (
-        effective_maker_first
-        and not bool(payload.get("reduceOnly"))
-        and maker_qty is not None
-        and maker_qty > 0
-        and maker_price is not None
-        and maker_price > 0
-    )
+    reduce_only_flag = bool(payload.get("reduceOnly"))
+    maker_enabled = True
+    if not router_decision["maker_requested"]:
+        maker_enabled = False
+        router_decision["reasons"].append("maker_not_requested")
+    if not policy.maker_first:
+        maker_enabled = False
+        router_decision["reasons"].append("policy_maker_disabled")
+    if policy.quality != "good":
+        maker_enabled = False
+        router_decision["reasons"].append("policy_quality_not_good")
+    if prefer_taker_bias:
+        maker_enabled = False
+        router_decision["reasons"].append("policy_bias_prefers_taker")
+    if reduce_only_flag:
+        maker_enabled = False
+        router_decision["reasons"].append("reduce_only")
+    if maker_qty is None or maker_qty <= 0:
+        maker_enabled = False
+        router_decision["reasons"].append("missing_maker_qty")
+    if maker_price is None or maker_price <= 0:
+        maker_enabled = False
+        router_decision["reasons"].append("missing_maker_price")
+    if spread_bps is not None and spread_bps > MAX_SPREAD_FOR_MAKER_BPS:
+        maker_enabled = False
+        router_decision["reasons"].append("spread_too_wide")
+    router_decision["maker_allowed"] = maker_enabled
+    router_decision["maker_qty"] = maker_qty
+    router_decision["maker_price"] = maker_price
+
+    spread_clamped = False
+    if maker_enabled and spread_bps is not None and spread_bps > WIDE_SPREAD_OFFSET_CLAMP_BPS:
+        adjusted_offset_bps = min(adjusted_offset_bps, WIDE_SPREAD_OFFSET_CLAMP_BPS)
+        router_decision["reasons"].append("wide_spread_clamped")
+        spread_clamped = True
+        router_decision["offset_bps"] = adjusted_offset_bps
 
     latency_ms: float | None = None
     resp: Dict[str, Any] | None = None
     maker_used = False
+    router_decision["maker_started"] = maker_enabled
     if maker_enabled:
         try:
             t0 = time.perf_counter()
@@ -558,8 +612,11 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             maker_px = effective_px(adjusted_price, side, is_maker=True) or adjusted_price
             maker_result = submit_limit(symbol, maker_px, maker_qty, side)
             latency_ms = (time.perf_counter() - t0) * 1000.0
+            router_decision["maker_offset_bps"] = adaptive_bps
         except Exception as exc:
             maker_result = None
+            router_decision["reasons"].append("maker_submit_failed")
+            router_decision["maker_error"] = str(exc)
             _LOG.warning("maker_first_failed symbol=%s err=%s", symbol, exc)
         else:
             resp = maker_result.raw or {
@@ -574,15 +631,25 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
                 "rejections": maker_result.rejections,
                 "slippage_bps": maker_result.slippage_bps,
             }
-            maker_used = True
+            maker_used = bool(maker_result.is_maker)
+            router_decision["maker_used"] = maker_used
+            router_decision["route"] = "maker" if maker_used else "taker"
+            if not maker_result.is_maker:
+                router_decision["reasons"].append("maker_fallback_to_taker")
 
     if resp is None:
         try:
             t0 = time.perf_counter()
             resp = ex.send_order(**payload)
             latency_ms = (time.perf_counter() - t0) * 1000.0
+            router_decision["route"] = "taker"
         except Exception as exc:
+            router_decision["reasons"].append("taker_submit_failed")
+            router_decision["taker_error"] = str(exc)
+            classification = ex.classify_binance_error(exc, getattr(exc, "response", None))
+            router_decision["error_classification"] = classification
             error_payload: Dict[str, Any] = {
+                "type": "order_error",
                 "exc": repr(exc),
                 "symbol": symbol,
                 "side": side,
@@ -593,14 +660,35 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
                 "dry_run": bool(dry_run),
                 "position_side": payload.get("positionSide"),
                 "reduce_only": payload.get("reduceOnly"),
+                "classification": classification,
+                "context": "router",
             }
             if filters_snapshot:
                 error_payload["exchange_filters_used"] = filters_snapshot
+            try:
+                record_execution_error(
+                    "router",
+                    symbol=symbol,
+                    message="taker_submit_failed",
+                    classification=classification,
+                    context={"side": side, "order_type": order_type},
+                )
+            except Exception:
+                pass
             log_event(LOG_ORDERS, "order_error", safe_dump(error_payload))
             _LOG.error("route_order failed: %s", exc)
             raise
 
     route_choice = "maker" if maker_used else "taker"
+    router_decision["route"] = router_decision.get("route") or route_choice
+    router_decision["used_fallback"] = bool(maker_enabled and not maker_used and router_decision["maker_started"])
+    router_decision["latency_ms"] = latency_ms
+    try:
+        router_decision.setdefault("type", "route_decision")
+        router_decision.setdefault("context", "router")
+        log_event(LOG_ROUTER_DECISIONS, "route_decision", safe_dump(router_decision))
+    except Exception:
+        pass
     risk_ctx["routed_as"] = route_choice
     if ctx_original is not None:
         try:
@@ -638,7 +726,12 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             "after": policy_after_snapshot,
             "risk_mode": risk_mode,
         },
+        "decision": {**router_decision, "spread_clamped": spread_clamped},
     }
+    try:
+        target_ctx["route_decision"] = router_meta["decision"]
+    except Exception:
+        pass
     result: Dict[str, Any] = {
         "accepted": accepted,
         "reason": reason,
@@ -669,6 +762,19 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
         for key, value in intent.items()
         if key not in {"router_ctx", "dry_run", "timing", "attempt_id", "intent_id"}
     }
+
+    symbol = str(base_intent.get("symbol") or base_intent.get("pair") or "").upper()
+    if symbol and "router_policy" not in router_ctx:
+        try:
+            policy_probe = router_policy(symbol)
+            router_ctx["router_policy"] = {
+                "maker_first": policy_probe.maker_first,
+                "taker_bias": policy_probe.taker_bias,
+                "quality": policy_probe.quality,
+                "reason": policy_probe.reason,
+            }
+        except Exception as exc:
+            router_ctx["router_policy"] = {"error": str(exc)}
 
     retry_count = int(intent.get("retry_count", 0) or 0)
     mark_px = (
@@ -714,6 +820,7 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
         router_metrics["maker_start"] = bool(started_maker)
         router_metrics["is_maker_final"] = False
         router_metrics["used_fallback"] = False
+        router_metrics["decision"] = router_ctx.get("route_decision")
         raise
 
     side = str(base_intent.get("side") or base_intent.get("signal") or "").upper()
@@ -794,4 +901,5 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
     router_metrics["autotune_applied"] = bool(autotune_meta.get("applied"))
     router_metrics["policy_before"] = autotune_meta.get("before")
     router_metrics["policy_after"] = autotune_meta.get("after")
+    router_metrics["decision"] = router_meta.get("decision") if isinstance(router_meta, Mapping) else router_ctx.get("route_decision")
     return exchange_response, router_metrics

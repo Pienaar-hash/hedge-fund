@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover - optional dependency
     UMFutures = None
 
 from execution.utils import get_coingecko_prices, load_json
+from execution.risk_loader import load_risk_config
 from execution.universe_resolver import symbol_min_gross
 
 logging.basicConfig(
@@ -50,6 +51,23 @@ getcontext().prec = 28
 
 _UM_CLIENT: Optional[Any] = None
 _UM_CLIENT_ERROR: Optional[str] = None
+class _NullUMClient:
+    """Stub client used when UMFutures cannot be initialised."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        self.is_stub = True
+        self.available = False
+
+    def get_position_risk(self):
+        _LOG.warning("[um_client] stub_get_position_risk (%s)", self.reason)
+        return []
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __getattr__(self, name: str):
+        raise RuntimeError(f"UMFutures client unavailable: {self.reason} (missing {name})")
 
 # --- Base URL + one-time environment banner ---------------------------------
 def _base_url() -> str:
@@ -94,6 +112,83 @@ def is_dry_run() -> bool:
     return _DRY_RUN
 
 
+def classify_binance_error(
+    exc: Optional[BaseException],
+    response: Optional[requests.Response] = None,
+) -> Dict[str, Any]:
+    """
+    Normalise Binance futures errors into a compact category.
+    Categories: network, rate_limit, auth, bad_request, exchange_server, config, unknown.
+    """
+    category = "unknown"
+    retriable = False
+    status = None
+    code = None
+    msg = ""
+
+    if isinstance(exc, requests.HTTPError):
+        response = response or exc.response
+    if response is None and exc is not None and hasattr(exc, "response"):
+        response = getattr(exc, "response")
+
+    status = getattr(exc, "status_code", None) if status is None and exc is not None else status
+    code = getattr(exc, "error_code", None) if code is None and exc is not None else code
+
+    if isinstance(exc, requests.RequestException) and not isinstance(exc, requests.HTTPError):
+        category = "network"
+        retriable = True
+        msg = str(exc)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        try:
+            body = response.json() if callable(getattr(response, "json", None)) else None
+            if isinstance(body, Mapping):
+                code = body.get("code")
+                msg = str(body.get("msg") or msg)
+        except Exception:
+            msg = msg or getattr(response, "text", "")
+        if status in (418, 429):
+            category = "rate_limit"
+            retriable = True
+        elif status in (401, 403):
+            category = "auth"
+        elif status is not None and status >= 500:
+            category = "exchange_server"
+            retriable = True
+        elif status in (400, 409, 422):
+            category = "bad_request"
+        elif status is not None and status >= 300:
+            category = "http_error"
+    if code is None and exc is not None:
+        code = getattr(exc, "code", None) or getattr(exc, "error_code", None)
+    if status is None and exc is not None:
+        status = getattr(exc, "status_code", None)
+    if not msg and exc is not None:
+        msg = getattr(exc, "message", "") or getattr(exc, "error_message", "") or str(exc)
+
+    if category == "unknown":
+        if status in (418, 429) or code in (-1003, -1015):
+            category = "rate_limit"
+            retriable = True
+        elif status in (401, 403) or code in (-2014, -2015, -4061, -4065):
+            category = "auth"
+        elif status is not None and status >= 500:
+            category = "exchange_server"
+            retriable = True
+        elif status in (400, 409, 422) or code in (-1102, -1111, -2010, -2011, -2019):
+            category = "bad_request"
+        elif status is not None and status >= 300:
+            category = "http_error"
+
+    return {
+        "category": category,
+        "retriable": retriable,
+        "status": status,
+        "code": code,
+        "message": msg or (str(exc) if exc else ""),
+    }
+
+
 def reset_um_client() -> None:
     """Reset the cached UMFutures client (mainly for tests)."""
     global _UM_CLIENT, _UM_CLIENT_ERROR
@@ -106,23 +201,63 @@ def um_client_error() -> Optional[str]:
     return _UM_CLIENT_ERROR
 
 
-def get_um_client(force_refresh: bool = False) -> Optional[Any]:
+def _record_exchange_error(
+    component: str,
+    message: str,
+    exc: Optional[BaseException] = None,
+    *,
+    response: Optional[requests.Response] = None,
+    symbol: Optional[str] = None,
+    context: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    # Local import to avoid circular dependency at module import time.
+    from execution.utils.execution_health import record_execution_error
+
+    classification = classify_binance_error(exc, response=response)
+    record_execution_error(
+        component,
+        symbol=symbol,
+        message=message,
+        classification=classification,
+        context=dict(context or {}),
+    )
+    return classification
+
+
+def get_um_client(force_refresh: bool = False) -> Any:
     """Return a cached UMFutures client configured for the current env."""
     global _UM_CLIENT, _UM_CLIENT_ERROR
+
+    def _install_stub(reason: str) -> Any:
+        global _UM_CLIENT, _UM_CLIENT_ERROR
+        _UM_CLIENT_ERROR = reason
+        _UM_CLIENT = _NullUMClient(reason)
+        return _UM_CLIENT
+
     if force_refresh:
         reset_um_client()
     if _UM_CLIENT is not None:
         return _UM_CLIENT
     if UMFutures is None:
-        _UM_CLIENT_ERROR = "UMFutures module unavailable"
         _LOG.warning("[um_client] binance.um_futures import missing")
-        return None
+        _record_exchange_error(
+            "exchange",
+            "umfutures_import_missing",
+            symbol=None,
+            context={"stage": "import"},
+        )
+        return _install_stub("UMFutures module unavailable")
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
     if not api_key or not api_secret:
-        _UM_CLIENT_ERROR = "missing credentials"
         _LOG.warning("[um_client] missing BINANCE_API_KEY / BINANCE_API_SECRET")
-        return None
+        _record_exchange_error(
+            "exchange",
+            "missing_credentials",
+            symbol=None,
+            context={"stage": "init"},
+        )
+        return _install_stub("missing credentials")
     kwargs: Dict[str, Any] = {"key": api_key, "secret": api_secret}
     base = _base_url()
     if base:
@@ -133,7 +268,19 @@ def get_um_client(force_refresh: bool = False) -> Optional[Any]:
         _UM_CLIENT = None
         _UM_CLIENT_ERROR = str(exc)
         _LOG.error("[um_client] init_failed: %s", exc)
-        return None
+        _record_exchange_error(
+            "exchange",
+            "um_client_init_failed",
+            exc,
+            symbol=None,
+            context={"stage": "init", "base_url": base},
+        )
+        return _install_stub(str(exc))
+    try:
+        setattr(_UM_CLIENT, "is_stub", False)
+        setattr(_UM_CLIENT, "available", True)
+    except Exception:
+        pass
     _UM_CLIENT_ERROR = None
     _LOG.info("[um_client] UMFutures client initialised (testnet=%s)", is_testnet())
     return _UM_CLIENT
@@ -417,9 +564,22 @@ def _req(
                     time.sleep(sleep_for + jitter)
                     backoff = min(_BACKOFF_MAX, backoff * 2.0)
                     continue
+            classification = _record_exchange_error(
+                "exchange",
+                "http_error",
+                exc,
+                response=exc.response,
+            )
             raise requests.HTTPError(f"{exc}{detail}", response=exc.response) from None
-        except requests.RequestException:
+        except requests.RequestException as exc:
             if attempt >= _MAX_BACKOFF_ATTEMPTS:
+                _record_exchange_error(
+                    "exchange",
+                    "network_error",
+                    exc,
+                    response=None,
+                    context={"url": url},
+                )
                 raise
             sleep_for = min(_BACKOFF_MAX, backoff)
             jitter = random.random() * 0.1 * sleep_for
@@ -699,7 +859,16 @@ def get_balances() -> List[Dict[str, Any]]:
     # Avoid signed USD-M calls in DRY_RUN to prevent -2015 while keys/env are being fixed
     if is_dry_run():
         return _dry_run_stub("get_balances", [])
-    return _req("GET", "/fapi/v2/balance", signed=True).json()
+    try:
+        return _req("GET", "/fapi/v2/balance", signed=True).json()
+    except Exception as exc:
+        _record_exchange_error(
+            "exchange",
+            "get_balances_failed",
+            exc,
+            response=exc.response if isinstance(exc, requests.HTTPError) else None,
+        )
+        raise
 
 
 def get_account() -> Dict[str, Any]:
@@ -726,6 +895,12 @@ def get_futures_balances() -> Dict[str, float]:
         balances = get_balances()
     except Exception as exc:
         _LOG.warning("[futures] balance fetch failed: %s", exc)
+        _record_exchange_error(
+            "exchange",
+            "get_futures_balances_failed",
+            exc,
+            response=exc.response if isinstance(exc, requests.HTTPError) else None,
+        )
         balances = []
     result: Dict[str, float] = {}
     for entry in balances or []:
@@ -1002,7 +1177,17 @@ def get_positions(symbol: Optional[str] = None) -> List[Dict[str, Any]]:
     params: Dict[str, Any] = {}
     if symbol:
         params["symbol"] = symbol
-    arr = _req("GET", "/fapi/v2/positionRisk", signed=True, params=params).json()
+    try:
+        arr = _req("GET", "/fapi/v2/positionRisk", signed=True, params=params).json()
+    except Exception as exc:
+        _record_exchange_error(
+            "exchange",
+            "get_positions_failed",
+            exc,
+            response=exc.response if isinstance(exc, requests.HTTPError) else None,
+            symbol=symbol,
+        )
+        raise
     out = []
     for p in arr:
         qty = float(p.get("positionAmt") or 0)
@@ -1044,6 +1229,31 @@ def _boolish(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def live_position_qty_for_symbol(
+    symbol: str, positions: Optional[List[Mapping[str, Any]]] = None
+) -> Optional[Decimal]:
+    """Return abs(positionQty) for symbol if present; prefer provided snapshot."""
+    sym_u = str(symbol or "").upper()
+    data = positions
+    if data is None:
+        try:
+            data = get_positions(sym_u)
+        except Exception as exc:
+            _LOG.debug("[positions] live snapshot fetch failed for %s: %s", sym_u, exc)
+            data = []
+    for entry in data or []:
+        if str(entry.get("symbol") or "").upper() != sym_u:
+            continue
+        try:
+            qty_val = Decimal(str(entry.get("qty") or entry.get("positionAmt") or 0))
+        except Exception:
+            continue
+        if qty_val == 0:
+            continue
+        return abs(qty_val)
+    return None
 
 
 def _position_qty_for_side(
@@ -1180,6 +1390,15 @@ def send_order(
             close_qty,
         )
 
+    if params.get("type") == "MARKET" and params.get("reduceOnly") in (True, "true", "True"):
+        pos_qty = live_position_qty_for_symbol(sym_u, positions=manual_positions)
+        if pos_qty and Decimal(str(params.get("quantity"))) == Decimal(str(pos_qty)):
+            _LOG.debug(
+                "[router][reduceOnly-fix] full close detected for %s; dropping reduceOnly for MARKET close",
+                sym_u,
+            )
+            params.pop("reduceOnly", None)
+
     clean_params = {
         k: v for k, v in params.items() if k in _ORDER_PARAM_WHITELIST and v not in (None, "")
     }
@@ -1221,17 +1440,46 @@ def send_order(
     except requests.HTTPError as exc:
         resp = exc.response
         err_code = None
+        err_msg = ""
         try:
             if resp is not None:
-                err_code = resp.json().get("code")
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    err_code = payload.get("code")
+                    err_msg = str(payload.get("msg") or "")
         except Exception:
             err_code = None
+            err_msg = ""
+        retry_reduce_only = (
+            ord_type == "MARKET"
+            and err_code == -1106
+            and "reduceonly" in err_msg.lower()
+            and clean_params.get("reduceOnly") is not None
+        )
+        if retry_reduce_only:
+            _LOG.warning(
+                "[executor][retry] Retrying MARKET close without reduceOnly for %s", sym_u
+            )
+            retry_params = dict(clean_params)
+            retry_params.pop("reduceOnly", None)
+            try:
+                return _submit(retry_params)
+            except requests.HTTPError:
+                pass
         if err_code == -4061:
             _LOG.error("[send_order] AUTH_ERR -4061 params=%s", clean_params)
         if not (
             allow_fallback
             and err_code == -4061
         ):
+            _record_exchange_error(
+                "exchange",
+                "send_order_failed",
+                exc,
+                response=exc.response,
+                symbol=sym_u,
+                context={"params": dict(clean_params), "order_type": ord_type},
+            )
             raise
         _LOG.warning("[send_order][fallback] -4061 detected, retrying without positionSide")
         retry_params = dict(clean_params)
@@ -1323,7 +1571,7 @@ def place_market_order_sized(  # noqa: F811
 
     floor_gross = 0.0
     try:
-        risk_cfg = load_json("config/risk_limits.json") or {}
+        risk_cfg = load_risk_config()
         risk_global = (risk_cfg.get("global") or {}) if isinstance(risk_cfg, Mapping) else {}
         floor_gross = max(
             symbol_min_gross(symbol),

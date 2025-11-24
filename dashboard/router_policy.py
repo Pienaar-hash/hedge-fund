@@ -29,9 +29,14 @@ def render_router_policy_panel(
 
     current_symbols = current_policy.get("symbols") if isinstance(current_policy, dict) else []
     sugg_symbols = suggestions.get("symbols") if isinstance(suggestions, dict) else []
+    if not isinstance(current_symbols, list):
+        current_symbols = []
+    if not isinstance(sugg_symbols, list):
+        sugg_symbols = []
+
     current_map = {str(item.get("symbol")).upper(): item for item in current_symbols if isinstance(item, dict)}
     rows = []
-    for entry in sugg_symbols if isinstance(sugg_symbols, list) else []:
+    for entry in sugg_symbols:
         if not isinstance(entry, dict):
             continue
         sym = str(entry.get("symbol") or "").upper()

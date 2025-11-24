@@ -22,5 +22,5 @@ echo "ORDER_REQ_200_COUNT=$COUNT"
 # If zero, surface top veto reasons (if present)
 if [[ "${COUNT:-0}" -eq 0 ]]; then
   echo "No ORDER_REQ 200 found. Top veto markers (last 200 lines):"
-  tail -n 200 "$log" | grep -E 'veto|portfolio_cap|symbol_cap|tier_cap|cooldown|daily_loss|below_min_notional|trade_rate_limit|ob_adverse' || true
+  tail -n 200 "$log" | grep -E 'veto|portfolio_cap|symbol_cap|tier_cap|cooldown|daily_loss|min_notional|trade_rate_limit|ob_adverse' || true
 fi

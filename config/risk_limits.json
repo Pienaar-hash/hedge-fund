@@ -1,31 +1,31 @@
 {
   "global": {
-    "daily_loss_limit_pct": 5.0,
+    "daily_loss_limit_pct": 0.10,
     "cooldown_minutes_after_stop": 30,
     "max_trades_per_symbol_per_hour": 10,
-    "drawdown_alert_pct": 3.0,
-    "max_gross_exposure_pct": 150,
-    "max_symbol_exposure_pct": 40,
-    "max_nav_drawdown_pct": 10,
+    "drawdown_alert_pct": 0.03,
+    "max_gross_exposure_pct": 1.5,
+    "max_symbol_exposure_pct": 0.4,
+    "max_nav_drawdown_pct": 0.30,
     "max_concurrent_positions": 4,
     "max_leverage": 4,
-    "min_notional_usdt": 100,
-    "max_trade_nav_pct": 0.2,
-    "trade_equity_nav_pct": 0.15,
-    "symbol_notional_share_cap_pct": 25.0,
-    "symbol_drawdown_cap_pct": 3.0,
+    "min_notional_usdt": 10,
+    "max_trade_nav_pct": 0.03,
+    "trade_equity_nav_pct": 0.02,
+    "symbol_notional_share_cap_pct": 0.25,
+    "symbol_drawdown_cap_pct": 0.03,
     "tiers": {
       "CORE": {
-        "per_symbol_nav_pct": 30.0
+        "per_symbol_nav_pct": 0.3
       },
       "SATELLITE": {
-        "per_symbol_nav_pct": 20.0
+        "per_symbol_nav_pct": 0.2
       },
       "TACTICAL": {
-        "per_symbol_nav_pct": 10.0
+        "per_symbol_nav_pct": 0.1
       },
       "ALT-EXT": {
-        "per_symbol_nav_pct": 5.0
+        "per_symbol_nav_pct": 0.05
       }
     }
   },
@@ -34,48 +34,49 @@
   "reset_timezone": "UTC",
   "quote_symbols": [
     "USDT",
-    "USDC"
+    "USDC",
+    "FDUSD"
   ],
   "restricted_symbols": [],
   "per_symbol": {
     "BTCUSDT": {
-      "min_notional": 100,
+      "min_notional": 10,
       "max_order_notional": 80000,
       "max_leverage": 4,
-      "max_nav_pct": 0.25
+      "max_nav_pct": 0.1
     },
     "ETHUSDT": {
-      "min_notional": 100,
+      "min_notional": 10,
       "max_order_notional": 50000,
       "max_leverage": 4,
-      "max_nav_pct": 0.2
+      "max_nav_pct": 0.08
     },
     "SOLUSDT": {
-      "min_notional": 100,
+      "min_notional": 10,
       "max_order_notional": 25000,
       "max_leverage": 3,
-      "max_nav_pct": 0.15
+      "max_nav_pct": 0.05
     },
     "LINKUSDT": {
-      "min_notional": 100,
+      "min_notional": 10,
       "max_order_notional": 25000,
       "max_leverage": 3,
       "max_nav_pct": 0.15
     },
     "LTCUSDT": {
-      "min_notional": 100,
+      "min_notional": 10,
       "max_order_notional": 25000,
       "max_leverage": 3,
       "max_nav_pct": 0.15
     },
     "SUIUSDT": {
-      "min_notional": 100,
+      "min_notional": 10,
       "max_order_notional": 15000,
       "max_leverage": 3,
       "max_nav_pct": 0.1
     },
     "WIFUSDT": {
-      "min_notional": 100,
+      "min_notional": 10,
       "max_order_notional": 15000,
       "max_leverage": 3,
       "max_nav_pct": 0.1
@@ -83,5 +84,11 @@
   },
   "non_prod": {
     "require_dry_run": true
+  },
+  "testnet_overrides": {
+    "enabled": true,
+    "max_nav_drawdown_pct": 0.95,
+    "daily_loss_limit_pct": 0.50,
+    "log_notice": true
   }
 }

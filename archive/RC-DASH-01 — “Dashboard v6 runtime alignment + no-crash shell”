@@ -1,0 +1,203 @@
+Yeah, we’ve got useful things we can do on the dashboard side right now — and we can keep it fully inside the v6 contracts instead of poking at executor/sizing again.
+
+You’re seeing:
+
+* Supervisor: `hedge:hedge-dashboard RUNNING`
+* Logs: only `[runbook] dashboard ENV source: dashboard/app.py:98-99`, no tracebacks
+* Browser: header renders, content area is empty
+
+Given the v6 docs, the dashboard **must** only depend on `logs/state/*` + config, no Firestore, and it’s wired to v6 runtime/telemetry.
+So if the header shows but nothing else, it’s almost certainly either:
+
+* an unreported Python exception (going to a different log file), or
+* a gating condition that thinks “no data yet” and never renders the body.
+
+Below is a concrete “do-now” plan plus a Codex patch prompt you can run as a focused RC-DASH batch.
+
+---
+
+## 1️⃣ Quick runtime sanity checks (CLI)
+
+These are cheap and confirm that the dashboard’s *inputs* exist and look sane.
+
+From `~/hedge-fund`:
+
+```bash
+# 1) See what the dashboard *thinks* exists
+ls -lh logs/state
+
+# 2) Spot-check the main v6 state files the dashboard should consume
+jq . logs/state/v6_runtime_probe.json
+jq . logs/state/synced_state.json
+jq . logs/state/nav_state.json 2>/dev/null || jq . logs/state/nav.json 2>/dev/null
+jq . logs/state/pipeline_v6_compare_summary.json
+jq . logs/state/pipeline_v6_shadow_head.json
+jq . logs/state/router_health.json
+jq . logs/state/router_policy_suggestions_v6.json 2>/dev/null
+jq . logs/state/expectancy_v6.json 2>/dev/null
+jq . logs/state/symbol_scores_v6.json 2>/dev/null
+jq . logs/state/risk_allocation_suggestions_v6.json 2>/dev/null
+```
+
+What we want to see:
+
+* **Non-zero file sizes** and valid JSON.
+* `v6_runtime_probe.json` showing all v6 flags + `engine_version` (you already have this).
+* `synced_state.json` / `nav_state.json` with `nav_usd`, `portfolio_gross_usd`, and a plausible `updated_ts`.
+* `pipeline_v6_compare_summary.json` with `sample_size`, `veto_mismatch_pct`, `is_warmup`, `min_sample_size`. You already saw this shape for compare.
+
+If any of these are missing or empty, the dashboard will have nothing to render and may be stuck behind early-exit guards.
+
+---
+
+## 2️⃣ Check the *right* dashboard logs
+
+Right now you’re tailing `hedge-dashboard.err.log` and only seeing INFO. Many Streamlit/Flask errors actually end up in the “out” log.
+
+Run:
+
+```bash
+sudo ls -lh /var/log | grep hedge-dashboard
+sudo tail -n 200 /var/log/hedge-dashboard.out.log
+sudo tail -n 200 /var/log/hedge-dashboard.err.log
+```
+
+If there’s **any** Python traceback in `out.log` (import error, KeyError reading a new v6 field, JSON parse exception, etc.), that’s almost certainly why you only see the header: the app starts, dies on first render, and the frontend keeps the shell.
+
+---
+
+## 3️⃣ Minimal interactive check in Python
+
+We can also confirm that the **dashboard helpers** can read the v6 state contract without exploding.
+
+From `~/hedge-fund`:
+
+```bash
+PYTHONPATH=$PWD python - << 'PY'
+import json, os, sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parent
+state_dir = root / "logs" / "state"
+print("state_dir:", state_dir, "exists:", state_dir.is_dir())
+
+for name in [
+    "v6_runtime_probe.json",
+    "synced_state.json",
+    "nav_state.json",
+    "pipeline_v6_compare_summary.json",
+    "pipeline_v6_shadow_head.json",
+    "router_health.json",
+]:
+    p = state_dir / name
+    print(">>", name, "size=", p.stat().st_size if p.exists() else "MISSING")
+    if p.exists():
+        with p.open() as fh:
+            try:
+                data = json.load(fh)
+                print("   keys:", list(data.keys()))
+            except Exception as e:
+                print("   JSON error:", e)
+PY
+```
+
+If that script passes and shows keys as expected, inputs are good; the bug is in `dashboard/app.py` or one of the panel modules, not in the runtime.
+
+---
+
+## 4️⃣ What we can safely *change* now with Codex (RC-DASH batch)
+
+Given the v6 docs, the dashboard is contractually supposed to:
+
+* Read **only** `logs/state/*` (no Firestore)
+* Show at least: NAV/positions/risk snapshot, pipeline v6 shadow/compare status, router health/policy, and v6 intel (expectancy/symbol scores/allocation).
+
+So a productive batch is:
+
+### ✅ RC-DASH-01 — “Dashboard v6 runtime alignment + no-crash shell”
+
+**Goal:** Make sure the dashboard *always* renders a basic shell (header + simple overview) even if some state files are missing, and gracefully shows “no data yet” instead of silently dying.
+
+**Codex patch prompt (you can paste this):**
+
+> **Task:**
+> Audit and patch the v6 dashboard so that it always renders a minimal shell and never fails silently when v6 state files are missing or warming up.
+>
+> **Scope (files only, no new modules):**
+>
+> * `dashboard/app.py`
+> * `dashboard/live_helpers.py`
+> * `dashboard/nav_helpers.py`
+> * `dashboard/pipeline_panel.py`
+> * `dashboard/router_health.py`
+> * `dashboard/intel_panel.py`
+>
+> **Constraints:**
+>
+> * Do **not** touch any execution, sizing, risk, or router code. No changes under `execution/` or `config/`.
+> * Consume only the v6 state artifacts documented in:
+>
+>   * `docs/v6_state_contract.md`
+>   * `docs/v6_runtime_telemetry_contract.md`
+>   * `docs/v6_pipeline_shadow_compare_contract.md`
+>   * `docs/v6_intel_contract.md`
+> * All reads must be from `logs/state/*.json` as per `ARCHITECTURE_CURRENT.md` (no Firestore, no external APIs).
+>
+> **Behaviour to enforce:**
+>
+> 1. **Global error handling**
+>
+>    * Wrap the top-level layout in `dashboard/app.py` in a try/except that:
+>
+>      * Logs a full traceback to the dashboard logger.
+>      * Renders an “Error loading dashboard” block in the UI (with the exception message), but keeps the header visible.
+>    * Under no circumstance should a failed panel prevent the rest of the page from rendering.
+> 2. **State loading helpers**
+>
+>    * Implement or harden small helpers in `live_helpers.py` / `nav_helpers.py` to:
+>
+>      * Load JSON from:
+>
+>        * `logs/state/v6_runtime_probe.json`
+>        * `logs/state/synced_state.json`
+>        * `logs/state/nav_state.json` (or `nav.json` if that’s the current file per the contract)
+>        * `logs/state/router_health.json`
+>        * `logs/state/expectancy_v6.json`
+>        * `logs/state/symbol_scores_v6.json`
+>        * `logs/state/risk_allocation_suggestions_v6.json`
+>        * `logs/state/pipeline_v6_shadow_head.json`
+>        * `logs/state/pipeline_v6_compare_summary.json`
+>      * Return **empty dicts/arrays with defaults** instead of raising if the file is missing, empty, or malformed.
+>      * Provide simple freshness helpers (e.g. nav updated_ts age in seconds) based on the v6 state contract.
+> 3. **Panels must degrade gracefully**
+>
+>    * `pipeline_panel.py`:
+>
+>      * If `pipeline_v6_compare_summary.json` is missing or `sample_size == 0`, render a “Pipeline v6: warming up” block instead of failing.
+>      * Use the documented fields `sample_size`, `veto_mismatch_pct`, `is_warmup`, `min_sample_size` and the new `sizing_diff_stats` if present.
+>    * `router_health.py`:
+>
+>      * If `router_health.json` has an empty `symbols` list, show a “No router metrics yet” message.
+>    * `intel_panel.py`:
+>
+>      * If `expectancy_v6.json` or `symbol_scores_v6.json` are missing, show “No expectancy data yet” instead of assuming keys exist.
+> 4. **v6 runtime header**
+>
+>    * In `dashboard/app.py`, add a small top-of-page “Runtime v6” strip that:
+>
+>      * Reads `engine_version` and v6 flags from `logs/state/v6_runtime_probe.json`.
+>      * Displays: engine version, and whether INTEL_V6, RISK_ENGINE_V6, PIPELINE_V6_SHADOW, ROUTER_AUTOTUNE_V6, FEEDBACK_ALLOCATOR_V6 are on/off.
+>      * Never crashes if the probe file is missing; just shows “probe unavailable”.
+> 5. **Testing / self-check**
+>
+>    * Add a very small self-check in `dashboard/app.py` (or a helper) that:
+>
+>      * Logs which state files were successfully loaded and which were missing, at INFO level, when the app boots.
+>      * This should be visible in the dashboard Supervisor logs and help debug “header-only” issues.
+>
+> **Out of scope:**
+>
+> * No layout redesign, no new dependencies, no changes to `ops/hedge.conf`.
+> * No access to Firestore or any external service. Everything must come from `logs/state/` and existing config files.
+
+After Codex runs this, the worst case is: you still only have warmup data, but the dashboard will **tell you that clearly** instead of silently rendering an empty page.

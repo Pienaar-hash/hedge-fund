@@ -8,16 +8,77 @@ import time
 import logging
 from typing import Any, Dict, List, Tuple, Optional, cast
 
-from execution.exchange_utils import get_balances, get_positions
+from execution.exchange_utils import (
+    get_balances,
+    get_positions,
+    get_price,
+    get_futures_balances,
+    get_um_client,
+)
+from execution.risk_loader import load_risk_config
 
 _NAV_CACHE_PATH = "logs/cache/nav_confirmed.json"
 _NAV_LOG_PATH = "logs/nav_log.json"
+_NAV_HEALTH_PATH = "logs/nav_health.json"
 _NAV_WRITER_DEFAULT_INTERVAL = float(os.environ.get("NAV_WRITER_INTERVAL_SEC", "60"))
+_NAV_FRESHNESS_SECONDS = float(os.environ.get("NAV_FRESHNESS_SECONDS", "90"))
+_NAV_CACHE_MAX_AGE_SECONDS = float(os.environ.get("NAV_CACHE_MAX_AGE_S", "900"))
 
 LOGGER = logging.getLogger("nav")
 
 JSONDict = Dict[str, Any]
 JSONList = List[JSONDict]
+
+
+def _normalize_balances(raw: Any) -> Dict[str, float]:
+    """Coerce exchange balance payloads (dict or list) into an asset->balance map."""
+    out: Dict[str, float] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            try:
+                out[str(key).upper()] = float(value)
+            except Exception:
+                continue
+        # Futures balance payloads sometimes expose walletBalance without asset key
+        if "USDT" not in out and "WALLETBALANCE" in out:
+            try:
+                out["USDT"] = float(out["WALLETBALANCE"])
+            except Exception:
+                pass
+        return out
+
+    if isinstance(raw, list):
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            asset = str(entry.get("asset") or entry.get("code") or "").upper()
+            if not asset:
+                continue
+            value = (
+                entry.get("balance")
+                or entry.get("walletBalance")
+                or entry.get("crossWalletBalance")
+                or entry.get("availableBalance")
+                or entry.get("available")
+            )
+            try:
+                out[asset] = float(value or 0.0)
+            except Exception:
+                continue
+    return out
+
+
+def _mark_price_usdt(asset: str) -> float:
+    """Best-effort mark/ticker price resolver for non-stable assets."""
+    sym = str(asset or "").upper()
+    if not sym or sym in {"USDT", "USDC"}:
+        return 1.0
+    try:
+        px = get_price(f"{sym}USDT")
+        return float(px or 0.0)
+    except Exception as exc:
+        LOGGER.warning("[nav] mark_price_fetch_failed asset=%s err=%s", sym, exc)
+        return 0.0
 
 
 def _load_json(path: str) -> JSONDict:
@@ -31,7 +92,85 @@ def _load_json(path: str) -> JSONDict:
     return {}
 
 
-def _futures_nav_usdt() -> Tuple[float, JSONDict]:
+def _live_nav_snapshot(quote_symbols: set[str]) -> Tuple[float, Dict[str, Any]]:
+    balances_ok = False
+    conversions: Dict[str, Any] = {}
+    quote_breakdown: Dict[str, float] = {}
+    breakdown: Dict[str, float] = {}
+    try:
+        balances = get_futures_balances() or {}
+        balances_ok = bool(balances)
+    except Exception as exc:
+        LOGGER.warning("[nav] futures_balances_failed: %s", exc)
+        balances = {}
+    total_nav = 0.0
+    for asset, raw_amt in balances.items():
+        try:
+            amt = float(raw_amt or 0.0)
+        except Exception:
+            continue
+        asset_key = str(asset).upper()
+        if asset_key in quote_symbols:
+            quote_breakdown[asset_key] = amt
+            breakdown[asset_key] = amt
+            total_nav += amt
+            continue
+        if asset_key not in {"BTC", "ETH"}:
+            continue
+        px = _ticker_last_price(f"{asset_key}USDT")
+        usd_val = amt * px if px > 0 else 0.0
+        conversions[asset_key] = {"amount": amt, "price": px, "value_usd": usd_val}
+        breakdown[asset_key] = usd_val
+        total_nav += usd_val
+    detail = {
+        "breakdown": breakdown,
+        "quote_breakdown": quote_breakdown,
+        "conversions": conversions,
+        "futures_balances": balances,
+        "fresh": balances_ok,
+        "source": "live" if balances_ok else "cache",
+    }
+    return total_nav, detail
+
+
+def _ticker_last_price(symbol: str) -> float:
+    try:
+        client = get_um_client()
+        resp = client.ticker_price(symbol=symbol)
+        if isinstance(resp, dict):
+            price_val = resp.get("price") or resp.get("lastPrice")
+        else:
+            price_val = resp
+        return float(price_val or 0.0)
+    except Exception as exc:
+        LOGGER.warning("[nav] ticker_price_failed symbol=%s err=%s", symbol, exc)
+        return 0.0
+
+
+def _write_nav_health(detail: Dict[str, Any]) -> None:
+    payload = {
+        "nav_total": detail.get("total_nav"),
+        "breakdown": detail.get("breakdown") or {},
+        "quote_breakdown": detail.get("quote_breakdown") or {},
+        "conversions": detail.get("conversions") or {},
+        "fresh": detail.get("fresh"),
+        "source": detail.get("source"),
+        "ts": time.time(),
+    }
+    payload["sources"] = {
+        "balances": bool(detail.get("fresh")),
+        "cache_used": detail.get("source") == "cache",
+    }
+    try:
+        os.makedirs(os.path.dirname(_NAV_HEALTH_PATH), exist_ok=True)
+        with open(_NAV_HEALTH_PATH, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+    except Exception as exc:
+        LOGGER.debug("[nav] nav_health_write_failed: %s", exc)
+
+
+def _futures_nav_usdt(nav_cfg: Optional[Dict[str, Any]] = None) -> Tuple[float, JSONDict]:
     """Compute USD-M futures wallet NAV and provide detail."""
     balances_ok = False
     positions_ok = False
@@ -41,19 +180,53 @@ def _futures_nav_usdt() -> Tuple[float, JSONDict]:
     except Exception as exc:
         LOGGER.warning("[nav] balances_fetch_failed: %s", exc)
         bal = {}
+
+    include_cfg = None
+    try:
+        include_cfg = (nav_cfg or {}).get("include_assets")
+    except Exception:
+        include_cfg = None
     # Support both dict-of-balances and list-of-dicts returns
-    wallet = 0.0
-    if isinstance(bal, dict):
-        wallet = float(bal.get("USDT", bal.get("walletBalance", 0.0)) or 0.0)
-    elif isinstance(bal, list):
-        for entry in bal:
-            try:
-                if entry.get("asset") == "USDT":
-                    wallet = float(entry.get("balance") or entry.get("walletBalance") or 0.0)
-                    break
-            except Exception:
-                continue
-    detail: JSONDict = {"futures_wallet_usdt": wallet}
+    asset_breakdown: Dict[str, float] = _normalize_balances(bal)
+    wallet = float(asset_breakdown.get("USDT", 0.0))
+    configured_assets = include_cfg if isinstance(include_cfg, list) else None
+    include_assets = {str(a).upper() for a in configured_assets or [] if str(a).strip()}
+    if not include_assets:
+        include_assets = {"USDT"}
+    use_mark_price = bool((nav_cfg or {}).get("use_mark_price"))
+    nav_mode = "enhanced" if configured_assets is not None or use_mark_price else "legacy"
+
+    assets_nav: Dict[str, float] = {}
+    mark_prices: Dict[str, float] = {}
+    mark_price_failures = 0
+    for asset, amount in asset_breakdown.items():
+        if asset not in include_assets:
+            continue
+        if asset in {"USDT", "USDC"}:
+            assets_nav[asset] = float(amount)
+            continue
+        if not use_mark_price:
+            assets_nav[asset] = 0.0
+            mark_price_failures += 1
+            continue
+        price = _mark_price_usdt(asset)
+        if price > 0.0:
+            mark_prices[asset] = price
+            assets_nav[asset] = float(amount) * price
+        else:
+            assets_nav[asset] = 0.0
+            mark_price_failures += 1
+
+    nav_total = float(sum(assets_nav.values()))
+    detail: JSONDict = {
+        "futures_wallet_usdt": wallet,
+        "asset_breakdown": asset_breakdown,
+        "assets": assets_nav,
+        "mark_prices": mark_prices,
+        "nav_mode": nav_mode,
+        "source": nav_mode,
+        "ts": time.time(),
+    }
     # Include unrealized PnL if present via positions
     try:
         positions = get_positions() or []
@@ -65,7 +238,7 @@ def _futures_nav_usdt() -> Tuple[float, JSONDict]:
             except Exception:
                 continue
         detail["unrealized_pnl"] = unreal
-        wallet += unreal
+        nav_total += unreal
     except Exception as exc:
         LOGGER.warning("[nav] positions_fetch_failed: %s", exc)
     detail["balances_ok"] = bool(balances_ok)
@@ -76,8 +249,22 @@ def _futures_nav_usdt() -> Tuple[float, JSONDict]:
     }
     sources_ok = all(source_health.values())
     detail["sources_ok"] = sources_ok
+
+    try:
+        cached_age = get_nav_age()
+        cached_age_int = int(cached_age) if cached_age is not None else None
+    except Exception:
+        cached_age_int = None
+    mark_prices_fresh = not use_mark_price or mark_price_failures == 0
+    detail["freshness"] = {
+        "exchange_balances_fresh": bool(balances_ok),
+        "mark_prices_fresh": bool(mark_prices_fresh),
+        "cached_nav_age_s": cached_age_int,
+    }
+    detail["nav"] = nav_total
+
     if sources_ok:
-        _persist_confirmed_nav(wallet, detail=detail, source_health=source_health)
+        _persist_confirmed_nav(nav_total, detail=detail, source_health=source_health)
     else:
         LOGGER.warning(
             "[nav] snapshot_mark_unhealthy balances_ok=%s positions_ok=%s",
@@ -85,7 +272,7 @@ def _futures_nav_usdt() -> Tuple[float, JSONDict]:
             positions_ok,
         )
         _mark_nav_unhealthy(detail=detail, source_health=source_health)
-    return wallet, detail
+    return nav_total, detail
 
 
 def _treasury_nav_usdt(_: str = "config/treasury.json") -> Tuple[float, JSONDict]:
@@ -108,43 +295,70 @@ def _nav_sources(cfg: JSONDict) -> Tuple[str, str, bool, Any]:
 
 
 def compute_trading_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
+    nav_cfg = (cfg or {}).get("nav") or {}
     trading_source, _, _, manual = _nav_sources(cfg)
     if trading_source == "manual":
         if manual is not None:
-            return float(manual), {"source": "manual"}
+            detail = {
+                "source": "manual",
+                "total_nav": float(manual),
+                "nav": float(manual),
+                "nav_usd": float(manual),
+                "fresh": True,
+            }
+            _write_nav_health(detail)
+            return float(manual), detail
         capital, detail = _fallback_capital(cfg)
-        # Align nav pair fallback with capital base when manual override absent
         detail["source"] = "capital_base"
+        detail["total_nav"] = float(capital)
+        detail["nav"] = float(capital)
+        detail["nav_usd"] = float(capital)
+        _write_nav_health(detail)
         return capital, detail
 
-    fut_nav, fut_detail = _futures_nav_usdt()
-    detail: JSONDict = dict(fut_detail)
-    sources_ok = bool(detail.get("sources_ok"))
-    if sources_ok and fut_nav > 0:
-        detail["source"] = "exchange"
-        return float(fut_nav), detail
+    risk_cfg = load_risk_config()
+    quote_symbols = {str(q).upper() for q in (risk_cfg.get("quote_symbols") or [])}
+    fut_nav, fut_detail = _live_nav_snapshot(quote_symbols)
+    fut_detail["nav_mode"] = "live_wallet"
+    fut_detail["total_nav"] = fut_nav
+    fut_detail["nav"] = fut_nav
+    fut_detail["nav_usd"] = fut_nav
+    fut_detail.setdefault("assets", fut_detail.get("breakdown", {}))
+    fut_detail.setdefault("asset_breakdown", fut_detail.get("breakdown", {}))
+    if fut_detail.get("fresh") and fut_nav > 0:
+        fut_detail["source"] = "live"
+        _persist_confirmed_nav(
+            fut_nav,
+            detail=fut_detail,
+            source_health={"balances_ok": True},
+        )
+        _write_nav_health(fut_detail)
+        return float(fut_nav), fut_detail
 
+    nav_health = nav_health_snapshot()
     confirmed = get_confirmed_nav()
-    confirmed_nav = float(confirmed.get("nav") or 0.0) if confirmed else 0.0
-    if confirmed_nav > 0:
-        cache_detail = {
-            "source": "exchange_cache",
-            "confirmed_ts": confirmed.get("ts"),
-            "sources_ok": confirmed.get("sources_ok"),
-            "stale_flags": confirmed.get("stale_flags"),
-        }
-        cache_detail = {k: v for k, v in cache_detail.items() if v is not None}
-        cache_detail.update(detail)
-        return confirmed_nav, cache_detail
-
-    detail["source"] = "unavailable"
-    return 0.0, detail
+    confirmed_nav = float(confirmed.get("nav") or confirmed.get("nav_usd") or 0.0) if confirmed else 0.0
+    cache_detail = confirmed.get("detail") if isinstance(confirmed, dict) else {}
+    cache_breakdown = {}
+    if isinstance(cache_detail, dict):
+        cache_breakdown = cache_detail.get("breakdown") or cache_detail.get("assets") or {}
+    fallback_detail: Dict[str, Any] = {
+        "source": "cache" if confirmed_nav > 0 else "unavailable",
+        "breakdown": cache_breakdown,
+        "asset_breakdown": cache_breakdown,
+        "total_nav": confirmed_nav,
+        "nav": confirmed_nav,
+        "nav_usd": confirmed_nav,
+        "fresh": bool(nav_health.get("fresh")),
+        "nav_health": nav_health,
+    }
+    _write_nav_health(fallback_detail)
+    return confirmed_nav, fallback_detail
 
 
 def compute_nav_summary(cfg: JSONDict | None = None) -> JSONDict:
-    cfg = cfg or _load_json("config/strategy_config.json")
-
-    futures_nav, futures_detail = _futures_nav_usdt()
+    cfg = _load_strategy_cfg(cfg)
+    futures_nav, futures_detail = compute_trading_nav(cfg)
     return {
         "futures_nav": float(futures_nav),
         "total_nav": float(futures_nav),
@@ -167,7 +381,7 @@ def compute_reporting_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
 
     nav_val, detail = compute_trading_nav(cfg)
     if nav_val > 0:
-        enriched = {"source": "exchange"}
+        enriched = {"source": (detail or {}).get("source", "live")}
         if isinstance(detail, dict):
             enriched.update(detail)
         return nav_val, enriched
@@ -306,7 +520,24 @@ def write_nav(nav_value: float) -> None:
 def _load_strategy_cfg(existing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if isinstance(existing, dict) and existing:
         return dict(existing)
-    return _load_json("config/strategy_config.json")
+    cfg = _load_json("config/strategy_config.json")
+    if not isinstance(cfg, dict):
+        cfg = {}
+    # Optionally merge runtime nav overrides (runtime.yaml)
+    try:
+        from execution.runtime_config import load_runtime_config
+
+        runtime_cfg = load_runtime_config()
+        if isinstance(runtime_cfg, dict):
+            rt_nav = runtime_cfg.get("nav")
+            if isinstance(rt_nav, dict):
+                nav_cfg = cfg.get("nav") if isinstance(cfg.get("nav"), dict) else {}
+                merged = dict(nav_cfg)
+                merged.update(rt_nav)
+                cfg["nav"] = merged
+    except Exception:
+        pass
+    return cfg
 
 
 def run_nav_writer(
@@ -522,35 +753,57 @@ def get_confirmed_nav() -> Dict[str, Any]:
 
 def get_nav_age(default: float | None = None) -> float | None:
     """Return age in seconds for the last confirmed NAV, or default if unknown."""
-    record = get_confirmed_nav()
-    ts_val = record.get("ts")
-    if not isinstance(ts_val, (int, float)):
+    health = nav_health_snapshot()
+    age_val = health.get("age_s")
+    if age_val is None:
         return default
     try:
-        age = max(0.0, time.time() - float(ts_val))
+        return float(age_val)
     except Exception:
         return default
-    return age
+
+
+def nav_health_snapshot(threshold_s: float | int | None = None) -> Dict[str, Any]:
+    """Return a consistent NAV health snapshot (age, freshness, sources)."""
+    try:
+        threshold = float(threshold_s) if threshold_s is not None else _NAV_FRESHNESS_SECONDS
+    except Exception:
+        threshold = _NAV_FRESHNESS_SECONDS
+    if threshold <= 0.0:
+        threshold = _NAV_FRESHNESS_SECONDS
+    record = get_confirmed_nav()
+    ts_val = record.get("ts")
+    try:
+        age = max(0.0, time.time() - float(ts_val)) if ts_val is not None else None
+    except Exception:
+        age = None
+    stale_flags = record.get("stale_flags") if isinstance(record, dict) else {}
+    stale_flags = {str(k): bool(v) for k, v in (stale_flags or {}).items()}
+    sources_ok = bool(record.get("sources_ok", True))
+    if stale_flags and any(stale_flags.values()):
+        sources_ok = False
+    fresh = sources_ok and age is not None and age <= threshold
+    return {
+        "age_s": age,
+        "sources_ok": sources_ok,
+        "stale_flags": stale_flags,
+        "fresh": fresh,
+        "threshold_s": threshold,
+        "cache_ts": record.get("ts"),
+        "cache_path": _NAV_CACHE_PATH,
+        "nav_total": float(record.get("nav") or record.get("nav_usd") or 0.0),
+    }
 
 
 def is_nav_fresh(threshold_s: float | int | None = None) -> bool:
-    try:
-        threshold = float(threshold_s or 0.0)
-    except Exception:
-        threshold = 0.0
-    if threshold <= 0.0:
-        return True
-    age = get_nav_age()
-    if age is None:
-        return False
-    return age <= threshold
+    return bool(nav_health_snapshot(threshold_s).get("fresh"))
 
 
 class PortfolioSnapshot:
     """Single-call helper to expose current NAV and gross exposure."""
 
     def __init__(self, cfg: Dict | None = None) -> None:
-        self.cfg = cfg or _load_json("config/strategy_config.json")
+        self.cfg = _load_strategy_cfg(cfg)
         self._nav: float | None = None
         self._gross: float | None = None
         self._symbol_gross: Dict[str, float] = {}
@@ -562,7 +815,21 @@ class PortfolioSnapshot:
             self._nav = float(nav_val or 0.0)
         except Exception:
             confirmed = get_confirmed_nav()
-            self._nav = float((confirmed or {}).get("nav") or 0.0)
+            age = get_nav_age()
+            sources_ok = bool(confirmed.get("sources_ok", True))
+            stale_flags = confirmed.get("stale_flags")
+            if isinstance(stale_flags, dict) and any(stale_flags.values()):
+                sources_ok = False
+            confirmed_nav = float((confirmed or {}).get("nav") or confirmed.get("nav_usd") or 0.0) if confirmed else 0.0
+            if (
+                sources_ok
+                and confirmed_nav > 0.0
+                and age is not None
+                and age <= max(_NAV_CACHE_MAX_AGE_SECONDS, _NAV_FRESHNESS_SECONDS)
+            ):
+                self._nav = confirmed_nav
+            else:
+                self._nav = 0.0
         self._symbol_gross = compute_symbol_gross_usd()
         self._gross = float(sum(self._symbol_gross.values()))
         self._stale = False
@@ -593,6 +860,7 @@ __all__ = [
     "compute_gross_exposure_usd",
     "compute_nav_summary",
     "get_confirmed_nav",
+    "nav_health_snapshot",
     "is_nav_fresh",
     "PortfolioSnapshot",
     "write_nav",

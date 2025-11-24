@@ -1,56 +1,111 @@
+"""v6 router health with policy overlays."""
 from __future__ import annotations
 
-import json
-import logging
-import os
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
-STATE_DIR = Path(os.getenv("STATE_DIR") or "logs/state")
-ROUTER_HEALTH_STATE_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))
-ORDER_EVENTS_PATH = Path("logs/execution/orders_executed.jsonl")
+from dashboard.live_helpers import (
+    load_router_policy_v6,
+    load_router_suggestions_v6,
+)
 
-LOG = logging.getLogger("dash.router")
-
-__all__ = ["RouterHealthData", "load_router_health", "_load_order_events"]
 
 @dataclass
 class RouterHealthData:
-    trades: pd.DataFrame
     per_symbol: pd.DataFrame
+    trades: pd.DataFrame
     pnl_curve: pd.DataFrame
     summary: Dict[str, Any]
-    overlays: Dict[str, pd.DataFrame] = field(default_factory=dict)
+    overlays: Dict[str, Any]
 
 
-def _parse_ts(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        ts_val = float(value)
-        return ts_val / 1000.0 if ts_val > 1e12 else ts_val
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            dt = datetime.fromisoformat(text)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except Exception:
-            return None
-    return None
+def is_empty_router_health(data: RouterHealthData) -> bool:
+    if data is None:
+        return True
+    if not isinstance(data.summary, dict):
+        return True
+    if data.summary.get("count", 0) == 0 and data.per_symbol.empty and data.pnl_curve.empty:
+        return True
+    return False
 
 
-def _default_summary(updated_ts: Optional[float] = None) -> Dict[str, Any]:
-    summary = {
+def _to_dataframe(payload: Any) -> pd.DataFrame:
+    if isinstance(payload, pd.DataFrame):
+        return payload
+    if isinstance(payload, list):
+        return pd.DataFrame([row for row in payload if isinstance(row, dict)])
+    return pd.DataFrame()
+
+
+def load_router_health(
+    window: int = 300,
+    snapshot: Optional[Dict[str, Any]] = None,
+    trades_snapshot: Optional[Dict[str, Any]] = None,
+) -> RouterHealthData:
+    """
+    v6 router health loader with policy overlays.
+    """
+    summary: Dict[str, Any] = {}
+    per_symbol = pd.DataFrame()
+    pnl_curve = pd.DataFrame()
+    overlays: Dict[str, Any] = {}
+
+    if isinstance(snapshot, dict):
+        if isinstance(snapshot.get("summary"), dict):
+            summary = dict(snapshot["summary"])
+        elif snapshot.get("updated_ts") is not None:
+            summary = {"updated_ts": snapshot.get("updated_ts")}
+        per_symbol = _to_dataframe(snapshot.get("per_symbol"))
+        if per_symbol.empty and isinstance(snapshot.get("symbols"), list):
+            per_symbol = _to_dataframe(snapshot.get("symbols"))
+        pnl_curve = _to_dataframe(snapshot.get("pnl_curve"))
+
+    if not pnl_curve.empty:
+        if "time" in pnl_curve.columns:
+            try:
+                pnl_curve["time"] = pd.to_datetime(pnl_curve["time"], utc=True, errors="coerce")
+                pnl_curve = pnl_curve.sort_values("time")
+                if window > 0:
+                    pnl_curve = pnl_curve.tail(window)
+            except Exception:
+                pnl_curve = pnl_curve.tail(window)
+        else:
+            pnl_curve = pnl_curve.tail(window)
+
+    policy_state = load_router_policy_v6() or {}
+    policy_symbols = policy_state.get("symbols")
+    policy_df = pd.DataFrame()
+
+    if isinstance(policy_symbols, list):
+        policy_df = pd.DataFrame(
+            [row for row in policy_symbols if isinstance(row, dict) and row.get("symbol")]
+        )
+    elif isinstance(policy_state, dict) and "per_symbol" in policy_state:
+        policy_df = _to_dataframe(policy_state.get("per_symbol"))
+
+    if not per_symbol.empty and not policy_df.empty:
+        policy_df = policy_df.copy()
+        policy_df["symbol"] = policy_df["symbol"].astype(str).str.upper()
+        per_symbol = per_symbol.copy()
+        if "symbol" in per_symbol.columns:
+            per_symbol["symbol"] = per_symbol["symbol"].astype(str).str.upper()
+
+        merge_cols = [c for c in ("maker_first", "bias", "quality", "allocator_state") if c in policy_df.columns]
+        if merge_cols:
+            right = policy_df[["symbol"] + merge_cols].drop_duplicates("symbol")
+            per_symbol = per_symbol.merge(right, on="symbol", how="left")
+
+    suggestions = load_router_suggestions_v6()
+    overlays["policy_suggestions"] = suggestions
+
+    if isinstance(suggestions, dict):
+        summary["policy_stale"] = bool(suggestions.get("stale"))
+        if "generated_at" in suggestions:
+            summary["policy_generated_at"] = suggestions.get("generated_at")
+
+    defaults = {
         "count": 0,
         "win_rate": 0.0,
         "avg_pnl": 0.0,
@@ -58,126 +113,34 @@ def _default_summary(updated_ts: Optional[float] = None) -> Dict[str, Any]:
         "fill_rate_pct": 0.0,
         "fees_total": 0.0,
         "realized_pnl": 0.0,
-        "avg_confidence": None,
         "confidence_weighted_cum_pnl": 0.0,
+        "rolling_sharpe_last": 0.0,
         "normalized_sharpe": 0.0,
         "volatility_scale": 1.0,
-        "rolling_sharpe_last": 0.0,
     }
-    if updated_ts is not None:
-        summary["updated_ts"] = updated_ts
-    return summary
+    for key, val in defaults.items():
+        summary.setdefault(key, val)
+    if summary.get("count", 0) == 0 and not per_symbol.empty:
+        try:
+            summary["count"] = int(len(per_symbol))
+        except Exception:
+            summary["count"] = 0
 
-
-def _empty_router_health(updated_ts: Optional[float] = None) -> RouterHealthData:
-    trades_df = pd.DataFrame(
-        columns=[
-            "time",
-            "symbol",
-            "pnl_usd",
-            "attempt_id",
-            "intent_id",
-            "signal",
-            "doctor_confidence",
-            "fees_total",
-        ]
-    )
-    pnl_curve_df = pd.DataFrame(columns=["time", "cum_pnl", "hit_rate", "confidence_weighted_cum_pnl", "rolling_sharpe"])
     return RouterHealthData(
-        trades=trades_df,
-        per_symbol=pd.DataFrame(),
-        pnl_curve=pnl_curve_df,
-        summary=_default_summary(updated_ts),
-        overlays={},
-    )
-
-
-def _mean_from_column(frame: pd.DataFrame, column: str, scale: float | None = None) -> Optional[float]:
-    if column not in frame.columns:
-        return None
-    try:
-        series = pd.to_numeric(frame[column], errors="coerce").dropna()
-    except Exception:
-        return None
-    if series.empty:
-        return None
-    val = float(series.mean())
-    if scale is not None:
-        val *= scale
-    return val
-
-
-def _build_router_health(payload: Mapping[str, Any]) -> RouterHealthData:
-    symbols = payload.get("symbols")
-    updated_ts = _parse_ts(payload.get("updated_ts") or payload.get("updated_at"))
-    if not isinstance(symbols, list):
-        return _empty_router_health(updated_ts)
-    per_symbol_df = pd.DataFrame.from_records(symbols) if symbols else pd.DataFrame()
-    summary = _default_summary(updated_ts)
-    summary["count"] = int(len(per_symbol_df))
-    maker_fill_pct = _mean_from_column(per_symbol_df, "maker_fill_rate", scale=100.0)
-    if maker_fill_pct is not None:
-        summary["fill_rate_pct"] = maker_fill_pct
-    fallback_pct = _mean_from_column(per_symbol_df, "fallback_rate", scale=100.0)
-    if fallback_pct is not None:
-        summary["fallback_rate_pct"] = fallback_pct
-    pnl_curve_df = pd.DataFrame(columns=["time", "cum_pnl", "hit_rate", "confidence_weighted_cum_pnl", "rolling_sharpe"])
-    trades_df = pd.DataFrame(
-        columns=[
-            "time",
-            "symbol",
-            "pnl_usd",
-            "attempt_id",
-            "intent_id",
-            "signal",
-            "doctor_confidence",
-            "fees_total",
-        ]
-    )
-    return RouterHealthData(
-        trades=trades_df,
-        per_symbol=per_symbol_df,
-        pnl_curve=pnl_curve_df,
+        per_symbol=per_symbol,
+        trades=_to_dataframe(trades_snapshot.get("items")) if isinstance(trades_snapshot, dict) else pd.DataFrame(),
+        pnl_curve=pnl_curve,
         summary=summary,
-        overlays={},
+        overlays=overlays,
     )
 
 
-def _load_order_events(limit: int = 0) -> Tuple[list[Dict[str, Any]], list[Dict[str, Any]], list[Dict[str, Any]]]:
-    """Minimal stub for doctor compatibility; returns empty lists (orders not used)."""
+__all__ = ["RouterHealthData", "load_router_health", "is_empty_router_health", "_load_order_events"]
+
+
+def _load_order_events(limit: int = 0) -> Tuple[list, list, list]:
+    """
+    v6 compatibility stub for scripts/doctor.py.
+    """
     _ = limit
-    return [], [], []
-
-
-def _load_state_router_health(path: Optional[Path] = None) -> Optional[RouterHealthData]:
-    target = path or ROUTER_HEALTH_STATE_PATH
-    if not target.exists():
-        return None
-    try:
-        payload = json.loads(target.read_text())
-    except Exception:
-        LOG.debug("[dash] failed to read router health state from %s", target)
-        return None
-    if not isinstance(payload, Mapping):
-        return None
-    return _build_router_health(payload)
-
-
-def load_router_health(
-    window: int = 0,
-    *,
-    signal_path: Path | None = None,
-    order_path: Path | None = None,
-    snapshot: Optional[Mapping[str, Any]] = None,
-    trades_snapshot: Optional[Mapping[str, Any]] = None,
-) -> RouterHealthData:
-    _ = window
-    _ = signal_path
-    _ = order_path
-    _ = trades_snapshot
-    state_view = _load_state_router_health()
-    if state_view is not None:
-        return state_view
-    if snapshot and isinstance(snapshot, Mapping):
-        return _build_router_health(snapshot)
-    return _empty_router_health()
+    return ([], [], [])

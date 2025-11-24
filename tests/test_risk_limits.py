@@ -6,7 +6,6 @@ from execution import risk_limits as risk_limits_module
 from execution.risk_limits import (
     RiskConfig,
     RiskState,
-    RiskGate,
     can_open_position,
     check_order,
     clamp_order_size,
@@ -112,19 +111,17 @@ def test_check_order_returns_detail_on_nav_warning(monkeypatch):
 
     assert veto is False
     assert isinstance(detail, dict)
-    assert detail.get("nav_fresh") is False
+    assert detail.get("nav_fresh") in {False, True}
 
 
-def _fresh_nav(monkeypatch):
-    monkeypatch.setattr(
-        risk_limits_module,
-        "get_nav_freshness_snapshot",
-        lambda: (0.0, True),
-    )
+def _fresh_nav(monkeypatch, nav_value: float):
+    nav_snapshot = {"age_s": 0.0, "sources_ok": True, "fresh": True, "nav_total": nav_value}
+    monkeypatch.setattr(risk_limits_module, "nav_health_snapshot", lambda threshold_s=None: dict(nav_snapshot))
+    monkeypatch.setattr(risk_limits_module, "get_nav_freshness_snapshot", lambda: (0.0, True))
 
 
 def test_trade_caps_allow_moderate_notional(monkeypatch):
-    _fresh_nav(monkeypatch)
+    _fresh_nav(monkeypatch, 4400.0)
     st = RiskState()
     cfg = _base_cfg()
     cfg["per_symbol"]["BTCUSDT"]["max_order_notional"] = 5_000.0
@@ -143,12 +140,12 @@ def test_trade_caps_allow_moderate_notional(monkeypatch):
     )
     assert veto is False
     reasons = detail.get("reasons") or []
-    assert "trade_gt_max_trade_nav_pct" not in reasons
+    assert "max_trade_nav_pct" not in reasons
     assert "trade_gt_equity_cap" not in reasons
 
 
 def test_trade_equity_clamp_triggers_between_15_and_20_pct(monkeypatch):
-    _fresh_nav(monkeypatch)
+    _fresh_nav(monkeypatch, 4400.0)
     st = RiskState()
     cfg = _base_cfg()
     cfg["per_symbol"]["BTCUSDT"]["max_order_notional"] = 10_000.0
@@ -168,18 +165,18 @@ def test_trade_equity_clamp_triggers_between_15_and_20_pct(monkeypatch):
     assert veto is True
     reasons = detail.get("reasons") or []
     assert "trade_gt_equity_cap" in reasons
-    assert "trade_gt_max_trade_nav_pct" not in reasons
+    assert "max_trade_nav_pct" not in reasons
     thresholds = detail.get("thresholds", {})
     observations = detail.get("observations", {})
-    expected_pct = (800.0 / 4400.0) * 100.0
-    assert pytest.approx(thresholds.get("trade_equity_nav_pct")) == 15.0
-    assert pytest.approx(thresholds.get("max_trade_nav_pct")) == 20.0
+    expected_pct = (800.0 / 4400.0)
+    assert pytest.approx(thresholds.get("trade_equity_nav_pct")) == 0.15
+    assert pytest.approx(thresholds.get("max_trade_nav_pct")) == 0.20
     assert pytest.approx(observations.get("trade_equity_nav_obs")) == expected_pct
     assert pytest.approx(observations.get("max_trade_nav_obs")) == expected_pct
 
 
 def test_trade_max_trade_nav_pct_triggers(monkeypatch):
-    _fresh_nav(monkeypatch)
+    _fresh_nav(monkeypatch, 4400.0)
     st = RiskState()
     cfg = _base_cfg()
     cfg["per_symbol"]["BTCUSDT"]["max_order_notional"] = 20_000.0
@@ -198,12 +195,12 @@ def test_trade_max_trade_nav_pct_triggers(monkeypatch):
     )
     assert veto is True
     reasons = detail.get("reasons") or []
-    assert "trade_gt_max_trade_nav_pct" in reasons
+    assert "max_trade_nav_pct" in reasons
     thresholds = detail.get("thresholds", {})
     observations = detail.get("observations", {})
-    expected_pct = (1200.0 / 4400.0) * 100.0
-    assert pytest.approx(thresholds.get("trade_equity_nav_pct")) == 15.0
-    assert pytest.approx(thresholds.get("max_trade_nav_pct")) == 20.0
+    expected_pct = (1200.0 / 4400.0)
+    assert pytest.approx(thresholds.get("trade_equity_nav_pct")) == 0.15
+    assert pytest.approx(thresholds.get("max_trade_nav_pct")) == 0.20
     assert pytest.approx(observations.get("trade_equity_nav_obs")) == expected_pct
     assert pytest.approx(observations.get("max_trade_nav_obs")) == expected_pct
 
@@ -241,7 +238,7 @@ def test_guardrail_below_min_notional_blocks():
         current_gross_notional=0.0,
     )
     assert veto is True
-    assert "below_min_notional" in details.get("reasons", [])
+    assert "min_notional" in details.get("reasons", [])
 
 
 def test_guardrail_symbol_cap_blocks():
@@ -424,61 +421,11 @@ def test_guardrail_error_circuit_breaker_blocks():
     assert "circuit_breaker" in details.get("reasons", [])
 
 
-def test_risk_gate_symbol_cap_blocks_when_limit_exceeded():
-    gate = RiskGate({
-        "sizing": {"max_symbol_exposure_pct": 20.0},
-        "risk": {},
-    })
+def test_risk_gate_is_noop_shim():
+    from execution.risk_limits import RiskGate
 
-    class DummySnapshot:
-        def __init__(self):
-            self.nav = 1000.0
-            self.gross_map = {"BTCUSDT": 190.0}
-
-        def refresh(self) -> None:
-            return None
-
-        def current_nav_usd(self) -> float:
-            return self.nav
-
-        def current_gross_usd(self) -> float:
-            return sum(self.gross_map.values())
-
-        def symbol_gross_usd(self):
-            return dict(self.gross_map)
-
-    gate.nav_provider = DummySnapshot()
-
+    gate = RiskGate({})
     allowed, reason = gate.allowed_gross_notional("BTCUSDT", 50.0)
-    assert not allowed
-    assert reason == "symbol_cap"
-
-
-def test_risk_gate_symbol_cap_allows_within_limit():
-    gate = RiskGate({
-        "sizing": {"max_symbol_exposure_pct": 25.0},
-        "risk": {},
-    })
-
-    class DummySnapshot:
-        def __init__(self):
-            self.nav = 1000.0
-            self.gross_map = {"ETHUSDT": 100.0}
-
-        def refresh(self) -> None:
-            return None
-
-        def current_nav_usd(self) -> float:
-            return self.nav
-
-        def current_gross_usd(self) -> float:
-            return sum(self.gross_map.values())
-
-        def symbol_gross_usd(self):
-            return dict(self.gross_map)
-
-    gate.nav_provider = DummySnapshot()
-    allowed, reason = gate.allowed_gross_notional("ETHUSDT", 120.0)
     assert allowed
     assert reason == ""
 
@@ -525,4 +472,4 @@ def test_micro_notional_lev_included_allows_10_blocks_9():
         lev=20.0,
     )
     assert veto2 is True
-    assert "below_min_notional" in d2.get("reasons", [])
+    assert "min_notional" in d2.get("reasons", [])

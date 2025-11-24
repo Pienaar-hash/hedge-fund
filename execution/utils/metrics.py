@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - fallback for tests/CLI
 from execution import router_metrics
 
 
-ALLOWED_SUFFIXES = ("USDC", "USDT")
+ALLOWED_SUFFIXES = ("USDC", "USDT", "FDUSD")
 
 
 def is_in_asset_universe(symbol: str) -> bool:
@@ -200,11 +200,20 @@ def hourly_expectancy(symbol: str) -> Dict[int, float]:
     return pnl_tracker.get_hourly_expectancy(symbol=symbol, window_days=7)
 
 
-def router_effectiveness_7d(symbol: Optional[str] = None) -> Dict[str, Optional[float]]:
+def router_effectiveness_7d(symbol: Optional[str] = None, window_days: Optional[float] = None) -> Dict[str, Optional[float]]:
     """
     Compute router quality stats over the last ~7 days.
     """
-    events = router_metrics.get_recent_router_events(symbol=symbol, window_days=7)
+    try:
+        env_window = float(os.getenv("ROUTER_EFFECTIVENESS_WINDOW_DAYS") or 0.0)
+    except Exception:
+        env_window = 0.0
+    if window_days is None or window_days <= 0:
+        window_days = env_window or 7.0
+    else:
+        window_days = env_window or window_days
+
+    events = router_metrics.get_recent_router_events(symbol=symbol, window_days=int(window_days))
     if not events:
         return {
             "maker_fill_ratio": None,

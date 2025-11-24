@@ -1,11 +1,8 @@
 {
+  "version": "v6.2",
   "use_futures": true,
   "poll_seconds": 300,
-  "universe": [
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT"
-  ],
+  "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
   "nav": {
     "trading_source": "exchange",
     "reporting_source": "exchange",
@@ -13,9 +10,7 @@
     "manual_nav_usdt": null
   },
   "sizing": {
-    "capital_per_trade_usdt": 6.0,
     "default_leverage": 3,
-    "target_gross_usd_per_order": 18,
     "slippage_bps": 3,
     "taker_fee_bps": 5,
     "atr_interval": "1h",
@@ -23,34 +18,30 @@
     "vol_target_bps": 25
   },
   "signals": {
-    "timeframe": "4h",
+    "timeframe": "15m",
     "momentum": {
-      "ema_fast": 20,
-      "ema_slow": 50,
-      "rsi_len": 14,
-      "rsi_buy": 55,
-      "rsi_sell": 45
+        "ema_fast": 20,
+        "ema_slow": 50,
+        "rsi_len": 14,
+        "rsi_buy": 55,
+        "rsi_sell": 45
     },
     "zscore": {
       "lookback": 48,
-      "entry": 1.5,
+      "entry": 1.0,
       "exit": 0.5
     },
-    "enable_ai_screener": true,
+    "enable_ai_screener": false,
     "use_shared_risk_gate": true
   },
   "ml": {
-    "enabled": true,
+    "enabled": false,
     "timeframe": "1h",
     "lookback_bars": 1500,
     "horizon_bars": 4,
     "target_ret_bps": 20,
     "prob_threshold": 0.68,
-    "symbols": [
-      "BTCUSDT",
-      "ETHUSDT",
-      "SOLUSDT"
-    ],
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
     "features": {
       "ema_fast": 20,
       "ema_slow": 50,
@@ -69,239 +60,77 @@
   },
   "strategies": [
     {
-      "id": "btc_micro",
-      "label": "Btc Micro",
+      "id": "btc_m15",
+      "label": "BTC 15m momentum",
       "enabled": true,
       "symbol": "BTCUSDT",
       "timeframe": "15m",
-      "tags": [
-        "majors"
-      ],
       "params": {
-        "capital_per_trade": 5.0,
-        "leverage": 5,
-        "bucket": "majors",
+        "per_trade_nav_pct": 0.015,
+        "leverage": 4,
+        "bucket": "CORE",
         "risk": {
           "fixed_sl_pct": 0.4,
           "fixed_tp_pct": 0.8,
           "atr_period": 14,
           "atr_mult": 1.0,
           "max_bars": 60,
-          "trail": {
-            "width_pct": 0.004
-          }
+          "trail": { "width_pct": 0.004 }
         },
         "entry": {
           "type": "rsi_band",
-          "band": [
-            30,
-            70
-          ],
-          "zmin": 1.2
+          "band": [35, 65],
+          "zmin": 0.6
         }
       }
     },
     {
-      "id": "eth_micro",
-      "label": "Eth Micro",
+      "id": "eth_m15",
+      "label": "ETH 15m momentum",
       "enabled": true,
       "symbol": "ETHUSDT",
       "timeframe": "15m",
-      "tags": [
-        "majors"
-      ],
       "params": {
-        "capital_per_trade": 5.0,
+        "per_trade_nav_pct": 0.015,
         "leverage": 3,
-        "bucket": "majors",
+        "bucket": "CORE",
         "risk": {
           "fixed_sl_pct": 0.5,
           "fixed_tp_pct": 1.0,
           "atr_period": 14,
           "atr_mult": 1.2,
           "max_bars": 60,
-          "trail": {
-            "width_pct": 0.005
-          }
+          "trail": { "width_pct": 0.005 }
         },
         "entry": {
           "type": "rsi_band",
-          "band": [
-            30,
-            70
-          ],
-          "zmin": 1.0
+          "band": [35, 65],
+          "zmin": 0.7
         }
       }
     },
     {
-      "id": "sol_micro",
-      "label": "Sol Micro",
+      "id": "sol_m15",
+      "label": "SOL 15m momentum",
       "enabled": true,
       "symbol": "SOLUSDT",
       "timeframe": "15m",
-      "tags": [
-        "alts"
-      ],
       "params": {
-        "capital_per_trade": 5.0,
+        "per_trade_nav_pct": 0.01,
         "leverage": 3,
-        "bucket": "alts",
+        "bucket": "SATELLITE",
         "risk": {
           "fixed_sl_pct": 0.5,
           "fixed_tp_pct": 1.0,
           "atr_period": 14,
           "atr_mult": 1.2,
           "max_bars": 60,
-          "trail": {
-            "width_pct": 0.005
-          }
+          "trail": { "width_pct": 0.005 }
         },
         "entry": {
           "type": "rsi_band",
-          "band": [
-            30,
-            70
-          ],
-          "zmin": 1.0
-        }
-      }
-    },
-    {
-      "id": "link_micro",
-      "label": "Link Micro",
-      "enabled": false,
-      "symbol": "LINKUSDT",
-      "timeframe": "15m",
-      "tags": [
-        "alts",
-        "experimental"
-      ],
-      "params": {
-        "experimental": true,
-        "capital_per_trade": 5.0,
-        "leverage": 3,
-        "bucket": "alts",
-        "risk": {
-          "fixed_sl_pct": 0.5,
-          "fixed_tp_pct": 1.0,
-          "atr_period": 14,
-          "atr_mult": 1.0,
-          "max_bars": 60,
-          "trail": {
-            "width_pct": 0.005
-          }
-        },
-        "entry": {
-          "type": "rsi_band",
-          "band": [
-            30,
-            70
-          ],
-          "zmin": 0.9
-        }
-      }
-    },
-    {
-      "id": "ltc_micro",
-      "label": "Ltc Micro",
-      "enabled": false,
-      "symbol": "LTCUSDT",
-      "timeframe": "15m",
-      "tags": [
-        "experimental"
-      ],
-      "params": {
-        "experimental": true,
-        "capital_per_trade": 5.0,
-        "leverage": 2,
-        "risk": {
-          "fixed_sl_pct": 0.6,
-          "fixed_tp_pct": 1.2,
-          "atr_period": 14,
-          "atr_mult": 1.1,
-          "max_bars": 60,
-          "trail": {
-            "width_pct": 0.006
-          }
-        },
-        "entry": {
-          "type": "rsi_band",
-          "band": [
-            30,
-            70
-          ],
-          "zmin": 1.0
-        }
-      }
-    },
-    {
-      "id": "sui_micro",
-      "label": "Sui Micro",
-      "enabled": false,
-      "symbol": "SUIUSDT",
-      "timeframe": "15m",
-      "tags": [
-        "alts",
-        "experimental"
-      ],
-      "params": {
-        "experimental": true,
-        "capital_per_trade": 5.0,
-        "leverage": 2,
-        "bucket": "alts",
-        "risk": {
-          "fixed_sl_pct": 0.7,
-          "fixed_tp_pct": 1.4,
-          "atr_period": 14,
-          "atr_mult": 1.2,
-          "max_bars": 60,
-          "trail": {
-            "width_pct": 0.007
-          }
-        },
-        "entry": {
-          "type": "rsi_band",
-          "band": [
-            30,
-            70
-          ],
-          "zmin": 1.1
-        }
-      }
-    },
-    {
-      "id": "wif_micro",
-      "label": "Wif Micro",
-      "enabled": false,
-      "symbol": "WIFUSDT",
-      "timeframe": "15m",
-      "tags": [
-        "alts",
-        "experimental"
-      ],
-      "params": {
-        "experimental": true,
-        "capital_per_trade": 5.0,
-        "leverage": 2,
-        "bucket": "alts",
-        "risk": {
-          "fixed_sl_pct": 0.9,
-          "fixed_tp_pct": 1.8,
-          "atr_period": 14,
-          "atr_mult": 1.2,
-          "max_bars": 60,
-          "trail": {
-            "width_pct": 0.01
-          }
-        },
-        "entry": {
-          "type": "rsi_band",
-          "band": [
-            30,
-            70
-          ],
-          "zmin": 1.2
+          "band": [35, 65],
+          "zmin": 0.6
         }
       }
     }

@@ -7,6 +7,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 import time
 from pathlib import Path
+from execution.risk_loader import load_risk_config
 
 try:
     from .exchange_utils import get_symbol_filters  # online listing check
@@ -311,7 +312,7 @@ def resolve_allowed_symbols() -> Tuple[List[str], Dict[str, str]]:
     # Optional throttle blocklist
     throttle_block: Set[str] = set()
     try:
-        cfg = _load_json("config/risk_limits.json", {})
+        cfg = load_risk_config()
         bl = ((cfg.get("global") or {}).get("throttle") or {}).get("blocked") or []
         throttle_block = {str(x).upper() for x in bl}
     except Exception:

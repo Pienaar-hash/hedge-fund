@@ -41,7 +41,6 @@ def test_pipeline_shadow_allowed(monkeypatch, tmp_path):
     monkeypatch.setattr("execution.pipeline_v6_shadow.router_policy", lambda _s: type("P", (), {"maker_first": True, "taker_bias": "balanced", "quality": "ok"})())
     monkeypatch.setattr("execution.pipeline_v6_shadow.suggest_maker_offset_bps", lambda _s: 1.0)
     monkeypatch.setattr("execution.pipeline_v6_shadow.effective_px", lambda px, side, is_maker=True: px)
-    monkeypatch.setattr("execution.pipeline_v6_shadow.suggest_gross_usd", lambda *args, **kwargs: {"gross_usd": 100.0})
     engine = FakeRiskEngine(allowed=True)
     result = run_pipeline_v6_shadow(
         "BTCUSDT",
@@ -55,6 +54,7 @@ def test_pipeline_shadow_allowed(monkeypatch, tmp_path):
     )
     assert result["risk_decision"]["allowed"] is True
     assert "router_decision" in result
+    assert result["size_decision"]["gross_usd"] == 100.0
     append_shadow_decision(result)
     entries = load_shadow_decisions(limit=10)
     assert len(entries) == 1

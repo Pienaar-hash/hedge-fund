@@ -1,0 +1,100 @@
+{
+  "directories": {
+    "execution": [
+      {"file": "execution/executor_live.py", "summary": "Executor main loop consuming intents, applying risk, routing orders."},
+      {"file": "execution/signal_screener.py", "summary": "Generates trading intents, unlevered sizing, signal logic."},
+      {"file": "execution/signal_generator.py", "summary": "Signal utilities and normalization helpers."},
+      {"file": "execution/risk_limits.py", "summary": "Risk caps and veto logic; per-trade/portfolio/symbol checks."},
+      {"file": "execution/risk_engine_v6.py", "summary": "Risk orchestration, account checks, integrates risk_limits."},
+      {"file": "execution/risk_loader.py", "summary": "Loads/normalizes risk config, applies testnet overrides."},
+      {"file": "execution/nav.py", "summary": "NAV computation from exchange balances/positions; freshness checks."},
+      {"file": "execution/order_router.py", "summary": "Maker-first router with offsets, post-only fallback, fill monitoring."},
+      {"file": "execution/runtime_config.py", "summary": "Loads runtime.yaml for router/execution tunables."},
+      {"file": "execution/state_publish.py", "summary": "Publishes consolidated state to logs/state/*."},
+      {"file": "execution/sync_state.py", "summary": "Mirrors/cleans state files for dashboard consumption."},
+      {"file": "execution/events.py", "summary": "JSONL event writer for orders/fills/health."},
+      {"file": "execution/router_metrics.py", "summary": "Aggregates router metrics and slippage stats."},
+      {"file": "execution/trade_logs.py", "summary": "Trade log helpers."},
+      {"file": "execution/pnl_tracker.py", "summary": "Tracks PnL across positions."},
+      {"file": "execution/position_sizing.py", "summary": "Position sizing utilities."},
+      {"file": "execution/drawdown_tracker.py", "summary": "Drawdown state, peak tracking, cooldown enforcement."},
+      {"file": "execution/universe_resolver.py", "summary": "Universe/tier resolution and symbol filters."},
+      {"file": "execution/orderbook_features.py", "summary": "Orderbook imbalance gate metrics."},
+      {"file": "execution/intel/maker_offset.py", "summary": "Suggests maker offsets (bps) for router."},
+      {"file": "execution/intel/router_policy.py", "summary": "Router policy selection logic."},
+      {"file": "execution/intel/router_autotune_v6.py", "summary": "Generates router tuning suggestions."},
+      {"file": "execution/intel/router_autotune_apply_v6.py", "summary": "Applies router autotune suggestions."},
+      {"file": "execution/intel/pipeline_v6_compare.py", "summary": "Pipeline compare tooling."},
+      {"file": "execution/intel/pipeline_v6_shadow.py", "summary": "Shadow pipeline logic."},
+      {"file": "execution/intel/expectancy_map.py", "summary": "Expectancy map calculations."},
+      {"file": "execution/intel/expectancy_v6.py", "summary": "Expectancy computation utilities."},
+      {"file": "execution/intel/feedback_allocator_v6.py", "summary": "Feedback allocator for intel signals."},
+      {"file": "execution/intel/symbol_score.py", "summary": "Symbol scoring helpers."},
+      {"file": "execution/intel/symbol_score_v6.py", "summary": "Legacy v6 symbol scoring (still active surface)."},
+      {"file": "execution/log_utils.py", "summary": "Structured logging helpers, veto/event emitters."},
+      {"file": "execution/metrics_normalizer.py", "summary": "Normalization for metrics payloads."},
+      {"file": "execution/mirror_builders.py", "summary": "State mirroring utilities."},
+      {"file": "execution/fills.py", "summary": "Fill processing helpers."},
+      {"file": "execution/firestore_utils.py", "summary": "Firestore integration helpers."},
+      {"file": "execution/telegram_report.py", "summary": "Telegram reporting."},
+      {"file": "execution/telegram_utils.py", "summary": "Telegram helpers."},
+      {"file": "execution/utils/metrics.py", "summary": "Metrics utilities."},
+      {"file": "execution/utils/expectancy.py", "summary": "Expectancy utility functions."},
+      {"file": "execution/utils/execution_health.py", "summary": "Execution health tracking."},
+      {"file": "execution/utils/vol.py", "summary": "Volatility utilities."},
+      {"file": "execution/utils/toggle.py", "summary": "Feature toggles helper."}
+    ],
+    "dashboard": [
+      {"file": "dashboard/app.py", "summary": "Streamlit entrypoint composing panels."},
+      {"file": "dashboard/nav_helpers.py", "summary": "NAV display helpers."},
+      {"file": "dashboard/pipeline_panel.py", "summary": "Pipeline/intents display."},
+      {"file": "dashboard/intel_panel.py", "summary": "Intel scores/offsets panel."},
+      {"file": "dashboard/router_health.py", "summary": "Router health metrics panel."},
+      {"file": "dashboard/router_policy.py", "summary": "Displays router policy state."},
+      {"file": "dashboard/live_helpers.py", "summary": "Live positions/orders helpers."},
+      {"file": "dashboard/dashboard_utils.py", "summary": "Shared dashboard utilities."}
+    ],
+    "scripts": [
+      {"file": "scripts/strategy_probe.py", "summary": "Manual screener/executor probe."},
+      {"file": "scripts/pipeline_shadow_heartbeat.py", "summary": "Shadow pipeline heartbeat daemon."},
+      {"file": "scripts/pipeline_compare_service.py", "summary": "Pipeline compare service."},
+      {"file": "scripts/route_debug.py", "summary": "Router debug helper."},
+      {"file": "scripts/exec_debug.py", "summary": "Executor debug helper."},
+      {"file": "scripts/nav_debug.py", "summary": "NAV debugging helper."},
+      {"file": "scripts/quick_checks.sh", "summary": "Quick diagnostic script."},
+      {"file": "scripts/quick_watch.sh", "summary": "Tail watcher for logs."},
+      {"file": "scripts/run_executor_once.sh", "summary": "One-shot executor run."},
+      {"file": "scripts/pipeline_compare_service.py", "summary": "Compare pipeline outputs."},
+      {"file": "scripts/pipeline_shadow_heartbeat.py", "summary": "Shadow pipeline ticker."},
+      {"file": "scripts/tail_exec_log.sh", "summary": "Tail executor log."},
+      {"file": "scripts/go_live_now.sh", "summary": "Activation helper."},
+      {"file": "scripts/exec_once_timeout.sh", "summary": "Timeout wrapper for executor run."},
+      {"file": "scripts/write_keys_env.sh", "summary": "Environment key writer."}
+    ],
+    "config": [
+      {"file": "config/strategy_config.json", "summary": "Strategies, per_trade_nav_pct, leverage metadata, signals."},
+      {"file": "config/strategy_registry.json", "summary": "Strategy registry metadata."},
+      {"file": "config/risk_limits.json", "summary": "Risk caps (fractional), per-symbol limits, testnet overrides."},
+      {"file": "config/runtime.yaml", "summary": "Router/runtime tunables (post-only, offsets, fees, windows)."},
+      {"file": "config/pairs_universe.json", "summary": "Universe definition and per-symbol caps."},
+      {"file": "config/symbol_tiers.json", "summary": "Symbol tier assignments."},
+      {"file": "config/assets.json", "summary": "Asset metadata."},
+      {"file": "config/reserves.json", "summary": "Reserve allocations."},
+      {"file": "config/settings.json", "summary": "General settings."}
+    ],
+    "ops": [
+      {"file": "ops/hedge.conf", "summary": "Supervisor config snippet for services."},
+      {"file": "ops/nginx_site.conf", "summary": "Nginx site configuration."},
+      {"file": "ops/README.md", "summary": "Ops notes."},
+      {"file": "ops/grep_patterns.txt", "summary": "Log grep patterns."}
+    ],
+    "bin": [
+      {"file": "bin/run-executor.sh", "summary": "Start executor service."},
+      {"file": "bin/run-dashboard.sh", "summary": "Launch dashboard (Streamlit)."},
+      {"file": "bin/run-sync.sh", "summary": "Run sync_state mirror."}
+    ],
+    "root": [
+      {"file": "VERSION", "summary": "Current version marker."}
+    ]
+  }
+}

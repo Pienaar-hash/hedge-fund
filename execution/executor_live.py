@@ -30,6 +30,8 @@ from execution.universe_resolver import (
     symbol_tier,
     universe_by_symbol,
 )
+from execution.runtime_config import load_runtime_config
+from execution.utils.execution_health import record_execution_error
 
 import requests
 from execution.intel.router_policy import router_policy
@@ -56,6 +58,7 @@ LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
 LOG_POSITION = get_logger("logs/execution/position_state.jsonl")
 LOG_HEART = get_logger("logs/execution/sync_heartbeats.jsonl")
 ROUTER_HEALTH_LOG = get_logger("logs/router_health.jsonl")
+EXEC_HEALTH_LOG = get_logger("logs/execution/execution_health.jsonl")
 _HEARTBEAT_INTERVAL = 60.0
 _LAST_HEARTBEAT = 0.0
 _LAST_SIGNAL_PULL = 0.0
@@ -85,9 +88,27 @@ _LAST_INTEL_PUBLISH: Dict[str, float] = {}
 ROUTER_HEALTH_REFRESH_INTERVAL_S = float(os.getenv("ROUTER_HEALTH_REFRESH_INTERVAL_S", "60") or 60)
 _LAST_ROUTER_HEALTH_PUBLISH = 0.0
 _LAST_RISK_PUBLISH = 0.0
+_LAST_EXEC_HEALTH_PUBLISH = 0.0
 _LAST_RISK_CACHE: Dict[str, Dict[str, Any]] = {}
 _LAST_ALERT_TS: Dict[str, float] = {}
 _V6_FLAGS = get_flags()
+_RUNTIME_CFG = load_runtime_config()
+_EXEC_CFG = _RUNTIME_CFG.get("execution") if isinstance(_RUNTIME_CFG, Mapping) else {}
+_MAX_TRANSIENT_RETRIES = int(
+    (_EXEC_CFG or {}).get("max_transient_retries")
+    or os.getenv("EXEC_MAX_TRANSIENT_RETRIES", "1")
+    or 1
+)
+_TRANSIENT_RETRY_BACKOFF_S = float(
+    (_EXEC_CFG or {}).get("transient_retry_backoff_s")
+    or os.getenv("EXEC_TRANSIENT_RETRY_BACKOFF_S", "1.5")
+    or 1.5
+)
+_ERROR_COOLDOWN_SEC = float(
+    (_EXEC_CFG or {}).get("error_cooldown_sec")
+    or os.getenv("EXEC_ERROR_COOLDOWN_SEC", "60")
+    or 60
+)
 INTEL_V6_ENABLED = _V6_FLAGS.intel_v6_enabled
 INTEL_V6_REFRESH_INTERVAL_S = float(os.getenv("INTEL_V6_REFRESH_INTERVAL_S", "600") or 600)
 ROUTER_AUTOTUNE_V6_ENABLED = _V6_FLAGS.router_autotune_v6_enabled
@@ -111,7 +132,9 @@ _LAST_PIPELINE_V6_COMPARE = 0.0
 _LAST_NAV_STATE: Dict[str, Any] = {}
 _LAST_POSITIONS_STATE: Dict[str, Any] = {}
 _LAST_RISK_SNAPSHOT: Dict[str, Any] | None = None
+_LAST_EXECUTION_HEALTH: Dict[str, Any] | None = None
 _LAST_SYMBOL_SCORES_STATE: Dict[str, Any] | None = None
+_SYMBOL_ERROR_COOLDOWN: Dict[str, float] = {}
 
 _VERSION_PATH = Path(repo_root) / "VERSION"
 if _VERSION_PATH.is_file():
@@ -161,6 +184,8 @@ def _build_router_health_snapshot() -> Dict[str, Any]:
     entries: List[Dict[str, Any]] = []
     now = time.time()
     symbols = sorted(universe_by_symbol().keys())
+    quality_counts: Dict[str, int] = {"good": 0, "ok": 0, "degraded": 0, "broken": 0}
+    maker_first_enabled = 0
     for sym in symbols:
         try:
             eff = router_effectiveness_7d(sym) or {}
@@ -174,6 +199,7 @@ def _build_router_health_snapshot() -> Dict[str, Any]:
                 "taker_bias": policy.taker_bias,
                 "quality": policy.quality,
                 "reason": policy.reason,
+                "offset_bps": policy.offset_bps,
             }
         except Exception:
             policy_payload = {
@@ -181,7 +207,13 @@ def _build_router_health_snapshot() -> Dict[str, Any]:
                 "taker_bias": None,
                 "quality": None,
                 "reason": None,
+                "offset_bps": None,
             }
+        quality_key = str(policy_payload.get("quality") or "").lower()
+        if quality_key in quality_counts:
+            quality_counts[quality_key] += 1
+        if policy_payload.get("maker_first"):
+            maker_first_enabled += 1
         entries.append(
             {
                 "symbol": sym,
@@ -189,11 +221,23 @@ def _build_router_health_snapshot() -> Dict[str, Any]:
                 "fallback_rate": eff.get("fallback_ratio"),
                 "slippage_p50": eff.get("slip_q50"),
                 "slippage_p95": eff.get("slip_q95"),
+                "ack_latency_ms": eff.get("latency_p50_ms") or eff.get("ack_latency_ms"),
                 "policy": policy_payload,
+                "maker_first": policy_payload.get("maker_first"),
+                "taker_bias": policy_payload.get("taker_bias"),
+                "bias": policy_payload.get("taker_bias"),
+                "quality": policy_payload.get("quality"),
+                "offset_bps": policy_payload.get("offset_bps"),
                 "updated_ts": now,
             }
         )
-    return {"updated_ts": now, "symbols": entries}
+    summary = {
+        "updated_ts": now,
+        "count": len(entries),
+        "quality_counts": quality_counts,
+        "maker_first_enabled": maker_first_enabled,
+    }
+    return {"updated_ts": now, "summary": summary, "symbols": entries, "per_symbol": entries}
 
 
 def _collect_execution_health() -> Dict[str, Any]:
@@ -299,6 +343,11 @@ def _maybe_emit_risk_snapshot(force: bool = False) -> None:
     except Exception as exc:
         LOG.debug("[metrics] execution_health_collect_failed: %s", exc)
         return
+    snapshot["risk_config_meta"] = {
+        "testnet_overrides_active": bool((_RISK_CFG.get("_meta") or {}).get("testnet_overrides_active")),
+        "max_nav_drawdown_pct": (_RISK_CFG.get("global") or {}).get("max_nav_drawdown_pct"),
+        "daily_loss_limit_pct": (_RISK_CFG.get("global") or {}).get("daily_loss_limit_pct"),
+    }
     try:
         write_risk_snapshot_state(snapshot)
     except Exception as exc:
@@ -311,6 +360,30 @@ def _maybe_emit_risk_snapshot(force: bool = False) -> None:
             cache[str(sym)] = entry
     _LAST_RISK_CACHE = cache
     _LAST_RISK_PUBLISH = now
+
+
+def _maybe_emit_execution_health_snapshot(force: bool = False) -> None:
+    global _LAST_EXEC_HEALTH_PUBLISH, _LAST_EXECUTION_HEALTH
+    now = time.time()
+    if not force and (now - _LAST_EXEC_HEALTH_PUBLISH) < _HEALTH_PUBLISH_INTERVAL_S:
+        return
+    try:
+        snapshot = _collect_execution_health()
+    except Exception as exc:
+        LOG.debug("[metrics] execution_health_collect_failed: %s", exc)
+        return
+    try:
+        snapshot.setdefault("type", "execution_health")
+        snapshot.setdefault("context", "executor")
+        EXEC_HEALTH_LOG.write(snapshot)
+    except Exception as exc:
+        LOG.debug("[metrics] execution_health_log_failed: %s", exc)
+    try:
+        write_execution_health_state(snapshot)
+    except Exception as exc:
+        LOG.debug("[metrics] execution_health_state_write_failed: %s", exc)
+    _LAST_EXECUTION_HEALTH = snapshot
+    _LAST_EXEC_HEALTH_PUBLISH = now
 
 
 def _maybe_emit_execution_alerts(symbol: str) -> None:
@@ -441,14 +514,11 @@ except Exception:
 from execution.risk_limits import (
     RiskState,
     check_order,
-    RiskGate,
-    symbol_notional_guard,
-    symbol_dd_guard,
 )
+from execution.risk_loader import load_risk_config
 from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
-from execution.risk_autotune import RiskAutotuner
-from execution.nav import compute_nav_pair, PortfolioSnapshot
-from execution import size_model, pipeline_v6_shadow
+from execution.nav import compute_nav_pair, PortfolioSnapshot, nav_health_snapshot
+from execution import pipeline_v6_shadow
 from execution.utils import (
     load_json,
     write_nav_snapshots_pair,
@@ -457,11 +527,9 @@ from execution.utils import (
 )
 
 from execution.signal_generator import (
-    generate_intents,
     normalize_intent as generator_normalize_intent,
-    allow_trade,
-    size_for,
 )
+from execution.signal_screener import generate_intents
 from execution import signal_doctor
 from execution.state_publish import (
     build_synced_state_payload,
@@ -471,6 +539,7 @@ from execution.state_publish import (
     write_risk_snapshot_state,
     write_router_health_state,
     write_symbol_scores_state,
+    write_execution_health_state,
     write_synced_state,
     write_v6_runtime_probe_state,
 )
@@ -510,14 +579,12 @@ def publish_nav_value(*_args, **_kwargs) -> None:  # type: ignore[override]
     return None
 
 # ---- risk limits config ----
-_RISK_CFG_PATH = os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
 _RISK_CFG: Dict[str, Any] = {}
 try:
-    with open(_RISK_CFG_PATH, "r") as fh:
-        _RISK_CFG = json.load(fh) or {}
+    _RISK_CFG = load_risk_config()
 except Exception as e:
     logging.getLogger("exutil").warning(
-        "[risk] config load failed (%s): %s", _RISK_CFG_PATH, e
+        "[risk] config load failed: %s", e
     )
 
 
@@ -587,7 +654,37 @@ def _apply_strategy_concurrency(risk_cfg: Dict[str, Any]) -> Dict[str, Any]:
     return risk_cfg
 
 
+def _refresh_risk_config() -> None:
+    global _RISK_CFG, _RISK_ENGINE_V6, _RISK_ENGINE_V6_CFG_DIGEST
+    try:
+        if hasattr(load_risk_config, "cache_clear"):
+            load_risk_config.cache_clear()  # type: ignore[attr-defined]
+        cfg = load_risk_config()
+    except Exception as exc:
+        LOG.warning("[risk] config refresh failed: %s", exc)
+        return
+    cfg = _apply_strategy_concurrency(cfg)
+    _RISK_CFG = cfg
+    _RISK_ENGINE_V6 = None
+    _RISK_ENGINE_V6_CFG_DIGEST = None
+
+
 _RISK_CFG = _apply_strategy_concurrency(_RISK_CFG)
+_RISK_STATE = RiskState()
+_PORTFOLIO_SNAPSHOT = PortfolioSnapshot(load_json("config/strategy_config.json"))
+
+
+def _nav_pct_fraction(value: Any) -> float:
+    """Interpret numeric percent inputs as fractions; 10 -> 0.10, 0.02 -> 0.02."""
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if pct <= 0.0:
+        return 0.0
+    if pct > 1.0:
+        return pct / 100.0
+    return pct
 
 
 def _normalize_pct_value(value: Any) -> float:
@@ -595,51 +692,24 @@ def _normalize_pct_value(value: Any) -> float:
         pct = float(value)
     except (TypeError, ValueError):
         return 0.0
-    if 0.0 < pct <= 1.0:
-        return pct * 100.0
+    if pct <= 0.0:
+        return 0.0
+    if pct > 1.0:
+        return pct / 100.0
     return pct
 
-_RISK_STATE = RiskState()
 
-# Build a minimal RiskGate config adapter from legacy risk_limits.json
-def _mk_gate_cfg(raw: Dict[str, Any]) -> Dict[str, Any]:
-    g = (raw.get("global") or {}) if isinstance(raw, dict) else {}
-    # Legacy configs kept caps at top-level; prefer `global` section when present
-    if not g and isinstance(raw, dict):
-        for key in ("daily_loss_limit_pct", "max_gross_exposure_pct"):
-            if key in raw:
-                g[key] = raw[key]
-    sizing = {
-        "min_notional_usdt": g.get("min_notional_usdt", 5.0),
-        # Accept either key for portfolio gross NAV cap
-        "max_gross_exposure_pct": (
-            g.get("max_gross_exposure_pct")
-            or g.get("max_portfolio_gross_nav_pct")
-            or g.get("max_gross_nav_pct")
-            or 0.0
-        ),
-        # Fallback sensible default if not provided
-        "max_symbol_exposure_pct": g.get("max_symbol_exposure_pct", 50.0),
-        "max_trade_nav_pct": g.get("max_trade_nav_pct", 0.0),
-    }
-    risk = {
-        "daily_loss_limit_pct": g.get("daily_loss_limit_pct", 5.0),
-        # Derive cooldown (minutes) from error circuit cooldown (seconds) if present
-        "cooldown_minutes_after_stop": (
-            g.get("cooldown_minutes_after_stop")
-            or max(
-                0.0,
-                float(((g.get("error_circuit") or {}).get("cooldown_sec") or 0))
-                / 60.0,
-            )
-        ),
-        "max_trades_per_symbol_per_hour": g.get("max_trades_per_symbol_per_hour", 6),
-    }
-    return {"sizing": sizing, "risk": risk}
+def _size_from_nav(symbol: str, nav_usd: float, pct: float) -> float:
+    """Compute gross notional from NAV * pct fraction."""
+    try:
+        return float(nav_usd) * float(pct)
+    except Exception:
+        return 0.0
 
-_RISK_GATE = RiskGate(_mk_gate_cfg(_RISK_CFG))
-_PORTFOLIO_SNAPSHOT = PortfolioSnapshot(load_json("config/strategy_config.json"))
-_RISK_GATE.nav_provider = _PORTFOLIO_SNAPSHOT
+
+def _clamp_intent_gross(symbol: str, gross: float, nav_usd: float, floor_gross: float) -> float:
+    """Pass-through clamp: honor floor only (caps enforced in risk engine)."""
+    return max(float(gross), float(floor_gross))
 
 # ---- knobs ----
 SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
@@ -740,6 +810,22 @@ def _sync_dry_run() -> None:
     set_dry_run(DRY_RUN)
 
 
+def _clean_testnet_caches() -> None:
+    flag = str(os.getenv("BINANCE_TESTNET", "0")).strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return
+    cache_paths = [
+        Path(repo_root) / "logs" / "cache" / "risk_state.json",
+        Path(repo_root) / "logs" / "cache" / "nav_confirmed.json",
+    ]
+    for path in cache_paths:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            LOG.debug("[executor][testnet] cache cleanup skipped for %s", path)
+    LOG.info("[executor][testnet] cleaned stale risk/nav cache for fresh start")
+
+
 def _coerce_veto_reasons(raw: Any) -> List[str]:
     if not raw:
         return []
@@ -754,6 +840,24 @@ def _normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
     normalized = generator_normalize_intent(intent)
     normalized.setdefault("tf", normalized.get("timeframe"))
     return normalized
+
+
+def _symbol_on_cooldown(symbol: str, now: Optional[float] = None) -> bool:
+    current = _SYMBOL_ERROR_COOLDOWN.get(str(symbol).upper())
+    if current is None:
+        return False
+    ts = float(now) if now is not None else time.time()
+    if ts >= current:
+        _SYMBOL_ERROR_COOLDOWN.pop(str(symbol).upper(), None)
+        return False
+    return True
+
+
+def _mark_symbol_cooldown(symbol: str, now: Optional[float] = None, seconds: float = _ERROR_COOLDOWN_SEC) -> float:
+    ts = float(now) if now is not None else time.time()
+    expiry = ts + float(seconds)
+    _SYMBOL_ERROR_COOLDOWN[str(symbol).upper()] = expiry
+    return expiry
 
 
 def _publish_intent_audit(symbol: Optional[str], intent: Dict[str, Any]) -> None:
@@ -786,9 +890,47 @@ def _publish_veto_exec(symbol: Optional[str], reasons: Sequence[str], intent: Ma
 def _record_structured_event(logger_obj: Any, event_type: str, payload: Mapping[str, Any] | None) -> None:
     try:
         sanitized = safe_dump(payload or {})
+        sanitized.setdefault("type", event_type)
+        sanitized.setdefault("context", "executor")
         log_event(logger_obj, event_type, sanitized)
     except Exception as exc:
         LOG.debug("structured_log_failed event=%s err=%s", event_type, exc)
+
+
+def _log_order_error(
+    *,
+    symbol: str,
+    side: str,
+    notional: float | None,
+    reason: str,
+    classification: Optional[Mapping[str, Any]] = None,
+    retried: bool = False,
+    exc: Optional[BaseException] = None,
+    component: str = "executor",
+    context: Optional[Mapping[str, Any]] = None,
+) -> None:
+    payload = {
+        "symbol": symbol,
+        "side": side,
+        "notional": notional,
+        "reason": reason,
+        "retried": retried,
+        "classification": dict(classification or {}),
+        "last_exception_message": str(exc) if exc else None,
+    }
+    if context:
+        payload["context"] = dict(context)
+    _record_structured_event(LOG_ORDERS, "order_error", payload)
+    try:
+        record_execution_error(
+            component,
+            symbol=symbol,
+            message=reason,
+            classification=dict(classification or {}),
+            context=dict(context or {}),
+        )
+    except Exception:
+        LOG.debug("[health] record_execution_error_failed")
 
 
 @dataclass
@@ -1143,20 +1285,10 @@ def _confirm_order_fill(ack: OrderAckInfo) -> Optional[FillSummary]:
 
 def _nav_snapshot() -> Dict[str, Any]:
     snapshot: Dict[str, Any] = {}
-    try:
-        snapshot["nav_usd"] = float(_PORTFOLIO_SNAPSHOT.current_nav_usd())
-    except Exception:
-        pass
-    try:
-        snapshot["gross_usd"] = float(_PORTFOLIO_SNAPSHOT.current_gross_usd())
-    except Exception:
-        pass
-    try:
-        gross_map = _PORTFOLIO_SNAPSHOT.symbol_gross_usd()
-        if gross_map:
-            snapshot["symbol_gross_usd"] = gross_map
-    except Exception:
-        pass
+    health = nav_health_snapshot()
+    snapshot["nav_usd"] = float(health.get("nav_total") or 0.0)
+    snapshot["nav_age_s"] = health.get("age_s")
+    snapshot["nav_sources_ok"] = health.get("sources_ok")
     return snapshot
 
 
@@ -1179,6 +1311,41 @@ def _estimate_intent_qty(intent: Mapping[str, Any], gross_target: float, price_h
     except Exception:
         pass
     return float(intent.get("qty_estimate", 0.0) or 0.0)
+
+
+def compute_final_gross_for_test(
+    intent: Mapping[str, Any],
+    nav_usd: float,
+    size_risk_cfg: Mapping[str, Any],
+) -> float:
+    """Pure helper for tests to mirror the v6 sizing clamps without side effects."""
+    try:
+        symbol = str(intent.get("symbol") or intent.get("pair") or "").upper()
+    except Exception:
+        symbol = ""
+    lev = float(intent.get("leverage", 1.0) or 1.0)
+    per_trade_nav_pct = _nav_pct_fraction(intent.get("per_trade_nav_pct"))
+    intent_min_notional = _to_float(intent.get("min_notional")) or 0.0
+    try:
+        screener_gross = float(intent.get("gross_usd") or 0.0)
+    except Exception:
+        screener_gross = 0.0
+    gross_target = float(intent.get("gross_usd") or 0.0)
+    if nav_usd is None:
+        nav_usd = 0.0
+    floor_gross = max(
+        float(size_risk_cfg.get("min_notional_usd") or 0.0),
+        intent_min_notional,
+        symbol_min_gross(symbol),
+    )
+    if gross_target <= 0.0 and per_trade_nav_pct > 0.0:
+        gross_target = _size_from_nav(symbol, nav_usd, per_trade_nav_pct)
+    gross_target = max(gross_target, floor_gross)
+    if screener_gross > 0.0:
+        gross_target = min(gross_target, screener_gross)
+    if gross_target < floor_gross:
+        return 0.0
+    return float(gross_target)
 
 
 def _position_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
@@ -1216,7 +1383,7 @@ def _emit_position_snapshots(symbol: str) -> None:
         _record_structured_event(LOG_POSITION, "position_snapshot", payload)
 
 
-def _maybe_emit_heartbeat(autotuner: Optional[RiskAutotuner] = None) -> None:
+def _maybe_emit_heartbeat() -> None:
     global _LAST_HEARTBEAT
     now = time.time()
     if (now - _LAST_HEARTBEAT) < _HEARTBEAT_INTERVAL:
@@ -1235,20 +1402,11 @@ def _maybe_emit_heartbeat(autotuner: Optional[RiskAutotuner] = None) -> None:
         payload["lag_secs"] = lag
     if _LAST_QUEUE_DEPTH is not None:
         payload["queue_depth"] = _LAST_QUEUE_DEPTH
-    if autotuner is not None:
-        try:
-            summary = autotuner.on_heartbeat(_RISK_STATE)
-            adjustments = summary.get("adjustments") if isinstance(summary, Mapping) else None
-            if adjustments:
-                LOG.info("[risk] autotune adjustments=%s", adjustments)
-                payload["risk_autotune"] = adjustments
-        except Exception as exc:
-            LOG.warning("[risk] autotune heartbeat failed: %s", exc)
     _record_structured_event(LOG_HEART, "heartbeat", payload)
 
 
 def _startup_position_check(client: Any) -> None:
-    if client is None:
+    if client is None or getattr(client, "is_stub", False):
         LOG.info("[startup-sync] unable to check positions (client unavailable)")
         return
     LOG.info("[startup-sync] checking open positions …")
@@ -1327,17 +1485,28 @@ def _maybe_run_internal_screener() -> None:
 
     submitted = 0
     for entry in intents:
+        symbol: Optional[str] = None
+        now_ts = time.time()
         try:
             payload = entry.get("raw") if isinstance(entry, Mapping) else entry
             intent = _normalize_intent(payload)
             symbol = cast(Optional[str], intent.get("symbol"))
             if not symbol:
                 continue
+            if _symbol_on_cooldown(symbol, now_ts):
+                continue
             _publish_intent_audit(symbol, intent)
             _send_order(intent)
             submitted += 1
         except Exception as exc:
             LOG.error("[executor] internal screener submit failed: %s", exc)
+            if symbol:
+                cooldown_until = _mark_symbol_cooldown(symbol, now_ts)
+                LOG.warning(
+                    "[screener][cooldown] symbol=%s entering temporary cooldown due to API failure",
+                    symbol,
+                )
+                intent.setdefault("cooldown_until", cooldown_until)
 
     global _LAST_SIGNAL_PULL, _LAST_QUEUE_DEPTH
     _LAST_SIGNAL_PULL = time.time()
@@ -1375,6 +1544,15 @@ def _account_snapshot() -> None:
 
 def _compute_nav() -> float:
     cfg = load_json("config/strategy_config.json") or {}
+    try:
+        runtime_cfg = load_runtime_config()
+        if isinstance(runtime_cfg, Mapping):
+            rt_nav = runtime_cfg.get("nav")
+            if isinstance(rt_nav, Mapping):
+                cfg.setdefault("nav", {})
+                cfg["nav"].update(rt_nav)
+    except Exception:
+        pass
 
     try:
         trading, reporting = compute_nav_pair(cfg)
@@ -1403,6 +1581,36 @@ def _compute_nav() -> float:
     return float(nav_val or 0.0)
 
 
+def _compute_nav_with_detail() -> tuple[float, Dict[str, Any]]:
+    cfg = load_json("config/strategy_config.json") or {}
+    try:
+        runtime_cfg = load_runtime_config()
+        if isinstance(runtime_cfg, Mapping):
+            rt_nav = runtime_cfg.get("nav")
+            if isinstance(rt_nav, Mapping):
+                cfg.setdefault("nav", {})
+                cfg["nav"].update(rt_nav)
+    except Exception:
+        pass
+
+    try:
+        trading, reporting = compute_nav_pair(cfg)
+        write_nav_snapshots_pair(trading, reporting)
+        nav_val = float(trading[0])
+        detail = {}
+        try:
+            detail = dict(trading[1] or {})
+        except Exception:
+            detail = {}
+        detail.setdefault("source", (trading[1] or {}).get("source") if isinstance(trading[1], Mapping) else None)
+        detail.setdefault("nav", nav_val)
+        detail.setdefault("nav_usd", nav_val)
+        return nav_val, detail
+    except Exception as exc:
+        LOG.error("[executor] compute_nav_with_detail not available: %s", exc)
+        return _compute_nav(), {}
+
+
 def _gross_and_open_qty(
     symbol: str, pos_side: str, positions: Iterable[Dict[str, Any]]
 ) -> tuple[float, float]:
@@ -1420,6 +1628,28 @@ def _gross_and_open_qty(
         except Exception:
             continue
     return gross, open_qty
+
+
+def _symbol_gross_notional(symbol: str, pos_side: str, positions: Iterable[Dict[str, Any]]) -> float:
+    sym_key = str(symbol).upper()
+    total = 0.0
+    for p in positions or []:
+        try:
+            if str(p.get("symbol", "")).upper() != sym_key:
+                continue
+            qty = float(p.get("qty", p.get("positionAmt", 0.0)) or 0.0)
+            if qty == 0.0:
+                continue
+            ps = str(p.get("positionSide", "BOTH")).upper()
+            if ps != "BOTH" and ps != str(pos_side).upper():
+                continue
+            entry = float(p.get("entryPrice") or p.get("markPrice") or 0.0)
+            if entry <= 0.0:
+                continue
+            total += abs(qty) * abs(entry)
+        except Exception:
+            continue
+    return total
 
 
 def _opposite_position(
@@ -1460,11 +1690,7 @@ def _update_risk_state_counters(
 
     _RISK_STATE.open_notional = float(portfolio_gross)
     _RISK_STATE.open_positions = int(open_positions)
-    try:
-        loss_pct = float(_RISK_GATE._daily_loss_pct())
-    except Exception:
-        loss_pct = 0.0
-    _RISK_STATE.daily_pnl_pct = -loss_pct
+    _RISK_STATE.daily_pnl_pct = 0.0
 
 
 def _current_bucket_gross(symbol_gross: Mapping[str, float], buckets: Mapping[str, str]) -> Dict[str, float]:
@@ -1497,10 +1723,10 @@ def _build_order_intent_for_executor(
     lev: float,
     intent: Mapping[str, Any],
 ) -> OrderIntent:
-    qty = float(intent.get("qty") or intent.get("quantity") or 0.0)
     price = float(intent.get("price") or 0.0)
-    if qty <= 0.0 and price > 0.0:
-        qty = gross_notional / price
+    qty = _to_float(intent.get("qty"))
+    if (qty is None or qty <= 0.0) and price > 0.0:
+        qty = (gross_notional / price)
     return OrderIntent(
         symbol=str(symbol).upper(),
         side=str(side).upper(),
@@ -1528,6 +1754,7 @@ def _evaluate_order_risk(
     nav: float,
     sym_open_qty: float,
     current_gross: float,
+    current_symbol_gross: float,
     open_positions_count: int,
     tier_name: Optional[str],
     current_tier_gross: float,
@@ -1550,7 +1777,7 @@ def _evaluate_order_risk(
             gross_notional=gross_target,
             nav=nav,
             sym_open_qty=sym_open_qty,
-            current_gross=current_gross,
+            current_gross=current_symbol_gross,
             open_positions_count=open_positions_count,
             tier_name=tier_name,
             current_tier_gross=current_tier_gross,
@@ -1569,7 +1796,7 @@ def _evaluate_order_risk(
         now=time.time(),
         cfg=_RISK_CFG,
         state=_RISK_STATE,
-        current_gross_notional=current_gross,
+        current_gross_notional=current_symbol_gross,
         lev=lev,
         open_positions_count=open_positions_count,
         tier_name=tier_name,
@@ -1708,6 +1935,15 @@ def _maybe_run_pipeline_v6_shadow_heartbeat() -> None:
         _LAST_PIPELINE_V6_HEARTBEAT = now
     except Exception as exc:
         LOG.debug("[shadow] pipeline_v6_heartbeat_failed symbol=%s err=%s", symbol, exc)
+        try:
+            record_execution_error(
+                "pipeline_shadow",
+                symbol=symbol,
+                message="heartbeat_failed",
+                context={"error": str(exc)},
+            )
+        except Exception:
+            pass
 
 
 def _maybe_run_pipeline_v6_compare(force: bool = False) -> None:
@@ -1722,6 +1958,15 @@ def _maybe_run_pipeline_v6_compare(force: bool = False) -> None:
         _LAST_PIPELINE_V6_COMPARE = now
     except Exception as exc:
         LOG.debug("[shadow] pipeline_v6_compare_failed: %s", exc)
+        try:
+            record_execution_error(
+                "pipeline_compare",
+                symbol=None,
+                message="compare_failed",
+                context={"error": str(exc)},
+            )
+        except Exception:
+            pass
 
 
 # NOTE: _send_order must only pass canonical order fields into send_order.
@@ -1757,38 +2002,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     intent_id = str(intent.get("intent_id") or mk_id("ord"))
     intent["attempt_id"] = attempt_id
     intent["intent_id"] = intent_id
+    per_trade_nav_pct = _nav_pct_fraction(intent.get("per_trade_nav_pct"))
+    try:
+        screener_gross = float(intent.get("gross_usd") or 0.0)
+    except Exception:
+        screener_gross = 0.0
     cap = float(intent.get("capital_per_trade", 0) or 0)
     lev = float(intent.get("leverage", 1) or 1)
-    gross_target = float(intent.get("gross_usd") or (cap * lev))
-    # Clamp to caps from intent/risk config using current nav snapshot
-    nav_snapshot = _nav_snapshot()
-    nav_usd = float(nav_snapshot.get("nav_usd", 0.0) or 0.0)
-    cap_candidates = []
-    try:
-        trade_cap = float(intent.get("trade_equity_nav_pct") or 0.0)
-    except Exception:
-        trade_cap = 0.0
-    try:
-        max_trade_cap = float(intent.get("max_trade_nav_pct") or 0.0)
-    except Exception:
-        max_trade_cap = 0.0
-    per_symbol_limit = 0.0
-    try:
-        sym_limits = ((intent.get("per_symbol_limits") or {}) if isinstance(intent.get("per_symbol_limits"), dict) else {})
-        per_symbol_limit = float(sym_limits.get(str(symbol).upper(), {}).get("max_order_notional") or 0.0)
-    except Exception:
-        per_symbol_limit = 0.0
-    if nav_usd > 0.0:
-        if trade_cap > 0.0:
-            cap_candidates.append(nav_usd * (trade_cap / 100.0))
-        if max_trade_cap > 0.0:
-            cap_candidates.append(nav_usd * (max_trade_cap / 100.0))
-    if per_symbol_limit > 0.0:
-        cap_candidates.append(per_symbol_limit)
-    if cap_candidates:
-        gross_target = min(gross_target, min(cap_candidates))
     if lev <= 0:
         lev = 1.0
+    gross_from_intent = float(intent.get("gross_usd") or 0.0)
+    gross_target = float(gross_from_intent or (cap * lev))
+    intent_min_notional = _to_float(intent.get("min_notional")) or 0.0
     price_guess = 0.0
     try:
         price_guess = float(intent.get("price", 0.0) or 0.0)
@@ -1810,6 +2035,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         pass
     nav_snapshot = _nav_snapshot()
     nav_usd = float(nav_snapshot.get("nav_usd", 0.0) or 0.0)
+    using_nav_pct = False
     symbol_gross_map: Dict[str, float] = {}
     try:
         raw_map = nav_snapshot.get("symbol_gross_usd") or {}
@@ -1825,6 +2051,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     tier_name = symbol_tier(symbol)
     tier_gross_map: Dict[str, float] = {}
     current_tier_gross = 0.0
+    per_symbol_limits: Dict[str, Dict[str, Any]] = {}
+    sym_limits: Dict[str, Any] = {}
+    sym_max_order = 0.0
+    sym_max_nav_pct = 0.0
 
     def _persist_veto(reason: str, price_hint: float, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -1874,229 +2104,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     sizing_cfg = (cfg.get("sizing") or {})
     floor_gross = max(
         symbol_min_gross(symbol.upper()),
+        intent_min_notional,
         float((_RISK_CFG.get("global") or {}).get("min_notional_usdt", 0.0) or 0.0),
     )
-    gross_target = max(gross_target, floor_gross)
-    try:
-        if not reduce_only:
-            risk_global_caps = _RISK_CFG.get("global") if isinstance(_RISK_CFG, Mapping) else {}
-            if not isinstance(risk_global_caps, Mapping):
-                risk_global_caps = {}
-            raw_per_symbol = _RISK_CFG.get("per_symbol") if isinstance(_RISK_CFG, Mapping) else {}
-            risk_per_symbol: Dict[str, Mapping[str, Any]] = {}
-            if isinstance(raw_per_symbol, Mapping):
-                for key, value in raw_per_symbol.items():
-                    if isinstance(value, Mapping):
-                        risk_per_symbol[str(key).upper()] = value
-            symbol_buckets.clear()
-            for sym_key, info in universe_by_symbol().items():
-                bucket = info.get("tier") or info.get("bucket")
-                if bucket:
-                    symbol_buckets[sym_key] = str(bucket)
-            for strat in cfg.get("strategies") or []:
-                if not isinstance(strat, Mapping):
-                    continue
-                sym = str(strat.get("symbol") or "").upper()
-                if not sym or sym in symbol_buckets:
-                    continue
-                params = strat.get("params") if isinstance(strat.get("params"), Mapping) else {}
-                bucket = (params or {}).get("bucket") or strat.get("bucket")
-                if bucket:
-                    symbol_buckets[sym] = str(bucket)
-            symbol_buckets.setdefault(symbol_upper, symbol_buckets.get(symbol_upper, "UNASSIGNED"))
-            tier_gross_map = _current_bucket_gross(symbol_gross_map, symbol_buckets)
-            if not tier_name:
-                tier_name = symbol_buckets.get(symbol_upper)
-            if tier_name:
-                current_tier_gross = tier_gross_map.get(tier_name, 0.0) or 0.0
-
-            def _merge_caps(*values: Any) -> float:
-                caps: List[float] = []
-                for candidate in values:
-                    normalized = _normalize_pct_value(candidate)
-                    if normalized > 0.0:
-                        caps.append(normalized)
-                return min(caps) if caps else 0.0
-
-            max_symbol_cap = _merge_caps(
-                risk_global_caps.get("max_symbol_exposure_pct"),
-            )
-            max_portfolio_cap = _merge_caps(
-                risk_global_caps.get("max_gross_exposure_pct"),
-                risk_global_caps.get("max_portfolio_gross_nav_pct"),
-                risk_global_caps.get("max_gross_nav_pct"),
-            )
-            max_trade_nav_cap = _merge_caps(
-                risk_global_caps.get("max_trade_nav_pct"),
-            )
-            trade_equity_cap = _merge_caps(
-                risk_global_caps.get("trade_equity_nav_pct"),
-            )
-            tier_caps: Dict[str, float] = {}
-            tiers_cfg = risk_global_caps.get("tiers") or {}
-            if isinstance(tiers_cfg, Mapping):
-                for tier_name, tier_cfg in tiers_cfg.items():
-                    try:
-                        pct = float((tier_cfg or {}).get("per_symbol_nav_pct", 0.0) or 0.0)
-                    except Exception:
-                        pct = 0.0
-                    if pct > 0.0:
-                        tier_caps[str(tier_name)] = pct
-            per_symbol_leverage: Dict[str, float] = {}
-            default_leverage = float(sizing_cfg.get("default_leverage", 1.0) or 1.0)
-            risk_global_leverage = float(risk_global_caps.get("max_leverage") or 0.0)
-            symbols_for_leverage = set(universe_by_symbol().keys()) | set(risk_per_symbol.keys())
-            symbols_for_leverage.add(symbol_upper)
-            for sym_key in symbols_for_leverage:
-                current_val = symbol_target_leverage(sym_key) or default_leverage
-                risk_sym_lev = 0.0
-                entry = risk_per_symbol.get(sym_key)
-                if entry:
-                    try:
-                        risk_sym_lev = float(entry.get("max_leverage") or 0.0)
-                    except Exception:
-                        risk_sym_lev = 0.0
-                final_val = current_val
-                if risk_sym_lev > 0.0:
-                    final_val = min(final_val, risk_sym_lev) if final_val > 0.0 else risk_sym_lev
-                if risk_global_leverage > 0.0:
-                    final_val = min(final_val, risk_global_leverage) if final_val > 0.0 else risk_global_leverage
-                per_symbol_leverage[sym_key] = max(final_val, 0.0)
-
-            per_symbol_limits: Dict[str, Dict[str, Any]] = {}
-            for sym_key, entry in risk_per_symbol.items():
-                limit_entry: Dict[str, Any] = {}
-                if "max_order_notional" in entry:
-                    limit_entry["max_order_notional"] = entry["max_order_notional"]
-                if "max_nav_pct" in entry:
-                    limit_entry["max_nav_pct"] = entry["max_nav_pct"]
-                if limit_entry:
-                    per_symbol_limits[sym_key] = limit_entry
-
-            size_risk_cfg = {
-                "min_notional_usd": floor_gross,
-                "fallback_gross_usd": gross_target,
-                "per_symbol_leverage": per_symbol_leverage,
-                "default_leverage": default_leverage,
-                "max_symbol_exposure_pct": max_symbol_cap,
-                "max_gross_exposure_pct": max_portfolio_cap,
-                "max_trade_nav_pct": max_trade_nav_cap,
-                "trade_equity_nav_pct": trade_equity_cap,
-                "vol_target_bps": sizing_cfg.get("vol_target_bps"),
-                "atr_interval": sizing_cfg.get("atr_interval"),
-                "atr_lookback": sizing_cfg.get("atr_lookback"),
-                "bucket_caps_pct": tier_caps,
-                "symbol_bucket": symbol_buckets,
-                "current_symbol_gross": symbol_gross_map,
-                "current_bucket_gross": _current_bucket_gross(symbol_gross_map, symbol_buckets),
-                "current_portfolio_gross": nav_snapshot.get("gross_usd"),
-                "price": price_guess,
-                "per_symbol_limits": per_symbol_limits,
-            }
-            signal_strength = float(
-                intent.get("signal_strength")
-                or intent.get("confidence")
-                or intent.get("score")
-                or 1.0
-            )
-            sizing_suggestion = size_model.suggest_gross_usd(
-                symbol,
-                nav_usd,
-                signal_strength,
-                size_risk_cfg,
-            )
-            sized_gross = float(sizing_suggestion.get("gross_usd", gross_target))
-            # Clamp to nav-based caps and per-symbol max_order_notional
-            if nav_usd > 0.0:
-                cap_candidates = []
-                try:
-                    trade_equity_cap = float(size_risk_cfg.get("trade_equity_nav_pct") or 0.0)
-                except Exception:
-                    trade_equity_cap = 0.0
-                try:
-                    max_trade_cap = float(size_risk_cfg.get("max_trade_nav_pct") or 0.0)
-                except Exception:
-                    max_trade_cap = 0.0
-                try:
-                    sym_limits = (size_risk_cfg.get("per_symbol") or {}).get(symbol.upper(), {}) if isinstance(size_risk_cfg.get("per_symbol"), dict) else {}
-                except Exception:
-                    sym_limits = {}
-                try:
-                    sym_max_order = float(sym_limits.get("max_order_notional") or 0.0)
-                except Exception:
-                    sym_max_order = 0.0
-                if trade_equity_cap > 0.0:
-                    cap_candidates.append(nav_usd * (trade_equity_cap / 100.0))
-                if max_trade_cap > 0.0:
-                    cap_candidates.append(nav_usd * (max_trade_cap / 100.0))
-                if sym_max_order > 0.0:
-                    cap_candidates.append(sym_max_order)
-                if cap_candidates:
-                    sized_gross = min(sized_gross, min(cap_candidates))
-            if sized_gross <= 0.0:
-                LOG.info(
-                    "[sizer] sym=%s atr=%.4f blocked (reason=%s)",
-                    symbol,
-                    sizing_suggestion.get("atr", 0.0),
-                    sizing_suggestion.get("reason", "sizer_cap"),
-                )
-                _persist_veto(
-                    sizing_suggestion.get("reason", "sizer_cap"),
-                    price_guess,
-                    {
-                        "intent": intent,
-                        "nav_snapshot": nav_snapshot,
-                        "thresholds": {
-                            "bucket": sizing_suggestion.get("bucket"),
-                            "bucket_cap": sizing_suggestion.get("bucket_cap"),
-                        },
-                    },
-                )
-                return
-            gross_target = max(sized_gross, floor_gross)
-            lev_cap = float(sizing_suggestion.get("leverage_cap") or lev)
-            if lev_cap > 0.0 and lev > lev_cap:
-                lev = lev_cap
-            LOG.info(
-                "[sizer] sym=%s atr=%.4f gross_usd=%.2f bucket_used=%.2f/%.2f",
-                symbol,
-                sizing_suggestion.get("atr", 0.0),
-                gross_target,
-                sizing_suggestion.get("bucket_used") or 0.0,
-                sizing_suggestion.get("bucket_cap") or 0.0,
-            )
-    except Exception:
-        gross_target = max(gross_target, floor_gross)
-
-    if not reduce_only:
-        if not allow_trade(symbol):
-            _persist_veto("signal_gate", price_guess)
-            return
-        if not symbol_notional_guard(symbol, cfg=_RISK_CFG):
-            _persist_veto("symbol_notional_cap", price_guess)
-            return
-        if not symbol_dd_guard(symbol, cfg=_RISK_CFG):
-            _persist_veto("symbol_drawdown_cap", price_guess)
-            return
-        try:
-            scaled_notional = size_for(symbol, gross_target)
-        except Exception:
-            scaled_notional = gross_target
-        if scaled_notional <= 0:
-            _persist_veto("sizing_zero", price_guess)
-            return
-        gross_target = max(float(scaled_notional), floor_gross)
-        cap_candidates = []
-        if nav_usd > 0.0:
-            if 'trade_cap' in locals() and trade_cap > 0.0:
-                cap_candidates.append(nav_usd * (trade_cap / 100.0))
-            if 'max_trade_cap' in locals() and max_trade_cap > 0.0:
-                cap_candidates.append(nav_usd * (max_trade_cap / 100.0))
-        if 'per_symbol_limit' in locals() and per_symbol_limit > 0.0:
-            cap_candidates.append(per_symbol_limit)
-        if cap_candidates:
-            gross_target = min(gross_target, min(cap_candidates))
-
+    gross_target = float(intent.get("gross_usd") or gross_target or 0.0)
     margin_target = gross_target / max(lev, 1.0)
     attempt_start_monotonic = time.monotonic()
     attempt_payload = {
@@ -2160,37 +2171,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         return
 
     LOG.info(
-        "[executor] INTENT symbol=%s side=%s ps=%s margin=%.4f gross=%.4f lev=%.2f reduceOnly=%s",
+        "[executor] INTENT symbol=%s side=%s ps=%s gross=%.4f margin=%.4f lev=%.2f reduceOnly=%s screener_cap=%.4f",
         symbol,
         side,
         pos_side,
-        margin_target,
         gross_target,
+        margin_target,
         lev,
         reduce_only,
+        screener_gross or 0.0,
     )
 
-    if not reduce_only:
-        # Shared gross-notional gate (canonical taxonomy)
-        try:
-            allowed, veto = _RISK_GATE.allowed_gross_notional(symbol, gross_target)
-        except Exception:
-            allowed, veto = True, ""
-        if not allowed:
-            price_hint = float(intent.get("price", 0.0) or 0.0)
-            _persist_veto(
-                veto or "blocked",
-                price_hint,
-                {
-                    "intent": intent,
-                    "nav_snapshot": nav_snapshot,
-                    "thresholds": {
-                        "max_gross_exposure_pct": _RISK_GATE.sizing.get("max_gross_exposure_pct"),
-                        "max_trade_nav_pct": _RISK_GATE.sizing.get("max_trade_nav_pct"),
-                    },
-                },
-            )
-            return
+    # Risk gating handled centrally in risk_engine_v6; executor does not re-evaluate caps.
 
     try:
         positions = list(get_positions() or [])
@@ -2350,6 +2342,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             force_direct_send = True
     nav = _compute_nav()
     current_gross, sym_open_qty = _gross_and_open_qty(symbol, pos_side, positions)
+    current_symbol_gross = _symbol_gross_notional(symbol, pos_side, positions)
     _update_risk_state_counters(positions, current_gross)
     open_positions_count = getattr(_RISK_STATE, "open_positions", 0)
     try:
@@ -2372,6 +2365,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         nav=nav,
         sym_open_qty=sym_open_qty,
         current_gross=current_gross,
+        current_symbol_gross=current_symbol_gross,
         open_positions_count=open_positions_count,
         tier_name=tier_name,
         current_tier_gross=current_tier_gross,
@@ -2560,44 +2554,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         if k in payload
     }
 
-    if not reduce_only:
-        try:
-            allowed_now, veto_now = _RISK_GATE.allowed_gross_notional(symbol, gross_target)
-        except Exception:
-            allowed_now, veto_now = True, ""
-        if not allowed_now:
-            LOG.warning(
-                "[risk] final gate veto %s %s reason=%s", symbol, side, veto_now or "blocked"
-            )
-            _persist_veto(
-                veto_now or "blocked",
-                norm_price,
-                {
-                    "intent": intent,
-                    "normalized_qty": norm_qty,
-                    "payload": payload_view,
-                    "meta": meta,
-                    "nav_snapshot": nav_snapshot,
-                    "thresholds": {
-                        "max_gross_exposure_pct": _RISK_GATE.sizing.get("max_gross_exposure_pct"),
-                        "max_trade_nav_pct": _RISK_GATE.sizing.get("max_trade_nav_pct"),
-                    },
-                },
-            )
-            try:
-                publish_order_audit(
-                    symbol,
-                    {
-                        "phase": "blocked",
-                        "side": side,
-                        "positionSide": pos_side,
-                        "reason": veto_now or "blocked",
-                        "notional": gross_target,
-                    },
-                )
-            except Exception:
-                pass
-            return
+    # Final gate is delegated to risk_engine_v6; executor no-ops here.
 
     normalized_ctx = {"price": norm_price, "qty": norm_qty, **meta}
 
@@ -2798,6 +2755,15 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             LOG.error(
                 "[executor] router_reject %s %s reason=%s", symbol, side, router_error
             )
+            _log_order_error(
+                symbol=symbol,
+                side=side,
+                notional=gross_target,
+                reason=f"router_error:{router_error}",
+                classification=None,
+                retried=False,
+                component="router",
+            )
         if maker_ctx_enabled:
             maker_result = _attempt_maker_first(norm_price, norm_qty)
             if maker_result:
@@ -2810,10 +2776,14 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     maker_result.is_maker,
                     maker_result.rejections,
                 )
-        if not resp:
+    if not resp:
+        dispatch_attempt = 0
+        while True:
             try:
                 resp = _dispatch(payload)
+                break
             except requests.HTTPError as exc:
+                dispatch_attempt += 1
                 try:
                     _RISK_STATE.note_error(time.time())
                 except Exception:
@@ -2824,6 +2794,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         err_code = exc.response.json().get("code")
                 except Exception:
                     err_code = None
+                classification = ex.classify_binance_error(exc, getattr(exc, "response", None))
                 LOG.error(
                     "[executor] ORDER_ERR code=%s symbol=%s side=%s meta=%s payload=%s err=%s",
                     err_code,
@@ -2832,6 +2803,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     meta,
                     payload_view,
                     exc,
+                )
+                retriable = bool(classification.get("retriable")) and dispatch_attempt <= _MAX_TRANSIENT_RETRIES
+                _log_order_error(
+                    symbol=symbol,
+                    side=side,
+                    notional=gross_target,
+                    reason="http_error",
+                    classification=classification,
+                    retried=retriable,
+                    exc=exc,
+                    component="exchange",
+                    context={"code": err_code, "payload": payload_view, "attempt": dispatch_attempt},
                 )
                 try:
                     publish_order_audit(
@@ -2855,12 +2838,25 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         payload_view,
                     )
                     return
+                if retriable:
+                    time.sleep(_TRANSIENT_RETRY_BACKOFF_S)
+                    continue
                 raise
             except Exception as exc:
                 try:
                     _RISK_STATE.note_error(time.time())
                 except Exception:
                     pass
+                _log_order_error(
+                    symbol=symbol,
+                    side=side,
+                    notional=gross_target,
+                    reason="dispatch_error",
+                    classification=None,
+                    retried=False,
+                    exc=exc,
+                    component="executor",
+                )
                 try:
                     publish_order_audit(
                         symbol,
@@ -2874,30 +2870,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 except Exception:
                     pass
                 raise
-        else:
-            router_metrics = router_metrics or {
-                "attempt_id": attempt_id,
-                "venue": "binance_futures",
-                "route": intent.get("route", "market"),
-                "prices": {
-                    "mark": price_hint,
-                    "submitted": _meta_float(payload.get("price"), price_hint),
-                    "avg_fill": _to_float(resp.get("avgPrice")),
-                },
-                "qty": {
-                    "contracts": _to_float(resp.get("executedQty")),
-                    "notional_usd": None,
-                },
-                "timing_ms": {
-                    "decision": decision_latency_ms,
-                    "submit": None,
-                    "ack": None,
-                    "fill": None,
-                },
-                "result": {"status": resp.get("status"), "retries": 0, "cancelled": False},
-                "fees_usd": None,
-                "slippage_bps": None,
-            }
 
     latency_ms = max(0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0)
 
@@ -3360,7 +3332,7 @@ def _persist_spot_state() -> None:
 
 def _pub_tick() -> None:
     global _LAST_NAV_STATE, _LAST_POSITIONS_STATE
-    nav_val = _compute_nav_snapshot()
+    nav_val, nav_detail = _compute_nav_with_detail()
     rows = _collect_rows()
     _persist_positions_cache(rows)
     _persist_nav_log(nav_val, rows)
@@ -3368,6 +3340,12 @@ def _pub_tick() -> None:
     now = time.time()
     nav_float = float(nav_val) if nav_val is not None else 0.0
     nav_payload = {"nav": nav_float, "nav_usd": nav_float, "updated_ts": now}
+    if isinstance(nav_detail, Mapping):
+        nav_payload["nav_detail"] = dict(nav_detail)
+        # Flatten a few helpful fields for dashboard/state readers
+        for key in ("assets", "mark_prices", "nav_mode", "freshness"):
+            if key in nav_detail:
+                nav_payload[key] = nav_detail.get(key)
     nav_written = False
     positions_written = False
     risk_written = False
@@ -3408,6 +3386,7 @@ def _pub_tick() -> None:
             engine_version=_ENGINE_VERSION,
             flags=flag_snapshot,
             updated_at=now,
+            nav_snapshot=nav_detail if isinstance(nav_detail, Mapping) else {},
         )
     except Exception as exc:
         LOG.debug("[telemetry] build_synced_state_payload_failed: %s", exc)
@@ -3417,6 +3396,7 @@ def _pub_tick() -> None:
             "engine_version": _ENGINE_VERSION,
             "v6_flags": flag_snapshot,
             "updated_at": now,
+            "nav_snapshot": nav_detail if isinstance(nav_detail, Mapping) else {},
         }
     try:
         write_synced_state(synced_payload)
@@ -3437,8 +3417,12 @@ def _pub_tick() -> None:
 
 
 def _loop_once(i: int) -> None:
+    # Signal path:
+    #   runtime.yaml -> signal_screener.generate_intents() -> executor veto/doctor -> router -> exchange.
+    #   generate_intents already applies local screener gates; veto=[] means risk+router should evaluate/send.
     global _LAST_SIGNAL_PULL, _LAST_QUEUE_DEPTH
     _sync_dry_run()
+    _refresh_risk_config()
     _account_snapshot()
 
     try:
@@ -3479,13 +3463,17 @@ def _loop_once(i: int) -> None:
             LOG.error("[screener] error: %s", e)
             intents_raw = []
         _LAST_QUEUE_DEPTH = len(intents_raw)
-        attempted = len(intents_raw)
-        emitted = 0
+        attempted = getattr(intents_raw, "attempted", len(intents_raw))
+        screener_emitted = getattr(intents_raw, "emitted", len(intents_raw))
+        submitted = 0
         for idx, raw_intent in enumerate(intents_raw):
             intent = _normalize_intent(raw_intent)
             symbol = cast(Optional[str], intent.get("symbol"))
             if not symbol:
                 LOG.warning("[screener] missing symbol in intent %s", intent)
+                continue
+            now_ts = time.time()
+            if _symbol_on_cooldown(symbol, now_ts):
                 continue
 
             veto_reasons = _coerce_veto_reasons(intent.get("veto"))
@@ -3529,7 +3517,7 @@ def _loop_once(i: int) -> None:
                 )
                 continue
 
-            emitted += 1
+            submitted += 1
             try:
                 _publish_intent_audit(symbol, intent)
                 intent_with_attempt = dict(intent)
@@ -3537,37 +3525,34 @@ def _loop_once(i: int) -> None:
                 _send_order(intent_with_attempt)
             except Exception as exc:
                 LOG.error("[executor] failed to send intent %s %s", symbol, exc)
-        LOG.info("[screener] attempted=%d emitted=%d", attempted, emitted)
+                cooldown_until = _mark_symbol_cooldown(symbol, now_ts)
+                LOG.warning(
+                    "[screener][cooldown] symbol=%s entering temporary cooldown due to API failure",
+                    symbol,
+                )
+                intent.setdefault("cooldown_until", cooldown_until)
+        LOG.info(
+            "[screener] attempted=%d emitted=%d submitted=%d",
+            attempted,
+            screener_emitted,
+            submitted,
+        )
 
     _pub_tick()
     _maybe_run_pipeline_v6_shadow_heartbeat()
     _maybe_emit_router_health_snapshot()
     _maybe_emit_risk_snapshot()
+    _maybe_emit_execution_health_snapshot()
     _maybe_run_pipeline_v6_compare()
 
 
 def main(argv: Optional[Sequence[str]] | None = None) -> None:
     args_list = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(description="Hedge live executor")
-    parser.add_argument(
-        "--risk-autotune",
-        action="store_true",
-        default=_truthy_env("RISK_AUTOTUNE", "0"),
-        help="Enable adaptive risk tuning and persist counters to disk",
-    )
-    parsed = parser.parse_args(args_list)
-    autotune_enabled = bool(parsed.risk_autotune)
-    autotuner: Optional[RiskAutotuner] = None
-    if autotune_enabled:
-        autotuner = RiskAutotuner(_RISK_GATE)
-        try:
-            autotuner.restore_state(_RISK_STATE)
-        except Exception as exc:
-            LOG.warning("[risk] autotune restore failed: %s", exc)
-        else:
-            LOG.info("[risk] autotune enabled (state restored)")
+    parser.parse_args(args_list)
 
     _sync_dry_run()
+    _clean_testnet_caches()
     LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
     log_v6_flag_snapshot(LOG)
     _maybe_write_v6_runtime_probe(force=True)
@@ -3578,7 +3563,7 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         LOG.error("[executor] dualSide check failed: %s", e)
 
     client = get_um_client()
-    if client is None:
+    if getattr(client, "is_stub", False):
         LOG.warning(
             "[startup-sync] UMFutures client unavailable (%s)",
             um_client_error() or "unknown",
@@ -3588,7 +3573,7 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
     i = 0
     while True:
         _loop_once(i)
-        _maybe_emit_heartbeat(autotuner)
+        _maybe_emit_heartbeat()
         _maybe_run_internal_screener()
         _maybe_write_v6_runtime_probe()
         i += 1

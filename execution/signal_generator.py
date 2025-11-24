@@ -19,7 +19,7 @@ from datetime import datetime
 from execution.utils import load_json
 from execution.utils.metrics import is_in_asset_universe
 from execution.utils.vol import atr_pct
-from execution.risk_autotune import size_multiplier
+from execution.utils.execution_health import size_multiplier
 from execution.position_sizing import inverse_vol_size, volatility_regime_scale
 from execution.intel.symbol_score import symbol_size_factor
 from .utils.expectancy import rolling_expectancy
@@ -407,9 +407,14 @@ def normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
     normalized["reduceOnly"] = bool(normalize_reduce)
 
     normalized["price"] = _safe_float(normalized.get("price"))
-    normalized["capital_per_trade"] = _safe_float(
-        normalized.get("capital_per_trade") or normalized.get("capital") or normalized.get("notional")
-    )
+    normalized["capital_per_trade"] = _safe_float(normalized.get("capital_per_trade"))
+    pct_raw = normalized.get("per_trade_nav_pct") or normalized.get("nav_pct")
+    pct_val = _safe_float(pct_raw)
+    if pct_val > 1.0:
+        pct_val = min(pct_val / 100.0, 1.0)
+    if pct_val < 0.0:
+        pct_val = 0.0
+    normalized["per_trade_nav_pct"] = pct_val
     lev_value = (
         normalized.get("leverage")
         or normalized.get("lev")
@@ -420,7 +425,7 @@ def normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
 
     gross_value = normalized.get("gross_usd")
     if gross_value in (None, ""):
-        normalized["gross_usd"] = abs(normalized["capital_per_trade"]) * max(normalized["leverage"], 1.0)
+        normalized["gross_usd"] = 0.0
     else:
         normalized["gross_usd"] = abs(_safe_float(gross_value))
 

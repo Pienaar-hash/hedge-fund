@@ -9,4 +9,11 @@ core execution and telemetry stack. All logic here should be:
 - Covered by focused pytest modules in tests/test_*intel*.py.
 """
 
-__all__ = ["expectancy_map", "symbol_score", "maker_offset", "router_policy"]
+__all__ = [
+    "expectancy_map",
+    "symbol_score",
+    "maker_offset",
+    "router_policy",
+    "pipeline_v6_compare",
+    "pipeline_v6_shadow",
+]

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import logging
 import os
 import time
 from collections import Counter
@@ -26,10 +28,14 @@ from execution.utils.expectancy import rolling_expectancy
 from execution.exchange_utils import get_price
 from execution.intel.symbol_score import compute_symbol_score
 from execution.intel.expectancy_map import hourly_expectancy as intel_hourly_expectancy
+from execution.risk_loader import load_risk_config
+
+LOG = logging.getLogger("dash.live_helpers")
 
 STABLES = {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}
 STATE_DIR = Path(os.getenv("STATE_DIR") or "logs/state")
-NAV_STATE_PATH = Path(os.getenv("NAV_STATE_PATH") or (STATE_DIR / "nav.json"))
+NAV_STATE_PATH = Path(os.getenv("NAV_STATE_PATH") or (STATE_DIR / "nav_state.json"))
+SYNCED_STATE_PATH = Path(os.getenv("SYNCED_STATE_PATH") or (STATE_DIR / "synced_state.json"))
 UNIVERSE_STATE_PATH = Path(os.getenv("UNIVERSE_STATE_PATH") or (STATE_DIR / "universe.json"))
 ROUTER_HEALTH_STATE_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))
 EXPECTANCY_STATE_PATH = Path(os.getenv("EXPECTANCY_STATE_PATH") or (STATE_DIR / "expectancy_v6.json"))
@@ -37,8 +43,12 @@ SYMBOL_SCORES_STATE_PATH = Path(os.getenv("SYMBOL_SCORES_STATE_PATH") or (STATE_
 PIPELINE_COMPARE_STATE_PATH = Path(os.getenv("PIPELINE_V6_COMPARE_STATE_PATH") or (STATE_DIR / "pipeline_v6_compare_summary.json"))
 PIPELINE_COMPARE_LOG_PATH = Path(os.getenv("PIPELINE_V6_COMPARE_LOG_PATH") or "logs/pipeline_v6_compare.jsonl")
 RISK_ALLOCATOR_STATE_PATH = Path(os.getenv("RISK_ALLOC_STATE_PATH") or (STATE_DIR / "risk_allocation_suggestions_v6.json"))
-ROUTER_POLICY_STATE_PATH = Path(os.getenv("ROUTER_POLICY_STATE_PATH") or (STATE_DIR / "router_health.json"))
-ROUTER_SUGGESTIONS_STATE_PATH = Path(os.getenv("ROUTER_SUGGESTIONS_STATE_PATH") or (STATE_DIR / "router_policy_suggestions_v6.json"))
+ROUTER_POLICY_STATE_PATH = Path(
+    os.getenv("ROUTER_POLICY_STATE_PATH") or (STATE_DIR / "router_policy_state_v6.json")
+)
+ROUTER_SUGGESTIONS_STATE_PATH = Path(
+    os.getenv("ROUTER_SUGGESTIONS_STATE_PATH") or (STATE_DIR / "router_policy_suggestions_v6.json")
+)
 PIPELINE_SHADOW_HEAD_STATE_PATH = Path(os.getenv("PIPELINE_SHADOW_HEAD_STATE_PATH") or (STATE_DIR / "pipeline_v6_shadow_head.json"))
 RUNTIME_PROBE_STATE_PATH = Path(os.getenv("RUNTIME_PROBE_STATE_PATH") or (STATE_DIR / "v6_runtime_probe.json"))
 
@@ -91,13 +101,30 @@ def _try_json(path: str) -> Any:
         return None
 
 
-def _load_state_json(path: Path) -> Any:
+def _load_state_json(path: Path, default: Any | None = None) -> Any:
+    default_obj = {} if default is None else copy.deepcopy(default)
     try:
-        if path.exists():
+        if path.exists() and path.stat().st_size > 0:
             return json.loads(path.read_text())
-    except Exception:
-        return None
-    return None
+    except Exception as exc:
+        LOG.debug("[dash] failed to load state file %s: %s", path, exc, exc_info=True)
+    return default_obj
+
+
+def _ensure_dict(payload: Any) -> Dict[str, Any]:
+    return payload if isinstance(payload, dict) else {}
+
+
+def _ensure_list(payload: Any) -> List[Any]:
+    return payload if isinstance(payload, list) else []
+
+
+def _resolve_nav_state_path() -> Path:
+    """
+    Resolve the canonical v6 NAV state path.
+    No legacy nav.json fallback is allowed in v6.
+    """
+    return NAV_STATE_PATH
 
 
 def ensure_timestamp(ts: Any) -> str:
@@ -125,44 +152,49 @@ def ensure_timestamp(ts: Any) -> str:
 
 
 def load_universe_state() -> List[Dict[str, Any]]:
-    payload = _load_state_json(UNIVERSE_STATE_PATH)
+    payload = _load_state_json(UNIVERSE_STATE_PATH, {})
     if isinstance(payload, dict) and isinstance(payload.get("universe"), list):
         return [dict(item) for item in payload["universe"] if isinstance(item, dict)]
     return []
 
 
 def load_expectancy_v6_state() -> Dict[str, Any]:
-    payload = _load_state_json(EXPECTANCY_STATE_PATH)
-    return payload if isinstance(payload, dict) else {}
+    payload = _load_state_json(EXPECTANCY_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
-def load_expectancy_v6() -> Optional[Dict[str, Any]]:
-    payload = _load_state_json(EXPECTANCY_STATE_PATH)
-    return payload if isinstance(payload, dict) else None
+def load_expectancy_v6() -> Dict[str, Any]:
+    payload = _load_state_json(EXPECTANCY_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
 def load_symbol_scores_v6_state() -> Dict[str, Any]:
-    payload = _load_state_json(SYMBOL_SCORES_STATE_PATH)
-    return payload if isinstance(payload, dict) else {}
+    payload = _load_state_json(SYMBOL_SCORES_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
-def load_symbol_scores_v6() -> Optional[Dict[str, Any]]:
-    payload = _load_state_json(SYMBOL_SCORES_STATE_PATH)
-    return payload if isinstance(payload, dict) else None
+def load_symbol_scores_v6() -> Dict[str, Any]:
+    payload = _load_state_json(SYMBOL_SCORES_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
-def load_risk_allocator_v6() -> Optional[Dict[str, Any]]:
-    payload = _load_state_json(RISK_ALLOCATOR_STATE_PATH)
-    return payload if isinstance(payload, dict) else None
+def load_risk_allocator_v6() -> Dict[str, Any]:
+    payload = _load_state_json(RISK_ALLOCATOR_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
-def load_router_policy_v6() -> Optional[Dict[str, Any]]:
-    payload = _load_state_json(ROUTER_POLICY_STATE_PATH)
-    return payload if isinstance(payload, dict) else None
+def load_router_policy_v6() -> Dict[str, Any]:
+    payload = _load_state_json(ROUTER_POLICY_STATE_PATH, {})
+    return _ensure_dict(payload)
+
+
+def load_router_health_state() -> Dict[str, Any]:
+    payload = _load_state_json(ROUTER_HEALTH_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
 def load_router_suggestions_v6() -> Dict[str, Any]:
-    payload = _load_state_json(ROUTER_SUGGESTIONS_STATE_PATH)
+    payload = _load_state_json(ROUTER_SUGGESTIONS_STATE_PATH, {})
     result: Dict[str, Any] = payload if isinstance(payload, dict) else {}
     ts_raw = result.get("generated_ts")
     ts_float: Optional[float] = None
@@ -190,13 +222,13 @@ def load_router_suggestions_v6() -> Dict[str, Any]:
 
 
 def load_pipeline_v6_compare_summary() -> Dict[str, Any]:
-    payload = _load_state_json(PIPELINE_COMPARE_STATE_PATH)
-    return payload if isinstance(payload, dict) else {}
+    payload = _load_state_json(PIPELINE_COMPARE_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
-def load_compare_summary() -> Optional[Dict[str, Any]]:
-    payload = _load_state_json(PIPELINE_COMPARE_STATE_PATH)
-    return payload if isinstance(payload, dict) else None
+def load_compare_summary() -> Dict[str, Any]:
+    payload = _load_state_json(PIPELINE_COMPARE_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
 def load_pipeline_v6_compare_events(limit: int = 200) -> List[Dict[str, Any]]:
@@ -223,9 +255,14 @@ def load_pipeline_v6_compare_events(limit: int = 200) -> List[Dict[str, Any]]:
     return records
 
 
-def load_shadow_head() -> Optional[Dict[str, Any]]:
-    payload = _load_state_json(PIPELINE_SHADOW_HEAD_STATE_PATH)
-    return payload if isinstance(payload, dict) else None
+def load_shadow_head() -> Dict[str, Any]:
+    payload = _load_state_json(PIPELINE_SHADOW_HEAD_STATE_PATH, {})
+    return _ensure_dict(payload)
+
+
+def load_synced_state() -> Dict[str, Any]:
+    payload = _load_state_json(SYNCED_STATE_PATH, {})
+    return _ensure_dict(payload)
 
 
 def get_symbol_intel_table(limit: int = 20) -> List[Dict[str, Any]]:
@@ -254,37 +291,58 @@ def get_symbol_intel_table(limit: int = 20) -> List[Dict[str, Any]]:
 
 
 def load_runtime_probe() -> Dict[str, Any]:
-    payload = _load_state_json(RUNTIME_PROBE_STATE_PATH)
-    if not isinstance(payload, dict):
-        return {}
-    result: Dict[str, Any] = {
-        "engine_version": payload.get("engine_version"),
-        "risk_v6_enabled": bool(payload.get("RISK_ENGINE_V6_ENABLED")),
-        "router_autotune_v6_enabled": bool(payload.get("ROUTER_AUTOTUNE_V6_ENABLED")),
-        "pipeline_v6_enabled": bool(payload.get("PIPELINE_V6_SHADOW_ENABLED")),
-        "intel_v6_enabled": bool(payload.get("INTEL_V6_ENABLED")),
-        "nav_age_ms": payload.get("nav_age_ms"),
-        "loop_latency_ms": payload.get("loop_latency_ms"),
-        "ts": payload.get("ts"),
+    payload = _load_state_json(RUNTIME_PROBE_STATE_PATH, {})
+    data = _ensure_dict(payload)
+
+    def _flag(key: str, alt: str | None = None) -> bool:
+        return bool(data.get(key) or (data.get(alt) if alt else False))
+
+    flags = {
+        "INTEL_V6": _flag("INTEL_V6_ENABLED", "intel_v6_enabled"),
+        "RISK_ENGINE_V6": _flag("RISK_ENGINE_V6_ENABLED", "risk_v6_enabled"),
+        "PIPELINE_V6_SHADOW": _flag("PIPELINE_V6_SHADOW_ENABLED", "pipeline_v6_enabled"),
+        "ROUTER_AUTOTUNE_V6": _flag("ROUTER_AUTOTUNE_V6_ENABLED", "router_autotune_v6_enabled"),
+        "FEEDBACK_ALLOCATOR_V6": _flag("FEEDBACK_ALLOCATOR_V6_ENABLED", "feedback_allocator_v6_enabled"),
     }
-    result["generated_at"] = ensure_timestamp(payload.get("ts"))
+
+    result: Dict[str, Any] = {
+        "engine_version": data.get("engine_version"),
+        "nav_age_ms": data.get("nav_age_ms"),
+        "loop_latency_ms": data.get("loop_latency_ms"),
+        "ts": data.get("ts"),
+        "flags": flags,
+    }
+    result["generated_at"] = ensure_timestamp(data.get("ts"))
+    # Backwards compatible aliases
+    result.update(
+        {
+            "risk_v6_enabled": flags["RISK_ENGINE_V6"],
+            "router_autotune_v6_enabled": flags["ROUTER_AUTOTUNE_V6"],
+            "pipeline_v6_enabled": flags["PIPELINE_V6_SHADOW"],
+            "intel_v6_enabled": flags["INTEL_V6"],
+            "feedback_allocator_v6_enabled": flags["FEEDBACK_ALLOCATOR_V6"],
+        }
+    )
     return result
 
 
 def _read_risk_cfg() -> Dict[str, Any]:
-    cfg = load_json("config/risk_limits.json")
+    try:
+        cfg = load_risk_config()
+    except Exception:
+        cfg = {}
     return cfg if isinstance(cfg, dict) else {}
 
 
 def get_nav_snapshot(nav_path: str | None = None) -> Dict[str, float]:
     """
-    Return a NAV snapshot sourced from logs/state/nav.json; never raises.
+    Return a NAV snapshot sourced from logs/state/nav_state.json; never raises.
     """
     _ = nav_path  # legacy param; state source is authoritative
     now_ts = time.time()
     result = {"nav": 0.0, "equity": 0.0, "ts": float(now_ts)}
 
-    state_payload = _load_state_json(NAV_STATE_PATH) or {}
+    state_payload = _load_state_json(_resolve_nav_state_path(), {}) or {}
     if isinstance(state_payload, dict):
         series = state_payload.get("series")
         latest_entry = None
@@ -699,6 +757,7 @@ __all__ = [
     "load_symbol_scores_v6",
     "load_risk_allocator_v6",
     "load_router_policy_v6",
+    "load_router_health_state",
     "load_router_suggestions_v6",
     "load_shadow_head",
     "load_compare_summary",

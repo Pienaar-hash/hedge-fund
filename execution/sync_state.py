@@ -8,6 +8,7 @@ import threading
 import time
 from copy import deepcopy
 
+from execution.risk_loader import load_risk_config
 try:
     from execution.firestore_utils import (
         get_db as _firestore_get_db,
@@ -184,6 +185,7 @@ _FAILURE_THRESHOLD = 5
 _LAST_SUCCESS_TS: Optional[float] = None
 
 _STABLE_ASSETS = {"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP"}
+DEFAULT_PEAK_STALE_SECONDS = 600
 
 
 # ------------------------------- Utilities ----------------------------------
@@ -313,6 +315,111 @@ def _convert_to_usd(symbol: str, qty: float) -> float:
         return amount * price
 
     return 0.0
+
+
+def _best_available_nav() -> float:
+    """Fallback NAV resolver using the confirmed NAV snapshot."""
+    try:
+        from execution.nav import get_confirmed_nav  # type: ignore
+    except Exception:
+        return 0.0
+    try:
+        cached = get_confirmed_nav()
+    except Exception:
+        return 0.0
+    if not isinstance(cached, dict):
+        return 0.0
+    for key in ("nav", "nav_usd"):
+        try:
+            val = float(cached.get(key) or 0.0)
+            if val > 0.0:
+                return val
+        except Exception:
+            continue
+    return 0.0
+
+
+def _runtime_risk_cfg() -> Dict[str, Any]:
+    """Risk overrides sourced from runtime.yaml (if present)."""
+    try:
+        from execution.runtime_config import load_runtime_config  # type: ignore
+    except Exception:
+        return {}
+    try:
+        cfg = load_runtime_config()
+        risk_cfg = cfg.get("risk") if isinstance(cfg, dict) else {}
+        return risk_cfg if isinstance(risk_cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _heal_peak_state(nav_current: float, rows: List[Dict[str, Any]], risk_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Reset peak_state on testnet (optional) and regenerate when stale.
+
+    Returns the peak_state dict after any healing.
+    """
+    state = load_peak_state()
+    now = time.time()
+    reset_on_testnet = bool(risk_cfg.get("reset_peak_on_testnet"))
+    testnet = os.getenv("BINANCE_TESTNET", "0").lower() in ("1", "true", "yes", "on")
+    if reset_on_testnet and testnet and nav_current > 0.0:
+        healed = {
+            "peak_nav": float(nav_current),
+            "peak_ts": now,
+            "daily_peak": float(nav_current),
+            "daily_ts": now,
+            "nav": float(nav_current),
+            "nav_usd": float(nav_current),
+            "peak": float(nav_current),
+            "peak_equity": float(nav_current),
+            "ts": now,
+            "updated_at": _now_iso(),
+        }
+        save_peak_state(healed)
+        return healed
+
+    try:
+        peak_ts = _to_float(state.get("peak_ts") or state.get("ts"))
+    except Exception:
+        peak_ts = 0.0
+    try:
+        stale_threshold = float(risk_cfg.get("peak_stale_seconds", DEFAULT_PEAK_STALE_SECONDS) or DEFAULT_PEAK_STALE_SECONDS)
+    except Exception:
+        stale_threshold = float(DEFAULT_PEAK_STALE_SECONDS)
+    is_stale = stale_threshold > 0 and (peak_ts <= 0.0 or (now - peak_ts) > stale_threshold)
+    if not is_stale:
+        return state
+
+    # Regenerate peak from recent NAV rows
+    nav_values: List[float] = []
+    for entry in (rows[-200:] if rows else []):
+        try:
+            nav_val = _to_float(entry.get("nav") or entry.get("nav_usd"))
+            if nav_val > 0.0:
+                nav_values.append(nav_val)
+        except Exception:
+            continue
+    if not nav_values and nav_current > 0.0:
+        nav_values.append(nav_current)
+    peak_val = max(nav_values) if nav_values else 0.0
+    if peak_val <= 0.0 and nav_current > 0.0:
+        peak_val = nav_current
+    healed = {
+        "peak_nav": float(peak_val),
+        "peak_ts": now,
+        "daily_peak": float(peak_val if peak_val > 0 else nav_current),
+        "daily_ts": now,
+        "nav": float(nav_current),
+        "nav_usd": float(nav_current),
+        "peak": float(peak_val),
+        "peak_equity": float(peak_val),
+        "ts": now,
+        "updated_at": _now_iso(),
+        "stale_healed": True,
+    }
+    save_peak_state(healed)
+    return healed
 
 
 def _infer_price(asset: str, quantity: float, previous: Optional[Dict[str, Any]]) -> float:
@@ -875,15 +982,11 @@ def _read_nav_tail_metrics(path: str) -> Dict[str, float]:
 
 
 def _load_risk_limits_config() -> Dict[str, Any]:
-    path = os.path.join(REPO_ROOT, "config", "risk_limits.json")
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        if isinstance(payload, dict):
-            return payload
+        cfg = load_risk_config()
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
-        pass
-    return {}
+        return {}
 
 
 def _reset_timezone_name() -> str:
@@ -1145,18 +1248,31 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
     print("[sync] executing _sync_once_with_db", flush=True)
     # NAV rows with cutoff + zero-equity filter
     rows = [p for p in _read_nav_rows(NAV_LOG) if _is_good_nav_row(p)]
+    risk_cfg = _runtime_risk_cfg()
 
     # Tail equity guard: avoid writing garbage when executor/sync is cold
     tail_kpis = _read_nav_tail_metrics(NAV_LOG)
     nav_total_equity = float(tail_kpis.get("total_equity", 0.0) or 0.0)
     if nav_total_equity <= 0.0:
-        print(
-            f"[sync] skipping write because nav tail total_equity <= 0 "
-            f"(value={tail_kpis.get('total_equity')})",
-            flush=True,
-        )
-        # still log positions exposure to nav doc (merge), but skip full write
-        return {}, {}, {}
+        fallback_nav = _best_available_nav()
+        if fallback_nav > 0.0:
+            nav_total_equity = fallback_nav
+            tail_kpis["total_equity"] = fallback_nav
+            if not rows:
+                rows.append({"t": time.time(), "nav": fallback_nav})
+            print(
+                f"[sync] nav tail empty -> using confirmed_nav {fallback_nav:.2f}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[sync] skipping write because nav tail total_equity <= 0 "
+                f"(value={tail_kpis.get('total_equity')})",
+                flush=True,
+            )
+            # still log positions exposure to nav doc (merge), but skip full write
+            return {}, {}, {}
+    peak_state = _heal_peak_state(nav_total_equity, rows, risk_cfg)
 
     # Peak: choose the best available source in this order:
     #  1) existing Firestore nav doc (peak_equity)
@@ -1168,7 +1284,12 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         peak_doc = float(nav_existing.get("peak_equity") or 0.0)
     except Exception:
         pass
-    peak_file = _read_peak_file(PEAK_STATE)
+    peak_file = _to_float(
+        peak_state.get("peak_equity")
+        or peak_state.get("peak_nav")
+        or peak_state.get("peak")
+        or _read_peak_file(PEAK_STATE)
+    )
     peak_rows = _compute_peak_from_rows(rows)
 
     # If we're filtering history (cutoff active), prefer rows-based peak (local regime)
@@ -1203,6 +1324,10 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         realized_today,
         reset_timezone=reset_tz,
     )
+    drawdown_state.setdefault("peak_nav", drawdown_state.get("peak"))
+    drawdown_state.setdefault("daily_peak", drawdown_state.get("peak"))
+    drawdown_state.setdefault("peak_ts", drawdown_state.get("ts"))
+    drawdown_state.setdefault("daily_ts", drawdown_state.get("ts"))
     save_peak_state(drawdown_state)
     if db is not None and not getattr(db, "_is_noop", False):
         mirror_peak_state_to_firestore(drawdown_state, db, env=_get_env())
@@ -1239,6 +1364,25 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         pass
 
     _export_dashboard_caches()
+
+    # NEW — v6 dashboard state
+    _write_json_cache(
+        os.path.join(LOGS_DIR, "state", "nav_state.json"),
+        nav_payload,
+        label="nav_state"
+    )
+
+    _write_json_cache(
+        os.path.join(LOGS_DIR, "state", "positions_state.json"),
+        pos_payload,
+        label="positions_state"
+    )
+
+    _write_json_cache(
+        os.path.join(LOGS_DIR, "state", "leaderboard_state.json"),
+        lb_payload,
+        label="leaderboard_state"
+    )
 
     return nav_payload, pos_payload, lb_payload
 
@@ -1331,6 +1475,26 @@ def _stop_heartbeat_thread() -> None:
         _HEARTBEAT_STOP = None
 
 
+def _reset_peak_state_on_testnet_startup() -> None:
+    testnet = os.getenv("BINANCE_TESTNET", "0").lower() in ("1", "true", "yes", "on")
+    if not testnet:
+        return
+    try:
+        from execution import nav as nav_mod
+
+        nav_val, detail = nav_mod.compute_trading_nav({})
+        nav_total = float(nav_val or detail.get("total_nav") or 0.0)
+    except Exception as exc:
+        LOGGER.warning("[sync] peak_reset_nav_failed: %s", exc, exc_info=True)
+        return
+    if nav_total <= 0.0:
+        LOGGER.info("[sync] peak_reset_skipped nav<=0")
+        return
+    baseline = {"peak": nav_total, "lowest": nav_total, "ts": time.time()}
+    save_peak_state(baseline)
+    LOGGER.info("[sync] peak_state_reset testnet=1 baseline_nav=%.2f", nav_total)
+
+
 def main_loop() -> None:
     env = _get_env()
     dry_run = _dry_run_mode()
@@ -1397,6 +1561,7 @@ def run() -> None:
         f"[sync] startup context: ENV={env}, DRY_RUN={dry_run}, repo_root={REPO_ROOT}",
         flush=True,
     )
+    _reset_peak_state_on_testnet_startup()
     try:
         main_loop()
     except KeyboardInterrupt:

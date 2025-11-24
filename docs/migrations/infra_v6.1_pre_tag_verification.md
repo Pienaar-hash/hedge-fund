@@ -1,0 +1,223 @@
+# v6.1-rc Pre-Tag Verification
+Date: 2025-11-23 10:35:57 UTC
+VERSION: v6.1-rc
+
+## Repo State
+- repo_state: DIRTY
+- Changed paths (non-ignored):
+  - .codexignore (D)
+  - Batch_12_RuntimeBetaFixes.prompt.txt (D)
+  - VERSION (M)
+  - apply (D)
+  - bin/run-dashboard.sh (M)
+  - config/dashboard.yml (D)
+  - config/firestore_schema.json (D)
+  - config/pairs_universe.json (M)
+  - config/reserves.json.example (D)
+  - config/risk_limits.json (M)
+  - config/strategy_config.json (M)
+  - core/__init__.py (D)
+  - core/strategy_base.py (D)
+  - cron/README.md (D)
+  - cron/rotate_exec_logs.sh (D)
+  - dashboard/__init__.py (D)
+  - dashboard/async_cache.py (D)
+  - dashboard/firestore_helpers.py (D)
+  - dashboard/main.py (D)
+  - dashboard/theme.css (D)
+  - dashboard/app.py (M)
+  - dashboard/intel_panel.py (M)
+  - dashboard/live_helpers.py (M)
+  - dashboard/nav_helpers.py (M)
+  - dashboard/pipeline_panel.py (M)
+  - dashboard/router_health.py (M)
+  - dashboard/router_policy.py (M)
+  - data/binance_week_by_symbol.csv (D)
+  - data/binance_week_daily_curve.csv (D)
+  - data/binance_week_overview.csv (D)
+  - data/fund_snapshot.json (D)
+  - data/portfolio_snapshot.csv (D)
+  - deploy/run_dashboard.sh (M)
+  - deploy/supervisor-user/supervisord.conf (M)
+  - deploy/supervisor/hedge-dashboard.conf (D)
+  - deploy/supervisor/hedge-executor.conf (D)
+  - deploy/supervisor/ml-retrain-nightly.conf (D)
+  - docs/FIRESTORE.md (D)
+  - docs/RELEASE_NOTES_v6.0-beta-preview.md (D)
+  - docs/archive/Codex Audit Prompt — v5.10 Strategy & Screener Repair.md (D)
+  - docs/codex_entrypoints_v5.9.5.md (D)
+  - docs/doctor_v5.10_baseline.txt (D)
+  - docs/doctor_v5.10_final.txt (D)
+  - docs/infra_v5.10_RC1_report.md (D)
+  - docs/infra_v6.0_beta_preview_runtime_audit.md (D)
+  - docs/infra_v6.0_beta_preview_runtime_verification.md (D)
+  - docs/infra_v6.0_intel_audit.md (D)
+  - docs/infra_v6.0_pipeline_audit.md (D)
+  - docs/infra_v6.0_repo_topology.md (D)
+  - docs/infra_v6.0_risk_audit.md (D)
+  - docs/infra_v6.0_runtime_activation_report.md (D)
+  - docs/infra_v6.0_runtime_final_audit.md (D)
+  - docs/infra_v6.0_telemetry_audit.md (D)
+  - docs/investor/investor_agreement.pdf (D)
+  - docs/investor/investor_landing_summary.pdf (D)
+  - docs/investor/investor_pitch_deck.pdf (D)
+  - docs/investor/one_page_summary.pdf (D)
+  - docs/screener_probe_v5.10_baseline.jsonl (D)
+  - docs/v5.10_nav_router_risk_snapshots.md (D)
+  - docs/v6.0-alpha1_pre_flight.txt (D)
+  - docs/v6.0-rc_confirmation.md (D)
+  - docs/v6.0-rc_migration_guide.md (D)
+  - docs/v6.0-rc_ops_runbook.md (D)
+  - docs/v6.0-rc_release_notes_final.md (D)
+  - docs/v6.0-rc_supervisor_activation_checklist.md (D)
+  - docs/v6.0_Master_Architecture_Map.md (D)
+  - docs/v6.0_Master_Architecture_Map.txt (D)
+  - docs/v6.0_architecture_brief.md (D)
+  - docs/v6.0_breaking_changes.md (D)
+  - docs/v6.0_known_issues.md (D)
+  - execution/_log_utils_self_test.jsonl (D)
+  - execution/capital_allocator.py (D)
+  - execution/exchange_utils.py (M)
+  - execution/executor_live.py (M)
+  - execution/exutil.py (D)
+  - execution/intel/pipeline_v6_compare.py (M)
+  - execution/intel/symbol_score_v6.py (M)
+  - execution/leaderboard_sync.py (D)
+  - execution/order_router.py (M)
+  - execution/pipeline_probe.py (D)
+  - execution/pipeline_v6_shadow.py (M)
+  - execution/reserves.py (D)
+  - execution/risk_limits.py (M)
+  - execution/sync_daemon.py (D)
+  - execution/sync_state.py (M)
+  - execution/utils/execution_alerts.py (D)
+  - execution/utils/metrics.py (M)
+  - execution/utils/trades.py (D)
+  - exit (D)
+  - firebase.json (D)
+  - gpt_schema/... (multiple config, execution, scripts, tests files) (D)
+  - grep_logs/*.log (D)
+  - hedge_gpt_schema_snapshot.tgz (D)
+  - infra_v6.0_rc_batch0*.prompt.txt (D)
+  - infrastructure/*. (D)
+  - ml/* (D)
+  - models/* (D)
+  - module_resolution_report.md (D)
+  - ops/hedge.conf (M)
+  - ops/nginx_site.conf (M)
+  - pr/PR_BODY.md (D)
+  - py/requirements.freeze.txt (D)
+  - quant-engineering adjustments.txt (D)
+  - repo/git.txt (D)
+  - reports/*.html (D)
+  - repro.py (D)
+  - research/**/* (D)
+  - runtime_path_diff.md (D)
+  - runtime_v6_pythonpath_verification.md (D)
+  - screener_state.json (D)
+  - scripts/**/* (D)
+  - status (D)
+  - supervisor_env_fix.diff (D)
+  - telegram/heartbeat.py (D)
+  - test (D)
+  - test_dash.py (D)
+  - tests/test_async_cache.py (D)
+  - tests/test_capital_allocator.py (D)
+  - tests/test_correlation_matrix.py (D)
+  - tests/test_doctor_positions.py (D)
+  - tests/test_execution_alerts.py (D)
+  - tests/test_factor_fusion.py (D)
+  - tests/test_last_train_report_schema.py (D)
+  - tests/test_ml_features.py (D)
+  - tests/test_pipeline_v6_compare_runtime.py (M)
+  - tests/test_rl_sizer_env.py (D)
+  - tests/test_signal_eval_report_shape.py (D)
+  - tests/test_signal_eval_smoke.py (D)
+  - tmp_router_health.json (D)
+  - tore . (D)
+  - utils/expectancy.py (D)
+  - utils/metrics.py (D)
+  - utils/trades.py (D)
+  - utils/vol.py (D)
+  - v6.0-rc_tag_message.txt (D)
+  - archive/ (new)
+  - docs/archive/... (new)
+  - docs/infra_v6.1_repo_topology.md (new)
+  - tests/test_v6_sizing_contract.py (new)
+
+## Import Sanity
+- execution.executor_live: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.risk_engine_v6: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.risk_limits: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.order_router: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.nav: OK
+- execution.events: OK
+- execution.state_publish: OK
+- execution.pipeline_v6_shadow: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.pipeline_v6_compare: FAIL (ModuleNotFoundError: No module named 'execution.pipeline_v6_compare')
+- execution.v6_flags: OK
+- execution.exchange_utils: OK
+- execution.universe_resolver: OK
+- execution.position_sizing: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.size_model: OK
+- execution.signal_generator: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.signal_screener: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.intel.expectancy_map: OK
+- execution.intel.maker_offset: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.intel.router_policy: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.intel.router_autotune_apply_v6: OK
+- execution.intel.symbol_score: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.utils.execution_health: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.utils.expectancy: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.utils.metrics: FAIL (ModuleNotFoundError: No module named 'numpy')
+- execution.utils.toggle: OK
+- execution.utils.vol: FAIL (ModuleNotFoundError: No module named 'numpy')
+- dashboard.app: FAIL (ModuleNotFoundError: No module named 'pandas')
+- dashboard.dashboard_utils: FAIL (ModuleNotFoundError: No module named 'pandas')
+- dashboard.live_helpers: FAIL (ModuleNotFoundError: No module named 'numpy')
+- dashboard.router_health: FAIL (ModuleNotFoundError: No module named 'pandas')
+- dashboard.router_policy: FAIL (ModuleNotFoundError: No module named 'pandas')
+- dashboard.intel_panel: FAIL (ModuleNotFoundError: No module named 'pandas')
+- dashboard.pipeline_panel: FAIL (ModuleNotFoundError: No module named 'pandas')
+- dashboard.nav_helpers: OK
+
+## Config & Contracts
+- config/risk_limits.json: OK
+- config/pairs_universe.json: OK
+- config/runtime.yaml: OK
+- config/dashboard.yaml: WARN (file empty)
+- config/strategy_registry.json: OK
+- config/strategy_config.json: OK
+- config/settings.json: OK
+- config/symbol_tiers.json: OK
+- config/assets.json: OK
+- config/reserves.json: OK
+- docs/ARCHITECTURE_CURRENT.md: OK
+- docs/infra_v6.1_repo_topology.md: OK
+- docs/v6_state_contract.md: OK
+- docs/v6_risk_engine_contract.md: OK
+- docs/v6_intel_contract.md: OK
+- docs/v6_router_autotune_contract.md: OK
+- docs/v6_pipeline_shadow_compare_contract.md: OK
+- docs/v6_runtime_telemetry_contract.md: OK
+- docs/v6_runtime_release_notes.md: OK
+- docs/Runbook.md: OK
+- docs/OPERATIONS.md: OK
+- docs/CloudEnvironment.md: OK
+- docs/CONFIG_GUIDE.md: OK
+- WARN items: config/dashboard.yaml (empty)
+
+## Supervisor & Ops
+- deploy/supervisor/hedge.conf: Canonical v6.1 set only (executor, sync_state, dashboard, pipeline-shadow-heartbeat, pipeline-compare); commands aligned with bin/scripts.
+- ops/hedge.conf: Canonical v6.1 set only; commands aligned with bin/scripts.
+- deploy/supervisor-user/supervisord.conf: includes deploy/supervisor/hedge.conf only. No legacy references found.
+
+## Test Smoke Summary
+- Attempted: tests/test_v6_runtime_activation.py (ERROR: missing dependency numpy)
+- Attempted: tests/test_executor_state_files.py (ERROR: missing dependency numpy)
+- Attempted: tests/test_router_policy.py (ERROR: missing dependency numpy)
+- Skipped (missing files): tests/test_risk_limits_v6.py, tests/test_pipeline_v6_shadow_compare.py
+- pytest available but collection failed due to missing dependency numpy.
+
+## Final Tag Readiness Note
+Ready for v6.1-rc tagging, subject to addressing WARN/FAIL items above (missing dependencies for imports/tests and empty config/dashboard.yaml).

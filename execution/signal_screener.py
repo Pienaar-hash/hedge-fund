@@ -13,7 +13,6 @@ from .orderbook_features import evaluate_entry_gate
 from .signal_generator import (
     normalize_intent as generator_normalize_intent,
     allow_trade,
-    size_for,
 )
 from .universe_resolver import (
     resolve_allowed_symbols,
@@ -23,15 +22,7 @@ from .universe_resolver import (
     symbol_min_notional,
     symbol_target_leverage,
 )
-from .risk_limits import (
-    check_order,
-    RiskState,
-    RiskGate,
-    symbol_notional_guard,
-    symbol_dd_guard,
-)
-from .risk_engine_v6 import OrderIntent, RiskEngineV6
-from .nav import PortfolioSnapshot
+from .nav import PortfolioSnapshot, nav_health_snapshot
 from execution.v6_flags import get_flags, log_v6_flag_snapshot
 
 try:
@@ -46,6 +37,8 @@ _DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
 _DEDUP_MAX_SIZE = 2048
 _ENTRY_GATE_NAME = "orderbook"
 ORDERBOOK_ALIGNMENT_THRESHOLD = 0.20
+DEFAULT_Z_MIN = 0.8
+DEFAULT_RSI_BAND = (30.0, 70.0)
 
 
 def _tf_seconds(tf: str | None) -> float:
@@ -126,6 +119,19 @@ def _normalize_pct(value: Any) -> float:
     return pct
 
 
+def _nav_fraction(value: Any) -> float:
+    """Normalize NAV-based pct inputs; 10 -> 0.10, 0.02 -> 0.02."""
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if pct <= 0.0:
+        return 0.0
+    if pct > 1.0:
+        return min(pct / 100.0, 1.0)
+    return pct
+
+
 def _extract_trade_nav_caps(risk_cfg: Mapping[str, Any] | None) -> Tuple[float, float]:
     if not isinstance(risk_cfg, Mapping):
         return 0.0, 0.0
@@ -171,6 +177,8 @@ def _reduce_plan(
     timeframe: str,
     positions: Dict[str, Dict[str, float]],
     fallback_price: float,
+    nav_usd: float,
+    min_notional: float,
 ) -> Tuple[List[Dict[str, Any]], float]:
     """Return (reduce_intents, notional_delta)."""
     desired_side = "LONG" if signal == "BUY" else "SHORT"
@@ -193,24 +201,18 @@ def _reduce_plan(
         "reduceOnly": True,
         "positionSide": opposite_side,
         "price": mark,
-        "capital_per_trade": notional,
+        "per_trade_nav_pct": (notional / nav_usd) if nav_usd > 0 else 0.0,
         "leverage": 1.0,
-        "gross_usd": notional,
+        "min_notional": min_notional,
         "source": "auto_reduce",
     }
     return [intent], notional
 
-
-_SCREENER_RISK_STATE = RiskState()
-_SCREENER_GATE = RiskGate({"sizing": {}, "risk": {}})
-_V6_FLAGS = get_flags()
+_ = get_flags()
 try:
     log_v6_flag_snapshot(LOGGER)
 except Exception:
     LOGGER.debug("v6 flag snapshot logging failed", exc_info=True)
-RISK_ENGINE_V6_ENABLED = _V6_FLAGS.risk_engine_v6_enabled
-_RISK_ENGINE_V6: Optional[RiskEngineV6] = None
-_RISK_ENGINE_V6_CFG_DIGEST: Optional[str] = None
 
 
 def _strategy_params(entry: Mapping[str, Any]) -> Dict[str, Any]:
@@ -218,27 +220,6 @@ def _strategy_params(entry: Mapping[str, Any]) -> Dict[str, Any]:
     if isinstance(params, Mapping):
         return dict(params)
     return {}
-
-
-def _update_screener_risk_state(
-    snapshot: PortfolioSnapshot,
-    open_notional: float,
-    open_positions: int,
-) -> None:
-    _SCREENER_GATE.nav_provider = snapshot
-    try:
-        loss_pct = float(_SCREENER_GATE._daily_loss_pct())
-    except Exception:
-        loss_pct = 0.0
-    _SCREENER_RISK_STATE.daily_pnl_pct = -loss_pct
-    _SCREENER_RISK_STATE.open_notional = float(open_notional)
-    _SCREENER_RISK_STATE.open_positions = int(open_positions)
-
-
-def _risk_cfg_path() -> str:
-    return os.getenv("RISK_LIMITS_CONFIG", "config/risk_limits.json")
-
-
 def _load_strategy_list() -> List[Dict[str, Any]]:
     scfg = json.load(open("config/strategy_config.json"))
     raw = scfg.get("strategies") or []
@@ -311,10 +292,9 @@ def _strategy_concurrency_budget() -> int:
 
 
 def _load_risk_cfg() -> Dict[str, Any]:
-    try:
-        cfg = json.load(open(_risk_cfg_path()))
-    except Exception:
-        cfg = {}
+    from execution.risk_loader import load_risk_config
+
+    cfg = load_risk_config()
     if not isinstance(cfg, dict):
         cfg = {}
     derived = _strategy_concurrency_budget()
@@ -329,26 +309,12 @@ def _load_risk_cfg() -> Dict[str, Any]:
     return cfg
 
 
-def _pairs_cfg_path() -> str:
-    return os.getenv("PAIRS_UNIVERSE_CONFIG", "config/pairs_universe.json")
-
-
 def _load_pairs_cfg() -> Dict[str, Any]:
     try:
-        payload = json.load(open(_pairs_cfg_path()))
+        payload = json.load(open(os.getenv("PAIRS_UNIVERSE_CONFIG", "config/pairs_universe.json")))
     except Exception:
         payload = {}
     return payload if isinstance(payload, dict) else {}
-
-
-def _get_risk_engine_v6(risk_cfg: Mapping[str, Any]) -> Optional[RiskEngineV6]:
-    global _RISK_ENGINE_V6, _RISK_ENGINE_V6_CFG_DIGEST
-    digest = json.dumps(risk_cfg, sort_keys=True, default=str)
-    if _RISK_ENGINE_V6 is None or _RISK_ENGINE_V6_CFG_DIGEST != digest:
-        pairs_cfg = _load_pairs_cfg()
-        _RISK_ENGINE_V6 = RiskEngineV6.from_configs(risk_cfg, pairs_cfg)
-        _RISK_ENGINE_V6_CFG_DIGEST = digest
-    return _RISK_ENGINE_V6
 
 
 def would_emit(
@@ -357,7 +323,7 @@ def would_emit(
     *,
     notional: float = 10.0,
     lev: float = 20.0,
-    nav: float = 1000.0,
+    nav: float = 0.0,
     open_positions_count: int = 0,
     current_gross_notional: float = 0.0,
     current_tier_gross_notional: float = 0.0,
@@ -413,119 +379,7 @@ def would_emit(
         except Exception as exc:  # pragma: no cover - ML optional
             extra["ml_error"] = str(exc)
 
-    cfg = _load_risk_cfg()
-    trade_equity_cap, max_trade_cap = _extract_trade_nav_caps(cfg)
-    tname = symbol_tier(sym)
-    temp_state = RiskState()
-    temp_state.daily_pnl_pct = _SCREENER_RISK_STATE.daily_pnl_pct
-    temp_state.open_notional = float(current_gross_notional)
-    temp_state.open_positions = int(open_positions_count)
-    nav_f = float(nav) if isinstance(nav, (int, float)) else float(nav or 0.0)
-    try:
-        gross_request = float(notional) * float(lev)
-    except Exception:
-        gross_request = float(notional)
-    try:
-        threshold = max(nav_f * 10.0, 1_000_000.0)
-        if gross_request > threshold:
-            msg = (
-                f"[size_dbg] sym={sym} gross={gross_request:.4f} nav={nav_f:.4f} "
-                f"lev={float(lev):.4f} base_notional={float(notional):.4f} "
-                f"open_gross={float(current_gross_notional):.4f} "
-                f"caps_eq={trade_equity_cap:.2f}% max_trade={max_trade_cap:.2f}% "
-                f"threshold={threshold:.2f}"
-            )
-            LOGGER.warning(msg)
-            print(msg)
-    except Exception:
-        LOGGER.debug("gross request logging failed", exc_info=True)
-    trade_obs_pct = None
-    if nav_f > 0.0:
-        trade_obs_pct = (gross_request / nav_f) * 100.0
-    trade_meta: Dict[str, Any] = {}
-    if trade_equity_cap > 0.0:
-        trade_meta["trade_equity_nav_pct"] = trade_equity_cap
-    if max_trade_cap > 0.0:
-        trade_meta["max_trade_nav_pct"] = max_trade_cap
-    if trade_obs_pct is not None:
-        trade_meta["trade_equity_nav_obs"] = trade_obs_pct
-        trade_meta["max_trade_nav_obs"] = trade_obs_pct
-    if trade_meta:
-        extra.setdefault("trade_nav", {}).update(trade_meta)
-    clamp_reasons: List[str] = []
-    if trade_obs_pct is not None:
-        if trade_equity_cap > 0.0 and trade_obs_pct > trade_equity_cap:
-            clamp_reasons.append("trade_gt_equity_cap")
-        if max_trade_cap > 0.0 and trade_obs_pct > max_trade_cap:
-            clamp_reasons.append("trade_gt_max_trade_nav_pct")
-    if clamp_reasons:
-        try:
-            LOGGER.warning(
-                "[screener] trade clamp %s sym=%s nav=%.4f gross_req=%.4f lev=%.4f trade_obs_pct=%.4f caps(eq=%.2f,max=%.2f) open_gross=%.4f",
-                clamp_reasons,
-                sym,
-                nav_f,
-                gross_request,
-                float(lev),
-                trade_obs_pct,
-                trade_equity_cap,
-                max_trade_cap,
-                float(current_gross_notional),
-            )
-        except Exception:
-            LOGGER.debug("trade clamp logging failed", exc_info=True)
-        for reason in clamp_reasons:
-            if reason not in reasons:
-                reasons.append(reason)
-        return False, reasons, extra
-
-    engine = _get_risk_engine_v6(cfg) if RISK_ENGINE_V6_ENABLED else None
-
-    if engine is not None and RISK_ENGINE_V6_ENABLED:
-        intent_payload = OrderIntent(
-            symbol=sym,
-            side=side,
-            qty=float(notional),
-            quote_notional=float(notional) * float(lev),
-            leverage=float(lev),
-            price=0.0,
-            tier_name=tname,
-            tier_gross_notional=float(current_tier_gross_notional),
-            current_gross_notional=float(current_gross_notional),
-            symbol_open_qty=0.0,
-            nav_usd=float(nav),
-            open_positions_count=int(open_positions_count),
-        )
-        decision = engine.check_order(intent_payload, temp_state)
-        risk_veto = not decision.allowed
-        details = decision.diagnostics or {}
-    else:
-        risk_veto, details = check_order(
-            symbol=sym,
-            side=side,
-            requested_notional=float(notional) * float(lev),
-            price=0.0,
-            nav=float(nav),
-            open_qty=0.0,
-            now=time.time(),
-            cfg=cfg,
-            state=temp_state,
-            current_gross_notional=float(current_gross_notional),
-            lev=float(lev),
-            open_positions_count=int(open_positions_count),
-            tier_name=tname,
-            current_tier_gross_notional=float(current_tier_gross_notional),
-        )
-    detail_dict = details if isinstance(details, dict) else {}
-    if isinstance(details, dict):
-        extra["risk"] = detail_dict
-    elif details is not None:
-        extra["risk"] = {"detail": details}
-    rs = [str(r) for r in (detail_dict.get("reasons") or [])]
-    for reason in rs:
-        if reason and reason not in reasons:
-            reasons.append(reason)
-    overall_ok = (len(reasons) == 0) and (not risk_veto)
+    overall_ok = len(reasons) == 0
 
     if overall_ok and timeframe and candle_close_ts is not None:
         now_ts = time.time()
@@ -574,18 +428,19 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         strategies = _load_strategy_list()
     except Exception as e:
         print(f"{LOG_TAG} error loading config: {e}")
-        return []
+        return IntentBatch([], 0)
+
     try:
         base_cfg = json.load(open("config/strategy_config.json"))
     except Exception:
         base_cfg = {}
-    sizing_cfg = (base_cfg.get("sizing") or {})
-    min_gross_floor = 0.0
+
     ml_cfg = (base_cfg.get("ml") or {})
     ml_enabled = bool(ml_cfg.get("enabled")) and _score_symbol is not None
-    out = []
+    out: List[Dict[str, Any]] = []
     attempted = 0
-    dbg = os.getenv("DEBUG_SIGNALS", "0").lower() in ("1","true","yes")
+    dbg = os.getenv("DEBUG_SIGNALS", "0").lower() in ("1", "true", "yes")
+
     # Prepare allowed set and tier map (best effort)
     try:
         allowed_syms, tier_by = resolve_allowed_symbols()
@@ -593,23 +448,30 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     except Exception:
         allowed_set = set()
         tier_by = {}
+
     # Risk cfg + portfolio snapshot (best effort)
     rlc = _load_risk_cfg()
-    risk_global = (rlc.get("global") or {}) if isinstance(rlc, Mapping) else {}
-    trade_equity_cap, max_trade_cap = _extract_trade_nav_caps(rlc)
     kill_switch = os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on")
     snapshot = PortfolioSnapshot(base_cfg)
     try:
         nav_override = float(os.getenv("SCREENER_NAV", "0") or 0.0)
     except Exception:
         nav_override = 0.0
-    if nav_override > 0:
-        nav = nav_override
-    else:
-        nav = float(snapshot.current_nav_usd())
-        if nav <= 0:
-            nav = 1000.0
-    current_portfolio_gross = float(snapshot.current_gross_usd())
+    nav_health = nav_health_snapshot()
+    nav = float(nav_override or nav_health.get("nav_total") or 0.0)
+    nav_age = nav_health.get("age_s")
+    nav_sources_ok = bool(nav_health.get("sources_ok", True))
+    nav_unknown = nav <= 0.0 or not nav_sources_ok
+    nav_detail_flag = {
+        "nav_unknown": nav_unknown,
+        "nav_age_s": nav_age,
+        "nav_sources_ok": nav_sources_ok,
+    }
+
+    try:
+        current_portfolio_gross = float(snapshot.current_gross_usd())
+    except Exception:
+        current_portfolio_gross = 0.0
     open_positions_count = 0
     tier_gross: Dict[str, float] = {}
     positions_by_symbol: Dict[str, Dict[str, Dict[str, float]]] = {}
@@ -636,19 +498,40 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             current_portfolio_gross = gross_from_positions
     except Exception:
         pass
-    _update_screener_risk_state(snapshot, current_portfolio_gross, open_positions_count)
-    cap_pct = float(risk_global.get("max_gross_exposure_pct", 0.0) or 0.0)
-    if os.environ.get("EVENT_GUARD", "0") == "1":
-        cap_pct *= 0.8
-    cap_usd = nav * (cap_pct / 100.0) if nav > 0 and cap_pct > 0 else 0.0
     ml_threshold = float(ml_cfg.get("prob_threshold", 0.0) or 0.0)
+
+    def _decide_signal(z: float, rsi: float, entry_cfg: Mapping[str, Any], entry_forced: bool) -> Optional[str]:
+        band_raw = entry_cfg.get("band") or DEFAULT_RSI_BAND
+        low, high = DEFAULT_RSI_BAND
+        try:
+            if isinstance(band_raw, (list, tuple)) and len(band_raw) >= 2:
+                low = float(band_raw[0])
+                high = float(band_raw[1])
+        except Exception:
+            low, high = DEFAULT_RSI_BAND
+        zmin_raw = entry_cfg.get("zmin", DEFAULT_Z_MIN)
+        try:
+            zmin = float(zmin_raw)
+        except Exception:
+            zmin = DEFAULT_Z_MIN
+        if z <= -zmin:
+            return "BUY"
+        if z >= zmin:
+            return "SELL"
+        if rsi <= low:
+            return "BUY"
+        if rsi >= high:
+            return "SELL"
+        if entry_forced:
+            return "BUY" if z <= 0 else "SELL"
+        return None
     for scfg in strategies:
         attempted += 1
         sym = scfg.get("symbol")
         sym_key = str(sym).upper()
         tf = scfg.get("timeframe", "15m")
         params = scfg.get("params") or {}
-        cap_cfg = float(params.get("capital_per_trade", 0) or 0) or 10.0
+        per_trade_nav_pct = _nav_fraction(params.get("per_trade_nav_pct"))
         lev = float(params.get("leverage") or symbol_target_leverage(sym_key) or 1.0)
         if lev <= 0:
             lev = 1.0
@@ -657,14 +540,6 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             per_symbol_cfg = ((rlc.get("per_symbol") or {}) if isinstance(rlc, Mapping) else {}).get(sym_key, {}) or {}
         except Exception:
             per_symbol_cfg = {}
-        sym_max_order = 0.0
-        try:
-            sym_max_order = float(per_symbol_cfg.get("max_order_notional") or 0.0)
-        except Exception:
-            sym_max_order = 0.0
-        gross_cap = cap_cfg * lev
-        sym_floor = max(symbol_min_gross(sym_key), 0.0)
-        config_floor = max(gross_cap, min_gross_floor, sym_floor)
         entry_forced = (params.get("entry", {}) or {}).get("type") == "always_on"
         if kill_switch:
             print(
@@ -699,84 +574,18 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         except Exception as e:
             print(f"{LOG_TAG} {sym} {tf} error: {e}")
             continue
-        cfg_min_notional = float(risk_global.get("min_notional_usdt", 0.0) or 0.0)
         sym_min_notional = symbol_min_notional(sym_key)
-        floor_notional = max(
-            config_floor,
-            cfg_min_notional,
-            sym_min_notional,
-            exch_min_notional,
-            min_qty_notional,
-        )
+        sym_floor = max(symbol_min_gross(sym_key), 0.0)
+        min_notional = max(sym_floor, sym_min_notional, exch_min_notional, min_qty_notional)
+        requested_notional = max(nav * per_trade_nav_pct, min_notional) if nav > 0 else min_notional
         try:
             print(
                 f"[sigdbg] sym={sym} tf={tf} price={price:.4f} nav={nav:.4f} "
-                f"cap_cfg={cap_cfg:.4f} lev={lev:.2f} floor_notional={floor_notional:.4f} "
-                f"cap_usd={cap_usd:.4f} open_gross={current_portfolio_gross:.4f}"
+                f"per_trade_nav_pct={per_trade_nav_pct:.4f} lev={lev:.2f} "
+                f"min_notional={min_notional:.4f} open_gross={current_portfolio_gross:.4f}"
             )
         except Exception:
             LOGGER.debug("sigdbg log failed", exc_info=True)
-        # Pre-risk clamp to stay within nav-based caps
-        requested_notional = floor_notional
-        if nav > 0.0:
-            nav_cap = []
-            if trade_equity_cap > 0.0:
-                nav_cap.append(nav * (trade_equity_cap / 100.0))
-            if max_trade_cap > 0.0:
-                nav_cap.append(nav * (max_trade_cap / 100.0))
-            # Per-symbol max_order_notional from risk_limits is enforced later; keep floor here on nav caps
-            if nav_cap:
-                requested_notional = min(requested_notional, min(nav_cap))
-        cap = requested_notional / lev
-        if cap_usd > 0:
-            if current_portfolio_gross >= cap_usd:
-                print(
-                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"]}}'
-                )
-                continue
-            if current_portfolio_gross + requested_notional > cap_usd:
-                remaining = max(cap_usd - current_portfolio_gross, 0.0)
-                print(
-                    f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["portfolio_cap_reached"],"remaining":{round(remaining,4)}}}'
-                )
-                continue
-        effective_notional = requested_notional
-        min_notional = max(exch_min_notional, cfg_min_notional, sym_min_notional)
-        vetoes = []
-        if effective_notional < min_notional:
-            vetoes.append("min_notional")
-        if effective_notional < min_qty_notional:
-            vetoes.append("min_qty_notional")
-        if vetoes and not entry_forced:
-            if dbg:
-                print(
-                    f'[sigdbg] {sym} tf={tf} px={round(price,4)} cap={cap} lev={lev} gross={round(effective_notional,4)} min_notional={min_notional} min_qty_notional={round(min_qty_notional,4)} veto={vetoes}'
-                )
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","gross":{effective_notional},"min_notional":{min_notional},"veto":{vetoes}}}'
-            )
-            continue
-
-        trade_obs_pct = None
-        trade_vetoes: List[str] = []
-        if nav > 0.0:
-            trade_obs_pct = (effective_notional / nav) * 100.0
-            if trade_equity_cap > 0.0 and trade_obs_pct > trade_equity_cap:
-                trade_vetoes.append("trade_gt_equity_cap")
-            if max_trade_cap > 0.0 and trade_obs_pct > max_trade_cap:
-                trade_vetoes.append("trade_gt_max_trade_nav_pct")
-        if trade_vetoes:
-            detail_payload = {
-                "trade_equity_nav_pct": trade_equity_cap if trade_equity_cap > 0.0 else None,
-                "max_trade_nav_pct": max_trade_cap if max_trade_cap > 0.0 else None,
-                "trade_equity_nav_obs": trade_obs_pct,
-                "max_trade_nav_obs": trade_obs_pct,
-            }
-            detail_payload = {k: v for k, v in detail_payload.items() if v is not None}
-            print(
-                f'[decision] {json.dumps({"symbol": sym, "tf": tf, "veto": trade_vetoes, "detail": detail_payload})}'
-            )
-            continue
 
         # Execution hardening gates
         if not allow_trade(sym_key):
@@ -784,42 +593,9 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["signal_gate"]}}'
             )
             continue
-        if not symbol_notional_guard(sym_key, cfg=rlc):
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["symbol_notional_cap"]}}'
-            )
-            continue
-        if not symbol_dd_guard(sym_key, cfg=rlc):
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["symbol_drawdown_cap"]}}'
-            )
-            continue
 
-        scaled_notional = size_for(sym_key, effective_notional)
-        if scaled_notional <= 0:
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["sizing_zero"]}}'
-            )
-            continue
-        requested_notional = max(float(scaled_notional), min_notional)
-        if nav > 0.0:
-            cap_candidates = []
-            if trade_equity_cap > 0.0:
-                cap_candidates.append(nav * (trade_equity_cap / 100.0))
-            if max_trade_cap > 0.0:
-                cap_candidates.append(nav * (max_trade_cap / 100.0))
-            if sym_max_order > 0.0:
-                cap_candidates.append(sym_max_order)
-            if cap_candidates:
-                requested_notional = min(requested_notional, min(cap_candidates))
-        effective_notional = requested_notional
-        cap = requested_notional / lev if lev > 0 else requested_notional
-
-        signal = (
-            "BUY"
-            if z < -0.8
-            else ("SELL" if z > 0.8 else ("BUY" if entry_forced else None))
-        )
+        entry_cfg = params.get("entry") or {}
+        signal = _decide_signal(z, rsi, entry_cfg, entry_forced)
         if signal is None:
             print(
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","z":{round(z, 4)},"rsi":{round(rsi, 1)},"veto":["no_cross"]}}'
@@ -865,78 +641,35 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                     print(f"{LOG_TAG} ml exception {sym}: {exc}")
                 ml_prob = None
 
-        # Risk pre-check
         tname = symbol_tier(sym)
         tier_key = tname or "?"
-        tcur = tier_gross.get(tier_key, 0.0)
-
         reduce_intents, reduce_notional = _reduce_plan(
             sym,
             signal,
             tf,
             positions_by_symbol.get(sym_key, {}),
             price,
+            nav,
+            min_notional,
         )
-        adj_portfolio_gross = max(current_portfolio_gross - reduce_notional, 0.0)
-        adj_tier_gross = max(tcur - reduce_notional, 0.0)
-        adj_open_positions = open_positions_count
-        if reduce_notional > 0.0 and adj_open_positions > 0:
-            adj_open_positions -= 1
-
-        risk_veto, details = check_order(
-            symbol=sym,
-            side=signal,
-            requested_notional=requested_notional,
-            price=price,
-            nav=nav,
-            open_qty=0.0,
-            now=time.time(),
-            cfg=rlc,
-            state=None,  # type: ignore[arg-type]
-            current_gross_notional=adj_portfolio_gross,
-            lev=lev,
-            open_positions_count=adj_open_positions,
-            tier_name=tname,
-            current_tier_gross_notional=adj_tier_gross,
-        )
-        if risk_veto:
-            rs = details.get("reasons", []) if isinstance(details, dict) else []
-            if reduce_intents:
-                for ri in reduce_intents:
-                    out.append(ri)
-                    pos_side = ri.get("positionSide")
-                    if pos_side:
-                        positions_by_symbol.setdefault(sym_key, {}).pop(pos_side, None)
-                current_portfolio_gross = adj_portfolio_gross
-                tier_gross[tier_key] = adj_tier_gross
-                open_positions_count = adj_open_positions
-                _update_screener_risk_state(
-                    snapshot,
-                    current_portfolio_gross,
-                    open_positions_count,
-                )
-            veto_payload = {
-                "symbol": sym,
-                "tf": tf,
-                "veto": rs,
-                "detail": details if isinstance(details, dict) else {"detail": details},
-            }
-            print(f'[decision] {json.dumps(veto_payload)}')
-            continue
         if reduce_intents:
-            for ri in reduce_intents:
-                out.append(ri)
-                pos_side = ri.get("positionSide")
-                if pos_side:
-                    positions_by_symbol.setdefault(sym_key, {}).pop(pos_side, None)
-            current_portfolio_gross = adj_portfolio_gross
-            tier_gross[tier_key] = adj_tier_gross
-            open_positions_count = adj_open_positions
-            _update_screener_risk_state(
-                snapshot,
-                current_portfolio_gross,
-                open_positions_count,
-            )
+            out.extend(reduce_intents)
+            current_portfolio_gross = max(current_portfolio_gross - reduce_notional, 0.0)
+            tier_gross[tier_key] = max(tier_gross.get(tier_key, 0.0) - reduce_notional, 0.0)
+            open_positions_count = max(open_positions_count - 1, 0)
+        gross_usd = requested_notional  # unlevered sizing; leverage is metadata only
+        qty_est = gross_usd / price if price > 0 else 0.0
+        sizing_notes = {
+            "floors": {
+                "symbol_min_gross": sym_floor,
+                "symbol_min_notional": sym_min_notional,
+                "exchange_min_notional": exch_min_notional,
+                "min_qty_notional": min_qty_notional,
+            },
+            "nav_used": nav,
+            "nav_age_s": nav_age,
+            "nav_sources_ok": nav_sources_ok,
+        }
         intent = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
             "symbol": sym,
@@ -944,48 +677,69 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "signal": signal,
             "reduceOnly": False,
             "price": price,
-            "capital_per_trade": cap,
             "leverage": lev,
-            "cap_usd": cap,
-            "gross_usd": requested_notional,
             "min_notional": min_notional,
-            "trade_equity_nav_pct": trade_equity_cap if trade_equity_cap > 0 else None,
-            "max_trade_nav_pct": max_trade_cap if max_trade_cap > 0 else None,
+            "per_trade_nav_pct": per_trade_nav_pct,
+            "gross_usd": gross_usd,
+            "qty": abs(qty_est),
+            "nav_used": nav,
+            "nav_age_s": nav_age,
+            "nav_sources_ok": nav_sources_ok,
+            "price_used": price,
+            "symbol_caps": (rlc.get("per_symbol") or {}).get(sym_key, {}) if isinstance(rlc, Mapping) else {},
+            "sizing_notes": sizing_notes,
             "per_symbol_limits": rlc.get("per_symbol") if isinstance(rlc, Mapping) else {},
         }
         if ml_prob is not None:
             intent["ml_prob"] = ml_prob
         if dbg:
             print(
-                f"[sigdbg] {sym} tf={tf} z={round(z,3)} rsi={round(rsi,1)} cap={cap} lev={lev} ok"
+                f"[sigdbg] {sym} tf={tf} z={round(z,3)} rsi={round(rsi,1)} pct={per_trade_nav_pct} lev={lev} ok"
             )
         print(f"{LOG_TAG} {sym} {tf} z={round(z, 3)} rsi={round(rsi, 1)}")
         decision_payload = {
             "symbol": sym,
             "tf": tf,
             "intent": intent,
-            "detail": details if isinstance(details, dict) else {},
+            "detail": nav_detail_flag if nav_unknown else {},
         }
         print(f'[decision] {json.dumps(decision_payload)}')
         out.append(intent)
-        current_portfolio_gross += effective_notional
-        tier_gross[tier_key] = adj_tier_gross + effective_notional
+        current_portfolio_gross += gross_usd
+        tier_gross[tier_key] = tier_gross.get(tier_key, 0.0) + gross_usd
         open_positions_count += 1
-        qty_est = requested_notional / price if price > 0 else 0.0
         positions_by_symbol.setdefault(sym_key, {})[
             "LONG" if signal == "BUY" else "SHORT"
         ] = {
             "qty": abs(qty_est),
             "mark": price,
-            "notional": requested_notional,
+            "notional": gross_usd,
         }
-        _update_screener_risk_state(
-            snapshot,
-            current_portfolio_gross,
-            open_positions_count,
-        )
     print(f"{LOG_TAG} attempted={attempted} emitted={len(out)}")
-    return out
+    return IntentBatch(out, attempted)
+
+
+class IntentBatch(list):
+    """List-like container that also carries screener attempt metadata."""
+
+    def __init__(self, intents: Iterable[Mapping[str, Any]], attempted: int) -> None:
+        super().__init__(list(intents))
+        self.attempted = attempted
+        self.emitted = len(self)
+
+
+def generate_intents(
+    now: float | None = None,
+    universe: Sequence[str] | None = None,
+    cfg: Mapping[str, Any] | None = None,
+    unified: bool = True,
+) -> IntentBatch:
+    """
+    Canonical entry point used by the executor.
+
+    config/runtime.yaml (signal source) -> generate_intents() -> screener gates -> intents list.
+    """
+    return generate_signals_from_config()
 
 
 def run_once(now: float | None = None) -> dict:
@@ -1010,6 +764,8 @@ def run_once(now: float | None = None) -> dict:
     except Exception:
         intents = []
 
+    attempted_attr = getattr(intents, "attempted", None)
+    emitted_attr = getattr(intents, "emitted", None)
     normalized: List[Dict[str, Any]] = []
     for raw in intents:
         try:
@@ -1019,19 +775,19 @@ def run_once(now: float | None = None) -> dict:
         summary: Dict[str, Any] = {
             "symbol": norm.get("symbol"),
             "side": norm.get("signal"),
-            "notional": norm.get("gross_usd") or norm.get("capital_per_trade"),
+            "gross_usd": norm.get("gross_usd"),
+            "notional": norm.get("per_trade_nav_pct"),
             "strategy": norm.get("strategy") or norm.get("source"),
             "timeframe": norm.get("timeframe"),
             "reduce_only": norm.get("reduceOnly"),
             "raw": norm,
         }
-        normalized_meta = norm.get("normalized")
-        if isinstance(normalized_meta, dict) and "qty" in normalized_meta:
-            summary["qty"] = normalized_meta.get("qty")
+        if "qty" in norm:
+            summary["qty"] = norm.get("qty")
         normalized.append(summary)
 
     return {
-        "attempted": attempted_count or len(intents),
-        "emitted": len(normalized),
+        "attempted": attempted_count or attempted_attr or len(intents),
+        "emitted": emitted_attr if emitted_attr is not None else len(normalized),
         "intents": normalized,
     }

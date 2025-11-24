@@ -7,6 +7,7 @@ and sizing multipliers into a deterministic health payload.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Optional
 
 from execution.utils.metrics import (
@@ -16,11 +17,14 @@ from execution.utils.metrics import (
 )
 from execution.utils.vol import atr_pct
 from execution.utils.toggle import is_symbol_disabled, get_symbol_disable_meta
-from execution.risk_autotune import size_multiplier
 from execution.position_sizing import volatility_regime_scale
 from execution.intel.symbol_score import symbol_size_factor
 from execution.intel.maker_offset import suggest_maker_offset_bps
 from execution.intel.router_policy import router_policy
+
+
+def size_multiplier(_symbol: str) -> float:
+    return 1.0
 
 
 FALLBACK_WARN_THRESHOLD = 0.50
@@ -32,6 +36,59 @@ DD_KILL_PCT = -3.0
 ATR_QUIET = 0.7
 ATR_HOT = 1.5
 ATR_PANIC = 2.5
+ERROR_SCHEMA = "execution_health_v1"
+
+# component -> symbol -> {"count": int, "last": {...}}
+_ERROR_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {}
+
+
+def reset_error_registry() -> None:
+    _ERROR_REGISTRY.clear()
+
+
+def record_execution_error(
+    component: str,
+    *,
+    symbol: Optional[str] = None,
+    message: Optional[str] = None,
+    classification: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Track the latest error per component + symbol for health snapshots."""
+    comp = _ERROR_REGISTRY.setdefault(component, {})
+    sym_key = (symbol or "__global__").upper()
+    entry = comp.setdefault(sym_key, {"count": 0, "last": {}})
+    entry["count"] = int(entry.get("count", 0) or 0) + 1
+    detail: Dict[str, Any] = {
+        "ts": time.time(),
+        "message": message,
+    }
+    if classification:
+        detail["classification"] = dict(classification)
+    if context:
+        detail["context"] = dict(context)
+    entry["last"] = detail
+    comp[sym_key] = entry
+
+
+def _error_view_for_symbol(symbol: Optional[str]) -> Dict[str, Any]:
+    view: Dict[str, Any] = {}
+    sym_key = symbol.upper() if symbol else None
+    for component, by_symbol in _ERROR_REGISTRY.items():
+        count = 0
+        last: Dict[str, Any] | None = None
+        for key, payload in by_symbol.items():
+            if sym_key and key not in {sym_key, "__global__"}:
+                continue
+            count += int(payload.get("count", 0) or 0)
+            latest = payload.get("last") or {}
+            if not last or (latest.get("ts") or 0) > (last.get("ts") or 0):
+                last = latest
+        view[component] = {
+            "count": count,
+            "last_error": last,
+        }
+    return view
 
 
 def classify_atr_regime(symbol: str) -> Dict[str, Any]:
@@ -102,7 +159,16 @@ def compute_execution_health(symbol: Optional[str] = None) -> Dict[str, Any]:
     router_stats = router_effectiveness_7d(symbol)
     router_part = classify_router_health(router_stats)
     if symbol is None:
-        return {"symbol": None, "router": router_part, "risk": None, "vol": None, "sizing": None}
+        return {
+            "schema": ERROR_SCHEMA,
+            "symbol": None,
+            "router": router_part,
+            "risk": None,
+            "vol": None,
+            "sizing": None,
+            "errors": _error_view_for_symbol(None),
+            "components": {"router": router_part, "risk": None, "vol": None, "sizing": None},
+        }
     sharpe = rolling_sharpe_7d(symbol)
     risk_part = classify_risk_health(symbol, sharpe)
     vol_part = classify_atr_regime(symbol)
@@ -122,26 +188,52 @@ def compute_execution_health(symbol: Optional[str] = None) -> Dict[str, Any]:
         "size_mult_combined": size_mult * regime_mult,
         "final_size_factor": size_mult * regime_mult * intel_factor,
     }
+    router_part["last_route_decision"] = (router_stats or {}).get("last_route_decision") if isinstance(router_stats, dict) else None
+    policy_obj = None
     try:
-        maker_offset = suggest_maker_offset_bps(symbol)
+        policy_obj = router_policy(symbol)
     except Exception:
-        maker_offset = None
-    router_part["maker_offset_bps"] = maker_offset
-    try:
-        policy = router_policy(symbol)
-        router_part["policy_quality"] = policy.quality
-        router_part["policy_maker_first"] = policy.maker_first
-        router_part["policy_taker_bias"] = policy.taker_bias
-    except Exception:
+        policy_obj = None
+    if policy_obj is not None:
+        router_part["policy_quality"] = policy_obj.quality
+        router_part["policy_maker_first"] = policy_obj.maker_first
+        router_part["policy_taker_bias"] = policy_obj.taker_bias
+        router_part["policy_reason"] = policy_obj.reason
+        router_part["maker_offset_bps"] = router_part.get("maker_offset_bps") or policy_obj.offset_bps
+        router_part["policy"] = {
+            "maker_first": policy_obj.maker_first,
+            "taker_bias": policy_obj.taker_bias,
+            "quality": policy_obj.quality,
+            "reason": policy_obj.reason,
+            "offset_bps": policy_obj.offset_bps,
+        }
+    else:
         router_part.setdefault("policy_quality", None)
         router_part.setdefault("policy_maker_first", None)
         router_part.setdefault("policy_taker_bias", None)
+        router_part.setdefault("policy_reason", None)
+        router_part.setdefault("policy", None)
+    if router_part.get("maker_offset_bps") is None:
+        try:
+            router_part["maker_offset_bps"] = suggest_maker_offset_bps(symbol)
+        except Exception:
+            router_part.setdefault("maker_offset_bps", None)
+    errors = _error_view_for_symbol(symbol)
+    components = {
+        "router": router_part,
+        "risk": risk_part,
+        "vol": vol_part,
+        "sizing": sizing_part,
+    }
     return {
+        "schema": ERROR_SCHEMA,
         "symbol": symbol,
         "router": router_part,
         "risk": risk_part,
         "vol": vol_part,
         "sizing": sizing_part,
+        "errors": errors,
+        "components": components,
     }
 
 
@@ -150,4 +242,6 @@ __all__ = [
     "classify_atr_regime",
     "classify_router_health",
     "classify_risk_health",
+    "record_execution_error",
+    "reset_error_registry",
 ]

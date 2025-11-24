@@ -107,6 +107,10 @@ def write_risk_snapshot_state(payload: Dict[str, Any], state_dir: pathlib.Path |
     _write_state_file("risk_snapshot.json", payload, state_dir)
 
 
+def write_execution_health_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    _write_state_file("execution_health.json", payload, state_dir)
+
+
 def write_universe_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     _write_state_file("universe.json", payload, state_dir)
 
@@ -157,6 +161,7 @@ def build_synced_state_payload(
     engine_version: str | None,
     flags: Mapping[str, Any] | None,
     updated_at: float,
+    nav_snapshot: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     snapshot = {
         "items": _coerce_synced_items(items or []),
@@ -165,6 +170,11 @@ def build_synced_state_payload(
         "v6_flags": dict(flags or {}),
         "updated_at": float(updated_at),
     }
+    if nav_snapshot:
+        try:
+            snapshot["nav_snapshot"] = dict(nav_snapshot)
+        except Exception:
+            snapshot["nav_snapshot"] = {}
     return snapshot
 
 
@@ -176,6 +186,7 @@ def write_synced_state(payload: Dict[str, Any], state_dir: pathlib.Path | None =
             engine_version=payload.get("engine_version"),
             flags=payload.get("v6_flags"),
             updated_at=payload.get("updated_at", time.time()),
+            nav_snapshot=payload.get("nav_snapshot"),
         )
     except Exception as exc:
         LOG.debug("build_synced_state_payload_failed: %s", exc)

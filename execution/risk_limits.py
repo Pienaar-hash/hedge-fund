@@ -13,12 +13,13 @@ import logging
 import os
 import time
 
-from execution.drawdown_tracker import load_peak_state
+from execution.drawdown_tracker import load_peak_state, save_peak_state
 from execution.nav import (
     compute_trading_nav,
     compute_gross_exposure_usd,
     get_confirmed_nav,
     get_nav_age as _nav_get_nav_age,
+    nav_health_snapshot,
 )
 from execution.utils import load_json, get_live_positions
 from execution.universe_resolver import symbol_min_gross, universe_by_symbol
@@ -29,8 +30,9 @@ from .utils.metrics import (
     is_in_asset_universe,
 )
 from .utils.toggle import disable_symbol_temporarily, is_symbol_disabled
-from execution.exchange_utils import get_balances
+from execution.exchange_utils import get_balances, is_dry_run
 from execution.log_utils import get_logger, log_event, safe_dump
+from execution.risk_loader import load_risk_config, load_symbol_caps, normalize_percentage
 
 LOGGER = logging.getLogger("risk_limits")
 
@@ -38,6 +40,7 @@ DEFAULT_SYMBOL_SHARE_CAP = 0.25  # 25% of 7d notional
 DEFAULT_SYMBOL_DD_CAP_PCT = 3.0
 COOLDOWN_H = 24
 REASON_TRADE_EQUITY_CAP = "trade_gt_equity_cap"
+REASON_MAX_TRADE_NAV = "max_trade_nav_pct"
 
 
 _GLOBAL_KEYS = {
@@ -73,6 +76,7 @@ _NAV_SNAPSHOT_PATHS: List[str] = [
 DEFAULT_NAV_FRESHNESS_SECONDS = int(os.environ.get("NAV_FRESHNESS_SECONDS", "90"))
 DEFAULT_FAIL_CLOSED_ON_NAV_STALE = os.environ.get("FAIL_CLOSED_ON_NAV_STALE", "1") != "0"
 PEAK_STATE_MAX_AGE_SEC = int(os.environ.get("PEAK_STATE_MAX_AGE_SEC", str(24 * 3600)))
+DEFAULT_PEAK_STALE_SECONDS = int(os.environ.get("PEAK_STALE_SECONDS", "600") or 600)
 DEFAULT_TRADE_EQUITY_NAV_PCT = 15.0
 
 
@@ -81,6 +85,11 @@ def get_nav_freshness_snapshot() -> Tuple[Optional[float], bool]:
     Return (age_seconds, sources_ok) using the confirmed NAV snapshot.
     Falls back to legacy mtime heuristics when the snapshot is absent.
     """
+    health = nav_health_snapshot()
+    if health.get("age_s") is not None:
+        return float(health.get("age_s") or 0.0), bool(health.get("sources_ok"))
+    if health.get("fresh") is False:
+        return None, bool(health.get("sources_ok"))
     now = time.time()
     snapshot_candidates = [
         "logs/cache/nav_confirmed.json",
@@ -272,6 +281,7 @@ def enforce_nav_freshness_or_veto(risk_ctx: Dict[str, Any], nav_dict: Dict[str, 
 
 REASONS = {
     "kill_switch_triggered": "kill_switch",
+    "min_notional": "min_notional",
     "below_min_notional": "min_notional",
     "exceeds_per_trade_cap": "per_trade_cap",
     "exceeds_leverage_cap": "leverage_cap",
@@ -284,6 +294,7 @@ REASONS = {
     "trade_gt_max_trade_nav_pct": "max_trade_nav",
     "trade_gt_10pct_equity": "max_trade_nav",
     REASON_TRADE_EQUITY_CAP: "max_trade_nav",
+    REASON_MAX_TRADE_NAV: "max_trade_nav",
     "symbol_cap": "symbol_cap",
     "portfolio_cap": "portfolio_cap",
     "max_gross_nav_pct": "portfolio_cap",
@@ -326,13 +337,7 @@ def _emit_veto(
 
 
 def _normalize_pct(value: Any) -> float:
-    try:
-        pct = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if 0.0 < pct <= 1.0:
-        return pct * 100.0
-    return pct
+    return normalize_percentage(value)
 
 
 def _normalize_risk_cfg(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -366,7 +371,29 @@ def _as_float(value: Any) -> float:
         return 0.0
 
 
-def _drawdown_snapshot() -> Dict[str, float]:
+def _peak_from_nav_log(limit: int = 200) -> float:
+    path = "logs/nav_log.json"
+    if not os.path.exists(path):
+        return 0.0
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return 0.0
+    series = data[-limit:] if isinstance(data, list) else [data]
+    peak_val = 0.0
+    for entry in series:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            nav_val = _as_float(entry.get("nav") or entry.get("nav_usd"))
+            peak_val = max(peak_val, nav_val)
+        except Exception:
+            continue
+    return peak_val
+
+
+def _drawdown_snapshot(g_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
     state = load_peak_state()
     if not isinstance(state, dict):
         state = {}
@@ -374,31 +401,116 @@ def _drawdown_snapshot() -> Dict[str, float]:
     nav_cache = confirmed if isinstance(confirmed, dict) else {}
     cached_nav = _as_float(nav_cache.get("nav") or nav_cache.get("nav_usd"))
     cache_ts = _as_float(nav_cache.get("ts"))
+    nav_health = nav_health_snapshot()
+    nav_sources_ok = bool(nav_health.get("sources_ok", True))
+    nav_fresh = bool(nav_health.get("fresh"))
 
-    dd_pct = _as_float(state.get("dd_pct"))
-    dd_abs = _as_float(state.get("dd_abs"))
-    peak = _as_float(state.get("peak") or state.get("peak_equity"))
+    dd_pct = 0.0
+    dd_abs = 0.0
+    peak = _as_float(state.get("peak") or state.get("peak_equity") or state.get("peak_nav"))
     nav = _as_float(state.get("nav") or state.get("nav_usd") or cached_nav)
     realized = _as_float(state.get("realized_pnl_today"))
 
+    now = time.time()
+    nav_cache_age = None
+    if cache_ts > 0.0:
+        nav_cache_age = max(0.0, now - cache_ts)
+
     if nav <= 0.0 and cached_nav > 0.0:
         nav = cached_nav
-    if peak <= 0.0 and cached_nav > 0.0:
-        peak = cached_nav
-    if peak > 0.0 and (dd_pct <= 0.0 or dd_abs <= 0.0):
-        dd_abs = max(0.0, peak - max(nav, 0.0))
+
+    try:
+        stale_threshold = float((g_cfg or {}).get("peak_stale_seconds", DEFAULT_PEAK_STALE_SECONDS) or DEFAULT_PEAK_STALE_SECONDS)
+    except Exception:
+        stale_threshold = DEFAULT_PEAK_STALE_SECONDS
+    if stale_threshold <= 0:
+        stale_threshold = DEFAULT_PEAK_STALE_SECONDS
+    peak_ts = _as_float(state.get("peak_ts") or state.get("ts"))
+    reset_on_testnet = bool((g_cfg or {}).get("reset_peak_on_testnet"))
+    testnet = os.getenv("BINANCE_TESTNET", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if reset_on_testnet and testnet and nav > 0.0:
+        peak = nav
+        peak_ts = now
+        state = {
+            "peak_nav": nav,
+            "peak_ts": now,
+            "daily_peak": nav,
+            "daily_ts": now,
+            "nav": nav,
+            "nav_usd": nav,
+            "peak": nav,
+            "peak_equity": nav,
+            "ts": now,
+            "updated_at": now,
+        }
+        save_peak_state(state)
+
+    is_stale = stale_threshold > 0 and (peak_ts <= 0.0 or (now - peak_ts) > stale_threshold)
+    if (peak <= 0.0 or is_stale) and nav_sources_ok:
+        regenerated = _peak_from_nav_log()
+        if regenerated > 0.0:
+            peak = regenerated
+            peak_ts = now
+            state.update(
+                {
+                    "peak_nav": peak,
+                    "peak_ts": now,
+                    "daily_peak": peak,
+                    "daily_ts": now,
+                    "peak": peak,
+                    "peak_equity": peak,
+                    "ts": now,
+                    "stale_healed": True,
+                }
+            )
+            save_peak_state(state)
+        elif nav > 0.0 and peak <= 0.0:
+            peak = nav
+            peak_ts = now
+
+    if peak > 0.0 and nav > 0.0:
+        dd_abs = max(0.0, peak - nav)
         dd_pct = (dd_abs / peak) * 100.0 if peak > 0 else 0.0
+
+    daily_peak = _as_float(state.get("daily_peak") or peak)
+    if daily_peak > 0.0 and nav > 0.0:
+        daily_loss_pct = max(0.0, (daily_peak - nav) / daily_peak * 100.0)
+    else:
+        daily_loss_pct = 0.0
 
     state_ts = _as_float(state.get("ts"))
     stale_age = None
     if state_ts > 0.0:
-        stale_age = max(0.0, time.time() - state_ts)
+        stale_age = max(0.0, now - state_ts)
         if stale_age > PEAK_STATE_MAX_AGE_SEC:
             LOGGER.warning(
                 "[risk] drawdown_state_stale age=%.0fs limit=%ss",
                 stale_age,
                 PEAK_STATE_MAX_AGE_SEC,
             )
+    stale_flags: Dict[str, bool] = {}
+    nav_age = nav_health.get("age_s")
+    if stale_age is not None and stale_age > PEAK_STATE_MAX_AGE_SEC:
+        stale_flags["peak_state_stale"] = True
+    if nav <= 0.0 or peak <= 0.0:
+        stale_flags["nav_missing"] = True
+    if not nav_sources_ok:
+        stale_flags["nav_sources_unhealthy"] = True
+    try:
+        if nav_age is not None and float(nav_age) > DEFAULT_NAV_FRESHNESS_SECONDS:
+            stale_flags["nav_cache_stale"] = True
+    except Exception:
+        pass
+    if nav_cache_age is not None and nav_cache_age > DEFAULT_NAV_FRESHNESS_SECONDS:
+        stale_flags["nav_cache_stale"] = True
+    if not nav_fresh:
+        stale_flags.setdefault("nav_cache_stale", True)
+    usable = nav > 0.0 and peak > 0.0 and not any(stale_flags.values())
+    assets = {}
+    detail = nav_cache.get("detail")
+    if isinstance(detail, dict):
+        assets = detail.get("assets") or {}
+
     return {
         "dd_pct": dd_pct,
         "dd_abs": dd_abs,
@@ -406,7 +518,24 @@ def _drawdown_snapshot() -> Dict[str, float]:
         "nav": nav,
         "realized_today": realized,
         "nav_cache_ts": cache_ts,
+        "nav_cache_age": nav_cache_age,
         "peak_state_age": stale_age,
+        "stale_flags": stale_flags,
+        "usable": usable,
+        "nav_health": nav_health,
+        "peak_state": state,
+        "drawdown": {
+            "pct": dd_pct,
+            "abs": dd_abs,
+            "peak_nav": peak,
+            "nav": nav,
+        },
+        "daily_loss": {
+            "pct": daily_loss_pct,
+            "daily_peak": daily_peak,
+            "nav": nav,
+        },
+        "assets": assets,
     }
 
 getcontext().prec = 28
@@ -566,14 +695,14 @@ def _can_open_position_legacy(
     if notional < cfg.min_notional:
         _emit_veto(
             symbol,
-            "below_min_notional",
+            "min_notional",
             detail={
                 "min_notional": float(cfg.min_notional),
                 "requested_notional": float(notional),
             },
             context=context_base,
         )
-        return False, "below_min_notional"
+        return False, "min_notional"
     if notional > cfg.max_notional_per_trade:
         _emit_veto(
             symbol,
@@ -697,7 +826,7 @@ def clamp_order_size(requested_qty: float, step_size: float) -> float:
 def will_violate_exposure(
     current_gross: float, add_notional: float, nav: float, max_nav_pct: float
 ) -> bool:
-    cap_frac = float(max_nav_pct) / 100.0
+    cap_frac = _normalize_pct(max_nav_pct)
     limit = float(nav) * max(cap_frac, 0.0)
     total = float(current_gross) + float(add_notional)
     return total > limit
@@ -734,6 +863,8 @@ def check_order(
     Returns ``(veto, info)`` where ``veto`` indicates the order should be
     blocked and ``info`` contains structured metadata about the violation.
     """
+    if not cfg:
+        cfg = load_risk_config()
     cfg = _normalize_risk_cfg(cfg)
 
     detail_payload: Dict[str, Any] = {}
@@ -741,6 +872,7 @@ def check_order(
     sym = str(symbol)
     s_cfg = _cfg_get(cfg, ["per_symbol", sym], {}) or {}
     g_cfg = _cfg_get(cfg, ["global"], {}) or {}
+    per_symbol_cfg = cfg.get("per_symbol") if isinstance(cfg, Mapping) else {}
     strategy_name = (
         s_cfg.get("strategy")
         or s_cfg.get("strategy_name")
@@ -760,6 +892,34 @@ def check_order(
         "notional": float(requested_notional),
     }
     thresholds: Dict[str, Any] = details.setdefault("thresholds", {})
+    dry_run = is_dry_run()
+
+    # Restricted symbols guard
+    try:
+        restricted = {str(x).upper() for x in (cfg.get("restricted_symbols") or [])}
+    except Exception:
+        restricted = set()
+    if restricted and sym.upper() in restricted:
+        details.setdefault("reasons", []).append("restricted_symbol")
+        return False, details
+
+    # Non-prod dry-run guard (skip on testnet)
+    require_dry = bool((cfg.get("non_prod") or {}).get("require_dry_run"))
+    if require_dry and not dry_run:
+        if os.getenv("BINANCE_TESTNET"):
+            pass
+        else:
+            details.setdefault("reasons", []).append("non_prod_env_guard")
+            return False, details
+
+    # Universe guard (exact symbol match)
+    try:
+        universe_set = {str(s).upper() for s in universe_by_symbol().keys()}
+    except Exception:
+        universe_set = set()
+    if universe_set and sym.upper() not in universe_set:
+        details.setdefault("reasons", []).append("symbol_not_in_universe")
+        return False, details
 
     nav_threshold_raw = g_cfg.get("nav_freshness_seconds")
     try:
@@ -776,24 +936,26 @@ def check_order(
         else DEFAULT_FAIL_CLOSED_ON_NAV_STALE
     )
 
-    nav_age, nav_sources_ok = get_nav_freshness_snapshot()
+    nav_health = nav_health_snapshot(nav_threshold_s)
+    nav_age = nav_health.get("age_s")
+    nav_sources_ok = nav_health.get("sources_ok")
+    nav_total = nav_health.get("nav_total")
     nav_age_s: Optional[int] = None
-    if isinstance(nav_age, (int, float)):
-        try:
-            nav_age_s = int(max(0.0, float(nav_age)))
-        except Exception:
-            nav_age_s = None
+    try:
+        if nav_health.get("age_s") is not None:
+            nav_age_s = int(max(0.0, float(nav_health.get("age_s"))))
+    except Exception:
+        nav_age_s = None
     if nav_age_s is not None:
         details["nav_age_s"] = nav_age_s
     else:
         details.setdefault("nav_age_s", None)
 
-    if nav_sources_ok is not None:
-        details["nav_sources_ok"] = bool(nav_sources_ok)
-    else:
-        details.setdefault("nav_sources_ok", None)
-
+    details["nav_sources_ok"] = bool(nav_health.get("sources_ok"))
     thresholds.setdefault("nav_freshness_seconds", float(nav_threshold_s))
+    testnet_override_active = bool((cfg.get("_meta") or {}).get("testnet_overrides_active"))
+    if testnet_override_active:
+        thresholds.setdefault("testnet_overrides_active", True)
 
     qty_req = None
     try:
@@ -803,7 +965,7 @@ def check_order(
         qty_req = None
 
     try:
-        nav_f = float(nav)
+        nav_f = float(nav_total) if nav_total is not None else float(nav)
     except Exception:
         nav_f = 0.0
     try:
@@ -828,6 +990,7 @@ def check_order(
         "nav_freshness_seconds": nav_threshold_s,
         "sources_ok": bool(nav_sources_ok) if nav_sources_ok is not None else None,
     }
+    nav_context["nav_total"] = nav_f
     if nav_age is not None:
         nav_context["nav_age"] = nav_age
 
@@ -851,13 +1014,10 @@ def check_order(
     except Exception:
         nav_age_val = None
     nav_sources_bool = bool(nav_sources_ok) if nav_sources_ok is not None else False
-    nav_is_fresh = bool(
-        nav_sources_bool
-        and nav_age_val is not None
-        and nav_age_val < float(nav_threshold_s)
-    )
+    nav_is_fresh = bool(nav_health.get("fresh")) if nav_health else False
     nav_fresh_flag = nav_is_fresh
     detail_payload["nav_fresh"] = nav_is_fresh
+    detail_payload["nav_health"] = nav_health
 
     nav_ok = enforce_nav_freshness_or_veto(
         {
@@ -927,11 +1087,19 @@ def check_order(
         if sym.upper() not in wl_set:
             reasons.append("not_whitelisted")
 
-    dd_snapshot = _drawdown_snapshot()
-    dd_pct = dd_snapshot.get("dd_pct", 0.0)
-    dd_peak = dd_snapshot.get("peak", 0.0)
-    dd_nav_snapshot = dd_snapshot.get("nav", 0.0)
-    dd_abs = dd_snapshot.get("dd_abs", 0.0)
+    dd_snapshot = _drawdown_snapshot(g_cfg)
+    dd_info = dd_snapshot.get("drawdown") or {}
+    dd_pct = _as_float(dd_info.get("pct", dd_snapshot.get("dd_pct", 0.0)))
+    dd_peak = _as_float(dd_info.get("peak_nav", dd_snapshot.get("peak", 0.0)))
+    dd_nav_snapshot = _as_float(dd_info.get("nav", dd_snapshot.get("nav", 0.0)))
+    dd_abs = _as_float(dd_info.get("abs", dd_snapshot.get("dd_abs", 0.0)))
+    daily_info = dd_snapshot.get("daily_loss") or {}
+    daily_loss_pct = _as_float(daily_info.get("pct"))
+    drawdown_usable = bool(dd_snapshot.get("usable", True))
+    dd_stale_flags = dd_snapshot.get("stale_flags") or {}
+    nav_health_diag = dd_snapshot.get("nav_health") or {}
+    peak_state_diag = dd_snapshot.get("peak_state") or {}
+    assets_diag = dd_snapshot.get("assets") or {}
     if dd_peak > 0.0 or dd_pct > 0.0:
         LOGGER.info("[risk] drawdown dd=%.1f%% peak=%.2f nav=%.2f", dd_pct, dd_peak, dd_nav_snapshot)
     if dd_abs:
@@ -941,6 +1109,8 @@ def check_order(
         details["drawdown_peak"] = dd_peak
     if dd_nav_snapshot:
         details["drawdown_nav"] = dd_nav_snapshot
+    if dd_stale_flags:
+        details["drawdown_stale_flags"] = dd_stale_flags
 
     daily_pnl_state = getattr(state, "daily_pnl_pct", 0.0)
     try:
@@ -954,12 +1124,14 @@ def check_order(
             if fallback_dd > dd_pct:
                 dd_pct = fallback_dd
                 details["drawdown_pct"] = dd_pct
+    if daily_loss_pct is not None:
+        details["daily_loss_pct"] = daily_loss_pct
 
     try:
         max_nav_drawdown_pct = float(g_cfg.get("max_nav_drawdown_pct", 0.0) or 0.0)
     except Exception:
         max_nav_drawdown_pct = 0.0
-    if max_nav_drawdown_pct > 0.0 and dd_pct >= max_nav_drawdown_pct:
+    if drawdown_usable and max_nav_drawdown_pct > 0.0 and dd_pct >= max_nav_drawdown_pct:
         reasons.append("nav_drawdown_limit")
         thresholds.setdefault("max_nav_drawdown_pct", max_nav_drawdown_pct)
         thresholds.setdefault("observed_drawdown_pct", dd_pct)
@@ -978,14 +1150,31 @@ def check_order(
         day_lim = float(g_cfg.get("daily_loss_limit_pct", 0.0) or 0.0)
     except Exception:
         day_lim = 0.0
+    observed_daily_loss_pct = daily_loss_pct if daily_loss_pct is not None else dd_pct
     if day_lim > 0.0:
-        if dd_pct >= day_lim:
+        observed_dd = observed_daily_loss_pct
+        if daily_pnl_state < 0.0:
+            observed_dd = max(observed_dd, abs(daily_pnl_state))
+        if observed_dd >= day_lim:
             reasons.append("day_loss_limit")
             thresholds.setdefault("daily_loss_limit_pct", day_lim)
-            thresholds.setdefault("observed_daily_drawdown_pct", dd_pct)
+            thresholds.setdefault("observed_daily_drawdown_pct", observed_dd)
             thresholds.setdefault("drawdown_peak", dd_peak)
             thresholds.setdefault("drawdown_nav", dd_nav_snapshot)
-            LOGGER.warning("[risk] veto daily_loss_limit dd=%.1f%% limit=%.1f%%", dd_pct, day_lim)
+            LOGGER.warning("[risk] veto daily_loss_limit dd=%.1f%% limit=%.1f%%", observed_dd, day_lim)
+    if not drawdown_usable and dd_stale_flags:
+        details.setdefault("warnings", [])
+        if "drawdown_stale" not in details["warnings"]:
+            details["warnings"].append("drawdown_stale")
+        thresholds.setdefault("drawdown_state_stale", dd_stale_flags)
+    diag_payload = {
+        "nav_health_diag": nav_health_diag,
+        "peak_state": peak_state_diag,
+        "drawdown": dd_info,
+        "daily_loss": daily_info,
+    }
+    if assets_diag:
+        diag_payload["assets"] = assets_diag
 
     # Per-order notional constraints
     g_min = float(g_cfg.get("min_notional_usdt", 0.0) or 0.0)
@@ -994,12 +1183,46 @@ def check_order(
     req_notional = float(requested_notional)
 
     if min_notional > 0.0 and req_notional < min_notional:
-        reasons.append("below_min_notional")
+        reasons.append("min_notional")
         thresholds.setdefault("min_notional", float(min_notional))
 
     if max_order_notional > 0.0 and req_notional > max_order_notional:
         reasons.append("symbol_cap")
         thresholds.setdefault("max_order_notional", float(max_order_notional))
+
+    cap_cfg_raw = (
+        s_cfg.get("max_nav_pct", s_cfg.get("symbol_notional_share_cap_pct"))
+        if isinstance(s_cfg, Mapping)
+        else None
+    ) or g_cfg.get("symbol_notional_share_cap_pct")
+    caps_map = load_symbol_caps()
+    cap_entry = None
+    if cap_cfg_raw is None:
+        # Respect explicit per-symbol entries; otherwise fall back to loader caps.
+        if sym not in (per_symbol_cfg.keys() if isinstance(per_symbol_cfg, Mapping) else {}):
+            cap_entry = caps_map.get(sym) if isinstance(caps_map, Mapping) else None
+            if cap_entry:
+                cap_cfg_raw = cap_entry.get("cap_cfg_raw")
+    cap_cfg_normalized = cap_entry.get("cap_cfg_normalized") if isinstance(cap_entry, Mapping) else None
+    if cap_cfg_normalized is None:
+        cap_cfg_normalized = normalize_percentage(cap_cfg_raw)
+    cap_abs = nav_f * cap_cfg_normalized if nav_f > 0.0 else 0.0
+    asset_breakdown = {}
+    try:
+        nav_snapshot = get_confirmed_nav()
+        detail = nav_snapshot.get("detail") if isinstance(nav_snapshot, Mapping) else {}
+        breakdown = detail.get("breakdown") or detail.get("assets") or {}
+        if isinstance(breakdown, Mapping):
+            asset_breakdown = dict(breakdown)
+    except Exception:
+        asset_breakdown = {}
+    if cap_abs > 0.0 and (current_gross_f + req_notional) > cap_abs:
+        reasons.append("symbol_cap")
+        thresholds.setdefault("symbol_notional_cap", float(cap_abs))
+        detail_payload.setdefault("cap_cfg_raw", cap_cfg_raw)
+        detail_payload.setdefault("cap_cfg_normalized", cap_cfg_normalized)
+        detail_payload.setdefault("nav_total", nav_f)
+        detail_payload.setdefault("asset_breakdown", asset_breakdown)
 
     # Open quantity cap (applies to increasing long exposure)
     max_open_qty = s_cfg.get("max_open_qty", None)
@@ -1079,46 +1302,44 @@ def check_order(
             pct_val = default
         return _normalize_pct(pct_val if pct_val is not None else default)
 
-    max_trade_pct_raw = g_cfg.get("max_trade_nav_pct", 10.0)
-    max_trade_pct = _normalized_pct(max_trade_pct_raw, 10.0)
+    max_trade_pct_raw = g_cfg.get("max_trade_nav_pct", 0.0)
+    max_trade_pct = _normalize_pct(max_trade_pct_raw)
     equity_nav_pct_raw = (
         g_cfg.get("trade_equity_nav_pct")
         or g_cfg.get("equity_nav_pct")
         or g_cfg.get("equity_clamp_nav_pct")
-        or DEFAULT_TRADE_EQUITY_NAV_PCT
+        or 0.0
     )
-    equity_nav_pct = _normalized_pct(equity_nav_pct_raw, DEFAULT_TRADE_EQUITY_NAV_PCT)
+    equity_nav_pct = _normalize_pct(equity_nav_pct_raw)
     thresholds.setdefault("trade_equity_nav_pct", float(equity_nav_pct))
     thresholds.setdefault("max_trade_nav_pct", float(max_trade_pct))
     trade_nav_obs_pct = None
     if nav_f > 0.0:
-        trade_nav_obs_pct = (req_notional / nav_f) * 100.0
+        trade_nav_obs_pct = req_notional / nav_f
     details["trade_equity_nav_obs"] = trade_nav_obs_pct
     details["max_trade_nav_obs"] = trade_nav_obs_pct
     if nav_f > 0.0:
         if equity_nav_pct > 0.0:
-            equity_limit = nav_f * (equity_nav_pct / 100.0)
+            equity_limit = nav_f * equity_nav_pct
             if req_notional > equity_limit:
                 if REASON_TRADE_EQUITY_CAP not in reasons:
                     reasons.append(REASON_TRADE_EQUITY_CAP)
         if max_trade_pct > 0.0:
-            trade_limit = nav_f * (max_trade_pct / 100.0)
+            trade_limit = nav_f * max_trade_pct
             if req_notional > trade_limit:
-                reasons.append("trade_gt_max_trade_nav_pct")
+                reasons.append(REASON_MAX_TRADE_NAV)
 
     # Gross exposure cap (global) — accept legacy/new keys
-    max_gross_nav_pct = float(
+    max_gross_nav_pct_raw = (
         (g_cfg.get("max_portfolio_gross_nav_pct")
          if (g_cfg.get("max_portfolio_gross_nav_pct") is not None)
          else g_cfg.get("max_gross_nav_pct", 0.0))
-        or 0.0
     )
+    max_gross_nav_pct = _normalize_pct(max_gross_nav_pct_raw)
     if max_gross_nav_pct > 0.0:
         if will_violate_exposure(
-            float(current_gross_notional), req_notional, float(nav), max_gross_nav_pct
+            float(current_gross_notional), req_notional, float(nav_f), max_gross_nav_pct
         ):
-            # keep legacy reason plus standardized alias
-            reasons.append("max_gross_nav_pct")
             reasons.append("portfolio_cap")
             thresholds.setdefault("max_gross_exposure_pct", max_gross_nav_pct)
 
@@ -1137,11 +1358,11 @@ def check_order(
         try:
             tiers_cfg = g_cfg.get("tiers") or {}
             t_cfg = tiers_cfg.get(str(tier_name)) or {}
-            per_sym_pct = float(t_cfg.get("per_symbol_nav_pct", 0.0) or 0.0)
+            per_sym_pct = _normalize_pct(t_cfg.get("per_symbol_nav_pct", 0.0) or 0.0)
         except Exception:
             per_sym_pct = 0.0
         if per_sym_pct > 0.0 and float(nav) > 0.0:
-            cap_abs = float(nav) * (per_sym_pct / 100.0)
+            cap_abs = float(nav) * per_sym_pct
             # current exposure for this symbol/tier + request
             cur = float(current_tier_gross_notional)
             if (cur + req_notional) > cap_abs:
@@ -1149,6 +1370,13 @@ def check_order(
                 thresholds.setdefault("tier_cap", {"tier": tier_name, "per_symbol_nav_pct": per_sym_pct})
 
     if not reasons:
+        if details.get("warnings"):
+            detail_payload = dict(detail_payload)
+            detail_payload["warnings"] = list(details.get("warnings") or [])
+            if "drawdown_stale_flags" in details:
+                detail_payload["drawdown_stale_flags"] = details.get("drawdown_stale_flags")
+        detail_payload = {**detail_payload, **diag_payload}
+        detail_payload["reasons"] = list(reasons)
         return False, detail_payload
 
     try:
@@ -1195,7 +1423,7 @@ def check_order(
         "current_tier_gross_notional": tier_gross_f,
     }
     if nav_f > 0.0:
-        context["post_trade_exposure_pct"] = ((current_gross_f + req_notional) / nav_f) * 100.0
+        context["post_trade_exposure_pct"] = ((current_gross_f + req_notional) / nav_f)
     nav_flag_snapshot = detail_payload.get("nav_fresh")
     detail_payload = {
         "gate": "risk_limits",
@@ -1203,9 +1431,16 @@ def check_order(
         "reasons": list(reasons),
         "thresholds": thresholds,
         "notional": float(req_notional),
+        **diag_payload,
     }
+    detail_payload.setdefault("cap_cfg_raw", cap_cfg_raw)
+    detail_payload.setdefault("cap_cfg_normalized", cap_cfg_normalized)
+    detail_payload.setdefault("nav_total", nav_f)
+    detail_payload.setdefault("asset_breakdown", asset_breakdown)
     if nav_flag_snapshot is not None:
         detail_payload["nav_fresh"] = nav_flag_snapshot
+    if not reasons:
+        reasons.append("unknown_early_veto")
     value = thresholds.get(reasons[0])
     if value is not None:
         detail_payload["value"] = value
@@ -1225,362 +1460,25 @@ def check_order(
         signal_ts=signal_ts,
         qty=qty_req,
     )
+    detail_payload["reasons"] = list(reasons)
     return True, detail_payload
-
-
-# ---------------- Canonical gross-notional gate (shared taxonomy) ----------------
-
-class RiskGate:
-    """Canonical gross-notional checks used by executor and screener.
-
-    Expects a cfg that contains keys under `sizing` and `risk` namespaces. Tests
-    may pass a minimal dict; production can adapt existing config to this shape.
-    """
-
-    def __init__(self, cfg: Dict):
-        self.cfg = cfg or {}
-        self.sizing = dict(self.cfg.get("sizing", {}) or {})
-        self.risk = dict(self.cfg.get("risk", {}) or {})
-        self.nav_provider: Optional[Any] = None
-        try:
-            self.min_notional = float(self.sizing.get("min_notional_usdt", 5.0))
-        except Exception:
-            self.min_notional = 5.0
-        try:
-            self.min_gross_usd_per_order = float(
-                (self.sizing.get("min_gross_usd_per_order", 0.0)) or 0.0
-            )
-        except Exception:
-            self.min_gross_usd_per_order = 0.0
-        per_symbol_floor = self.sizing.get("per_symbol_min_gross_usd") or {}
-        self.per_symbol_min_gross_usd: Dict[str, float] = {}
-        if isinstance(per_symbol_floor, dict):
-            for key, value in per_symbol_floor.items():
-                try:
-                    self.per_symbol_min_gross_usd[str(key).upper()] = float(value)
-                except Exception:
-                    continue
-        for sym_key in universe_by_symbol().keys():
-            try:
-                floor_val = float(symbol_min_gross(sym_key))
-            except Exception:
-                floor_val = 0.0
-            if floor_val > 0:
-                self.per_symbol_min_gross_usd.setdefault(sym_key.upper(), floor_val)
-        self._last_stop_ts = 0.0
-        self._trade_counts: Dict[tuple[str, int], int] = {}
-
-    # --- overridable helpers (tests may subclass) ---
-    def _portfolio_nav(self) -> float:
-        # Best-effort NAV; tests may override
-        provider = self.nav_provider
-        if provider is not None:
-            try:
-                return float(provider.current_nav_usd())
-            except Exception:
-                pass
-        cfg: Dict[str, Any] = {}
-        try:
-            cfg = load_json("config/strategy_config.json") or {}
-        except Exception:
-            cfg = {}
-        try:
-            nav_val, _ = compute_trading_nav(cfg)
-            if nav_val and nav_val > 0:
-                return float(nav_val)
-        except Exception:
-            pass
-        try:
-            bal = get_balances()
-            if isinstance(bal, dict):
-                return float(bal.get("USDT", bal.get("walletBalance", 0.0)) or 0.0)
-            if isinstance(bal, list):
-                for entry in bal:
-                    try:
-                        if entry.get("asset") == "USDT":
-                            return float(entry.get("balance") or entry.get("walletBalance") or 0.0)
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        return float(cfg.get("capital_base_usdt", 0.0) or 0.0)
-
-    def _gross_exposure_pct(self) -> float:
-        nav = float(self._portfolio_nav())
-        if nav <= 0:
-            return 0.0
-        gross = float(self._portfolio_gross_usd())
-        return (gross / nav) * 100.0
-
-    def _symbol_exposure_pct(self, symbol: str) -> float:
-        nav = float(self._portfolio_nav())
-        if nav <= 0:
-            return 0.0
-        sym = str(symbol).upper()
-        gross_map: Dict[str, float] = {}
-        provider = self.nav_provider
-        if provider is not None:
-            try:
-                getter = getattr(provider, "symbol_gross_usd", None)
-                if callable(getter):
-                    gross_map = getter()
-            except Exception:
-                gross_map = {}
-        if not gross_map:
-            try:
-                from execution.nav import compute_symbol_gross_usd
-
-                gross_map = compute_symbol_gross_usd()
-            except Exception:
-                gross_map = {}
-        sym_gross = float(gross_map.get(sym, 0.0) or 0.0)
-        if sym_gross <= 0:
-            return 0.0
-        return (sym_gross / nav) * 100.0
-
-    def _portfolio_gross_usd(self) -> float:
-        provider = self.nav_provider
-        if provider is not None:
-            try:
-                return float(provider.current_gross_usd())
-            except Exception:
-                pass
-        try:
-            return float(compute_gross_exposure_usd())
-        except Exception:
-            return 0.0
-
-    def _now_hour_key(self) -> int:
-        return int(time.time() // 3600)
-
-    def _daily_loss_pct(self) -> float:
-        snapshot = _drawdown_snapshot()
-        dd_pct_raw = snapshot.get("dd_pct")
-        if dd_pct_raw is not None:
-            try:
-                dd_pct_val = float(dd_pct_raw)
-            except Exception:
-                dd_pct_val = 0.0
-            if dd_pct_val <= 0.0:
-                return 0.0
-            return dd_pct_val
-        peak = snapshot.get("peak", 0.0)
-        if peak <= 0:
-            return 0.0
-        try:
-            curr = float(self._portfolio_nav())
-        except Exception:
-            curr = snapshot.get("nav", 0.0)
-        if curr is None or peak <= 0:
-            return 0.0
-        return 100.0 * max(0.0, (peak - float(curr)) / peak)
-
-    # NEW: canonical gross-notional checker used by both screener & executor
-    def allowed_gross_notional(
-        self, symbol: str, gross_usd: float, now_ts: float | None = None
-    ) -> tuple[bool, str]:
-        """
-        Decide if a NEW order with the given gross USD notional may be opened.
-        Returns (allowed: bool, veto_reason: str) where veto_reason == "" if allowed.
-        Veto reasons (taxonomy): cooldown, daily_loss_limit, portfolio_cap, symbol_cap,
-        below_min_notional, trade_rate_limit
-        """
-        now_ts = float(now_ts or time.time())
-        try:
-            gross_value = float(gross_usd)
-        except (TypeError, ValueError):
-            _emit_veto(
-                symbol,
-                "invalid_notional",
-                detail={"raw_gross_usd": gross_usd},
-                context={"requested_gross_usd": gross_usd, "now": now_ts},
-            )
-            return False, "invalid_notional"
-
-        base_context = {"requested_gross_usd": gross_value, "now": now_ts}
-
-        # cooldown after stop
-        try:
-            cd_min = float(self.risk.get("cooldown_minutes_after_stop", 60) or 0)
-        except Exception:
-            cd_min = 60.0
-        if cd_min > 0 and (now_ts - float(self._last_stop_ts)) < (60.0 * cd_min):
-            cooldown_elapsed = now_ts - float(self._last_stop_ts)
-            _emit_veto(
-                symbol,
-                "cooldown",
-                detail={
-                    "cooldown_minutes_after_stop": cd_min,
-                    "elapsed_since_stop_sec": cooldown_elapsed,
-                },
-                context={**base_context, "last_stop_ts": float(self._last_stop_ts)},
-            )
-            return False, "cooldown"
-
-        # daily loss stop
-        try:
-            day_lim = float(self.risk.get("daily_loss_limit_pct", 5) or 0)
-        except Exception:
-            day_lim = 5.0
-        daily_loss_pct = self._daily_loss_pct()
-        if day_lim > 0 and daily_loss_pct >= day_lim:
-            _emit_veto(
-                symbol,
-                "daily_loss_limit",
-                detail={
-                    "daily_loss_limit_pct": day_lim,
-                    "observed_daily_loss_pct": daily_loss_pct,
-                },
-                context=base_context,
-            )
-            self._last_stop_ts = now_ts
-            return False, "daily_loss_limit"
-
-        provider = self.nav_provider
-        if provider is not None:
-            try:
-                provider.refresh()
-            except Exception:
-                pass
-        raw_nav = float(self._portfolio_nav())
-        nav = max(raw_nav, 1.0)
-
-        guard_multiplier = 0.8 if os.environ.get("EVENT_GUARD", "0") == "1" else 1.0
-        nav_context = {
-            **base_context,
-            "nav": raw_nav,
-            "guard_multiplier": guard_multiplier,
-        }
-
-        sym_key = str(symbol).upper()
-        floor = float(self.min_gross_usd_per_order or 0.0)
-        floor = max(floor, float(self.per_symbol_min_gross_usd.get(sym_key, 0.0)))
-        min_floor = max(float(self.min_notional), floor)
-        if min_floor > 0.0 and gross_value + 1e-9 < min_floor:
-            _emit_veto(
-                symbol,
-                "below_min_notional",
-                detail={
-                    "min_gross_usd": min_floor,
-                    "requested_gross_usd": gross_value,
-                },
-                context=nav_context,
-            )
-            return False, "below_min_notional"
-
-        max_trade_pct = _normalize_pct(self.sizing.get("max_trade_nav_pct", 0.0)) * guard_multiplier
-        if max_trade_pct > 0.0 and nav > 0.0:
-            if gross_value > nav * (max_trade_pct / 100.0):
-                _emit_veto(
-                    symbol,
-                    "trade_gt_max_trade_nav_pct",
-                    detail={
-                        "max_trade_nav_pct": max_trade_pct,
-                        "requested_gross_usd": gross_value,
-                        "nav": nav,
-                    },
-                    context=nav_context,
-                )
-                return False, "trade_gt_max_trade_nav_pct"
-
-        additional_pct = (gross_value / nav) * 100.0 if nav > 0 else float("inf")
-
-        max_sym_pct = _normalize_pct(self.sizing.get("max_symbol_exposure_pct", 50)) * guard_multiplier
-        if max_sym_pct > 0:
-            symbol_pct = float(self._symbol_exposure_pct(symbol))
-            if symbol_pct + additional_pct > max_sym_pct:
-                _emit_veto(
-                    symbol,
-                    "symbol_cap",
-                    detail={
-                        "max_symbol_exposure_pct": max_sym_pct,
-                        "current_symbol_pct": symbol_pct,
-                        "incoming_pct": additional_pct,
-                    },
-                    context={**nav_context, "symbol_pct": symbol_pct},
-                )
-                return False, "symbol_cap"
-
-        current_gross = float(self._portfolio_gross_usd())
-        if current_gross <= 0.0 and nav > 0.0:
-            try:
-                current_gross = max(0.0, float(self._gross_exposure_pct())) * nav / 100.0
-            except Exception:
-                current_gross = 0.0
-        max_gross_pct = _normalize_pct(self.sizing.get("max_gross_exposure_pct", 150)) * guard_multiplier
-        if nav > 0 and max_gross_pct > 0:
-            current_pct = (current_gross / nav) * 100.0
-            prospective_pct = current_pct + additional_pct
-            snapshot_pct: Optional[float]
-            try:
-                snapshot_pct = float(self._gross_exposure_pct())
-            except Exception:
-                snapshot_pct = None
-            if prospective_pct > max_gross_pct and (snapshot_pct is None or snapshot_pct > max_gross_pct):
-                _emit_veto(
-                    symbol,
-                    "portfolio_cap",
-                    detail={
-                        "max_gross_exposure_pct": max_gross_pct,
-                        "current_portfolio_pct": current_pct,
-                        "incoming_pct": additional_pct,
-                        "snapshot_portfolio_pct": snapshot_pct,
-                    },
-                    context={
-                        **nav_context,
-                        "current_portfolio_pct": current_pct,
-                        "current_gross_usd": current_gross,
-                    },
-                )
-                return False, "portfolio_cap"
-
-        # rate limit per symbol/hour
-        key = (str(symbol), int(self._now_hour_key()))
-        self._trade_counts[key] = int(self._trade_counts.get(key, 0)) + 1
-        try:
-            max_trades = int(float(self.risk.get("max_trades_per_symbol_per_hour", 6) or 0))
-        except Exception:
-            max_trades = 6
-        if max_trades > 0 and self._trade_counts[key] > max_trades:
-            _emit_veto(
-                symbol,
-                "trade_rate_limit",
-                detail={
-                    "max_trades_per_symbol_per_hour": max_trades,
-                    "observed_count": self._trade_counts[key],
-                },
-                context=nav_context,
-            )
-            return False, "trade_rate_limit"
-
-        return True, ""
 
 
 def _effective_guard_cfg(cfg: Mapping[str, Any] | None) -> Mapping[str, Any]:
     if isinstance(cfg, Mapping):
         return cfg
-    loaded = load_json("config/risk_limits.json") or {}
+    loaded = load_risk_config()
     return loaded if isinstance(loaded, Mapping) else {}
 
 
 def _normalize_ratio(value: Any, default: float) -> float:
-    try:
-        val = float(value)
-    except Exception:
-        return default
-    if val <= 0:
-        return default
-    if val > 1.0:
-        return val / 100.0
-    return val
+    normalized = normalize_percentage(value)
+    return normalized if normalized > 0 else default
 
 
 def _normalize_pct_value(value: Any, default: float) -> float:
-    try:
-        val = float(value)
-    except Exception:
-        return default
-    return val if val > 0 else default
+    normalized = normalize_percentage(value)
+    return normalized if normalized > 0 else default
 
 
 def _guard_thresholds(symbol: str, cfg: Mapping[str, Any]) -> tuple[float, float]:
@@ -1622,8 +1520,18 @@ def symbol_dd_guard(symbol: str, cfg: Mapping[str, Any] | None = None) -> bool:
     if not is_in_asset_universe(symbol):
         return False
     _, dd_cap = _guard_thresholds(symbol, _effective_guard_cfg(cfg))
-    dd = dd_today_pct(symbol) or 0.0
+    dd_raw = dd_today_pct(symbol) or 0.0
+    dd = dd_raw / 100.0
     if dd <= -dd_cap:
         disable_symbol_temporarily(symbol, ttl_hours=COOLDOWN_H, reason="dd_cap_hit")
         return False
     return True
+
+
+# Deprecated: retained as a no-op shim to avoid import errors while sizing refactor proceeds.
+class RiskGate:  # pragma: no cover - compatibility shim
+    def __init__(self, cfg: Mapping[str, Any] | None = None) -> None:
+        self.cfg = cfg or {}
+
+    def allowed_gross_notional(self, symbol: str, gross_usd: float, now_ts: float | None = None) -> tuple[bool, str]:
+        return True, ""

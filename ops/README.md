@@ -44,7 +44,6 @@ sudo supervisorctl restart hedge:hedge-dashboard
 sudo supervisorctl restart hedge:hedge-pipeline-shadow-heartbeat
 sudo supervisorctl restart hedge:hedge-pipeline-compare
 
-sudo supervisorctl status
 
 tail -f /var/log/hedge-executor.out.log
 tail -f /var/log/hedge-executor.err.log
@@ -78,3 +77,4 @@ tail -fn200 /var/log/hedge-dashboard.err.log
 ```
 
 The executor will emit `[v6] flags ...` on startup; confirm v6 flags match your intended config after any restart.
+sudo supervisorctl status

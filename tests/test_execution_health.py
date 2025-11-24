@@ -1,4 +1,13 @@
+import pytest
+
 import execution.utils.execution_health as eh
+
+
+@pytest.fixture(autouse=True)
+def _reset_error_registry():
+    eh.reset_error_registry()
+    yield
+    eh.reset_error_registry()
 
 
 def test_classify_atr_regime_buckets_execution_hardening(monkeypatch):
@@ -90,3 +99,24 @@ def test_compute_execution_health_combines_parts_execution_hardening(monkeypatch
     assert snapshot["router"]["policy_quality"] == "broken"
     assert snapshot["router"]["policy_maker_first"] is False
     assert snapshot["router"]["policy_taker_bias"] == "prefer_taker"
+    assert snapshot["router"]["policy_reason"] == "test"
+    assert snapshot["router"]["policy"]["quality"] == "broken"
+    assert snapshot["router"]["policy"]["offset_bps"] is None
+
+
+def test_execution_health_includes_error_registry(monkeypatch):
+    monkeypatch.setattr(
+        "execution.utils.execution_health.router_effectiveness_7d",
+        lambda symbol: {"maker_fill_ratio": 0.1, "fallback_ratio": 0.2, "slip_q50": 1.0},
+    )
+    monkeypatch.setattr("execution.utils.execution_health.rolling_sharpe_7d", lambda s: 0.0)
+    monkeypatch.setattr("execution.utils.execution_health.dd_today_pct", lambda s: 0.0)
+    monkeypatch.setattr("execution.utils.execution_health.is_symbol_disabled", lambda s: False)
+    monkeypatch.setattr("execution.utils.execution_health.get_symbol_disable_meta", lambda s: None)
+    eh.record_execution_error("exchange", symbol="ETHUSDT", message="network", classification={"category": "network"})
+
+    snapshot = eh.compute_execution_health("ETHUSDT")
+    assert snapshot["schema"] == "execution_health_v1"
+    errors = snapshot["errors"]["exchange"]
+    assert errors["count"] == 1
+    assert errors["last_error"]["classification"]["category"] == "network"

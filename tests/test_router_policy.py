@@ -41,6 +41,19 @@ def test_router_policy_prefers_maker_when_good_execution_intelligence(monkeypatc
     assert policy.taker_bias == "prefer_maker"
 
 
+def test_router_policy_carries_offset(monkeypatch):
+    monkeypatch.setattr(
+        "execution.intel.router_policy.router_effectiveness_7d",
+        lambda s: {"maker_fill_ratio": 0.75, "fallback_ratio": 0.2, "slip_q50": 2.0},
+    )
+    monkeypatch.setattr("execution.intel.router_policy.classify_atr_regime", lambda s: "normal")
+    monkeypatch.setattr("execution.intel.router_policy.maker_offset.suggest_maker_offset_bps", lambda _s: 1.25)
+
+    policy = router_policy("BTCUSDC")
+    assert policy.offset_bps == 1.25
+    assert policy.maker_first is True
+
+
 def test_classify_router_regime_variants():
     assert (
         classify_router_regime({"maker_fill_rate": 0.8, "fallback_rate": 0.1, "slippage_p95": 3.0})
