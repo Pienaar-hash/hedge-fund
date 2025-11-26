@@ -20,3 +20,8 @@ nav:
 risk:
   reset_peak_on_testnet: true
   peak_stale_seconds: 600
+# Signal gate tunables
+signal_gate:
+  atr_lookback: 50
+  atr_mult: 4.0          # multiplier vs median ATR; increase to allow higher vol
+  expectancy_min: -0.10  # minimum rolling expectancy to allow trade

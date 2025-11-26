@@ -141,7 +141,16 @@ def _to_float(value: Any) -> Optional[float]:
             return None
         return float(value)
     except Exception:
-        return None
+        pass
+    # Try parsing ISO timestamp strings
+    if isinstance(value, str) and "T" in value:
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return dt.timestamp()
+        except Exception:
+            pass
+    return None
 
 
 def _read_jsonl(path: Path, limit: int) -> List[Dict[str, Any]]:

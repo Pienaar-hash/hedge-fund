@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+"""
+v7 AUM source: AUM = futures NAV (pure) + off-exchange holdings.
+Legacy reserves/treasury handling removed.
+"""
+
 import json
 import math
 import os
@@ -23,6 +28,7 @@ _NAV_HEALTH_PATH = "logs/nav_health.json"
 _NAV_WRITER_DEFAULT_INTERVAL = float(os.environ.get("NAV_WRITER_INTERVAL_SEC", "60"))
 _NAV_FRESHNESS_SECONDS = float(os.environ.get("NAV_FRESHNESS_SECONDS", "90"))
 _NAV_CACHE_MAX_AGE_SECONDS = float(os.environ.get("NAV_CACHE_MAX_AGE_S", "900"))
+_OFFEXCHANGE_PATH = os.getenv("OFFEXCHANGE_HOLDINGS_PATH", "config/offexchange_holdings.json")
 
 LOGGER = logging.getLogger("nav")
 
@@ -79,6 +85,63 @@ def _mark_price_usdt(asset: str) -> float:
     except Exception as exc:
         LOGGER.warning("[nav] mark_price_fetch_failed asset=%s err=%s", sym, exc)
         return 0.0
+
+
+def get_mark_price_for_symbol(symbol: str) -> float:
+    """Alias used by off-exchange holdings valuation."""
+    return _mark_price_usdt(symbol)
+
+
+def _get_usd_fallback_price(symbol: str, default: float | None = None):
+    """
+    Fallback USD spot price for off-exchange holdings when UM mark price is unavailable.
+    Order:
+        1) coingecko price (if available)
+        2) default (avg_cost from config)
+    Returns None if nothing available.
+    """
+    try:
+        from execution.exchange_utils import coingecko_price_usd
+    except Exception:
+        coingecko_price_usd = None
+
+    if coingecko_price_usd:
+        try:
+            px = coingecko_price_usd(symbol)
+            if px and px > 0:
+                return float(px)
+        except Exception:
+            pass
+    return default
+
+
+def load_offexchange_holdings(path: str | None = None) -> Dict[str, Dict[str, float]]:
+    """Load off-exchange holdings from config; returns empty dict on failure."""
+    target = path or _OFFEXCHANGE_PATH
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if isinstance(payload, dict):
+            holdings: Dict[str, Dict[str, float]] = {}
+            for sym, data in payload.items():
+                if not isinstance(data, dict):
+                    continue
+                try:
+                    qty = float(data.get("qty", 0.0) or 0.0)
+                except Exception:
+                    qty = 0.0
+                avg_cost = data.get("avg_cost")
+                try:
+                    avg_cost = float(avg_cost) if avg_cost is not None else None
+                except Exception:
+                    avg_cost = None
+                holdings[str(sym).upper()] = {"qty": qty, "avg_cost": avg_cost}
+            return holdings
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        LOGGER.debug("[nav] offexchange_holdings_load_failed path=%s", target, exc_info=True)
+    return {}
 
 
 def _load_json(path: str) -> JSONDict:
@@ -145,6 +208,69 @@ def _ticker_last_price(symbol: str) -> float:
     except Exception as exc:
         LOGGER.warning("[nav] ticker_price_failed symbol=%s err=%s", symbol, exc)
         return 0.0
+
+
+def _attach_aum(nav_total: float, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Augment NAV snapshot with off-exchange holdings and total AUM."""
+    holdings = load_offexchange_holdings()
+    offexchange_usd: Dict[str, Dict[str, Any]] = {}
+    for sym, data in holdings.items():
+        qty = float(data.get("qty", 0.0) or 0.0)
+        avg_cost = data.get("avg_cost")
+        mark = get_mark_price_for_symbol(sym)
+
+        # Try futures mark price first; fallback to coingecko/avg_cost if unavailable
+        spot_usd = None
+        if not mark or mark <= 0.0:
+            spot_usd = _get_usd_fallback_price(sym, default=avg_cost)
+            if spot_usd and spot_usd > 0:
+                usd_value = qty * spot_usd
+            else:
+                usd_value = None
+        else:
+            usd_value = qty * mark
+
+        try:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.info(
+                "[aum-v7-detail] symbol=%s qty=%s avg_cost=%s mark=%s fallback=%s usd_value=%s",
+                sym,
+                qty,
+                avg_cost,
+                mark if (mark and mark > 0) else None,
+                spot_usd,
+                usd_value,
+            )
+        except Exception:
+            pass
+
+        offexchange_usd[sym] = {
+            "qty": qty,
+            "avg_cost": avg_cost,
+            "mark": mark if mark and mark > 0 else spot_usd,
+            "usd_value": usd_value,
+        }
+    off_total = sum(v.get("usd_value", 0.0) or 0.0 for v in offexchange_usd.values())
+    aum_total = float(nav_total) + float(off_total)
+    try:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info(
+            "[aum-v7-summary] offexchange_keys=%s offexchange_usd_total=%s",
+            sorted(offexchange_usd.keys()),
+            off_total,
+        )
+    except Exception:
+        pass
+    snapshot["aum"] = {
+        "futures": float(nav_total),
+        "offexchange": offexchange_usd,
+        "total": aum_total,
+    }
+    return snapshot
 
 
 def _write_nav_health(detail: Dict[str, Any]) -> None:
@@ -262,6 +388,10 @@ def _futures_nav_usdt(nav_cfg: Optional[Dict[str, Any]] = None) -> Tuple[float, 
         "cached_nav_age_s": cached_age_int,
     }
     detail["nav"] = nav_total
+    try:
+        _attach_aum(nav_total, detail)
+    except Exception:
+        LOGGER.debug("[nav] attach_aum_failed", exc_info=True)
 
     if sources_ok:
         _persist_confirmed_nav(nav_total, detail=detail, source_health=source_health)
@@ -306,6 +436,10 @@ def compute_trading_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
                 "nav_usd": float(manual),
                 "fresh": True,
             }
+            try:
+                _attach_aum(float(manual), detail)
+            except Exception:
+                LOGGER.debug("[nav] attach_aum_manual_failed", exc_info=True)
             _write_nav_health(detail)
             return float(manual), detail
         capital, detail = _fallback_capital(cfg)
@@ -352,6 +486,10 @@ def compute_trading_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
         "fresh": bool(nav_health.get("fresh")),
         "nav_health": nav_health,
     }
+    try:
+        _attach_aum(confirmed_nav, fallback_detail)
+    except Exception:
+        LOGGER.debug("[nav] attach_aum_cache_failed", exc_info=True)
     _write_nav_health(fallback_detail)
     return confirmed_nav, fallback_detail
 
@@ -369,14 +507,25 @@ def compute_nav_summary(cfg: JSONDict | None = None) -> JSONDict:
 def _fallback_capital(cfg: JSONDict) -> Tuple[float, JSONDict]:
     """Fallback NAV when no positions or manual override exist."""
     base = float(cfg.get("capital_base_usdt", 0.0))
-    return base, {"source": "fallback_capital"}
+    detail = {"source": "fallback_capital", "nav": base, "nav_usd": base, "total_nav": base}
+    try:
+        _attach_aum(base, detail)
+    except Exception:
+        LOGGER.debug("[nav] attach_aum_fallback_failed", exc_info=True)
+    return base, detail
 
 
 def compute_reporting_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
     _, reporting_source, _, manual = _nav_sources(cfg)
     if reporting_source == "manual":
         if manual is not None:
-            return float(manual), {"source": "manual"}
+            nav_val = float(manual)
+            detail = {"source": "manual", "nav": nav_val, "nav_usd": nav_val, "total_nav": nav_val}
+            try:
+                _attach_aum(nav_val, detail)
+            except Exception:
+                LOGGER.debug("[nav] attach_aum_reporting_manual_failed", exc_info=True)
+            return nav_val, detail
         return _fallback_capital(cfg)
 
     nav_val, detail = compute_trading_nav(cfg)

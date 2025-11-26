@@ -49,6 +49,9 @@ tail -f /var/log/hedge-executor.out.log
 tail -f /var/log/hedge-executor.err.log
 tail -f /var/log/hedge-dashboard.err.log
 
+tail -f /var/log/supervisor/sync_state.err
+tail -f /var/log/supervisor/sync_state.out
+
 sudo supervisorctl status
 
 http://{{DASHBOARD_HOST}}:8501

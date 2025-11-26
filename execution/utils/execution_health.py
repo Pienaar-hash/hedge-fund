@@ -41,10 +41,13 @@ ERROR_SCHEMA = "execution_health_v1"
 
 # component -> symbol -> {"count": int, "last": {...}}
 _ERROR_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {}
+_RISK_GATES: list[dict[str, Any]] = []
+_RISK_GATE_LIMIT = 256
 
 
 def reset_error_registry() -> None:
     _ERROR_REGISTRY.clear()
+    _RISK_GATES.clear()
 
 
 def atr_regime_from_ratio(ratio: float) -> str:
@@ -82,6 +85,30 @@ def record_execution_error(
     comp[sym_key] = entry
 
 
+def record_risk_gate_triggered(
+    gate: str,
+    *,
+    symbol: Optional[str] = None,
+    reason: Optional[str] = None,
+    thresholds: Optional[Dict[str, Any]] = None,
+    observations: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Optional hook to track risk gate events for execution health displays."""
+    event: Dict[str, Any] = {
+        "ts": time.time(),
+        "gate": gate,
+        "symbol": symbol,
+        "reason": reason,
+    }
+    if thresholds:
+        event["thresholds"] = dict(thresholds)
+    if observations:
+        event["observations"] = dict(observations)
+    _RISK_GATES.append(event)
+    if len(_RISK_GATES) > _RISK_GATE_LIMIT:
+        del _RISK_GATES[0 : len(_RISK_GATES) - _RISK_GATE_LIMIT]
+
+
 def _error_view_for_symbol(symbol: Optional[str]) -> Dict[str, Any]:
     view: Dict[str, Any] = {}
     sym_key = symbol.upper() if symbol else None
@@ -100,6 +127,18 @@ def _error_view_for_symbol(symbol: Optional[str]) -> Dict[str, Any]:
             "last_error": last,
         }
     return view
+
+
+def _recent_risk_gates(symbol: Optional[str]) -> list[dict[str, Any]]:
+    if not _RISK_GATES:
+        return []
+    sym_key = symbol.upper() if symbol else None
+    events = []
+    for event in _RISK_GATES[-_RISK_GATE_LIMIT:]:
+        if sym_key and str(event.get("symbol") or "").upper() not in {sym_key, ""}:
+            continue
+        events.append(event)
+    return events
 
 
 def classify_atr_regime(symbol: str) -> Dict[str, Any]:
@@ -270,6 +309,7 @@ def compute_execution_health(symbol: Optional[str] = None) -> Dict[str, Any]:
         "sizing": sizing_part,
         "errors": errors,
         "components": components,
+        "events": {"risk_gates": _recent_risk_gates(symbol)},
     }
 
 
@@ -279,6 +319,7 @@ __all__ = [
     "classify_router_health",
     "classify_risk_health",
     "record_execution_error",
+    "record_risk_gate_triggered",
     "reset_error_registry",
     "summarize_atr_regimes",
 ]

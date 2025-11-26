@@ -147,9 +147,19 @@ def _ensure_list(payload: Any) -> List[Any]:
     return payload if isinstance(payload, list) else []
 
 
+def load_kpis_v7_snapshot(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Return the v7 KPI snapshot from logs/state/kpis_v7.json; never raises.
+    """
+    try:
+        return _ensure_dict(_load_state_json(KPI_V7_STATE_PATH, default or {})) or (default or {})
+    except Exception:
+        return default or {}
+
+
 def load_kpis_v7() -> Dict[str, Any]:
     """Load v7 KPI snapshot (ATR regime, drawdown state, fee/PnL ratio)."""
-    return _ensure_dict(_load_state_json(KPI_V7_STATE_PATH, default={}))
+    return load_kpis_v7_snapshot({})
 
 
 def _resolve_nav_state_path() -> Path:
@@ -683,21 +693,6 @@ def _read_treasury_sources(root: str = ".") -> List[Dict[str, Any]]:
             }
         )
 
-    try:
-        cfg_path = Path(root) / "config" / "reserves.json"
-        if cfg_path.exists():
-            payload = json.loads(cfg_path.read_text())
-            if isinstance(payload, dict):
-                sources.append(
-                    {
-                        "label": "config/reserves.json",
-                        "payload": payload,
-                        "updated_at": None,
-                        "freshness_seconds": None,
-                    }
-                )
-    except Exception:
-        pass
     return sources
 
 
@@ -706,9 +701,9 @@ def _select_canonical_treasury(
 ) -> tuple[List[Dict[str, Any]], float, str, List[str]]:
     """Select canonical treasury data from available sources."""
     sources_seen: List[str] = []
-    priority = ["logs/treasury.json", "config/reserves.json"]
+    priority = ["logs/treasury.json"]
     chosen_payload: Dict[str, Any] = {}
-    source_used = "config/reserves.json"
+    source_used = "logs/treasury.json"
 
     for label in priority:
         for entry in sources:
@@ -716,7 +711,7 @@ def _select_canonical_treasury(
                 continue
             sources_seen.append(label)
             freshness = entry.get("freshness_seconds")
-            if label == "config/reserves.json" or (freshness is not None and freshness <= freshness_limit):
+            if freshness is not None and freshness <= freshness_limit:
                 chosen_payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
                 source_used = label
                 break
@@ -725,27 +720,10 @@ def _select_canonical_treasury(
 
     assets: List[Dict[str, Any]] = []
     total_usd = 0.0
-    if source_used == "config/reserves.json":
-        stable_set = {"USDT", "USDC", "DAI", "FDUSD", "TUSD"}
-        for symbol, qty in (chosen_payload or {}).items():
-            try:
-                balance = float(qty)
-            except Exception:
-                continue
-            if balance == 0:
-                continue
-            asset = str(symbol).upper()
-            price = 1.0 if asset in stable_set else _safe_price(f"{asset}USDT")
-            if price <= 0 and asset.endswith("USDT"):
-                price = 1.0
-            usd_value = balance * price if price > 0 else balance
-            total_usd += usd_value
-            assets.append(_format_asset_entry(asset, balance, price, usd_value))
-    else:
-        normalized = _normalize_treasury_payload(chosen_payload, source_used)
-        if normalized:
-            assets = normalized.get("assets", [])
-            total_usd = float(normalized.get("total_usd") or 0.0)
+    normalized = _normalize_treasury_payload(chosen_payload, source_used)
+    if normalized:
+        assets = normalized.get("assets", [])
+        total_usd = float(normalized.get("total_usd") or 0.0)
     assets = sorted(assets, key=lambda item: item.get("usd_value", 0.0), reverse=True)
     return assets, float(total_usd), source_used, sources_seen
 
@@ -794,5 +772,7 @@ __all__ = [
     "load_router_suggestions_v6",
     "load_shadow_head",
     "load_compare_summary",
+    "load_kpis_v7",
+    "load_kpis_v7_snapshot",
     "ensure_timestamp",
 ]

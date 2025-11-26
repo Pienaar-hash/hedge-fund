@@ -1,8 +1,8 @@
 {
-  "version": "v6.2",
+  "version": "v6.3",
   "use_futures": true,
   "poll_seconds": 300,
-  "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+  "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
   "nav": {
     "trading_source": "exchange",
     "reporting_source": "exchange",
@@ -41,7 +41,7 @@
     "horizon_bars": 4,
     "target_ret_bps": 20,
     "prob_threshold": 0.68,
-    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
     "features": {
       "ema_fast": 20,
       "ema_slow": 50,
@@ -131,6 +131,131 @@
           "type": "rsi_band",
           "band": [35, 65],
           "zmin": 0.6
+        }
+      }
+    },
+    {
+      "id": "doge_m15",
+      "label": "DOGE 15m momentum",
+      "enabled": true,
+      "symbol": "DOGEUSDT",
+      "timeframe": "15m",
+      "params": {
+        "per_trade_nav_pct": 0.01,
+        "leverage": 3,
+        "bucket": "SATELLITE",
+        "risk": {
+          "fixed_sl_pct": 0.6,
+          "fixed_tp_pct": 1.2,
+          "atr_period": 14,
+          "atr_mult": 1.2,
+          "max_bars": 60,
+          "trail": { "width_pct": 0.006 }
+        },
+        "entry": {
+          "type": "rsi_band",
+          "band": [30, 70],
+          "zmin": 0.8
+        }
+      }
+    },
+    {
+      "id": "link_m15",
+      "label": "LINK 15m momentum",
+      "enabled": true,
+      "symbol": "LINKUSDT",
+      "timeframe": "15m",
+      "params": {
+        "per_trade_nav_pct": 0.01,
+        "leverage": 3,
+        "bucket": "SATELLITE",
+        "risk": {
+          "fixed_sl_pct": 0.5,
+          "fixed_tp_pct": 1.0,
+          "atr_period": 14,
+          "atr_mult": 1.2,
+          "max_bars": 60,
+          "trail": { "width_pct": 0.005 }
+        },
+        "entry": {
+          "type": "rsi_band",
+          "band": [35, 65],
+          "zmin": 0.7
+        }
+      }
+    },
+    {
+      "id": "ltc_m15",
+      "label": "LTC 15m momentum",
+      "enabled": true,
+      "symbol": "LTCUSDT",
+      "timeframe": "15m",
+      "params": {
+        "per_trade_nav_pct": 0.01,
+        "leverage": 3,
+        "bucket": "SATELLITE",
+        "risk": {
+          "fixed_sl_pct": 0.5,
+          "fixed_tp_pct": 1.0,
+          "atr_period": 14,
+          "atr_mult": 1.2,
+          "max_bars": 60,
+          "trail": { "width_pct": 0.005 }
+        },
+        "entry": {
+          "type": "rsi_band",
+          "band": [35, 65],
+          "zmin": 0.7
+        }
+      }
+    },
+    {
+      "id": "sui_m15",
+      "label": "SUI 15m momentum",
+      "enabled": true,
+      "symbol": "SUIUSDT",
+      "timeframe": "15m",
+      "params": {
+        "per_trade_nav_pct": 0.008,
+        "leverage": 3,
+        "bucket": "SATELLITE",
+        "risk": {
+          "fixed_sl_pct": 0.6,
+          "fixed_tp_pct": 1.2,
+          "atr_period": 14,
+          "atr_mult": 1.2,
+          "max_bars": 60,
+          "trail": { "width_pct": 0.006 }
+        },
+        "entry": {
+          "type": "rsi_band",
+          "band": [30, 70],
+          "zmin": 0.8
+        }
+      }
+    },
+    {
+      "id": "wif_m15",
+      "label": "WIF 15m momentum",
+      "enabled": true,
+      "symbol": "WIFUSDT",
+      "timeframe": "15m",
+      "params": {
+        "per_trade_nav_pct": 0.008,
+        "leverage": 3,
+        "bucket": "SATELLITE",
+        "risk": {
+          "fixed_sl_pct": 0.6,
+          "fixed_tp_pct": 1.2,
+          "atr_period": 14,
+          "atr_mult": 1.2,
+          "max_bars": 60,
+          "trail": { "width_pct": 0.006 }
+        },
+        "entry": {
+          "type": "rsi_band",
+          "band": [30, 70],
+          "zmin": 0.8
         }
       }
     }

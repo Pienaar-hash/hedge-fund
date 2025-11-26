@@ -14,11 +14,14 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from execution.risk_limits import RiskState, check_order
+from execution import drawdown_tracker
+from execution.risk_limits import RiskState, check_order, drawdown_snapshot, classify_drawdown_state
 from execution.nav import nav_health_snapshot
 from execution.risk_loader import load_risk_config
 from execution.universe_resolver import universe_by_symbol
-from execution.utils.execution_health import compute_execution_health
+from execution.utils import metrics
+from execution.utils import vol as vol_utils
+from execution.utils.execution_health import compute_execution_health, summarize_atr_regimes
 
 
 @dataclass
@@ -47,6 +50,73 @@ class RiskDecision:
     reasons: List[str] = field(default_factory=list)
     hit_caps: Dict[str, bool] = field(default_factory=dict)
     diagnostics: Dict[str, Any] = field(default_factory=dict)
+
+
+def _symbols_from_positions(positions_state: Optional[Mapping[str, Any] | List[Any]]) -> List[str]:
+    symbols: List[str] = []
+    if isinstance(positions_state, Mapping):
+        entries = positions_state.get("items") or positions_state.get("positions") or positions_state.get("symbols")
+        if isinstance(entries, Mapping):
+            symbols.extend([str(key) for key in entries.keys()])
+        elif isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, Mapping) and entry.get("symbol"):
+                    symbols.append(str(entry.get("symbol")))
+    elif isinstance(positions_state, list):
+        for entry in positions_state:
+            if isinstance(entry, Mapping) and entry.get("symbol"):
+                symbols.append(str(entry.get("symbol")))
+    return sorted({sym for sym in symbols if sym})
+
+
+def _portfolio_atr_regime(nav_state: Optional[Mapping[str, Any]] = None, positions_state: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    try:
+        getter = getattr(vol_utils, "get_atr_regime", None)
+        if callable(getter):
+            return getter(nav_state or {}, positions_state)
+    except Exception:
+        pass
+    symbols = _symbols_from_positions(positions_state)
+    if not symbols:
+        try:
+            symbols = sorted(universe_by_symbol().keys())
+        except Exception:
+            symbols = []
+    try:
+        return summarize_atr_regimes(symbols)
+    except Exception:
+        return {"atr_regime": "unknown", "median_ratio": None, "symbols": []}
+
+
+def _dd_state_snapshot(risk_cfg: Mapping[str, Any] | None) -> Dict[str, Any]:
+    try:
+        getter = getattr(drawdown_tracker, "current_state", None)
+        if callable(getter):
+            state = getter()
+            return state if isinstance(state, dict) else {"dd_state": state}
+    except Exception:
+        pass
+    g_cfg = (risk_cfg or {}).get("global") if isinstance(risk_cfg, Mapping) else {}
+    try:
+        dd_snapshot = drawdown_snapshot(g_cfg)
+    except Exception:
+        dd_snapshot = {}
+    drawdown_info = dd_snapshot.get("drawdown") if isinstance(dd_snapshot, Mapping) else {}
+    dd_pct = None
+    if isinstance(drawdown_info, Mapping):
+        dd_pct = drawdown_info.get("pct")
+    if dd_pct is None and isinstance(dd_snapshot, Mapping):
+        dd_pct = dd_snapshot.get("dd_pct")
+    try:
+        alert_pct = float((g_cfg or {}).get("drawdown_alert_pct"))
+    except Exception:
+        alert_pct = None
+    try:
+        kill_pct = float((g_cfg or {}).get("max_nav_drawdown_pct") or (g_cfg or {}).get("daily_loss_limit_pct"))
+    except Exception:
+        kill_pct = None
+    dd_state = classify_drawdown_state(dd_pct=dd_pct or 0.0, alert_pct=alert_pct, kill_pct=kill_pct)
+    return {"dd_state": dd_state, "drawdown": dd_snapshot}
 
 
 class RiskEngineV6:
@@ -173,7 +243,29 @@ class RiskEngineV6:
                 continue
             entry["updated_ts"] = now
             symbols.append(entry)
-        return {"updated_ts": now, "symbols": symbols}
+        nav_snapshot = nav_state if isinstance(nav_state, Mapping) else nav_health_snapshot()
+        try:
+            dd_state = _dd_state_snapshot(self._risk_cfg)
+        except Exception:
+            dd_state = {"dd_state": "unknown"}
+        try:
+            atr_summary = _portfolio_atr_regime(nav_snapshot, positions_state)
+        except Exception:
+            atr_summary = {"atr_regime": "unknown", "median_ratio": None, "symbols": []}
+        try:
+            fee_snapshot = metrics.fee_pnl_ratio(symbol=None)
+        except Exception:
+            fee_snapshot = {"fee_pnl_ratio": None, "fees": 0.0, "pnl": 0.0, "window_days": 7}
+        return {
+            "updated_ts": now,
+            "symbols": symbols,
+            "dd_state": dd_state,
+            "atr_regime": atr_summary.get("atr_regime"),
+            "atr": atr_summary,
+            "fee_pnl_ratio": fee_snapshot.get("fee_pnl_ratio"),
+            "fee_pnl": fee_snapshot,
+            "nav_health": nav_snapshot,
+        }
 
 
 __all__ = ["RiskEngineV6", "OrderIntent", "RiskDecision"]

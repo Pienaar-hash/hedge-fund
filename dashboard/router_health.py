@@ -35,8 +35,17 @@ def _to_dataframe(payload: Any) -> pd.DataFrame:
     if isinstance(payload, pd.DataFrame):
         return payload
     if isinstance(payload, list):
-        return pd.DataFrame([row for row in payload if isinstance(row, dict)])
-    return pd.DataFrame()
+        df = pd.DataFrame([row for row in payload if isinstance(row, dict)])
+    else:
+        df = pd.DataFrame()
+
+    if "value" in df.columns:
+        try:
+            df["value"] = pd.to_numeric(df["value"], errors="coerce")
+            df["value"] = df["value"].fillna(0.0).astype(float)
+        except Exception:
+            df["value"] = df["value"]
+    return df
 
 
 def load_router_health(

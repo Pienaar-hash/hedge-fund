@@ -78,8 +78,7 @@
       {"file": "config/runtime.yaml", "summary": "Router/runtime tunables (post-only, offsets, fees, windows)."},
       {"file": "config/pairs_universe.json", "summary": "Universe definition and per-symbol caps."},
       {"file": "config/symbol_tiers.json", "summary": "Symbol tier assignments."},
-      {"file": "config/assets.json", "summary": "Asset metadata."},
-      {"file": "config/reserves.json", "summary": "Reserve allocations."},
+      {"file": "config/offexchange_holdings.json", "summary": "Off-exchange holdings for AUM."},
       {"file": "config/settings.json", "summary": "General settings."}
     ],
     "ops": [

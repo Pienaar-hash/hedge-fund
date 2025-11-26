@@ -11,7 +11,7 @@
 - Risk: `config/risk_limits.json` (fractional caps; testnet overrides).
 - Runtime/router: `config/runtime.yaml` (post-only defaults, offsets, child sizes, fees).
 - Universe/tiers: `config/pairs_universe.json`, `config/symbol_tiers.json`.
-- Registry/settings/assets: `config/strategy_registry.json`, `config/assets.json`, `config/settings.json`.
+- Registry/settings/assets: `config/strategy_registry.json`, `config/offexchange_holdings.json`, `config/settings.json`.
 
 ### Adding/editing logic
 - Risk tuning: `execution/risk_limits.py` (caps, veto reasons), `risk_engine_v6.py` (orchestration). Use `risk_loader.normalize_percentage` for new pct fields.

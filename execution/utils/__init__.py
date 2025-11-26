@@ -310,18 +310,6 @@ def write_treasury_snapshot(
             except Exception as exc:
                 logger.debug("[treasury] compute_treasury_only fallback failed: %s", exc)
 
-        reserves_cfg = load_json("config/reserves.json")
-        if isinstance(reserves_cfg, dict):
-            for asset, qty in reserves_cfg.items():
-                asset_code = str(asset).upper()
-                qty_val = _optional_float(qty)
-                if qty_val is None:
-                    continue
-                slot = holdings.setdefault(asset_code, {"balance": 0.0, "price": None, "usd_value": None})
-                slot["balance"] = qty_val
-                if asset_code not in order:
-                    order.append(asset_code)
-
         treasury_cfg = load_json("config/treasury.json")
         if isinstance(treasury_cfg, dict):
             for asset, qty in treasury_cfg.items():

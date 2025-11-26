@@ -1,0 +1,273 @@
+================================================================================
+RISK CAP ANALYSIS — EXPOSURE CEILING INVESTIGATION
+================================================================================
+Date: 2025-11-26
+Branch: v7-risk-tuning
+NAV at analysis time: ~$4,229 USDT
+Observed portfolio gross: ~$403.91 USDT (capped)
+
+================================================================================
+EXECUTIVE SUMMARY
+================================================================================
+
+The system is restricting total exposure to approximately $400 due to two
+primary constraints:
+
+1. GLOBAL: trade_equity_nav_pct = 0.02 (2% of NAV per trade = ~$84.59 max)
+   → Blocking BTCUSDT trades at $100 with reason "trade_gt_equity_cap"
+
+2. PER-SYMBOL: SOLUSDT max_nav_pct = 0.05 (5% of NAV = ~$211 max per symbol)
+   → Blocking additional SOL exposure with reason "symbol_cap"
+
+================================================================================
+ALL NOTIONAL/EXPOSURE CAPS IN THE SYSTEM
+================================================================================
+
+------------------------------------------------------------------------------
+1. PER-TRADE NAV CAPS (GLOBAL) — CURRENTLY RESTRICTING BTC
+------------------------------------------------------------------------------
+
+Location: config/risk_limits.json → global section
+
+Current Config:
+    "trade_equity_nav_pct": 0.02   // 2% of NAV per trade
+    "max_trade_nav_pct": 0.03      // 3% of NAV per trade
+
+How it's computed (NAV-relative):
+    File: execution/risk_limits.py (lines 1095-1115)
+    
+    equity_nav_pct = _normalize_pct(equity_nav_pct_raw)
+    max_trade_pct = _normalize_pct(max_trade_pct_raw)
+    if nav_f > 0.0:
+        if equity_nav_pct > 0.0:
+            equity_limit = nav_f * equity_nav_pct
+            if req_notional > equity_limit:
+                reasons.append("trade_gt_equity_cap")
+        if max_trade_pct > 0.0:
+            trade_limit = nav_f * max_trade_pct
+            if req_notional > trade_limit:
+                reasons.append("max_trade_nav_pct")
+
+Final computed limits (NAV = $4,229):
+    trade_equity_nav_pct = 0.02 → Max $84.59 per trade
+    max_trade_nav_pct = 0.03    → Max $126.88 per trade
+
+Veto log evidence:
+    BTCUSDT trades at $100 blocked with "trade_gt_equity_cap"
+    Because: $100 > $84.59 (2% of NAV)
+
+------------------------------------------------------------------------------
+2. PER-SYMBOL NAV CAP (max_nav_pct) — CURRENTLY RESTRICTING SOLUSDT
+------------------------------------------------------------------------------
+
+Location: config/risk_limits.json → per_symbol section
+
+Current Config:
+    "SOLUSDT":  { "max_nav_pct": 0.05 }   // 5% of NAV
+    "BTCUSDT":  { "max_nav_pct": 0.10 }   // 10% of NAV
+    "ETHUSDT":  { "max_nav_pct": 0.08 }   // 8% of NAV
+    "LINKUSDT": { "max_nav_pct": 0.15 }   // 15% of NAV
+    "LTCUSDT":  { "max_nav_pct": 0.15 }   // 15% of NAV
+    "SUIUSDT":  { "max_nav_pct": 0.10 }   // 10% of NAV
+    "WIFUSDT":  { "max_nav_pct": 0.10 }   // 10% of NAV
+
+How it's computed (NAV-relative):
+    File: execution/risk_limits.py (lines 1045-1062)
+    
+    cap_cfg_normalized = normalize_percentage(cap_cfg_raw)
+    cap_abs = nav_f * cap_cfg_normalized
+    if cap_abs > 0.0 and (current_gross_f + req_notional) > cap_abs:
+        reasons.append("symbol_cap")
+
+Final computed limits (NAV = $4,229):
+    SOLUSDT:  5% → $211.47 max total exposure per symbol
+    BTCUSDT: 10% → $422.93 max total exposure per symbol
+    ETHUSDT:  8% → $338.34 max total exposure per symbol
+
+Veto log evidence:
+    SOLUSDT blocked with "symbol_cap"
+    symbol_notional_cap = 211.46586956
+    current_gross_notional + req_notional exceeded cap
+
+------------------------------------------------------------------------------
+3. PORTFOLIO GROSS EXPOSURE CAP (GLOBAL)
+------------------------------------------------------------------------------
+
+Location: config/risk_limits.json → global section
+
+Current Config:
+    "max_gross_exposure_pct": 1.5   // 150% of NAV gross portfolio limit
+
+How it's computed:
+    File: execution/risk_limits.py (lines 1119-1126)
+    
+    if will_violate_exposure(current_gross, req_notional, nav, max_gross_nav_pct):
+        reasons.append("portfolio_cap")
+
+Final computed limit (NAV = $4,229):
+    Max total portfolio gross = $6,343 USDT
+    
+Status: NOT CURRENTLY BINDING (portfolio at ~$404)
+
+------------------------------------------------------------------------------
+4. MAX CONCURRENT POSITIONS (GLOBAL)
+------------------------------------------------------------------------------
+
+Location: config/risk_limits.json → global section
+
+Current Config:
+    "max_concurrent_positions": 6
+
+Current state: 4 open positions
+Status: NOT CURRENTLY BINDING
+
+------------------------------------------------------------------------------
+5. STRATEGY-LEVEL per_trade_nav_pct — SIZING INPUT
+------------------------------------------------------------------------------
+
+Location: config/strategy_config.json → per-strategy params
+
+Current Config (examples):
+    btc_m15:  { "per_trade_nav_pct": 0.015 }  // 1.5% of NAV
+    eth_m15:  { "per_trade_nav_pct": 0.015 }  // 1.5% of NAV
+    sol_m15:  { "per_trade_nav_pct": 0.01  }  // 1.0% of NAV
+
+How it's computed:
+    File: execution/signal_screener.py (lines 575-576)
+    
+    requested_notional = max(nav * per_trade_nav_pct, min_notional)
+
+Final computed sizing (NAV = $4,229):
+    BTC sizing = $4,229 × 0.015 = ~$63.44
+    But BTCUSDT has 100 USDT min_notional exchange floor → sized to $100
+
+------------------------------------------------------------------------------
+6. PER-SYMBOL max_order_notional (ABSOLUTE CAP)
+------------------------------------------------------------------------------
+
+Location: config/risk_limits.json → per_symbol section
+
+Current Config:
+    "BTCUSDT":  { "max_order_notional": 80000 }
+    "ETHUSDT":  { "max_order_notional": 50000 }
+    "SOLUSDT":  { "max_order_notional": 25000 }
+    "SUIUSDT":  { "max_order_notional": 15000 }
+    "WIFUSDT":  { "max_order_notional": 15000 }
+
+Status: NOT CURRENTLY BINDING (trades are much smaller)
+
+================================================================================
+SUMMARY TABLE — ALL CAPS AND CURRENT STATUS
+================================================================================
+
+Cap                       | Current Value | Computed Limit | Blocking?
+--------------------------|---------------|----------------|----------
+trade_equity_nav_pct      | 0.02          | $84.59/trade   | ✓ YES (BTC)
+max_trade_nav_pct         | 0.03          | $126.88/trade  | Partial
+SOLUSDT max_nav_pct       | 0.05          | $211.47 total  | ✓ YES (SOL)
+BTCUSDT max_nav_pct       | 0.10          | $422.93 total  | Not yet
+max_gross_exposure_pct    | 1.50          | $6,343 total   | No
+max_concurrent_positions  | 6             | 6 positions    | No (at 4)
+max_order_notional (BTC)  | 80,000        | $80,000/order  | No
+
+================================================================================
+PROPOSED CHANGES TO INCREASE ALLOWED EXPOSURE
+================================================================================
+
+------------------------------------------------------------------------------
+OPTION A: MINIMAL CHANGE — Increase Per-Trade NAV Caps Only
+------------------------------------------------------------------------------
+
+File: config/risk_limits.json
+
+BEFORE:
+    "trade_equity_nav_pct": 0.02,
+    "max_trade_nav_pct": 0.03
+
+AFTER:
+    "trade_equity_nav_pct": 0.03,   // 3% of NAV per trade
+    "max_trade_nav_pct": 0.05       // 5% of NAV per trade
+
+Effect:
+    Max single trade: $126.87 (equity) / $211.47 (max_trade)
+    BTCUSDT $100 trades would pass
+
+------------------------------------------------------------------------------
+OPTION B: Increase Per-Symbol NAV Caps
+------------------------------------------------------------------------------
+
+File: config/risk_limits.json → per_symbol
+
+BEFORE:
+    "SOLUSDT": { "max_nav_pct": 0.05, ... }
+
+AFTER:
+    "SOLUSDT": { "max_nav_pct": 0.10, ... }   // 10% of NAV
+
+Effect:
+    SOL max exposure: $422.93 per symbol
+    Allows more SOL positions before symbol_cap fires
+
+------------------------------------------------------------------------------
+OPTION C: COMBINED (RECOMMENDED FOR MODERATE LIFT)
+------------------------------------------------------------------------------
+
+File: config/risk_limits.json
+
+{
+  "global": {
+    "trade_equity_nav_pct": 0.04,   // 4% of NAV per trade (was 0.02)
+    "max_trade_nav_pct": 0.06       // 6% of NAV per trade (was 0.03)
+  },
+  "per_symbol": {
+    "SOLUSDT": { "max_nav_pct": 0.08 },  // 8% of NAV (was 0.05)
+    "BTCUSDT": { "max_nav_pct": 0.15 }   // 15% of NAV (was 0.10)
+  }
+}
+
+Effect:
+    Single trades up to ~$169 (equity) / ~$254 (max_trade)
+    Per-symbol: SOL up to ~$338, BTC up to ~$634
+    Total portfolio could reach ~$1,000+ before other caps bind
+
+================================================================================
+VALIDATION STEPS AFTER MODIFYING
+================================================================================
+
+1. Restart the executor to reload config/risk_limits.json
+
+2. Tail the veto log to confirm no unexpected blocks:
+   $ tail -f logs/execution/risk_vetoes.jsonl | jq -r '.veto_reason'
+
+3. Run a dry-run test with DRY_RUN=1 to simulate order flow
+
+4. Check dashboard KPI panel for updated threshold displays
+
+5. Monitor initial trades to confirm sizing passes risk gates
+
+6. Verify veto log shows new thresholds:
+   Look for: "trade_equity_nav_pct": 0.04 (or new value)
+             "symbol_notional_cap": <new higher value>
+
+================================================================================
+KEY CODE LOCATIONS FOR REFERENCE
+================================================================================
+
+Risk limit enforcement:
+    execution/risk_limits.py          — check_order() function
+    execution/risk_engine_v6.py       — RiskEngineV6 wrapper
+
+Config files:
+    config/risk_limits.json           — All global + per-symbol caps
+    config/strategy_config.json       — per_trade_nav_pct sizing inputs
+
+Sizing/screener:
+    execution/signal_screener.py      — Intent sizing (gross_usd)
+    execution/executor_live.py        — Final sizing clamps
+
+Veto logging:
+    logs/execution/risk_vetoes.jsonl  — All blocked trades with reasons
+
+================================================================================
+END OF ANALYSIS
+================================================================================

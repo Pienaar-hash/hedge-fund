@@ -31,6 +31,7 @@ from execution.universe_resolver import (
     universe_by_symbol,
 )
 from execution.runtime_config import load_runtime_config
+from execution import telegram_alerts_v7
 from execution.utils.execution_health import record_execution_error, summarize_atr_regimes
 
 import requests
@@ -480,6 +481,19 @@ def _maybe_emit_v7_kpis(force: bool = False) -> None:
         LOG.debug("[metrics] kpis_v7_state_write_failed: %s", exc)
     _LAST_KPIS_V7 = payload
     _LAST_KPI_PUBLISH = now
+
+
+def _maybe_run_telegram_alerts() -> None:
+    try:
+        context = {
+            "risk_snapshot": _LAST_RISK_SNAPSHOT or {},
+            "nav_snapshot": (_LAST_NAV_STATE.get("nav_detail") or _LAST_NAV_STATE),
+            "kpis_snapshot": _LAST_KPIS_V7 or {},
+            "now_ts": time.time(),
+        }
+        telegram_alerts_v7.run_alerts(context)
+    except Exception as exc:
+        LOG.debug("[telegram] alerts_v7_failed: %s", exc)
 
 
 def _maybe_emit_execution_alerts(symbol: str) -> None:
@@ -1509,6 +1523,10 @@ def _startup_position_check(client: Any) -> None:
     if client is None or getattr(client, "is_stub", False):
         LOG.info("[startup-sync] unable to check positions (client unavailable)")
         return
+    
+    # Allow skipping the blocking check if ALLOW_OPEN_POSITIONS=1
+    allow_open = os.getenv("ALLOW_OPEN_POSITIONS", "0") == "1"
+    
     LOG.info("[startup-sync] checking open positions …")
     retry_interval = 30
     first_warning = True
@@ -1536,6 +1554,12 @@ def _startup_position_check(client: Any) -> None:
                 pos.get("entryPrice"),
                 pos.get("unRealizedProfit"),
             )
+        
+        # If ALLOW_OPEN_POSITIONS=1, proceed with existing positions
+        if allow_open:
+            LOG.info("[startup-sync] ALLOW_OPEN_POSITIONS=1 -> proceeding with %d open positions", len(live))
+            return
+        
         first_warning = False
         time.sleep(retry_interval)
 
@@ -1705,6 +1729,18 @@ def _compute_nav_with_detail() -> tuple[float, Dict[str, Any]]:
         detail.setdefault("source", (trading[1] or {}).get("source") if isinstance(trading[1], Mapping) else None)
         detail.setdefault("nav", nav_val)
         detail.setdefault("nav_usd", nav_val)
+        try:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.info(
+                "[nav-detail] nav_total=%s aum_total=%s future_only_nav=%s",
+                detail.get("nav_total") or nav_val,
+                (detail.get("aum") or {}).get("total") if isinstance(detail.get("aum"), Mapping) else None,
+                detail.get("nav_total") or nav_val,
+            )
+        except Exception:
+            pass
         return nav_val, detail
     except Exception as exc:
         LOG.error("[executor] compute_nav_with_detail not available: %s", exc)
@@ -1854,7 +1890,7 @@ def _evaluate_order_risk(
     nav: float,
     sym_open_qty: float,
     current_gross: float,
-    current_symbol_gross: float,
+    current_symbol_gross: float = 0.0,
     open_positions_count: int,
     tier_name: Optional[str],
     current_tier_gross: float,
@@ -3223,17 +3259,16 @@ def _compute_nav_snapshot() -> Optional[float]:
 
 def _collect_rows() -> List[Dict[str, Any]]:
     try:
-        from execution.exchange_utils import get_account as _get_account_snapshot
+        from execution.exchange_utils import get_positions as _get_positions_snapshot
 
-        account = _get_account_snapshot() or {}
-        raw_positions = account.get("positions") or []
+        raw_positions = list(_get_positions_snapshot() or [])
     except Exception as exc:
-        LOG.error("[executor] account/positions fetch error: %s", exc)
+        LOG.error("[executor] positions fetch error: %s", exc)
         raw_positions = []
     rows: List[Dict[str, Any]] = []
     for payload in raw_positions:
         try:
-            qty_val = float(payload.get("positionAmt", payload.get("qty", 0)) or 0.0)
+            qty_val = float(payload.get("qty", payload.get("positionAmt", 0)) or 0.0)
             if abs(qty_val) <= 0.0:
                 continue
             mark_val = _to_float(
@@ -3253,7 +3288,7 @@ def _collect_rows() -> List[Dict[str, Any]]:
                     "qty": qty_val,
                     "entryPrice": float(payload.get("entryPrice") or 0.0),
                     "unrealized": float(
-                        payload.get("unRealizedProfit", payload.get("unrealized", 0)) or 0.0
+                        payload.get("unrealized", payload.get("unRealizedProfit", 0)) or 0.0
                     ),
                     "leverage": float(payload.get("leverage") or 0.0),
                     "markPrice": mark_val,
@@ -3658,6 +3693,7 @@ def _loop_once(i: int) -> None:
     _maybe_run_pipeline_v6_shadow_heartbeat()
     _maybe_emit_router_health_snapshot()
     _maybe_emit_risk_snapshot()
+    _maybe_run_telegram_alerts()
     _maybe_emit_execution_health_snapshot()
     _maybe_run_pipeline_v6_compare()
 

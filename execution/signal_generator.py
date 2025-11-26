@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import math
 import logging
+import os
 import time
 from collections import OrderedDict, defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -22,6 +23,7 @@ from execution.utils.vol import atr_pct
 from execution.utils.execution_health import size_multiplier
 from execution.position_sizing import inverse_vol_size, volatility_regime_scale
 from execution.intel.symbol_score import symbol_size_factor
+from execution.runtime_config import load_runtime_config
 from .utils.expectancy import rolling_expectancy
 
 _LOG = logging.getLogger("signal_generator")
@@ -48,23 +50,46 @@ _ML_FUTURE: Optional[Future] = None
 _ML_CACHE_TS: float = 0.0
 _ML_SCORES: Dict[str, float] = {}
 
-ATR_LOOKBACK = 50
-ATR_MULT = 1.5
+# Signal gate defaults (can be overridden via runtime.yaml or env)
+_DEFAULT_ATR_LOOKBACK = 50
+_DEFAULT_ATR_MULT = 1.5
+_DEFAULT_EXPECTANCY_MIN = 0.0
+
+
+def _get_signal_gate_config() -> Dict[str, Any]:
+    """Load signal gate config from runtime.yaml with env overrides."""
+    cfg = load_runtime_config().get("signal_gate", {}) or {}
+    return {
+        "atr_lookback": int(os.getenv("SIGNAL_GATE_ATR_LOOKBACK", cfg.get("atr_lookback", _DEFAULT_ATR_LOOKBACK))),
+        "atr_mult": float(os.getenv("SIGNAL_GATE_ATR_MULT", cfg.get("atr_mult", _DEFAULT_ATR_MULT))),
+        "expectancy_min": float(os.getenv("SIGNAL_GATE_EXPECTANCY_MIN", cfg.get("expectancy_min", _DEFAULT_EXPECTANCY_MIN))),
+    }
+
+
+# Legacy module-level constants (for backwards compat)
+ATR_LOOKBACK = _DEFAULT_ATR_LOOKBACK
+ATR_MULT = _DEFAULT_ATR_MULT
 
 
 def allow_trade(symbol: str) -> bool:
     if not is_in_asset_universe(symbol):
         return False
-    atr = atr_pct(symbol, lookback_bars=ATR_LOOKBACK)
-    med = atr_pct(symbol, lookback_bars=ATR_LOOKBACK * 10, median_only=True)
-    if atr is not None and med is not None and atr > ATR_MULT * med:
+    cfg = _get_signal_gate_config()
+    atr_lookback = cfg["atr_lookback"]
+    atr_mult = cfg["atr_mult"]
+    expectancy_min = cfg["expectancy_min"]
+    atr = atr_pct(symbol, lookback_bars=atr_lookback)
+    med = atr_pct(symbol, lookback_bars=atr_lookback * 10, median_only=True)
+    if atr is not None and med is not None and atr > atr_mult * med:
         return False
     expectancy = rolling_expectancy(symbol)
-    return (expectancy is None) or (expectancy >= 0.0)
+    return (expectancy is None) or (expectancy >= expectancy_min)
 
 
 def size_for(symbol: str, base_size: float) -> float:
-    size = inverse_vol_size(symbol, base_size, lookback=ATR_LOOKBACK)
+    cfg = _get_signal_gate_config()
+    atr_lookback = cfg["atr_lookback"]
+    size = inverse_vol_size(symbol, base_size, lookback=atr_lookback)
     size *= volatility_regime_scale(symbol)
     size *= size_multiplier(symbol)
     try:

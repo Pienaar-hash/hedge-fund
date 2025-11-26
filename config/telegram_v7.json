@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "bot_token_env": "TELEGRAM_BOT_TOKEN",
+  "chat_id_env": "TELEGRAM_CHAT_ID",
+  "min_interval_seconds": 60,
+  "alerts": {
+    "atr_regime": { "enabled": true, "min_interval_seconds": 900 },
+    "dd_state":   { "enabled": true, "min_interval_seconds": 900 },
+    "risk_mode":  { "enabled": true, "min_interval_seconds": 900 },
+    "close_4h":   { "enabled": true, "min_interval_seconds": 3600 }
+  }
+}

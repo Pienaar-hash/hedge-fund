@@ -1034,36 +1034,12 @@ def get_spot_balances() -> Dict[str, Any]:
             "raw": payload,
         }
 
-    # Fallback to config reserves valuation
-    reserves_path = os.path.join(root, "config", "reserves.json")
-    payload = _read_payload(reserves_path)
-    balances: Dict[str, float] = {}
-    total_val = 0.0
-    if isinstance(payload, dict):
-        for asset, qty in payload.items():
-            try:
-                amount = float(qty)
-            except Exception:
-                continue
-            symbol = str(asset).upper()
-            if not symbol or amount == 0:
-                continue
-            price = 1.0 if symbol in {"USDT", "USDC", "DAI", "FDUSD", "TUSD"} else 0.0
-            if price == 0.0:
-                try:
-                    price = float(get_price(f"{symbol}USDT") or 0.0)
-                except Exception:
-                    price = 0.0
-            if price <= 0 and symbol.endswith("USDT"):
-                price = 1.0
-            balances[symbol] = amount
-            total_val += amount * price if price > 0 else amount
     return {
-        "balances": balances,
-        "total_usd": float(total_val),
-        "source": "treasury_file:config/reserves.json",
+        "balances": {},
+        "total_usd": 0.0,
+        "source": "treasury_file:none",
         "updated_at": None,
-        "raw": payload if isinstance(payload, dict) else {},
+        "raw": {},
     }
 
 

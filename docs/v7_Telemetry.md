@@ -13,6 +13,7 @@
 - `logs/state/positions.json`: positions list with symbol, qty, entry/mark, leverage, unrealized PnL.
 - `logs/state/risk.json`: recent veto reasons, thresholds, nav freshness flags, drawdown stats.
 - `logs/state/router.json`: recent router decisions, post-only rejects, taker fallbacks, slippage_bps, offsets used.
+- `logs/state/kpis_v7.json`: nav block (nav_total, age_s, updated_at), risk block (dd_state, drawdown_pct, atr_regime, atr_ratio, fee_pnl_ratio), router block (policy_quality, maker_fill_rate, fallback_ratio, slip_q25/50/75), performance block, fx, and per-symbol ATR/DD mirrors (`symbols`).
 - `logs/state/intel.json` (if emitted): intel scores/offset suggestions.
 - `logs/execution/risk_vetoes.jsonl`: per veto event with symbol, veto_reason, thresholds/observations, nav_total.
 - `events` JSONL (orders/fills): symbol, side, price, qty, order_id, status, timestamps, is_maker, slippage_bps, rejections.

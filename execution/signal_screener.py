@@ -24,6 +24,7 @@ from .universe_resolver import (
 )
 from .nav import PortfolioSnapshot, nav_health_snapshot
 from execution.v6_flags import get_flags, log_v6_flag_snapshot
+from execution.risk_limits import check_order
 
 try:
     from .ml.predict import score_symbol as _score_symbol
@@ -39,6 +40,8 @@ _ENTRY_GATE_NAME = "orderbook"
 ORDERBOOK_ALIGNMENT_THRESHOLD = 0.20
 DEFAULT_Z_MIN = 0.8
 DEFAULT_RSI_BAND = (30.0, 70.0)
+RISK_ENGINE_V6_ENABLED = get_flags().risk_engine_v6_enabled
+_RISK_ENGINE_V6 = None
 
 
 def _tf_seconds(tf: str | None) -> float:
@@ -160,10 +163,12 @@ def _positions_by_side(
                 continue
             abs_qty = abs(qty)
             mark = float(raw.get("markPrice") or raw.get("entryPrice") or 0.0)
+            entry = float(raw.get("entryPrice") or mark or 0.0)
             notional = abs_qty * abs(mark)
             out.setdefault(sym, {})[side] = {
                 "qty": abs_qty,
                 "mark": abs(mark),
+                "entry": abs(entry),
                 "notional": notional,
             }
         except Exception:
@@ -317,6 +322,10 @@ def _load_pairs_cfg() -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _get_risk_engine_v6(_cfg: Optional[Mapping[str, Any]] = None):
+    return _RISK_ENGINE_V6
+
+
 def would_emit(
     symbol: str,
     side: str,
@@ -421,6 +430,67 @@ def _zscore(closes: List[float], lookback: int = 20) -> float:
     var = sum((x - mean) ** 2 for x in seg) / lookback
     std = (var**0.5) or 1.0
     return (closes[-1] - mean) / std
+
+
+def _trend_filter(closes: List[float], period: int = 20) -> str:
+    """Determine trend direction based on SMA crossover.
+    
+    Returns:
+        'BULL' if price > SMA (uptrend)
+        'BEAR' if price < SMA (downtrend)
+        'NEUTRAL' if insufficient data
+    """
+    if len(closes) < period:
+        return "NEUTRAL"
+    sma = sum(closes[-period:]) / period
+    if closes[-1] > sma * 1.005:  # 0.5% buffer to reduce noise
+        return "BULL"
+    elif closes[-1] < sma * 0.995:
+        return "BEAR"
+    return "NEUTRAL"
+
+
+def _position_pnl_pct(
+    positions: Dict[str, Dict[str, float]],
+    signal: str,
+    current_price: float,
+) -> Optional[float]:
+    """Calculate unrealized PnL % for existing position in same direction as signal.
+    
+    Returns None if no position exists in the signal direction.
+    """
+    # Signal direction matches position side we'd be adding to
+    position_side = "LONG" if signal == "BUY" else "SHORT"
+    pos = positions.get(position_side, {})
+    if not pos:
+        return None
+    
+    qty = float(pos.get("qty", 0.0) or 0.0)
+    if qty <= 0:
+        return None
+    
+    # Get entry price from mark (which is used as proxy in _positions_by_side)
+    # Note: mark here is actually markPrice, we need entryPrice for accurate PnL
+    # For now, use notional/qty as approximate entry
+    notional = float(pos.get("notional", 0.0) or 0.0)
+    if notional <= 0 or current_price <= 0:
+        return None
+    
+    # mark stored is markPrice; approximate entry from stored data
+    mark = float(pos.get("mark", 0.0) or 0.0)
+    if mark <= 0:
+        return None
+    
+    # For LONG: pnl = (current - entry) / entry
+    # For SHORT: pnl = (entry - current) / entry
+    # Since we only have mark (current), we can't compute exact PnL
+    # Use mark as approximate entry and compare to live price
+    if position_side == "LONG":
+        pnl_pct = (current_price - mark) / mark if mark > 0 else 0.0
+    else:  # SHORT
+        pnl_pct = (mark - current_price) / mark if mark > 0 else 0.0
+    
+    return pnl_pct
 
 
 def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
@@ -555,6 +625,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             price = get_price(sym)
             rsi = _rsi(closes, 14)
             z = _zscore(closes, 20)
+            trend = _trend_filter(closes, 20)
             filters = get_symbol_filters(sym)
             notional_filter = (
                 filters.get("MIN_NOTIONAL")
@@ -601,6 +672,39 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 f'[decision] {{"symbol":"{sym}","tf":"{tf}","z":{round(z, 4)},"rsi":{round(rsi, 1)},"veto":["no_cross"]}}'
             )
             continue
+
+        # Trend filter: block counter-trend entries
+        is_counter_trend = False
+        if signal == "SELL" and trend == "BULL":
+            is_counter_trend = True
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","signal":"{signal}","trend":"{trend}","veto":["counter_trend"]}}'
+            )
+            continue
+        if signal == "BUY" and trend == "BEAR":
+            is_counter_trend = True
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","signal":"{signal}","trend":"{trend}","veto":["counter_trend"]}}'
+            )
+            continue
+
+        # No-add-to-loser: block adding to underwater positions
+        sym_positions = positions_by_symbol.get(sym_key, {})
+        position_side = "LONG" if signal == "BUY" else "SHORT"
+        existing_pos = sym_positions.get(position_side, {})
+        if existing_pos:
+            entry_px = float(existing_pos.get("entry", 0.0) or 0.0)
+            if entry_px > 0 and price > 0:
+                if position_side == "LONG":
+                    unrealized_pct = (price - entry_px) / entry_px
+                else:  # SHORT
+                    unrealized_pct = (entry_px - price) / entry_px
+                # Block if position is more than 2% underwater
+                if unrealized_pct < -0.02:
+                    print(
+                        f'[decision] {{"symbol":"{sym}","tf":"{tf}","signal":"{signal}","unrealized_pct":{round(unrealized_pct*100, 2)},"veto":["no_add_to_loser"]}}'
+                    )
+                    continue
         # Optional orderbook entry gate (veto/boost)
         feat = params.get("features", {}) if isinstance(params, dict) else {}
         ob_enabled = bool(feat.get("orderbook_gate"))
@@ -692,11 +796,17 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         }
         if ml_prob is not None:
             intent["ml_prob"] = ml_prob
+        # Add trend context to intent for downstream tracking
+        intent["trend"] = trend
+        intent["trend_aligned"] = (
+            (signal == "BUY" and trend == "BULL") or
+            (signal == "SELL" and trend == "BEAR")
+        )
         if dbg:
             print(
-                f"[sigdbg] {sym} tf={tf} z={round(z,3)} rsi={round(rsi,1)} pct={per_trade_nav_pct} lev={lev} ok"
+                f"[sigdbg] {sym} tf={tf} z={round(z,3)} rsi={round(rsi,1)} trend={trend} pct={per_trade_nav_pct} lev={lev} ok"
             )
-        print(f"{LOG_TAG} {sym} {tf} z={round(z, 3)} rsi={round(rsi, 1)}")
+        print(f"{LOG_TAG} {sym} {tf} z={round(z, 3)} rsi={round(rsi, 1)} trend={trend}")
         decision_payload = {
             "symbol": sym,
             "tf": tf,
@@ -713,6 +823,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         ] = {
             "qty": abs(qty_est),
             "mark": price,
+            "entry": price,  # New position entry = current price
             "notional": gross_usd,
         }
     print(f"{LOG_TAG} attempted={attempted} emitted={len(out)}")

@@ -49,6 +49,8 @@ def classify_router_quality(
 
     Backwards compatible with the legacy dict signature while also supporting
     direct numeric inputs for the v6 intel helpers.
+    
+    Thresholds relaxed in v6.3 to avoid over-penalizing new/low-trade symbols.
     """
     maker = None
     if isinstance(eff, Mapping):
@@ -69,9 +71,13 @@ def classify_router_quality(
         slip_val = 0.0
     latency_val = _to_float(latency_ms) or 0.0
 
-    if fallback >= 0.9 or slip_val >= 20.0 or latency_val >= 2500:
+    # Relaxed thresholds: broken only for extreme cases
+    if slip_val >= 50.0 or latency_val >= 5000:
         return "broken"
-    if fallback >= 0.6 or slip_val >= 8.0 or latency_val >= 1500:
+    # High fallback alone is degraded, not broken (allows recovery)
+    if fallback >= 0.95 or slip_val >= 30.0 or latency_val >= 3000:
+        return "degraded"
+    if fallback >= 0.7 or slip_val >= 15.0 or latency_val >= 2000:
         return "degraded"
     if maker >= 0.7 and fallback <= 0.4 and slip_val <= 4.0 and (latency_val == 0.0 or latency_val <= 800):
         return "good"
@@ -81,17 +87,21 @@ def classify_router_quality(
 def classify_router_regime(metrics: Mapping[str, Any]) -> str:
     """
     Determine a coarse router regime as a helper for auto-tune intel.
+    Thresholds relaxed in v6.3 to allow maker order recovery.
     """
     maker = _clamp01(_to_float(metrics.get("maker_fill_rate") or metrics.get("maker_fill_ratio"))) or 0.0
     fallback = _clamp01(_to_float(metrics.get("fallback_rate") or metrics.get("fallback_ratio"))) or 0.0
     slip = _to_float(metrics.get("slippage_p95") or metrics.get("slip_q95") or metrics.get("slip_q50"))
     latency = _to_float(metrics.get("ack_latency_ms") or metrics.get("latency_ms") or metrics.get("latency_p50_ms"))
 
-    if fallback >= 0.85 or maker <= 0.2 or (slip is not None and slip >= 25.0) or (latency is not None and latency >= 3000):
+    # Only broken for truly extreme conditions
+    if (slip is not None and slip >= 50.0) or (latency is not None and latency >= 5000):
         return "broken"
-    if fallback >= 0.55:
+    if fallback >= 0.95 and maker <= 0.05:
+        return "broken"
+    if fallback >= 0.70:
         return "fallback_heavy"
-    if slip is not None and slip >= 12.0:
+    if slip is not None and slip >= 20.0:
         return "slippage_hot"
     if maker >= 0.7 and fallback <= 0.3 and (slip is None or slip <= 5.0):
         return "maker_strong"

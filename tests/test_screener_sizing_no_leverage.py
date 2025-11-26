@@ -51,8 +51,12 @@ def screener_stubs(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(sc, "symbol_min_notional", lambda s: 0.0)
     monkeypatch.setattr(sc, "symbol_min_gross", lambda s: 0.0)
-    monkeypatch.setattr(sc, "get_positions", lambda: [], raising=False)
+    # Mock positions at the exchange_utils module level to intercept the local import
+    from execution import exchange_utils
+    monkeypatch.setattr(exchange_utils, "get_positions", lambda: [])
     monkeypatch.setattr(sc.PortfolioSnapshot, "current_gross_usd", lambda self: 0.0)
+    # Mock trend filter to NEUTRAL so signals pass through
+    monkeypatch.setattr(sc, "_trend_filter", lambda *args, **kwargs: "NEUTRAL")
     return price
 
 

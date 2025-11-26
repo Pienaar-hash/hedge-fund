@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import time
+import execution.drawdown_tracker as drawdown_tracker
 from execution.drawdown_tracker import load_peak_state, save_peak_state
 from execution.nav import (
     compute_trading_nav,
@@ -21,12 +22,14 @@ from execution.nav import (
     nav_health_snapshot,
 )
 from execution.utils import load_json, get_live_positions
+from execution.utils import vol as vol_utils
 from execution.universe_resolver import symbol_min_gross, universe_by_symbol
 from .utils.metrics import (
     notional_7d_by_symbol,
     total_notional_7d,
     dd_today_pct,
     is_in_asset_universe,
+    fee_pnl_ratio,
 )
 from .utils.toggle import disable_symbol_temporarily, is_symbol_disabled
 from execution.exchange_utils import get_balances, is_dry_run
@@ -77,6 +80,10 @@ DEFAULT_FAIL_CLOSED_ON_NAV_STALE = os.environ.get("FAIL_CLOSED_ON_NAV_STALE", "1
 PEAK_STATE_MAX_AGE_SEC = int(os.environ.get("PEAK_STATE_MAX_AGE_SEC", str(24 * 3600)))
 DEFAULT_PEAK_STALE_SECONDS = int(os.environ.get("PEAK_STALE_SECONDS", "600") or 600)
 DEFAULT_TRADE_EQUITY_NAV_PCT = 15.0
+
+ATR_QUIET = 0.7
+ATR_HOT = 1.5
+ATR_PANIC = 2.5
 
 
 def get_nav_freshness_snapshot() -> Tuple[Optional[float], bool]:
@@ -1020,6 +1027,7 @@ def check_order(
         "thresholds": {"nav_freshness_seconds": nav_threshold_s},
         "observations": nav_observations,
     }
+    nav_detail_payload["nav_total"] = nav_f
 
     nav_guard_cfg = {
         "nav_freshness_seconds": nav_threshold_s,
@@ -1142,6 +1150,14 @@ def check_order(
         dd_kill_pct = None
     dd_state = classify_drawdown_state(dd_pct=dd_pct, alert_pct=dd_alert_pct, kill_pct=dd_kill_pct)
     details["dd_state"] = dd_state
+    try:
+        dd_state_snapshot = getattr(drawdown_tracker, "current_state", None)
+        if callable(dd_state_snapshot):
+            snapshot_val = dd_state_snapshot()
+            detail_payload.setdefault("dd_state_snapshot", snapshot_val)
+            details["dd_state_snapshot"] = snapshot_val
+    except Exception:
+        pass
     if dd_alert_pct:
         thresholds.setdefault("drawdown_alert_pct", dd_alert_pct)
     if dd_kill_pct:
@@ -1161,6 +1177,19 @@ def check_order(
                 details["drawdown_pct"] = dd_pct
     if daily_loss_pct is not None:
         details["daily_loss_pct"] = daily_loss_pct
+
+    try:
+        atr_snapshot = _atr_regime_snapshot(sym)
+    except Exception:
+        atr_snapshot = {"atr_regime": "unknown", "atr_now": None, "atr_med": None, "atr_ratio": None}
+    details["atr_regime"] = atr_snapshot.get("atr_regime")
+    details["atr_snapshot"] = atr_snapshot
+    try:
+        fee_snapshot = fee_pnl_ratio(symbol=sym)
+    except Exception:
+        fee_snapshot = {"fee_pnl_ratio": None, "fees": 0.0, "pnl": 0.0, "window_days": 7}
+    details["fee_pnl_ratio"] = fee_snapshot.get("fee_pnl_ratio")
+    details["fee_pnl"] = fee_snapshot
 
     try:
         max_nav_drawdown_pct = float(g_cfg.get("max_nav_drawdown_pct", 0.0) or 0.0)
@@ -1207,6 +1236,8 @@ def check_order(
         "peak_state": peak_state_diag,
         "drawdown": dd_info,
         "daily_loss": daily_info,
+        "atr": atr_snapshot,
+        "fee_pnl": fee_snapshot,
     }
     if assets_diag:
         diag_payload["assets"] = assets_diag
@@ -1411,6 +1442,10 @@ def check_order(
             if "drawdown_stale_flags" in details:
                 detail_payload["drawdown_stale_flags"] = details.get("drawdown_stale_flags")
         detail_payload = {**detail_payload, **diag_payload}
+        detail_payload.setdefault("nav_total", nav_f)
+        detail_payload.setdefault("dd_state", dd_state)
+        detail_payload.setdefault("atr_regime", atr_snapshot.get("atr_regime"))
+        detail_payload.setdefault("fee_pnl_ratio", fee_snapshot.get("fee_pnl_ratio"))
         detail_payload.setdefault("gate", "risk_limits")
         detail_payload.setdefault("thresholds", thresholds)
         observations_payload = {
@@ -1474,7 +1509,10 @@ def check_order(
         "notional": float(req_notional),
         **diag_payload,
     }
+    detail_payload.setdefault("nav_total", nav_f)
     detail_payload.setdefault("dd_state", dd_state)
+    detail_payload.setdefault("atr_regime", atr_snapshot.get("atr_regime"))
+    detail_payload.setdefault("fee_pnl_ratio", fee_snapshot.get("fee_pnl_ratio"))
     detail_payload.setdefault("cap_cfg_raw", cap_cfg_raw)
     detail_payload.setdefault("cap_cfg_normalized", cap_cfg_normalized)
     detail_payload.setdefault("nav_total", nav_f)
@@ -1491,7 +1529,15 @@ def check_order(
         for k, v in details.items()
         if k not in ("reasons", "thresholds")
     }
-    detail_payload["observations"] = extra or {}
+    observations = extra or {}
+    diagnostics_payload = {
+        "gate": detail_payload.get("gate") or "risk_limits",
+        "thresholds": thresholds,
+        "observations": observations,
+        "nav_total": nav_f,
+    }
+    detail_payload.update(diagnostics_payload)
+    detail_payload["observations"] = observations
     _emit_veto(
         symbol,
         reasons[0],
@@ -1545,6 +1591,40 @@ def classify_drawdown_state(
     if dd_abs >= alert_threshold:
         return "cautious"
     return "normal"
+
+
+def _atr_regime_snapshot(symbol: str) -> Dict[str, Any]:
+    """Lightweight ATR regime classifier without importing execution_health (avoid cycles)."""
+    try:
+        atr_now = float(vol_utils.atr_pct(symbol, lookback_bars=50))
+    except Exception:
+        atr_now = 0.0
+    try:
+        atr_med = float(vol_utils.atr_pct(symbol, lookback_bars=500))
+    except Exception:
+        atr_med = 0.0
+    ratio = None
+    try:
+        if atr_med:
+            ratio = atr_now / atr_med
+    except Exception:
+        ratio = None
+    regime = "unknown"
+    if ratio is not None:
+        if ratio < ATR_QUIET:
+            regime = "quiet"
+        elif ratio < ATR_HOT:
+            regime = "normal"
+        elif ratio < ATR_PANIC:
+            regime = "hot"
+        else:
+            regime = "panic"
+    return {
+        "atr_now": atr_now,
+        "atr_med": atr_med,
+        "atr_ratio": ratio,
+        "atr_regime": regime,
+    }
 
 
 def _guard_thresholds(symbol: str, cfg: Mapping[str, Any]) -> tuple[float, float]:

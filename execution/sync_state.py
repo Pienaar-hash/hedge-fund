@@ -8,7 +8,14 @@ import threading
 import time
 from copy import deepcopy
 
+# Ensure repo root is importable before pulling execution/utils modules.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+    print(f"[sync] PYTHONPATH bootstrapped: {REPO_ROOT}", flush=True)
+
 from execution.risk_loader import load_risk_config
+from execution.state_publish import build_kpis_v7
 try:
     from execution.firestore_utils import (
         get_db as _firestore_get_db,
@@ -21,11 +28,6 @@ from execution.v6_flags import log_v6_flag_snapshot
 
 # --- Ensure repo root is importable & files are read from repo root ---
 # /root/hedge-fund/execution/sync_state.py -> repo_root=/root/hedge-fund
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-print(f"[sync] PYTHONPATH bootstrapped: {REPO_ROOT}", flush=True)
-
 LOGGER = logging.getLogger("sync_state")
 if not LOGGER.handlers:
     handler = logging.StreamHandler(sys.stdout)
@@ -175,6 +177,10 @@ SYNCED_STATE: str = os.path.join(LOGS_DIR, "state", "synced_state.json")
 SPOT_CACHE_PATH: str = os.path.join(LOGS_DIR, "spot_state.json")
 TREASURY_CACHE_PATH: str = os.path.join(LOGS_DIR, "cache", "treasury_sync.json")
 POLYMARKET_CACHE_PATH: str = os.path.join(LOGS_DIR, "polymarket.json")
+RISK_STATE_PATH: str = os.path.join(LOGS_DIR, "state", "risk_snapshot.json")
+ROUTER_STATE_PATH: str = os.path.join(LOGS_DIR, "state", "router_health.json")
+EXPECTANCY_STATE_PATH: str = os.path.join(LOGS_DIR, "state", "expectancy_v6.json")
+KPI_V7_STATE_PATH: str = os.path.join(LOGS_DIR, "state", "kpis_v7.json")
 print(f"[sync] file paths => NAV_LOG={NAV_LOG}", flush=True)
 
 # ------------------------------ Settings ------------------------------------
@@ -642,7 +648,7 @@ def _collect_treasury_cache(previous: Dict[str, Any]) -> Dict[str, Any]:
         if qty > 0:
             _register_qty(sym, qty)
 
-    for cfg_name in ("treasury.json", "reserves.json"):
+    for cfg_name in ("treasury.json",):
         cfg_path = os.path.join(REPO_ROOT, "config", cfg_name)
         try:
             with open(cfg_path, "r", encoding="utf-8") as handle:
@@ -1100,6 +1106,44 @@ def _normalize_positions_items(items: List[Dict[str, Any]]) -> List[Dict[str, An
     return out
 
 
+def _symbol_risk_map(risk_snapshot: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Extract per-symbol ATR/DD metrics from risk_snapshot (best-effort)."""
+    result: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(risk_snapshot, dict):
+        return result
+    try:
+        for entry in risk_snapshot.get("symbols") or []:
+            if not isinstance(entry, dict):
+                continue
+            sym = str(entry.get("symbol") or "").upper()
+            if not sym:
+                continue
+            risk_part = entry.get("risk") if isinstance(entry.get("risk"), dict) else {}
+            vol_part = entry.get("vol") if isinstance(entry.get("vol"), dict) else {}
+            result[sym] = {
+                "dd_state": risk_part.get("dd_state"),
+                "dd_today_pct": _to_float(risk_part.get("dd_today_pct")),
+                "atr_ratio": _to_float(vol_part.get("atr_ratio")),
+                "atr_regime": vol_part.get("atr_regime"),
+            }
+    except Exception:
+        result = result or {}
+    try:
+        atr_block = risk_snapshot.get("atr") or {}
+        for entry in atr_block.get("symbols") or []:
+            if not isinstance(entry, dict):
+                continue
+            sym = str(entry.get("symbol") or "").upper()
+            if not sym:
+                continue
+            target = result.setdefault(sym, {})
+            target.setdefault("atr_ratio", _to_float(entry.get("atr_ratio")))
+            target.setdefault("atr_regime", entry.get("atr_regime"))
+    except Exception:
+        pass
+    return result
+
+
 # ------------------------------ Exposure KPIs --------------------------------
 
 
@@ -1205,9 +1249,30 @@ def _commit_nav(db, rows: List[Dict[str, Any]], peak: float) -> Dict[str, Any]:
     return payload
 
 
-def _commit_positions(db, positions: Dict[str, Any]) -> Dict[str, Any]:
+def _fmt_usd(value: Any) -> str:
+    try:
+        return f"{float(value):,.2f}"
+    except Exception:
+        return "-"
+
+
+def _commit_positions(db, positions: Dict[str, Any], symbol_risk: Dict[str, Dict[str, Any]] | None = None) -> Dict[str, Any]:
     items = positions.get("items") or []
     norm = _normalize_positions_items(items)  # normalize to dashboard schema
+    sym_risk = symbol_risk or {}
+    for pos in norm:
+        try:
+            sym = str(pos.get("symbol") or "").upper()
+        except Exception:
+            sym = ""
+        pos["notional_fmt"] = _fmt_usd(pos.get("notional", 0.0))
+        pos["pnl_fmt"] = _fmt_usd(pos.get("pnl", 0.0))
+        if sym and sym in sym_risk:
+            meta = sym_risk[sym]
+            pos.setdefault("dd_state", meta.get("dd_state"))
+            pos.setdefault("dd_today_pct", meta.get("dd_today_pct"))
+            pos.setdefault("atr_ratio", meta.get("atr_ratio"))
+            pos.setdefault("atr_regime", meta.get("atr_regime"))
     exp = _exposure_from_positions(norm)
     payload = {"items": norm, "updated_at": _now_iso(), **exp}
     return payload
@@ -1237,6 +1302,24 @@ def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _mirror_kpis_v7(nav_payload: Dict[str, Any]) -> None:
+    """Mirror kpis_v7.json into the state directory for dashboard consumption."""
+    try:
+        risk_snapshot = _load_existing_cache(RISK_STATE_PATH)
+        router_snapshot = _load_existing_cache(ROUTER_STATE_PATH)
+        expectancy_snapshot = _load_existing_cache(EXPECTANCY_STATE_PATH)
+        payload = build_kpis_v7(
+            time.time(),
+            nav_payload,
+            risk_snapshot,
+            router_snapshot,
+            expectancy_snapshot,
+        )
+        _write_json_cache(KPI_V7_STATE_PATH, payload, label="kpis_v7")
+    except Exception as exc:
+        LOGGER.warning("[sync] kpis_v7_mirror_failed: %s", exc, exc_info=True)
+
+
 def _publish_health(db, ok: bool, last_error: str) -> None:
     return None
 
@@ -1249,6 +1332,8 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
     # NAV rows with cutoff + zero-equity filter
     rows = [p for p in _read_nav_rows(NAV_LOG) if _is_good_nav_row(p)]
     risk_cfg = _runtime_risk_cfg()
+    risk_snapshot = _load_existing_cache(RISK_STATE_PATH)
+    symbol_risk = _symbol_risk_map(risk_snapshot)
 
     # Tail equity guard: avoid writing garbage when executor/sync is cold
     tail_kpis = _read_nav_tail_metrics(NAV_LOG)
@@ -1349,7 +1434,7 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         flush=True,
     )
 
-    pos_payload = _commit_positions(db, pos_snap)
+    pos_payload = _commit_positions(db, pos_snap, symbol_risk)
     lb_payload = _commit_leaderboard(db, pos_snap)
 
     # Console log
@@ -1362,6 +1447,38 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         )
     except Exception:
         pass
+
+    nav_payload["updated_at"] = time.time()
+    series_ts: float | None = None
+    try:
+        series = nav_payload.get("series") or []
+        if isinstance(series, list) and series:
+            ts_candidates = []
+            for entry in series:
+                try:
+                    if isinstance(entry, dict) and "t" in entry:
+                        ts_candidates.append(float(entry.get("t")))
+                except Exception:
+                    continue
+            if ts_candidates:
+                series_ts = max(ts_candidates)
+    except Exception:
+        series_ts = None
+    age_source = None
+    try:
+        tail_age = _to_float((tail_kpis or {}).get("nav_age_s"))
+        if tail_age is not None:
+            age_source = tail_age
+    except Exception:
+        age_source = None
+    if age_source is None:
+        ts_src = nav_payload.get("updated_at") or series_ts
+        if isinstance(ts_src, (int, float)):
+            age_source = max(0.0, time.time() - float(ts_src))
+    try:
+        nav_payload["age_s"] = float(age_source) if age_source is not None else None
+    except Exception:
+        nav_payload["age_s"] = None
 
     _export_dashboard_caches()
 
@@ -1383,6 +1500,8 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         lb_payload,
         label="leaderboard_state"
     )
+
+    _mirror_kpis_v7(nav_payload)
 
     return nav_payload, pos_payload, lb_payload
 
