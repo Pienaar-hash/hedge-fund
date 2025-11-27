@@ -1,0 +1,20 @@
+# OHLCV Collector Cron Jobs
+# Add to crontab with: crontab -e
+#
+# Option A: Periodic bulk update (every 4 hours)
+# 0 */4 * * * /root/hedge-fund/scripts/ohlcv_collector.py --intervals 5m,15m,1h --days 1 --backfill >> /root/hedge-fund/logs/ohlcv_collector.log 2>&1
+#
+# Option B: Run as daemon (preferred for real-time data)
+# The supervisor config below handles this
+
+# Collect 15m candles every 15 minutes (safer than daemon for low-resource systems)
+*/15 * * * * cd /root/hedge-fund && python scripts/ohlcv_collector.py --intervals 15m --days 1 >> /root/hedge-fund/logs/ohlcv_15m.log 2>&1
+
+# Collect 1h candles every hour
+0 * * * * cd /root/hedge-fund && python scripts/ohlcv_collector.py --intervals 1h --days 1 >> /root/hedge-fund/logs/ohlcv_1h.log 2>&1
+
+# Collect 4h candles every 4 hours
+0 */4 * * * cd /root/hedge-fund && python scripts/ohlcv_collector.py --intervals 4h --days 1 >> /root/hedge-fund/logs/ohlcv_4h.log 2>&1
+
+# Daily backfill at 3am to catch any gaps
+0 3 * * * cd /root/hedge-fund && python scripts/ohlcv_collector.py --intervals 5m,15m,1h,4h --days 7 --backfill >> /root/hedge-fund/logs/ohlcv_backfill.log 2>&1

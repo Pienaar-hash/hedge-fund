@@ -86,8 +86,8 @@ def _fee_from_runtime(key: str, env_key: str, default: float) -> float:
 
 # --- Tunables sourced from runtime.yaml / env overrides ---
 POST_ONLY_DEFAULT = bool(_runtime_flag("post_only_default", True))
-SLIP_MAX_BPS = int(_runtime_flag("router_slip_max_bps", 3))  # switch to taker if mid drifts beyond this
-REJECTS_MAX = int(_runtime_flag("router_rejects_max", 2))  # post-only rejects before fallback
+SLIP_MAX_BPS = int(_runtime_flag("router_slip_max_bps", 5))  # v6.4: increased from 3 - switch to taker if mid drifts beyond this
+REJECTS_MAX = int(_runtime_flag("router_rejects_max", 4))  # v6.4: increased from 2 - post-only rejects before fallback
 MIN_CHILD_NOTIONAL = _min_child_from_runtime(30.0)  # USDT per child
 LOW_FILL_WINDOW_S = int(_runtime_flag("low_fill_window_s", 60))
 MIN_FILL_RATIO = float(_runtime_flag("min_fill_ratio", 0.40))
@@ -571,15 +571,26 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     if not policy.maker_first:
         maker_enabled = False
         router_decision["reasons"].append("policy_maker_disabled")
-    if policy.quality != "good":
+    # v6.5: Allow maker orders for "ok", "good", and "degraded" (for recovery)
+    # Only "broken" quality should completely disable maker attempts
+    # This enables maker attempts during bootstrap and recovery phases
+    if policy.quality == "broken":
         maker_enabled = False
-        router_decision["reasons"].append("policy_quality_not_good")
+        router_decision["reasons"].append("policy_quality_broken")
+    # v6.5: Only disable maker for explicit "prefer_taker" bias
+    # "balanced" bias should still allow maker attempts for recovery
     if prefer_taker_bias:
         maker_enabled = False
         router_decision["reasons"].append("policy_bias_prefers_taker")
-    if reduce_only_flag:
+    # v6.4: Allow maker for reduce-only exits unless it's an urgent stop-loss
+    # Take-profit exits can afford to wait for maker fills
+    is_urgent_exit = bool(intent.get("is_stop_loss") or intent.get("urgent") or risk_ctx.get("is_stop_loss"))
+    if reduce_only_flag and is_urgent_exit:
         maker_enabled = False
-        router_decision["reasons"].append("reduce_only")
+        router_decision["reasons"].append("reduce_only_urgent")
+    elif reduce_only_flag:
+        # Allow maker for non-urgent exits (take-profit)
+        router_decision["reasons"].append("reduce_only_maker_allowed")
     if maker_qty is None or maker_qty <= 0:
         maker_enabled = False
         router_decision["reasons"].append("missing_maker_qty")

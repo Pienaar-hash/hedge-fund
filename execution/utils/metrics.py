@@ -256,6 +256,7 @@ def router_effectiveness_7d(symbol: Optional[str] = None, window_days: Optional[
             "slip_q25": None,
             "slip_q50": None,
             "slip_q75": None,
+            "sample_count": 0,
         }
 
     maker_flags: List[float] = []
@@ -299,6 +300,9 @@ def router_effectiveness_7d(symbol: Optional[str] = None, window_days: Optional[
             return (None, None, None, None)
     q25, q50, q75, q95 = _quartiles(slippages)
 
+    # v6.5: Include sample count for bootstrap detection in router policy
+    sample_count = len(events) if events else 0
+
     return {
         "maker_fill_ratio": _ratio(maker_flags),
         "fallback_ratio": _ratio(fallback_flags),
@@ -306,4 +310,5 @@ def router_effectiveness_7d(symbol: Optional[str] = None, window_days: Optional[
         "slip_q50": q50,
         "slip_q75": q75,
         "slip_q95": q95,
+        "sample_count": sample_count,
     }

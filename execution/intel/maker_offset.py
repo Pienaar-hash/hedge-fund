@@ -14,9 +14,9 @@ from execution.utils.metrics import router_effectiveness_7d
 from execution.intel.expectancy_map import hourly_expectancy
 from execution.utils.vol import atr_pct
 
-BASELINE_BPS = 2.0
-MIN_OFFSET_BPS = 0.5
-MAX_OFFSET_BPS = 8.0
+BASELINE_BPS = 4.0  # v6.4: increased from 2.0 for better maker fill rate
+MIN_OFFSET_BPS = 1.0  # v6.4: increased from 0.5 to avoid too-aggressive quotes
+MAX_OFFSET_BPS = 10.0  # v6.4: increased from 8.0 to allow more conservative quotes in volatile regimes
 
 
 def classify_atr_regime(symbol: str) -> str:

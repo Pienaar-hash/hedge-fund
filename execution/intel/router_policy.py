@@ -38,17 +38,27 @@ def _clamp01(value: Optional[float]) -> Optional[float]:
     return max(0.0, min(1.0, value))
 
 
+# Minimum sample count required for reliable quality assessment
+# Below this, we assume "ok" (bootstrap mode) to allow maker order attempts
+MIN_SAMPLES_FOR_QUALITY = 20
+
+
 def classify_router_quality(
     eff: Mapping[str, Any] | float | None,
     slip_p95_bps: Optional[float] = None,
     fallback_rate: Optional[float] = None,
     latency_ms: Optional[float] = None,
+    sample_count: Optional[int] = None,
 ) -> str:
     """
     Classify router quality into: "good", "ok", "degraded", "broken".
 
     Backwards compatible with the legacy dict signature while also supporting
     direct numeric inputs for the v6 intel helpers.
+    
+    v6.5: Added bootstrap mode - with insufficient samples, return "ok" to allow
+    maker order attempts. This breaks the chicken-and-egg problem where the router
+    needs good metrics to try maker orders but can't get good metrics without trying.
     
     Thresholds relaxed in v6.3 to avoid over-penalizing new/low-trade symbols.
     """
@@ -61,6 +71,8 @@ def classify_router_quality(
             fallback_rate = _to_float(eff.get("fallback_ratio") or eff.get("fallback_rate"))
         if latency_ms is None:
             latency_ms = _to_float(eff.get("ack_latency_ms") or eff.get("latency_ms") or eff.get("latency_p50_ms"))
+        if sample_count is None:
+            sample_count = int(_to_float(eff.get("sample_count")) or 0)
     elif eff is not None:
         maker = _to_float(eff)
 
@@ -70,16 +82,29 @@ def classify_router_quality(
     if slip_val is None:
         slip_val = 0.0
     latency_val = _to_float(latency_ms) or 0.0
+    samples = int(sample_count or 0)
+
+    # v6.5: Bootstrap mode - insufficient samples means we can't reliably assess quality.
+    # Return "ok" to allow maker orders to be attempted, which will build up metrics.
+    # Only apply extreme thresholds (broken) during bootstrap to protect against real issues.
+    if samples < MIN_SAMPLES_FOR_QUALITY:
+        # Even in bootstrap, block truly broken scenarios
+        if slip_val >= 50.0 or latency_val >= 5000:
+            return "broken"
+        # Otherwise, give benefit of the doubt - allow maker attempts
+        return "ok"
 
     # Relaxed thresholds: broken only for extreme cases
     if slip_val >= 50.0 or latency_val >= 5000:
         return "broken"
     # High fallback alone is degraded, not broken (allows recovery)
-    if fallback >= 0.95 or slip_val >= 30.0 or latency_val >= 3000:
+    # v6.5: Raised fallback threshold from 0.95 to 0.98 - nearly all fallback is still recoverable
+    if fallback >= 0.98 or slip_val >= 30.0 or latency_val >= 3000:
         return "degraded"
-    if fallback >= 0.7 or slip_val >= 15.0 or latency_val >= 2000:
+    # v6.5: Raised slip threshold from 15 to 25 bps - normal market slippage shouldn't trigger degraded
+    if fallback >= 0.85 or slip_val >= 25.0 or latency_val >= 2000:
         return "degraded"
-    if maker >= 0.7 and fallback <= 0.4 and slip_val <= 4.0 and (latency_val == 0.0 or latency_val <= 800):
+    if maker >= 0.5 and fallback <= 0.5 and slip_val <= 8.0 and (latency_val == 0.0 or latency_val <= 1000):
         return "good"
     return "ok"
 
@@ -179,21 +204,34 @@ def router_policy(symbol: str) -> RouterPolicy:
     except Exception:
         base_offset = None
 
+    # Extract sample count for bootstrap detection
+    sample_count = int(_to_float(eff.get("sample_count")) or 0)
+    is_bootstrap = sample_count < MIN_SAMPLES_FOR_QUALITY
+
     maker_first = True
     taker_bias = "balanced"
     reason_parts = [f"quality={quality}", f"regime={regime}"]
+
+    if is_bootstrap:
+        reason_parts.append(f"bootstrap_mode(n={sample_count})")
 
     if quality == "broken":
         maker_first = False
         taker_bias = "prefer_taker"
         reason_parts.append("fallback/slippage too high")
     elif quality == "degraded":
+        # v6.5: In degraded state, still allow maker_first but with balanced bias
+        # This allows recovery from degraded state by attempting maker orders
         maker_first = True
-        taker_bias = "prefer_taker"
-        reason_parts.append("router degraded")
+        taker_bias = "balanced"  # Changed from prefer_taker to allow maker attempts
+        reason_parts.append("router degraded - attempting recovery")
     elif quality == "good":
         taker_bias = "prefer_maker"
         reason_parts.append("router good")
+    elif quality == "ok":
+        # v6.5: OK quality should prefer maker to build up good metrics
+        taker_bias = "prefer_maker"
+        reason_parts.append("router ok - prefer maker")
 
     if regime == "panic":
         taker_bias = "prefer_taker"

@@ -1,5 +1,5 @@
 {
-  "version": "v6.3",
+  "version": "v6.4",
   "use_futures": true,
   "poll_seconds": 300,
   "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
@@ -20,11 +20,11 @@
   "signals": {
     "timeframe": "15m",
     "momentum": {
-        "ema_fast": 20,
+        "ema_fast": 15,
         "ema_slow": 50,
         "rsi_len": 14,
         "rsi_buy": 55,
-        "rsi_sell": 45
+        "rsi_sell": 40
     },
     "zscore": {
       "lookback": 48,
@@ -43,7 +43,7 @@
     "prob_threshold": 0.68,
     "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
     "features": {
-      "ema_fast": 20,
+      "ema_fast": 15,
       "ema_slow": 50,
       "rsi_len": 14,
       "zscore_lookback": 48,
@@ -71,7 +71,7 @@
         "bucket": "CORE",
         "risk": {
           "fixed_sl_pct": 0.4,
-          "fixed_tp_pct": 0.8,
+          "fixed_tp_pct": 1.2,
           "atr_period": 14,
           "atr_mult": 1.0,
           "max_bars": 60,
@@ -79,7 +79,7 @@
         },
         "entry": {
           "type": "rsi_band",
-          "band": [35, 65],
+          "band": [35, 70],
           "zmin": 0.6
         }
       }
@@ -96,15 +96,15 @@
         "bucket": "CORE",
         "risk": {
           "fixed_sl_pct": 0.5,
-          "fixed_tp_pct": 1.0,
-          "atr_period": 14,
+          "fixed_tp_pct": 1.5,
+          "atr_period": 7,
           "atr_mult": 1.2,
           "max_bars": 60,
           "trail": { "width_pct": 0.005 }
         },
         "entry": {
           "type": "rsi_band",
-          "band": [35, 65],
+          "band": [20, 80],
           "zmin": 0.7
         }
       }
@@ -116,20 +116,20 @@
       "symbol": "SOLUSDT",
       "timeframe": "15m",
       "params": {
-        "per_trade_nav_pct": 0.01,
+        "per_trade_nav_pct": 0.012,
         "leverage": 3,
         "bucket": "SATELLITE",
         "risk": {
           "fixed_sl_pct": 0.5,
-          "fixed_tp_pct": 1.0,
-          "atr_period": 14,
+          "fixed_tp_pct": 1.5,
+          "atr_period": 21,
           "atr_mult": 1.2,
           "max_bars": 60,
           "trail": { "width_pct": 0.005 }
         },
         "entry": {
           "type": "rsi_band",
-          "band": [35, 65],
+          "band": [25, 65],
           "zmin": 0.6
         }
       }
@@ -147,14 +147,14 @@
         "risk": {
           "fixed_sl_pct": 0.6,
           "fixed_tp_pct": 1.2,
-          "atr_period": 14,
+          "atr_period": 21,
           "atr_mult": 1.2,
           "max_bars": 60,
           "trail": { "width_pct": 0.006 }
         },
         "entry": {
           "type": "rsi_band",
-          "band": [30, 70],
+          "band": [30, 65],
           "zmin": 0.8
         }
       }
@@ -163,6 +163,7 @@
       "id": "link_m15",
       "label": "LINK 15m momentum",
       "enabled": true,
+      "short_enabled": false,
       "symbol": "LINKUSDT",
       "timeframe": "15m",
       "params": {
@@ -179,7 +180,7 @@
         },
         "entry": {
           "type": "rsi_band",
-          "band": [35, 65],
+          "band": [20, 70],
           "zmin": 0.7
         }
       }
@@ -188,23 +189,24 @@
       "id": "ltc_m15",
       "label": "LTC 15m momentum",
       "enabled": true,
+      "short_enabled": false,
       "symbol": "LTCUSDT",
       "timeframe": "15m",
       "params": {
-        "per_trade_nav_pct": 0.01,
-        "leverage": 3,
-        "bucket": "SATELLITE",
+        "per_trade_nav_pct": 0.005,
+        "leverage": 2,
+        "bucket": "TACTICAL",
         "risk": {
-          "fixed_sl_pct": 0.5,
-          "fixed_tp_pct": 1.0,
-          "atr_period": 14,
+          "fixed_sl_pct": 0.4,
+          "fixed_tp_pct": 1.6,
+          "atr_period": 7,
           "atr_mult": 1.2,
           "max_bars": 60,
           "trail": { "width_pct": 0.005 }
         },
         "entry": {
           "type": "rsi_band",
-          "band": [35, 65],
+          "band": [20, 75],
           "zmin": 0.7
         }
       }
@@ -213,15 +215,16 @@
       "id": "sui_m15",
       "label": "SUI 15m momentum",
       "enabled": true,
+      "short_enabled": false,
       "symbol": "SUIUSDT",
       "timeframe": "15m",
       "params": {
-        "per_trade_nav_pct": 0.008,
-        "leverage": 3,
-        "bucket": "SATELLITE",
+        "per_trade_nav_pct": 0.005,
+        "leverage": 2,
+        "bucket": "TACTICAL",
         "risk": {
-          "fixed_sl_pct": 0.6,
-          "fixed_tp_pct": 1.2,
+          "fixed_sl_pct": 0.5,
+          "fixed_tp_pct": 1.5,
           "atr_period": 14,
           "atr_mult": 1.2,
           "max_bars": 60,
@@ -229,7 +232,7 @@
         },
         "entry": {
           "type": "rsi_band",
-          "band": [30, 70],
+          "band": [25, 70],
           "zmin": 0.8
         }
       }
@@ -241,13 +244,13 @@
       "symbol": "WIFUSDT",
       "timeframe": "15m",
       "params": {
-        "per_trade_nav_pct": 0.008,
+        "per_trade_nav_pct": 0.012,
         "leverage": 3,
         "bucket": "SATELLITE",
         "risk": {
-          "fixed_sl_pct": 0.6,
-          "fixed_tp_pct": 1.2,
-          "atr_period": 14,
+          "fixed_sl_pct": 0.5,
+          "fixed_tp_pct": 1.5,
+          "atr_period": 21,
           "atr_mult": 1.2,
           "max_bars": 60,
           "trail": { "width_pct": 0.006 }

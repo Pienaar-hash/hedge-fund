@@ -43,6 +43,15 @@ from dashboard.router_policy import render_router_policy_panel
 from dashboard.router_health import load_router_health, is_empty_router_health
 from dashboard import kpi_panel
 from dashboard.state_v7 import load_all_state
+from dashboard.research_panel import render_research_panel
+from dashboard.trader_toys import (
+    inject_trader_toys_css,
+    render_liquid_gauge,
+    render_radial_progress,
+    render_mini_bar,
+    render_pulse_indicator,
+    render_gauge_panel,
+)
 
 LOG = logging.getLogger("dash.app")
 if not LOG.handlers:
@@ -438,6 +447,10 @@ def render_positions_table(positions: List[Dict[str, Any]]) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Hedge — v6 Dashboard", layout="wide")
+    
+    # Inject trader toys CSS
+    inject_trader_toys_css()
+    
     st.title("📊 Hedge — Portfolio Dashboard (v7)")
 
     state = load_all_state()
@@ -463,7 +476,7 @@ def main() -> None:
 
     render_header(nav)
 
-    tabs = st.tabs(["Overview (v7)", "Advanced (v6)"])
+    tabs = st.tabs(["Overview (v7)", "Research & Optimizations", "Advanced (v6)"])
 
     with tabs[0]:
         st.subheader("Overview (v7)")
@@ -586,6 +599,70 @@ def main() -> None:
             )
             st.plotly_chart(fig_spark, use_container_width=True, config={'displayModeBar': False})
 
+        # ===== TRADER TOYS: Risk Gauges =====
+        st.markdown("#### 🎯 Risk Gauges")
+        
+        # Calculate metrics for gauges
+        nav_value = safe_float(nav.get("nav_usd")) or 1
+        exposure_pct = (gross_exp / nav_value * 100) if nav_value > 0 else 0
+        
+        # Margin used estimation (notional / (nav * max_leverage))
+        max_leverage = 4  # From config
+        margin_capacity = nav_value * max_leverage
+        margin_used_pct = (gross_exp / margin_capacity * 100) if margin_capacity > 0 else 0
+        
+        # Risk capacity = inverse of exposure utilization
+        max_exposure_pct = 150  # From risk_limits
+        risk_capacity_pct = max(0, 100 - (exposure_pct / max_exposure_pct * 100))
+        
+        gauge_cols = st.columns(4)
+        
+        with gauge_cols[0]:
+            # Exposure gauge
+            exp_color = "green" if exposure_pct < 80 else ("yellow" if exposure_pct < 120 else "red")
+            st.markdown(f"""
+            <div class="liquid-gauge {exp_color}" style="width:85px;height:85px;margin:0 auto;">
+                <span class="gauge-value">{exposure_pct:.0f}%</span>
+                <span class="gauge-label">Exposure</span>
+            </div>
+            <style>.liquid-gauge.{exp_color}::before {{ height: {min(100, exposure_pct/1.5):.0f}%; }}</style>
+            """, unsafe_allow_html=True)
+        
+        with gauge_cols[1]:
+            # Margin used gauge
+            margin_color = "green" if margin_used_pct < 50 else ("yellow" if margin_used_pct < 80 else "red")
+            st.markdown(f"""
+            <div class="liquid-gauge {margin_color}" style="width:85px;height:85px;margin:0 auto;">
+                <span class="gauge-value">{margin_used_pct:.0f}%</span>
+                <span class="gauge-label">Margin</span>
+            </div>
+            <style>.liquid-gauge.{margin_color}::before {{ height: {min(100, margin_used_pct):.0f}%; }}</style>
+            """, unsafe_allow_html=True)
+        
+        with gauge_cols[2]:
+            # Drawdown gauge (inverse - lower is better)
+            dd_value = drawdown_pct if drawdown_pct else 0
+            dd_color = "green" if dd_value < 5 else ("yellow" if dd_value < 15 else "red")
+            dd_fill = min(100, dd_value * 3.33)  # Scale to 30% max
+            st.markdown(f"""
+            <div class="liquid-gauge {dd_color}" style="width:85px;height:85px;margin:0 auto;">
+                <span class="gauge-value">{dd_value:.1f}%</span>
+                <span class="gauge-label">Drawdown</span>
+            </div>
+            <style>.liquid-gauge.{dd_color}::before {{ height: {dd_fill:.0f}%; }}</style>
+            """, unsafe_allow_html=True)
+        
+        with gauge_cols[3]:
+            # Risk capacity gauge (higher is better)
+            cap_color = "red" if risk_capacity_pct < 30 else ("yellow" if risk_capacity_pct < 60 else "green")
+            st.markdown(f"""
+            <div class="liquid-gauge {cap_color}" style="width:85px;height:85px;margin:0 auto;">
+                <span class="gauge-value">{risk_capacity_pct:.0f}%</span>
+                <span class="gauge-label">Capacity</span>
+            </div>
+            <style>.liquid-gauge.{cap_color}::before {{ height: {min(100, risk_capacity_pct):.0f}%; }}</style>
+            """, unsafe_allow_html=True)
+
         st.markdown("---")
         
         # AUM Section
@@ -594,11 +671,24 @@ def main() -> None:
         total_pnl = aum.get("total_pnl_usd", 0.0)
         pnl_pct = (total_pnl / total_usd * 100) if total_usd > 0 else 0
         pnl_color = "#00cc00" if total_pnl >= 0 else "#ff4444"
+        pnl_arrow = "▲" if total_pnl >= 0 else "▼"
         slices = aum.get("slices") or []
         
-        # Header
-        st.markdown(f"### Total AUM: ${total_usd:,.0f} (ZAR {total_zar:,.0f})")
-        st.markdown(f"### Total PnL: <span style='color:{pnl_color}'>${total_pnl:+,.2f} ({pnl_pct:+.2f}%)</span>", unsafe_allow_html=True)
+        # Animated AUM Header with glowing effect
+        st.markdown(f'''
+        <div style="display:flex;gap:20px;align-items:stretch;margin:15px 0;">
+            <div style="flex:1;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);border-radius:16px;padding:20px;border:1px solid #333;box-shadow:0 0 20px rgba(0,200,255,0.1);">
+                <div style="font-size:12px;color:#888;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px;">💰 Total AUM</div>
+                <div style="font-size:32px;font-weight:700;color:#00d4ff;text-shadow:0 0 20px rgba(0,212,255,0.4);">${total_usd:,.0f}</div>
+                <div style="font-size:14px;color:#666;margin-top:4px;">ZAR {total_zar:,.0f}</div>
+            </div>
+            <div style="flex:1;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);border-radius:16px;padding:20px;border:1px solid #333;box-shadow:0 0 20px rgba({"0,255,100" if total_pnl >= 0 else "255,100,100"},0.1);">
+                <div style="font-size:12px;color:#888;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px;">📈 Total PnL</div>
+                <div style="font-size:32px;font-weight:700;color:{pnl_color};text-shadow:0 0 20px {pnl_color}66;">{pnl_arrow} ${abs(total_pnl):,.2f}</div>
+                <div style="font-size:14px;color:{pnl_color};margin-top:4px;">{pnl_pct:+.2f}% return</div>
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
         
         # Donut and breakdown side by side - balanced layout
         col_chart, col_list = st.columns([1, 1])
@@ -608,20 +698,36 @@ def main() -> None:
                 import plotly.graph_objects as go
                 labels = [s.get('label', '?') for s in slices]
                 values = [s.get('usd', 0) for s in slices]
-                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+                # Premium color palette matching asset colors
+                color_map = {"Futures": "#00d4ff", "BTC": "#f7931a", "ETH": "#627eea", "SOL": "#00ffa3", "USDT": "#26a17b", "USDC": "#2775ca", "XAUT": "#ffd700"}
+                colors = [color_map.get(l, "#888888") for l in labels]
                 
                 fig = go.Figure(data=[go.Pie(
                     labels=labels,
                     values=values,
-                    hole=0.45,
+                    hole=0.55,
                     textinfo='label+percent',
                     textposition='inside',
-                    marker=dict(colors=colors[:len(labels)], line=dict(color='#FFFFFF', width=2))
+                    textfont=dict(size=12, color='#fff'),
+                    hovertemplate='<b>%{label}</b><br>$%{value:,.0f}<br>%{percent}<extra></extra>',
+                    marker=dict(
+                        colors=colors,
+                        line=dict(color='#1a1a2e', width=3)
+                    ),
+                    pull=[0.02] * len(labels)  # Slight pull for 3D effect
                 )])
                 fig.update_layout(
                     height=380,
-                    margin=dict(t=30, b=30, l=30, r=30),
-                    showlegend=False
+                    margin=dict(t=20, b=20, l=20, r=20),
+                    showlegend=False,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    annotations=[dict(
+                        text=f'<b>${total_usd:,.0f}</b>',
+                        x=0.5, y=0.5,
+                        font=dict(size=18, color='#00d4ff'),
+                        showarrow=False
+                    )]
                 )
                 st.plotly_chart(fig, use_container_width=True)
         
@@ -629,6 +735,10 @@ def main() -> None:
             st.markdown("#### Asset Breakdown")
             # Build a lookup for off-exchange details (has avg_cost)
             offex_details = {d.get('symbol'): d for d in aum.get('offexchange_details', [])}
+            
+            # Asset type icons
+            asset_icons = {"Futures": "⚡", "BTC": "₿", "ETH": "⟠", "SOL": "◎", "USDT": "💵", "USDC": "💵", "XAUT": "🥇"}
+            asset_colors = {"Futures": "#00d4ff", "BTC": "#f7931a", "ETH": "#627eea", "SOL": "#00ffa3", "USDT": "#26a17b", "USDC": "#2775ca", "XAUT": "#ffd700"}
             
             for s in slices:
                 label = s.get('label', '?')
@@ -640,10 +750,13 @@ def main() -> None:
                 avg_cost = detail.get('avg_cost')
                 qty = detail.get('qty')
                 
+                # Asset styling
+                icon = asset_icons.get(label, "💎")
+                bar_color = asset_colors.get(label, "#888")
+                
                 # Build the line - Futures uses all-time net PnL, others use unrealized PnL
                 extra_info = ""
                 if label == "Futures":
-                    # For Futures: show all-time net realized PnL (after fees)
                     alltime_pnl = s.get('alltime_realized_pnl', 0)
                     alltime_fees = s.get('alltime_fees', 0)
                     alltime_notional = s.get('alltime_notional', 0)
@@ -653,26 +766,37 @@ def main() -> None:
                     arrow = "▲" if net_pnl >= 0 else "▼"
                     color = "#00cc00" if net_pnl >= 0 else "#ff4444"
                     if alltime_trades > 0:
-                        extra_info = f"<br><span style='color:#888; font-size:13px'>📊 {alltime_trades} trades • ${alltime_notional:,.0f} volume • ${alltime_fees:.2f} fees</span>"
+                        extra_info = f"<div style='font-size:11px;color:#666;margin-top:4px;'>📊 {alltime_trades} trades • ${alltime_notional:,.0f} vol • ${alltime_fees:.2f} fees</div>"
                     pnl_usd = net_pnl
                     pnl_pct_asset = pnl_pct
                 else:
-                    # For off-exchange: show unrealized PnL vs cost basis
                     pnl_usd = s.get("pnl_usd", 0)
                     pnl_pct_asset = s.get("pnl_pct", 0)
                     arrow = "▲" if pnl_usd >= 0 else "▼"
                     color = "#00cc00" if pnl_usd >= 0 else "#ff4444"
                     if avg_cost and qty:
-                        extra_info = f" <span style='color:#888; font-size:15px'>({qty:.4g} @ ${avg_cost:,.2f})</span>"
+                        extra_info = f"<div style='font-size:11px;color:#666;margin-top:4px;'>{qty:.4g} @ ${avg_cost:,.2f}</div>"
                 
-                st.markdown(
-                    f"<p style='font-size:18px; margin:10px 0; line-height:1.5'>"
-                    f"<b>{label}</b>: ${usd_val:,.0f} ({pct_of_total:.1f}%)"
-                    f" <span style='color:{color}; font-weight:bold'>{arrow} ${abs(pnl_usd):,.2f} ({pnl_pct_asset:+.1f}%)</span>"
-                    f"{extra_info}"
-                    f"</p>",
-                    unsafe_allow_html=True
-                )
+                # Render asset card with allocation bar
+                st.markdown(f'''
+                <div style="background:linear-gradient(135deg,#1a1a2e 0%,#0f0f1a 100%);border-radius:10px;padding:12px 15px;margin:8px 0;border-left:3px solid {bar_color};">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <span style="font-size:18px;font-weight:600;color:#fff;">{icon} {label}</span>
+                            <span style="font-size:14px;color:#888;margin-left:10px;">${usd_val:,.0f}</span>
+                        </div>
+                        <div style="text-align:right;">
+                            <span style="color:{color};font-weight:bold;font-size:14px;">{arrow} ${abs(pnl_usd):,.2f}</span>
+                            <span style="color:{color};font-size:12px;margin-left:5px;">({pnl_pct_asset:+.1f}%)</span>
+                        </div>
+                    </div>
+                    <div style="height:4px;background:#222;border-radius:2px;margin-top:8px;overflow:hidden;">
+                        <div style="height:100%;width:{pct_of_total}%;background:linear-gradient(90deg,{bar_color}88,{bar_color});border-radius:2px;"></div>
+                    </div>
+                    <div style="font-size:10px;color:#555;margin-top:4px;">{pct_of_total:.1f}% of portfolio</div>
+                    {extra_info}
+                </div>
+                ''', unsafe_allow_html=True)
         
         st.markdown("---")
         
@@ -689,6 +813,40 @@ def main() -> None:
         sample_count = expectancy_data.get("sample_count", 0) if expectancy_data else 0
         
         st.markdown(f"### Trading Performance <span style='font-size:12px; color:#888; font-weight:normal'>(last {lookback}h • {sample_count} completed trades • updated {exp_age_str} ago)</span>", unsafe_allow_html=True)
+        
+        # Quick stats row
+        if expectancy_data and "symbols" in expectancy_data:
+            symbols_exp = expectancy_data["symbols"]
+            total_trades = sum(s.get("count", 0) for s in symbols_exp.values())
+            avg_win_rate = sum(s.get("hit_rate", 0) for s in symbols_exp.values()) / len(symbols_exp) * 100 if symbols_exp else 0
+            avg_expectancy = sum(s.get("expectancy", 0) for s in symbols_exp.values()) / len(symbols_exp) if symbols_exp else 0
+            total_pnl_trades = sum(s.get("expectancy", 0) * s.get("count", 0) for s in symbols_exp.values())
+            
+            exp_color = "#00cc00" if avg_expectancy >= 0 else "#ff4444"
+            pnl_trade_color = "#00cc00" if total_pnl_trades >= 0 else "#ff4444"
+            wr_color = "#00cc00" if avg_win_rate >= 55 else ("#ffaa00" if avg_win_rate >= 45 else "#ff4444")
+            
+            st.markdown(f'''
+            <div style="display:flex;gap:12px;margin:15px 0;">
+                <div style="flex:1;background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:12px;padding:15px;text-align:center;border:1px solid #333;">
+                    <div style="font-size:11px;color:#888;text-transform:uppercase;">Trades</div>
+                    <div style="font-size:28px;font-weight:700;color:#00d4ff;">{total_trades}</div>
+                </div>
+                <div style="flex:1;background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:12px;padding:15px;text-align:center;border:1px solid #333;">
+                    <div style="font-size:11px;color:#888;text-transform:uppercase;">Win Rate</div>
+                    <div style="font-size:28px;font-weight:700;color:{wr_color};">{avg_win_rate:.0f}%</div>
+                </div>
+                <div style="flex:1;background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:12px;padding:15px;text-align:center;border:1px solid #333;">
+                    <div style="font-size:11px;color:#888;text-transform:uppercase;">Avg EV/Trade</div>
+                    <div style="font-size:28px;font-weight:700;color:{exp_color};">${avg_expectancy:.2f}</div>
+                </div>
+                <div style="flex:1;background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:12px;padding:15px;text-align:center;border:1px solid #333;">
+                    <div style="font-size:11px;color:#888;text-transform:uppercase;">Est. PnL</div>
+                    <div style="font-size:28px;font-weight:700;color:{pnl_trade_color};">${total_pnl_trades:+,.0f}</div>
+                </div>
+            </div>
+            ''', unsafe_allow_html=True)
+        
         col_perf_left, col_perf_right = st.columns([1, 1])
         
         with col_perf_left:
@@ -706,39 +864,63 @@ def main() -> None:
                 # Color by expectancy (green = positive, red = negative)
                 colors = ["#00cc00" if e >= 0 else "#ff4444" for e in expectancies]
                 
+                # Premium gradient colors based on value
+                bar_colors = []
+                for e in expectancies:
+                    if e >= 0.5:
+                        bar_colors.append('#00ff88')  # Bright green
+                    elif e >= 0:
+                        bar_colors.append('#00cc66')  # Green
+                    elif e >= -0.5:
+                        bar_colors.append('#ff6b35')  # Orange-red
+                    else:
+                        bar_colors.append('#ff4444')  # Red
+                
                 fig_exp = go.Figure()
                 fig_exp.add_trace(go.Bar(
                     y=symbol_labels,
                     x=expectancies,
                     orientation='h',
-                    marker_color=colors,
-                    text=[f"${e:.2f}" for e in expectancies],
+                    marker=dict(
+                        color=bar_colors,
+                        line=dict(color='rgba(255,255,255,0.1)', width=1)
+                    ),
+                    text=[f'${e:+.2f}' for e in expectancies],
                     textposition='outside',
-                    hovertemplate='%{y}<br>Expectancy: $%{x:.2f}<br>Win Rate: ' + '<br>'.join([f"{wr:.0f}%" for wr in win_rates]) + '<extra></extra>'
+                    textfont=dict(size=11, color='#ccc'),
+                    hovertemplate='<b>%{y}</b><br>EV: $%{x:.2f} per trade<extra></extra>'
                 ))
+                
+                # Add win rate annotations on the bars
+                for i, (sym, wr, tc) in enumerate(zip(symbol_labels, win_rates, trade_counts)):
+                    fig_exp.add_annotation(
+                        x=0, y=i,
+                        text=f'{wr:.0f}% ({tc})',
+                        showarrow=False,
+                        font=dict(size=9, color='#888'),
+                        xanchor='right' if expectancies[i] >= 0 else 'left',
+                        xshift=-5 if expectancies[i] >= 0 else 5
+                    )
+                
                 fig_exp.update_layout(
-                    title=dict(text="Expectancy by Symbol", font=dict(size=14)),
-                    height=200,
-                    margin=dict(t=40, b=20, l=60, r=60),
-                    xaxis=dict(title="$ per trade", zeroline=True, zerolinecolor='#444'),
-                    yaxis=dict(title=""),
-                    showlegend=False
+                    title=dict(text='📊 Expectancy by Symbol', font=dict(size=14, color='#fff'), x=0),
+                    height=220,
+                    margin=dict(t=45, b=25, l=55, r=55),
+                    xaxis=dict(
+                        title=dict(text='$ per trade', font=dict(size=10, color='#666')),
+                        zeroline=True,
+                        zerolinecolor='#444',
+                        zerolinewidth=2,
+                        gridcolor='rgba(255,255,255,0.05)',
+                        tickfont=dict(color='#888')
+                    ),
+                    yaxis=dict(title='', tickfont=dict(color='#ccc', size=11)),
+                    showlegend=False,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(26,26,46,0.5)',
+                    bargap=0.3
                 )
                 st.plotly_chart(fig_exp, use_container_width=True)
-                
-                # Summary stats with avg expectancy
-                total_trades = sum(trade_counts)
-                avg_expectancy = sum(expectancies) / len(expectancies) if expectancies else 0
-                avg_exp_color = "#00cc00" if avg_expectancy >= 0 else "#ff4444"
-                
-                st.markdown(
-                    f"<p style='font-size:14px; margin:5px 0'>"
-                    f"<b>Avg Expectancy:</b> <span style='color:{avg_exp_color}; font-weight:bold'>${avg_expectancy:.2f}</span> "
-                    f"• <b>Total Trades:</b> {total_trades}</p>"
-                    f"<p style='font-size:13px; color:#888'><b>Win Rates:</b> " + 
-                    " • ".join([f"{s}: {wr:.0f}%" for s, wr in zip(symbol_labels, win_rates)]) + 
-                    "</p>", 
-                    unsafe_allow_html=True)
             else:
                 st.info("No trade history yet.")
         
@@ -756,44 +938,110 @@ def main() -> None:
                     returns = [hour_data[str(h)].get("avg_return", 0) for h in hours]
                     counts = [hour_data[str(h)].get("count", 0) for h in hours]
                     
-                    # Color scale: red (-) to green (+)
-                    colors = ["#ff4444" if r < 0 else "#00cc00" for r in returns]
+                    # Premium gradient colors based on return value
+                    bar_colors = []
+                    for r in returns:
+                        if r >= 1.0:
+                            bar_colors.append('#00ff88')  # Bright green
+                        elif r >= 0:
+                            bar_colors.append('#00cc66')  # Green
+                        elif r >= -1.0:
+                            bar_colors.append('#ff6b35')  # Orange
+                        else:
+                            bar_colors.append('#ff4444')  # Red
                     
-                    # Use horizontal bars for hours - longer and thinner
                     fig_hours = go.Figure()
                     fig_hours.add_trace(go.Bar(
                         y=hour_labels,
                         x=returns,
                         orientation='h',
-                        marker_color=colors,
-                        text=[f"${r:.2f}" for r in returns],
+                        marker=dict(
+                            color=bar_colors,
+                            line=dict(color='rgba(255,255,255,0.1)', width=1)
+                        ),
+                        text=[f'${r:+.2f}' for r in returns],
                         textposition='outside',
-                        hovertemplate='%{y}<br>Avg Return: $%{x:.2f}<extra></extra>'
+                        textfont=dict(size=10, color='#ccc'),
+                        hovertemplate='<b>%{y} UTC</b><br>Avg Return: $%{x:.2f}<br>Trades: ' + str(counts) + '<extra></extra>'
                     ))
                     
-                    # Dynamic height based on number of hours
-                    bar_height = max(200, len(hours) * 28)
+                    # Add trade count annotations
+                    for i, (h, c) in enumerate(zip(hour_labels, counts)):
+                        if c > 0:
+                            fig_hours.add_annotation(
+                                x=0, y=i,
+                                text=f'({c})',
+                                showarrow=False,
+                                font=dict(size=9, color='#666'),
+                                xanchor='right' if returns[i] >= 0 else 'left',
+                                xshift=-5 if returns[i] >= 0 else 5
+                            )
+                    
+                    bar_height = max(220, len(hours) * 24)
                     fig_hours.update_layout(
-                        title=dict(text="Avg Return by Hour (UTC)", font=dict(size=14)),
+                        title=dict(text='🕐 Avg Return by Hour (UTC)', font=dict(size=14, color='#fff'), x=0),
                         height=bar_height,
-                        margin=dict(t=40, b=20, l=60, r=60),
-                        xaxis=dict(title="$ Return", zeroline=True, zerolinecolor='#444'),
-                        yaxis=dict(title="", autorange="reversed"),
-                        showlegend=False
+                        margin=dict(t=45, b=25, l=55, r=55),
+                        xaxis=dict(
+                            title=dict(text='$ Return', font=dict(size=10, color='#666')),
+                            zeroline=True,
+                            zerolinecolor='#444',
+                            zerolinewidth=2,
+                            gridcolor='rgba(255,255,255,0.05)',
+                            tickfont=dict(color='#888')
+                        ),
+                        yaxis=dict(title='', autorange='reversed', tickfont=dict(color='#ccc', size=10)),
+                        showlegend=False,
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(26,26,46,0.5)',
+                        bargap=0.25
                     )
                     st.plotly_chart(fig_hours, use_container_width=True)
                     
-                    # Best/Worst hours
+                    # Best/Worst hours with visual styling
                     best_hour = max(hour_data.items(), key=lambda x: x[1].get("avg_return", 0))
                     worst_hour = min(hour_data.items(), key=lambda x: x[1].get("avg_return", 0))
-                    st.markdown(f"<p style='text-align:center; color:#888'>Best: {best_hour[0]}:00 UTC • Worst: {worst_hour[0]}:00 UTC</p>", unsafe_allow_html=True)
+                    best_ret = best_hour[1].get("avg_return", 0)
+                    worst_ret = worst_hour[1].get("avg_return", 0)
+                    st.markdown(f'''
+                    <div style="display:flex;justify-content:space-around;margin-top:10px;">
+                        <div style="text-align:center;">
+                            <span style="color:#00ff88;font-size:20px;">🏆</span>
+                            <span style="color:#00ff88;font-weight:bold;">{best_hour[0]}:00</span>
+                            <span style="color:#888;font-size:12px;"> (+${best_ret:.2f})</span>
+                        </div>
+                        <div style="text-align:center;">
+                            <span style="color:#ff4444;font-size:20px;">⚠️</span>
+                            <span style="color:#ff4444;font-weight:bold;">{worst_hour[0]}:00</span>
+                            <span style="color:#888;font-size:12px;"> (${worst_ret:.2f})</span>
+                        </div>
+                    </div>
+                    ''', unsafe_allow_html=True)
                 else:
                     st.info("No hourly data yet.")
             else:
                 st.info("Hourly performance coming soon.")
         
         st.markdown("---")
-        st.markdown("**Open Positions**")
+        
+        # Position status with pulse indicators
+        pos_count = len(raw_positions) if raw_positions else 0
+        if pos_count > 0:
+            total_pnl = sum(
+                float(p.get("unrealized") or p.get("pnl") or 0)
+                for p in raw_positions
+            )
+            pnl_status = "green" if total_pnl >= 0 else "red"
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;gap:15px;margin-bottom:10px;">
+                <span style="font-weight:600;font-size:16px;">Open Positions</span>
+                <span class="pulse-dot {pnl_status}"></span>
+                <span style="color:#888;font-size:14px;">{pos_count} active</span>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("**Open Positions**")
+        
         render_positions_table(positions)
         st.caption(f"Data age: {_format_age_seconds(meta.get('data_age_s'))}")
         
@@ -862,32 +1110,31 @@ def main() -> None:
                             atr_text = f"{atr_regime} ({atr_ratio:.2f}x)" if atr_ratio else atr_regime
                             
                             with col:
-                                st.markdown(f"""
-                                <div style='
-                                    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-                                    border-radius: 12px;
-                                    padding: 16px;
-                                    margin: 4px 0;
-                                    border: 1px solid #333;
-                                '>
-                                    <div style='font-size:20px; font-weight:bold; margin-bottom:10px;'>{symbol}</div>
-                                    <div style='font-size:14px; margin:4px 0;'>
-                                        {risk_emoji} Risk: <span style='color:{status_color(risk_state)}'>{risk_state}</span>
-                                    </div>
-                                    <div style='font-size:14px; margin:4px 0;'>
-                                        {router_emoji} Router: <span style='color:{status_color(router_quality)}'>{router_quality}</span>
-                                    </div>
-                                    <div style='font-size:14px; margin:4px 0;'>
-                                        📊 ATR: <span style='color:{atr_color(atr_regime)}'>{atr_text}</span>
-                                    </div>
-                                    <div style='font-size:14px; margin:4px 0; color:#888;'>
-                                        Slip: {slip_text}
-                                    </div>
-                                    <div style='font-size:14px; margin-top:8px;'>
-                                        Size: <span style='color:{size_color}; font-weight:bold'>{size_factor:.0%}</span>
-                                    </div>
-                                </div>
-                                """, unsafe_allow_html=True)
+                                # Calculate progress bar percentages
+                                risk_pct = {"low": 25, "normal": 30, "medium": 55, "elevated": 70, "high": 85, "extreme": 100}.get(risk_state.lower(), 50)
+                                router_pct = {"excellent": 95, "ok": 80, "good": 75, "fair": 50, "poor": 25, "degraded": 20, "cold": 10}.get(router_quality.lower(), 50)
+                                size_pct = min(100, int(size_factor * 100))
+                                
+                                risk_bar_color = {"low": "#00ff88", "normal": "#00ff88", "medium": "#ffcc00", "elevated": "#ff9900", "high": "#ff6b35", "extreme": "#ff0040"}.get(risk_state.lower(), "#888")
+                                router_bar_color = {"excellent": "#00ff88", "ok": "#00ff88", "good": "#00d4ff", "fair": "#ffcc00", "poor": "#ff6b35", "degraded": "#ff4444", "cold": "#888"}.get(router_quality.lower(), "#888")
+                                
+                                risk_c = status_color(risk_state)
+                                router_c = status_color(router_quality)
+                                atr_c = atr_color(atr_regime)
+                                
+                                # Build card in plain format for safer rendering
+                                card_html = f'''<div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);border-radius:12px;padding:16px;margin:4px 0;border:1px solid #333;box-shadow:0 4px 15px rgba(0,0,0,0.3);">
+<div style="font-size:20px;font-weight:bold;margin-bottom:12px;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{size_color};box-shadow:0 0 8px {size_color};margin-right:8px;"></span>{symbol}</div>
+<div style="font-size:13px;margin:8px 0;">{risk_emoji} Risk: <span style="color:{risk_c}">{risk_state}</span></div>
+<div style="height:4px;background:#222;border-radius:2px;margin:4px 0;overflow:hidden;"><div style="height:100%;width:{risk_pct}%;background:linear-gradient(90deg,{risk_bar_color}88,{risk_bar_color});border-radius:2px;"></div></div>
+<div style="font-size:13px;margin:8px 0;">{router_emoji} Router: <span style="color:{router_c}">{router_quality}</span></div>
+<div style="height:4px;background:#222;border-radius:2px;margin:4px 0;overflow:hidden;"><div style="height:100%;width:{router_pct}%;background:linear-gradient(90deg,{router_bar_color}88,{router_bar_color});border-radius:2px;"></div></div>
+<div style="font-size:13px;margin:8px 0;">📊 ATR: <span style="color:{atr_c}">{atr_text}</span></div>
+<div style="font-size:13px;margin:8px 0;color:#888;">Slip: {slip_text}</div>
+<div style="font-size:13px;margin-top:10px;">⚖️ Size: <span style="color:{size_color};font-weight:bold">{size_factor:.0%}</span></div>
+<div style="height:6px;background:#222;border-radius:3px;margin:4px 0;overflow:hidden;"><div style="height:100%;width:{size_pct}%;background:linear-gradient(90deg,{size_color}88,{size_color});border-radius:3px;"></div></div>
+</div>'''
+                                st.markdown(card_html, unsafe_allow_html=True)
             else:
                 st.info("Risk snapshot unavailable.")
         except Exception as e:
@@ -897,6 +1144,9 @@ def main() -> None:
         render_kpis_v7_panel(kpis, router)
 
     with tabs[1]:
+        render_research_panel()
+
+    with tabs[2]:
         st.subheader("Advanced (v6)")
         st.caption("Legacy v6 telemetry — visible for internal diagnostics only.")
         with st.expander("Runtime (v6 telemetry)", expanded=False):
