@@ -33,6 +33,10 @@ from execution.universe_resolver import (
 from execution.runtime_config import load_runtime_config
 from execution import telegram_alerts_v7
 from execution.utils.execution_health import record_execution_error, summarize_atr_regimes
+from execution.utils.metrics import router_effectiveness_7d
+from execution import router_metrics
+from execution.intel import maker_offset, router_autotune_shared
+from execution.exchange_utils import get_price
 
 import requests
 from execution.intel.router_policy import router_policy
@@ -72,6 +76,7 @@ ORDER_METRICS_LOG = get_logger(str(ORDER_METRICS_PATH))
 ROUTER_METRICS_LOG = get_logger(str(ROUTER_METRICS_MIRROR_PATH))
 LOGS_ROOT = Path(repo_root) / "logs"
 POSITIONS_CACHE_PATH = LOGS_ROOT / "positions.json"
+POSITIONS_STATE_PATH = LOGS_ROOT / "state" / "positions_state.json"
 NAV_LOG_CACHE_PATH = LOGS_ROOT / "nav_log.json"
 SPOT_STATE_CACHE_PATH = LOGS_ROOT / "spot_state.json"
 NAV_LOG_MAX_POINTS = int(os.getenv("NAV_LOG_MAX_POINTS", "720") or 720)
@@ -81,6 +86,8 @@ _FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)
 _FILL_POLL_TIMEOUT = float(os.getenv("ORDER_FILL_POLL_TIMEOUT", "8.0") or 8.0)
 _FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 _HEALTH_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_HEALTH_PUBLISH_INTERVAL", "120") or 120)
+# Backwards compatibility: some call sites referred to EXEC_HEALTH_PUBLISH_INTERVAL_S.
+EXEC_HEALTH_PUBLISH_INTERVAL_S = _HEALTH_PUBLISH_INTERVAL_S
 _LAST_HEALTH_PUBLISH: Dict[str, float] = {}
 EXEC_ALERT_INTERVAL_S = float(os.getenv("EXEC_ALERT_INTERVAL_S", "60") or 60)
 _LAST_EXEC_ALERT_EVAL: Dict[str, float] = {}
@@ -181,15 +188,14 @@ def _write_router_metrics_local(record: Mapping[str, Any]) -> None:
 
 
 def _build_router_health_snapshot() -> Dict[str, Any]:
-    from execution.universe_resolver import universe_by_symbol
-    from execution.utils.metrics import router_effectiveness_7d
-    from execution.intel.router_policy import router_policy
-
     entries: List[Dict[str, Any]] = []
     now = time.time()
     symbols = sorted(universe_by_symbol().keys())
     quality_counts: Dict[str, int] = {"good": 0, "ok": 0, "degraded": 0, "broken": 0}
     maker_first_enabled = 0
+    symbol_stats: Dict[str, Dict[str, Any]] = {}
+    risk_snapshot = router_autotune_shared.load_risk_snapshot()
+    global_health = router_metrics.build_router_health_snapshot()
     for sym in symbols:
         try:
             eff = router_effectiveness_7d(sym) or {}
@@ -218,30 +224,70 @@ def _build_router_health_snapshot() -> Dict[str, Any]:
             quality_counts[quality_key] += 1
         if policy_payload.get("maker_first"):
             maker_first_enabled += 1
-        entries.append(
+
+        events = router_metrics.get_recent_router_events(symbol=sym)
+        symbol_health = router_metrics.build_router_health_snapshot(router_events=events)
+        stats: Dict[str, Any] = {
+            "maker_count": int(symbol_health.get("maker_count") or 0),
+            "taker_count": int(symbol_health.get("taker_count") or 0),
+            "fallback_count": int(symbol_health.get("fallback_count") or 0),
+            "reject_count": int(symbol_health.get("reject_count") or 0),
+            "order_count": int(symbol_health.get("order_count") or 0),
+            "avg_slippage_bps": float(symbol_health.get("avg_slippage_bps") or 0.0),
+            "maker_reliability": float(symbol_health.get("maker_reliability") or 0.0),
+            "last_ts": float(symbol_health.get("ts") or now),
+        }
+        autotune = router_autotune_shared.suggest_autotune_for_symbol(
+            sym,
+            float(policy_payload.get("offset_bps") or 0.0),
+            router_health={"symbol_stats": {sym: stats}},
+            risk_snapshot=risk_snapshot,
+            min_offset_bps=getattr(maker_offset, "MIN_OFFSET_BPS", 0.5),
+        )
+        stats.update(
             {
-                "symbol": sym,
-                "maker_fill_rate": eff.get("maker_fill_ratio"),
-                "fallback_rate": eff.get("fallback_ratio"),
-                "slippage_p50": eff.get("slip_q50"),
-                "slippage_p95": eff.get("slip_q95"),
-                "ack_latency_ms": eff.get("latency_p50_ms") or eff.get("ack_latency_ms"),
-                "policy": policy_payload,
-                "maker_first": policy_payload.get("maker_first"),
-                "taker_bias": policy_payload.get("taker_bias"),
-                "bias": policy_payload.get("taker_bias"),
-                "quality": policy_payload.get("quality"),
-                "offset_bps": policy_payload.get("offset_bps"),
-                "updated_ts": now,
+                "adaptive_offset_bps": autotune["adaptive_offset_bps"],
+                "maker_first": bool(autotune["maker_first"]),
+                "risk_mode": autotune.get("risk_mode"),
+                "effective_reliability": autotune.get("effective_reliability"),
             }
         )
+        symbol_stats[sym.upper()] = stats
+        entry = {
+            "symbol": sym,
+            "maker_fill_rate": eff.get("maker_fill_ratio"),
+            "fallback_rate": eff.get("fallback_ratio"),
+            "slippage_p50": eff.get("slip_q50"),
+            "slippage_p95": eff.get("slip_q95"),
+            "ack_latency_ms": eff.get("latency_p50_ms") or eff.get("ack_latency_ms"),
+            "policy": policy_payload,
+            "maker_first": stats.get("maker_first"),
+            "taker_bias": policy_payload.get("taker_bias"),
+            "bias": policy_payload.get("taker_bias"),
+            "quality": policy_payload.get("quality"),
+            "offset_bps": autotune["adaptive_offset_bps"],
+            "updated_ts": now,
+            "autotune": autotune,
+        }
+        entries.append(entry)
     summary = {
         "updated_ts": now,
         "count": len(entries),
         "quality_counts": quality_counts,
         "maker_first_enabled": maker_first_enabled,
     }
-    return {"updated_ts": now, "summary": summary, "symbols": entries, "per_symbol": entries}
+    global_block = {
+        "router_health_score": float(global_health.get("router_health_score") or 0.0),
+        "last_update_ts": now,
+    }
+    return {
+        "updated_ts": now,
+        "summary": summary,
+        "symbols": entries,
+        "per_symbol": entries,
+        "symbol_stats": symbol_stats,
+        "global": global_block,
+    }
 
 
 def _router_quality_label(stats: Mapping[str, Any]) -> str:
@@ -550,6 +596,8 @@ def _maybe_publish_execution_intel() -> None:
             write_symbol_scores_state,
             write_router_policy_suggestions_state,
             write_risk_allocation_suggestions_state,
+            compute_and_write_rv_momentum_state,
+            compute_and_write_factor_diagnostics_state,
         )
 
         trades = expectancy_v6.load_trade_records(lookback_hours=48.0)
@@ -560,6 +608,10 @@ def _maybe_publish_execution_intel() -> None:
         router_health = _build_router_health_snapshot()
         scores_snapshot = symbol_score_v6.build_symbol_scores(expectancy_snapshot, router_health)
         write_symbol_scores_state(scores_snapshot)
+        # RV momentum state (v7.5_C1)
+        compute_and_write_rv_momentum_state()
+        # Factor diagnostics state (v7.5_C2)
+        compute_and_write_factor_diagnostics_state(scores_snapshot)
         _LAST_SYMBOL_SCORES_STATE = dict(scores_snapshot)
         router_suggestions_payload = None
         if ROUTER_AUTOTUNE_V6_ENABLED:
@@ -656,6 +708,9 @@ from execution.state_publish import (
     write_execution_health_state,
     write_synced_state,
     write_v6_runtime_probe_state,
+    compute_and_write_risk_advanced_state,
+    compute_and_write_alpha_decay_state,
+    write_runtime_diagnostics_state,
 )
 try:
     from execution.signal_screener import run_once as run_screener_once
@@ -689,8 +744,15 @@ def publish_order_audit(*_args, **_kwargs) -> None:  # type: ignore[override]
     return None
 
 
-def publish_nav_value(*_args, **_kwargs) -> None:  # type: ignore[override]
-    return None
+# Delegate nav publishing to state_publish to keep local/state files fresh.
+try:
+    from execution import state_publish as _state_publish
+
+    def publish_nav_value(*args, **kwargs) -> None:  # type: ignore[override]
+        return _state_publish.publish_nav_value(*args, **kwargs)
+except Exception:
+    def publish_nav_value(*_args, **_kwargs) -> None:  # type: ignore[override]
+        return None
 
 # ---- risk limits config ----
 _RISK_CFG: Dict[str, Any] = {}
@@ -1243,7 +1305,11 @@ def _should_emit_close(ack: OrderAckInfo, close_results: List[PnlCloseResult]) -
     return pos_before * pos_after <= 0.0
 
 
-def _confirm_order_fill(ack: OrderAckInfo) -> Optional[FillSummary]:
+def _confirm_order_fill(
+    ack: OrderAckInfo,
+    metadata: Optional[Mapping[str, Any]] = None,
+    strategy: Optional[str] = None,
+) -> Optional[FillSummary]:
     if not ack.order_id and not ack.client_order_id:
         return None
     start = time.time()
@@ -1257,6 +1323,13 @@ def _confirm_order_fill(ack: OrderAckInfo) -> Optional[FillSummary]:
     status = ack.status
     last_summary: Optional[FillSummary] = None
     fill_latency_ms: Optional[float] = None
+
+    metadata_payload: Optional[Dict[str, Any]] = None
+    if isinstance(metadata, Mapping):
+        try:
+            metadata_payload = dict(metadata)
+        except Exception:
+            metadata_payload = None
 
     while (time.time() - start) <= _FILL_POLL_TIMEOUT:
         status_resp = _fetch_order_status(ack.symbol, ack.order_id, ack.client_order_id)
@@ -1309,6 +1382,10 @@ def _confirm_order_fill(ack: OrderAckInfo) -> Optional[FillSummary]:
                 "tradeIds": sorted(seen_trade_ids),
                 "status": status,
             }
+            if strategy:
+                fill_payload["strategy"] = strategy
+            if metadata_payload:
+                fill_payload["metadata"] = metadata_payload
             if ack.position_side:
                 fill_payload["positionSide"] = ack.position_side
             if ack.reduce_only:
@@ -1358,6 +1435,10 @@ def _confirm_order_fill(ack: OrderAckInfo) -> Optional[FillSummary]:
                     "position_size_before": pos_before,
                     "position_size_after": pos_after,
                 }
+                if strategy:
+                    close_payload["strategy"] = strategy
+                if metadata_payload:
+                    close_payload["metadata"] = metadata_payload
                 if ack.position_side:
                     close_payload["positionSide"] = ack.position_side
                 if closed_qty > 0:
@@ -1519,6 +1600,54 @@ def _maybe_emit_heartbeat() -> None:
     _record_structured_event(LOG_HEART, "heartbeat", payload)
 
 
+def _sync_tp_sl_registry(positions: list) -> None:
+    """
+    Sync TP/SL registry with current positions at startup.
+    
+    V7.4_C3: Uses position_ledger.sync_ledger_with_positions() for unified
+    ledger-based sync. Ensures all open positions have TP/SL registered,
+    and removes entries for positions that no longer exist.
+    """
+    try:
+        from execution.position_ledger import sync_ledger_with_positions
+        from execution.utils import load_json
+        
+        # Load ATR multipliers from strategy config
+        strategy_cfg = load_json("config/strategy_config.json") or {}
+        sl_atr_mult = strategy_cfg.get("sl_atr_mult", 2.0)
+        tp_atr_mult = strategy_cfg.get("tp_atr_mult", 3.0)
+        
+        ledger = sync_ledger_with_positions(
+            seed_missing=True,
+            remove_stale=True,
+            sl_atr_mult=sl_atr_mult,
+            tp_atr_mult=tp_atr_mult,
+        )
+        
+        LOG.info("[startup-ledger] position ledger synced: %d entries", len(ledger))
+    except Exception as exc:
+        LOG.warning("[startup-sync] position ledger sync failed: %s", exc)
+        # Fallback to legacy registry sync
+        try:
+            from execution.position_tp_sl_registry import sync_registry_with_positions
+            from execution.utils import load_json
+            
+            strategy_cfg = load_json("config/strategy_config.json") or {}
+            sl_atr_mult = strategy_cfg.get("sl_atr_mult", 2.0)
+            tp_atr_mult = strategy_cfg.get("tp_atr_mult", 3.0)
+            
+            result = sync_registry_with_positions(positions, sl_atr_mult, tp_atr_mult)
+            
+            if result["stale_removed"] > 0 or result["new_seeded"] > 0:
+                LOG.info(
+                    "[startup-sync] TP/SL registry synced (fallback): %d stale removed, %d new seeded",
+                    result["stale_removed"],
+                    result["new_seeded"],
+                )
+        except Exception as exc2:
+            LOG.warning("[startup-sync] fallback registry sync also failed: %s", exc2)
+
+
 def _startup_position_check(client: Any) -> None:
     if client is None or getattr(client, "is_stub", False):
         LOG.info("[startup-sync] unable to check positions (client unavailable)")
@@ -1538,6 +1667,8 @@ def _startup_position_check(client: Any) -> None:
                 LOG.info("[startup-sync] all positions cleared -> resuming trading loop")
             else:
                 LOG.info("[startup-sync] no open positions detected")
+            # V7.4_C2: Sync registry even when no positions (cleanup stale entries)
+            _sync_tp_sl_registry([])
             return
 
         LOG.warning(
@@ -1558,6 +1689,8 @@ def _startup_position_check(client: Any) -> None:
         # If ALLOW_OPEN_POSITIONS=1, proceed with existing positions
         if allow_open:
             LOG.info("[startup-sync] ALLOW_OPEN_POSITIONS=1 -> proceeding with %d open positions", len(live))
+            # V7.4_C2: Sync TP/SL registry with current positions
+            _sync_tp_sl_registry(live)
             return
         
         first_warning = False
@@ -2454,7 +2587,11 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
                 reduce_fill: Optional[FillSummary] = None
                 if reduce_ack and not reduce_resp.get("dryRun"):
-                    reduce_fill = _confirm_order_fill(reduce_ack)
+                    reduce_fill = _confirm_order_fill(
+                        reduce_ack,
+                        intent.get("metadata"),
+                        intent.get("strategy") or intent.get("strategy_id"),
+                    )
                 if reduce_ack:
                     LOG.info(
                         "[executor] FLIP_ACK id=%s status=%s qty=%s",
@@ -3042,7 +3179,11 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             intent_id=intent_id,
         )
         if ack_info and not resp.get("dryRun"):
-            fill_summary = _confirm_order_fill(ack_info)
+            fill_summary = _confirm_order_fill(
+                ack_info,
+                intent.get("metadata"),
+                intent.get("strategy") or intent.get("strategy_id"),
+            )
 
     avg_fill_price = (
         fill_summary.avg_price if fill_summary and fill_summary.avg_price is not None else _to_float(resp.get("avgPrice"))
@@ -3197,11 +3338,12 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         except Exception:
             pass
         _emit_position_snapshots(symbol)
-        if fill_summary and (
+        is_position_close = (
             reduce_only
             or (side == "SELL" and pos_side == "LONG")
             or (side == "BUY" and pos_side == "SHORT")
-        ):
+        )
+        if fill_summary and is_position_close:
             try:
                 publish_close_audit(
                     symbol,
@@ -3231,6 +3373,29 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             }
             _append_order_metrics(close_record)
             _INTENT_REGISTRY.pop(intent_id, None)
+            # V7.3: Remove TP/SL registry entry on position close
+            try:
+                from execution.position_tp_sl_registry import unregister_position_tp_sl
+                unregister_position_tp_sl(symbol, pos_side)
+            except Exception:
+                pass
+        elif not is_position_close:
+            # V7.3: Register TP/SL for new positions from vol_target strategy
+            try:
+                tp_price = intent.get("take_profit_price")
+                sl_price = intent.get("stop_loss_price")
+                if tp_price is not None or sl_price is not None:
+                    metadata = intent.get("metadata", {}).get("vol_target", {}).get("tp_sl")
+                    from execution.position_tp_sl_registry import register_position_tp_sl
+                    register_position_tp_sl(
+                        symbol=symbol,
+                        position_side=pos_side,
+                        take_profit_price=tp_price,
+                        stop_loss_price=sl_price,
+                        metadata=metadata,
+                    )
+            except Exception:
+                pass
 
 
 
@@ -3271,6 +3436,9 @@ def _collect_rows() -> List[Dict[str, Any]]:
             qty_val = float(payload.get("qty", payload.get("positionAmt", 0)) or 0.0)
             if abs(qty_val) <= 0.0:
                 continue
+            entry_price = _to_float(payload.get("entryPrice") or payload.get("entry_price"))
+            if entry_price is None or entry_price <= 0.0:
+                continue
             mark_val = _to_float(
                 payload.get("markPrice")
                 or payload.get("mark_price")
@@ -3281,22 +3449,115 @@ def _collect_rows() -> List[Dict[str, Any]]:
                     mark_val = float(get_price(str(payload.get("symbol") or "") or ""))
                 except Exception:
                     mark_val = None
+            if mark_val is None or mark_val <= 0.0:
+                continue
+            unrealized_val = _to_float(
+                payload.get("unrealized", payload.get("unRealizedProfit", 0)) or 0.0
+            )
+            leverage_val = _to_float(payload.get("leverage"))
             rows.append(
                 {
                     "symbol": payload.get("symbol"),
                     "positionSide": payload.get("positionSide", "BOTH"),
                     "qty": qty_val,
-                    "entryPrice": float(payload.get("entryPrice") or 0.0),
-                    "unrealized": float(
-                        payload.get("unrealized", payload.get("unRealizedProfit", 0)) or 0.0
-                    ),
-                    "leverage": float(payload.get("leverage") or 0.0),
+                    "entryPrice": entry_price,
+                    "unrealized": float(unrealized_val or 0.0),
+                    "leverage": float(leverage_val or 0.0),
                     "markPrice": mark_val,
                 }
             )
         except Exception:
             continue
     return rows
+
+
+def _build_positions_state_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize live positions for the canonical positions_state.json writer."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    normalized: List[Dict[str, Any]] = []
+    for raw in rows:
+        try:
+            symbol = str(raw.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            qty = _to_float(raw.get("qty") or raw.get("positionAmt"))
+            if qty is None:
+                continue
+            entry_price = _to_float(raw.get("entryPrice") or raw.get("entry_price"))
+            mark_price = _to_float(
+                raw.get("markPrice") or raw.get("mark_price") or raw.get("mark")
+            )
+            if mark_price is None and symbol:
+                try:
+                    mark_price = float(get_price(symbol))
+                except Exception:
+                    mark_price = None
+            unrealized = _to_float(
+                raw.get("unrealized")
+                or raw.get("unRealizedProfit")
+                or raw.get("pnl")
+                or raw.get("pnl_usd")
+                or raw.get("unrealized_pnl")
+            )
+            leverage = _to_float(raw.get("leverage"))
+            if unrealized is None and mark_price is not None and entry_price is not None:
+                unrealized = (mark_price - entry_price) * qty
+            notional = abs(qty) * mark_price if mark_price is not None else None
+            normalized.append(
+                {
+                    "symbol": symbol,
+                    "side": str(raw.get("positionSide") or raw.get("side") or ("LONG" if qty > 0 else "SHORT")).upper(),
+                    "qty": qty,
+                    "entry_price": entry_price if entry_price is not None else 0.0,
+                    "mark_price": mark_price if mark_price is not None else 0.0,
+                    "unrealized_pnl": unrealized if unrealized is not None else 0.0,
+                    "realized_pnl": _to_float(
+                        raw.get("realized_pnl") or raw.get("realized") or raw.get("realizedProfit")
+                    ),
+                    "notional": notional if notional is not None else 0.0,
+                    "leverage": leverage,
+                    "ts": now_iso,
+                }
+            )
+        except Exception:
+            continue
+    return normalized
+
+
+def _write_positions_state(positions_rows: List[Dict[str, Any]], *, updated_ts: Optional[str] = None) -> None:
+    """
+    Canonical writer for logs/state/positions_state.json.
+
+    Ensures non-zero positions carry non-zero entry/mark prices to catch bogus snapshots early.
+    """
+    ts_value = updated_ts or datetime.now(timezone.utc).isoformat()
+    for row in positions_rows:
+        qty = _to_float(row.get("qty"))
+        if qty is None or abs(qty) <= 0:
+            continue
+        entry_price = _to_float(row.get("entry_price"))
+        mark_price = _to_float(row.get("mark_price"))
+        if entry_price is None or entry_price <= 0:
+            LOG.warning(
+                "[telemetry] positions_state_invalid_entry symbol=%s qty=%s entry=%s",
+                row.get("symbol"),
+                qty,
+                entry_price,
+            )
+        if mark_price is None or mark_price <= 0:
+            LOG.warning(
+                "[telemetry] positions_state_invalid_mark symbol=%s qty=%s mark=%s",
+                row.get("symbol"),
+                qty,
+                mark_price,
+            )
+        assert entry_price is not None and entry_price > 0, "positions_state entry_price must be >0 for open positions"
+        assert mark_price is not None and mark_price > 0, "positions_state mark_price must be >0 for open positions"
+    payload = {
+        "updated_ts": ts_value,
+        "positions": positions_rows,
+    }
+    _write_json_cache(POSITIONS_STATE_PATH, payload)
 
 
 def _json_default(value: Any) -> str:
@@ -3498,27 +3759,119 @@ def _pub_tick() -> None:
             if key in nav_detail:
                 nav_payload[key] = nav_detail.get(key)
     nav_written = False
-    positions_written = False
+    positions_state_written = False
+    positions_snapshot_written = False
     risk_written = False
     scores_written = False
+    diagnostics_written = False
     synced_written = False
     try:
         write_nav_state(nav_payload)
         nav_written = True
     except Exception as exc:
         LOG.error("[telemetry] nav_state_write_failed: %s", exc)
-    positions_payload = {"rows": rows, "updated": now}
+    positions_state_rows = _build_positions_state_rows(rows)
+    positions_state_ts = datetime.now(timezone.utc).isoformat()
+    positions_state_payload = {"positions": positions_state_rows, "updated_ts": positions_state_ts}
+    try:
+        _write_positions_state(positions_state_rows, updated_ts=positions_state_ts)
+        positions_state_written = True
+    except Exception as exc:
+        LOG.error("[telemetry] positions_state_contract_write_failed: %s", exc)
+    # Only persist non-zero positions; ignore exchange noise entries.
+    filtered_rows = []
+    for r in rows:
+        try:
+            qty = float(r.get("positionAmt") or r.get("qty") or 0.0)
+        except Exception:
+            qty = 0.0
+        if abs(qty) < 1e-9:
+            continue
+        filtered_rows.append(r)
+    # Persist non-zero positions with enriched fields for monitoring/ledger.
+    items = []
+    for r in filtered_rows:
+        qty = r.get("qty") if "qty" in r else r.get("positionAmt")
+        try:
+            qty = float(qty or 0.0)
+        except Exception:
+            qty = 0.0
+        entry = r.get("entryPrice") or r.get("entry_price") or 0.0
+        mark = r.get("markPrice") or r.get("mark_price") or 0.0
+        try:
+            entry = float(entry)
+        except Exception:
+            entry = 0.0
+        try:
+            mark = float(mark)
+        except Exception:
+            mark = 0.0
+        if not mark:
+            try:
+                sym = r.get("symbol")
+                if sym:
+                    mark = float(get_price(f"{sym}USDT"))
+            except Exception:
+                mark = 0.0
+        try:
+            pnl = float(r.get("unrealized") or r.get("pnl") or (qty * (mark - entry)))
+        except Exception:
+            pnl = 0.0
+        try:
+            notional = abs(qty * mark)
+        except Exception:
+            notional = 0.0
+        items.append(
+            {
+                "symbol": r.get("symbol"),
+                "side": r.get("positionSide") or r.get("side"),
+                "qty": qty,
+                "entry_price": entry,
+                "mark_price": mark,
+                "pnl": pnl,
+                "leverage": r.get("leverage"),
+                "notional": notional,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    positions_payload = {
+        "rows": filtered_rows,
+        "items": items,
+        "positions": positions_state_rows,
+        "updated": now,
+    }
     try:
         write_positions_state(positions_payload)
-        positions_written = True
+        positions_snapshot_written = True
     except Exception as exc:
-        LOG.error("[telemetry] positions_state_write_failed: %s", exc)
+        LOG.error("[telemetry] positions_snapshot_write_failed: %s", exc)
     risk_payload = _LAST_RISK_SNAPSHOT or {"updated_ts": now, "symbols": []}
     try:
         write_risk_snapshot_state(risk_payload)
         risk_written = True
     except Exception as exc:
         LOG.error("[telemetry] risk_snapshot_write_failed: %s", exc)
+    # v7.5_A1: Publish VaR/CVaR and alpha decay state
+    try:
+        positions_for_var = []
+        for r in rows:
+            sym = r.get("symbol")
+            if not sym:
+                continue
+            # Compute notional from qty * markPrice
+            qty = abs(float(r.get("qty") or 0))
+            mark = float(r.get("markPrice") or r.get("mark_price") or 0)
+            notional = qty * mark if mark > 0 else abs(float(r.get("notional") or 0))
+            if notional > 0:
+                positions_for_var.append({"symbol": sym, "notional": notional})
+        compute_and_write_risk_advanced_state(positions_for_var, nav_float)
+    except Exception as exc:
+        LOG.debug("[telemetry] risk_advanced_write_failed: %s", exc)
+    try:
+        symbols_list = [str(r.get("symbol")) for r in rows if r.get("symbol")]
+        compute_and_write_alpha_decay_state(symbols_list)
+    except Exception as exc:
+        LOG.debug("[telemetry] alpha_decay_write_failed: %s", exc)
     scores_payload = (
         dict(_LAST_SYMBOL_SCORES_STATE)
         if isinstance(_LAST_SYMBOL_SCORES_STATE, Mapping)
@@ -3529,6 +3882,11 @@ def _pub_tick() -> None:
         scores_written = True
     except Exception as exc:
         LOG.error("[telemetry] symbol_scores_write_failed: %s", exc)
+    try:
+        write_runtime_diagnostics_state()
+        diagnostics_written = True
+    except Exception as exc:
+        LOG.debug("[telemetry] diagnostics_state_write_failed: %s", exc)
     flag_snapshot = get_v6_flag_snapshot()
     try:
         synced_payload = build_synced_state_payload(
@@ -3555,15 +3913,17 @@ def _pub_tick() -> None:
     except Exception as exc:
         LOG.error("[telemetry] synced_state_write_failed: %s", exc)
     LOG.info(
-        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions=%s risk=%s symbol_scores=%s synced=%s",
+        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s synced=%s",
         nav_written,
-        positions_written,
+        positions_state_written,
+        positions_snapshot_written,
         risk_written,
         scores_written,
+        diagnostics_written,
         synced_written,
     )
     _LAST_NAV_STATE = nav_payload
-    _LAST_POSITIONS_STATE = synced_payload
+    _LAST_POSITIONS_STATE = positions_state_payload
     return None
 
 
@@ -3592,6 +3952,44 @@ def _loop_once(i: int) -> None:
     for symbol in sorted(active_symbols):
         _maybe_emit_execution_alerts(symbol)
     _maybe_publish_execution_intel()
+
+    # V7.3: Scan for TP/SL exits before generating new intents
+    try:
+        from execution.exit_scanner import scan_tp_sl_exits, build_exit_intent
+        
+        # Build price map from positions (markPrice) or fetch live
+        price_map: Dict[str, float] = {}
+        for pos in baseline_positions:
+            sym = pos.get("symbol")
+            if not sym:
+                continue
+            mark = pos.get("markPrice") or pos.get("mark_price")
+            if mark:
+                price_map[sym] = float(mark)
+            else:
+                try:
+                    price_map[sym] = float(get_price(sym))
+                except Exception:
+                    pass
+        
+        exit_candidates = scan_tp_sl_exits(baseline_positions, price_map)
+        for candidate in exit_candidates:
+            exit_intent = build_exit_intent(candidate)
+            LOG.info(
+                "[exit_scanner] %s %s %s exit trigger at %.4f",
+                candidate.symbol,
+                candidate.position_side,
+                candidate.exit_reason.value.upper(),
+                candidate.trigger_price,
+            )
+            try:
+                _send_order(exit_intent)
+            except Exception as exc:
+                LOG.error("[exit_scanner] failed to send exit intent %s: %s", candidate.symbol, exc)
+    except ImportError:
+        pass
+    except Exception as exc:
+        LOG.warning("[exit_scanner] error during TP/SL scan: %s", exc)
 
     if INTENT_TEST:
         intent = {
@@ -3705,6 +4103,15 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
 
     _sync_dry_run()
     _clean_testnet_caches()
+    
+    # Refresh exchange precision cache at startup
+    try:
+        from execution.exchange_precision import refresh_precision_cache
+        refresh_precision_cache()
+        LOG.info("[executor] exchange precision cache refreshed")
+    except Exception as exc:
+        LOG.warning("[executor] precision cache refresh failed: %s", exc)
+    
     LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
     log_v6_flag_snapshot(LOG)
     _maybe_write_v6_runtime_probe(force=True)

@@ -10,6 +10,7 @@ volatility regime, and time-of-day expectancy buckets.
 import datetime as dt
 from typing import Dict
 
+from execution.intel.router_autotune_shared import suggest_autotune_for_symbol
 from execution.utils.metrics import router_effectiveness_7d
 from execution.intel.expectancy_map import hourly_expectancy
 from execution.utils.vol import atr_pct
@@ -72,6 +73,12 @@ def suggest_maker_offset_bps(symbol: str) -> float:
         offset += 0.8
     elif slip_med < 1.0:
         offset -= 0.2
+
+    try:
+        dynamic = suggest_autotune_for_symbol(symbol, offset, min_offset_bps=MIN_OFFSET_BPS)
+        offset = float(dynamic.get("adaptive_offset_bps") or offset)
+    except Exception:
+        pass
 
     try:
         hourly = hourly_expectancy(symbol) or {}

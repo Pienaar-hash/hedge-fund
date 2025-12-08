@@ -1,0 +1,14 @@
+{
+  "state_files": {
+    "nav_state": "logs/state/nav_state.json",
+    "positions_state": "logs/state/positions_state.json",
+    "risk_snapshot": "logs/state/risk_snapshot.json",
+    "factor_diagnostics": "logs/state/factor_diagnostics.json",
+    "runtime_diagnostics": "logs/state/diagnostics.json"
+  },
+  "diagnostics": {
+    "veto_metrics": true,
+    "exit_pipeline": true,
+    "liveness": true
+  }
+}

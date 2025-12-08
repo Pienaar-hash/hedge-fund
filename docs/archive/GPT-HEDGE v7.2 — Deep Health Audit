@@ -1,0 +1,348 @@
+# 🧬 GPT-HEDGE v7.2 — Deep Health Audit
+
+## Telemetry & Pipeline Consistency Runbook
+
+**Purpose:**
+Go beyond “does it run?” and check **whether all subsystems agree with each other**:
+
+* NAV ↔ positions ↔ risk
+* Screener ↔ risk veto ↔ router ↔ orders
+* PnL attribution ↔ equity ↔ regimes/risk-mode
+* Dashboard ↔ logs/state/*
+
+Run this after pre-flight passes and after major patches (like the DD fix).
+
+---
+
+## 0. Conventions & Prep
+
+From repo root on the box:
+
+```bash
+cd ~/hedge-fund
+export PYTHONPATH=.
+```
+
+Shortcuts (adapt to your paths):
+
+* State: `logs/state/*.json`
+* Execution logs: `logs/execution/*.jsonl`
+* Pipeline: `logs/pipeline_v6_shadow.jsonl`, `logs/pipeline_v6_compare.jsonl`
+
+---
+
+## 1. State Surface Sanity — Timestamps & Cohesion
+
+### 1.1 Check state files exist & are updating
+
+```bash
+ls -ltr logs/state | tail -n 12
+```
+
+You should see recent mtime for at least:
+
+* `nav.json`
+* `nav_state.json`/`nav_confirmed.json` (if present)
+* `positions.json`
+* `risk_snapshot.json`
+* `regimes.json`
+* `router_health.json`
+* `equity.json`
+* `pnl_attribution.json`
+* `kpis_v7.json`
+
+**Red flags:**
+
+* One of these not updating while others are
+* `nav.json` much older than `risk_snapshot.json` or `router_health.json`
+
+---
+
+## 2. NAV ↔ Positions ↔ Risk Snapshot
+
+Goal: Make sure **NAV, exposures, and risk_snapshot agree**.
+
+### 2.1 NAV vs positions exposure
+
+Open:
+
+* `logs/state/nav.json`
+* `logs/state/positions.json`
+
+Check:
+
+* Sum of `abs(position.notional_usd)` is comfortably below NAV × max gross exposure you expect.
+* If you have a per-symbol cap (e.g., BTC 15% NAV), verify largest symbol notional ≲ 0.15 × NAV.
+
+If you want a quick ad-hoc check in Python (paste into `python`):
+
+```python
+import json, glob
+
+nav = json.load(open("logs/state/nav.json"))
+positions = json.load(open("logs/state/positions.json"))
+
+nav_usd = nav["nav"]["total_usd"]
+total_gross = sum(abs(p.get("notional_usd", 0.0)) for p in positions)
+max_symbol = max(positions, key=lambda p: abs(p.get("notional_usd", 0.0)))
+
+print("NAV USD:", nav_usd)
+print("Total gross:", total_gross, "gross/NAV:", total_gross/nav_usd)
+print("Max symbol:", max_symbol["symbol"], max_symbol["notional_usd"]/nav_usd)
+```
+
+You want **gross/NAV** and the max symbol percentage to look sane.
+
+---
+
+### 2.2 Risk snapshot vs drawdown limits
+
+Open `logs/state/risk_snapshot.json` and confirm:
+
+* `dd_pct` ~ 1.x (percent-style)
+* `dd_frac` ~ 0.0x (fraction)
+* `daily_loss_frac` similar
+* `risk_mode` consistent:
+
+  * `OK` if `dd_frac` and `daily_loss_frac` ≪ configured caps
+  * `DEFENSIVE` / `HALTED` only when you’d expect
+
+If you see `risk_mode: DEFENSIVE` with tiny `dd_frac`, that’s a red flag. Right now after the patch, it **should** be consistent.
+
+---
+
+## 3. Screener ↔ Risk Veto ↔ Router ↔ Orders
+
+Goal: Every intent takes a clean path:
+
+> intent → (maybe veto) → (maybe order) → (maybe fill)
+
+### 3.1 Intent generation vs veto counts
+
+Check latest screener intents (shadow):
+
+```bash
+tail -n 50 logs/pipeline_v6_shadow.jsonl
+```
+
+For a short window, count how many intents and how many vetoes:
+
+* If you see, say, 20 intents and 20 vetoes, check the veto reasons in:
+
+  * `logs/execution/risk_vetoes.jsonl`
+
+You want:
+
+* No nav_drawdown_limit / day_loss_limit spam anymore
+* Mostly `symbol_cap`, `min_notional`, `counter_trend`, etc.
+
+---
+
+### 3.2 Orders attempted vs vetoes
+
+```bash
+tail -n 50 logs/execution/orders_attempted.jsonl
+tail -n 50 logs/execution/risk_vetoes.jsonl
+```
+
+Audit:
+
+* Every attempted order should either:
+
+  * appear as a real exchange order (in your order logs / fills), **or**
+  * be clearly vetoed *before* order placement.
+
+If you see timestamps where:
+
+* Screener emits an intent
+* No matching veto AND no order attempt
+
+→ pipeline bug.
+
+If you want, we can design a little “intent → veto → order” correlator later.
+
+---
+
+## 4. Router Health ↔ Actual Execution
+
+Goal: Make sure `router_health.json` matches **how we are actually routing**.
+
+### 4.1 Router health snapshot
+
+Open `logs/state/router_health.json`:
+
+For a few active symbols (BTC, SOL, etc.) check:
+
+* `maker_count`, `taker_count`, `fallback_count`, `reject_count`
+* `avg_slippage_bps`
+* `maker_reliability`
+* `adaptive_offset_bps`
+* `maker_first`
+
+If SOL is 100% fallback, you should see:
+
+* High `fallback_count`
+* Low `maker_reliability`
+* Probably `maker_first` = false for SOL only
+
+That’s consistent: the audit is about whether **the telemetry matches the behavior**, not whether SOL’s books are pretty.
+
+---
+
+## 5. PnL Attribution ↔ Equity ↔ Regimes / Risk Mode
+
+Goal: Equity curve and PnL attribution should tell the **same story**.
+
+### 5.1 Equity vs total PnL
+
+Open:
+
+* `logs/state/equity.json`
+* `logs/state/pnl_attribution.json`
+
+Rough check:
+
+```python
+import json
+
+eq = json.load(open("logs/state/equity.json"))
+attr = json.load(open("logs/state/pnl_attribution.json"))
+
+total_attr = attr["summary"]["total_pnl"]
+equity_series = eq["equity"]
+initial_equity = eq.get("initial_equity", equity_series[0])
+equity_pnl = equity_series[-1] - initial_equity
+
+print("Total attr PnL:", total_attr)
+print("Equity PnL:", equity_pnl)
+print("Diff:", equity_pnl - total_attr)
+```
+
+You want the difference small (fees / rounding / time window).
+
+---
+
+### 5.2 Regime & risk-mode attribution consistency
+
+From `pnl_attribution.json`:
+
+* `per_regime.atr` and `per_regime.dd`:
+
+  * Buckets with most activity should correspond to regimes you actually see in `regimes.json`.
+* `per_risk_mode`:
+
+  * In a stable low-DD environment, majority should be in `OK` bucket.
+
+If `per_risk_mode.DEFENSIVE` shows big PnL but `risk_snapshot.json` has spent almost no time in DEFENSIVE recently, that’s a hint the attribution’s regime snapshot might be misaligned.
+
+---
+
+## 6. Dashboard ↔ logs/state/*
+
+Goal: UI is just a read-only lens on `logs/state/*`.
+
+### 6.1 Risk card vs risk_snapshot.json
+
+Compare:
+
+* Dashboard Risk card (dd_frac, daily_loss_frac, risk_mode)
+* `logs/state/risk_snapshot.json`
+
+Numbers should match to at least 2–3 decimal places.
+
+---
+
+### 6.2 Router gauge vs router_health.json
+
+* Router circle gauge health score vs `router_health["global"]["router_health_score"]`
+* Maker/fallback stats vs symbol_stats for the currently selected symbol
+
+---
+
+### 6.3 Attribution tab vs pnl_attribution.json
+
+* Totals shown in summary card should match:
+
+  * `summary.total_pnl`
+  * `summary.total_realized`
+  * `summary.total_unrealized`
+
+Spot-check a symbol or strategy row vs `per_symbol` or `per_strategy` in the JSON.
+
+---
+
+### 6.4 Diagnostics tab vs equity/positions/pnl_attribution
+
+* Drawdown % vs last `drawdown` element in equity.json
+* Worst-symbol list vs lowest `unrealized_pnl` from positions.json
+* Regime PnL bars vs `per_regime.atr` / `per_regime.dd`
+
+If anything doesn’t line up, it’s a **view bug**, not engine bug — note it and we can patch the panel.
+
+---
+
+## 7. Test Suites — Structural & Logic Guardrails
+
+Run the “deep health” test bundle:
+
+```bash
+pytest \
+  tests/test_risk_limits.py \
+  tests/test_risk_engine_v6.py \
+  tests/test_risk_caps_v7.py \
+  tests/test_router_autotune.py \
+  tests/test_strategy_adaptation.py \
+  tests/test_adaptive_weighting.py \
+  tests/test_pnl_attribution_core.py \
+  tests/test_pnl_attribution_h2.py \
+  tests/test_dashboard_attribution_panel.py \
+  tests/test_portfolio_diagnostics_panel.py
+```
+
+You want:
+
+* All tests passing
+* Only the known `PytestConfigWarning` about `env`
+* No new failures after the DD patch
+
+---
+
+## 8. Consistency Heuristics — Quick “Smell Checks”
+
+If all the above passes, do a final gut-check on a single recent window (say last 1–2 hours):
+
+1. **Did we trade?**
+
+   * `orders_attempted.jsonl` shows attempts
+   * `fills` (wherever recorded) show some executions.
+
+2. **Did attribution move?**
+
+   * `pnl_attribution.json` changed
+   * `per_symbol` and `summary.total_pnl` are not static.
+
+3. **Did equity move in the same direction as trades?**
+
+   * If we had net long exposure and price went up, equity and PnL should reflect that.
+
+4. **Did router behave as expected given health?**
+
+   * If books were thin, more fallback / taker; otherwise more maker.
+
+If all of that feels coherent, the **telemetry graph is healthy**: logs agree with each other, and the dashboard agrees with the logs.
+
+---
+
+## 9. What To Flag As “Needs Patch”
+
+From this deep audit, anything in this list is worth a patch:
+
+* **Hard mismatch** between dashboard and state file values
+* **NAV / equity / total PnL inconsistencies** beyond fees/slippage
+* **Intents disappearing** (appearing in shadow but not in veto or order logs)
+* **Risk mode flipping** with no underlying change in dd_frac/daily_loss_frac
+* **Router health score** high but metrics clearly degraded (or vice versa)
+* **Attribution regime/risk-mode buckets** that don’t match actual recent regimes
+
+If you hit any of those, tell me **which mismatch** you see (and paste 2–3 relevant snippets), and we’ll treat it as a focused “PATCHSET K — Consistency Fixes” sprint.
+

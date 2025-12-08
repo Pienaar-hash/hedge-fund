@@ -18,7 +18,12 @@ import pathlib
 import time
 from typing import Any, Dict, List, Mapping, Optional
 
+from execution.diagnostics_metrics import (
+    build_runtime_diagnostics_snapshot_with_liveness,
+    _load_strategy_config,
+)
 from utils.firestore_client import get_db
+from execution.pnl_tracker import export_pnl_attribution_state
 from execution.utils import get_usd_to_zar
 
 # ----- robust .env load -----
@@ -152,14 +157,320 @@ def write_nav_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = No
             logger.warning("[nav-state] AUM warning: entries missing usd_value=%s", missing)
 
     _write_state_file("nav.json", snapshot, state_dir)
+    try:
+        export_pnl_attribution_state()
+    except Exception as exc:
+        LOG.warning("pnl_attribution_export_failed: %s", exc)
 
 
 def write_router_health_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write router health state with computed health score.
+    
+    Adds router_health_score if not present in payload.
+    """
+    # Add health score if not present
+    if "router_health_score" not in payload:
+        try:
+            from execution.router_metrics import compute_router_health_score
+            
+            maker_ratio = payload.get("maker_ratio") or payload.get("maker_fill_rate") or 0.0
+            fallback_ratio = payload.get("fallback_ratio") or 0.0
+            avg_slippage = payload.get("avg_slippage_bps") or payload.get("slip_q50_bps") or 0.0
+            reject_ratio = payload.get("reject_ratio") or payload.get("reject_rate") or 0.0
+            
+            payload["router_health_score"] = compute_router_health_score(
+                maker_ratio=float(maker_ratio) if maker_ratio else 0.0,
+                fallback_ratio=float(fallback_ratio) if fallback_ratio else 0.0,
+                avg_slippage_bps=float(avg_slippage) if avg_slippage else 0.0,
+                reject_ratio=float(reject_ratio) if reject_ratio else 0.0,
+            )
+        except Exception:
+            payload["router_health_score"] = 0.0
+    
     _write_state_file("router_health.json", payload, state_dir)
 
 
-def write_risk_snapshot_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
-    _write_state_file("risk_snapshot.json", payload, state_dir)
+def _to_frac(value: Any) -> Optional[float]:
+    """
+    Normalize a percentage-style value to a fraction (0-1).
+    Values >1 are treated as percent-style (e.g., 1.14 -> 0.0114).
+    Values <=1 are assumed already fractional and returned unchanged.
+    Returns None if value is None or not numeric.
+    """
+    if value is None:
+        return None
+    try:
+        v = float(value)
+        if v > 1.0:
+            return v / 100.0
+        return v
+    except (TypeError, ValueError):
+        return None
+
+
+def write_risk_snapshot_state(
+    payload: Dict[str, Any],
+    state_dir: pathlib.Path | None = None,
+    *,
+    router_health: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Write risk_snapshot.json with added normalized fractional fields and risk mode."""
+    from execution.risk_engine_v6 import compute_risk_mode_from_state
+    from execution.drawdown_tracker import get_portfolio_dd_state
+    from execution.risk_loader import load_risk_config
+
+    # Add normalized fractional fields for drawdown and daily loss
+    enriched = dict(payload) if payload else {}
+    dd_state_block = enriched.get("dd_state") or {}
+    drawdown_block = dd_state_block.get("drawdown") or {} if isinstance(dd_state_block, dict) else {}
+    
+    # Extract dd_pct from nested structure: dd_state.drawdown.dd_pct
+    dd_pct_raw = drawdown_block.get("dd_pct")
+    # Extract daily_loss.pct from nested structure: dd_state.drawdown.daily_loss.pct
+    daily_loss_block = drawdown_block.get("daily_loss") or {}
+    daily_loss_pct_raw = daily_loss_block.get("pct")
+    
+    # Compute normalized fractions
+    dd_frac = _to_frac(dd_pct_raw)
+    daily_loss_frac = _to_frac(daily_loss_pct_raw)
+    
+    # Add fractional fields to payload (preserve originals)
+    enriched["dd_frac"] = dd_frac
+    enriched["daily_loss_frac"] = daily_loss_frac
+
+    # Compute portfolio DD and circuit breaker status
+    try:
+        risk_cfg = load_risk_config()
+        cb_cfg = risk_cfg.get("circuit_breakers") or {}
+        max_portfolio_dd_nav_pct = cb_cfg.get("max_portfolio_dd_nav_pct")
+
+        # Load NAV history for portfolio DD computation
+        nav_log_path = LOG_DIR / "nav_log.json"
+        nav_history: List[float] = []
+        if nav_log_path.exists():
+            try:
+                import json as _json
+                with nav_log_path.open("r", encoding="utf-8") as handle:
+                    nav_log_data = _json.load(handle)
+                if isinstance(nav_log_data, list):
+                    for entry in nav_log_data[-200:]:
+                        if isinstance(entry, dict):
+                            nav_val = entry.get("nav") or entry.get("nav_usd")
+                            if nav_val is not None:
+                                try:
+                                    nav_float = float(nav_val)
+                                    if nav_float > 0:
+                                        nav_history.append(nav_float)
+                                except (TypeError, ValueError):
+                                    pass
+            except Exception:
+                pass
+
+        dd_state_obj = get_portfolio_dd_state(nav_history) if nav_history else None
+        portfolio_dd_pct = dd_state_obj.current_dd_pct if dd_state_obj else None
+
+        circuit_breaker_active = False
+        if max_portfolio_dd_nav_pct is not None and dd_state_obj is not None:
+            circuit_breaker_active = dd_state_obj.current_dd_pct >= max_portfolio_dd_nav_pct
+
+        enriched["portfolio_dd_pct"] = portfolio_dd_pct
+        enriched["circuit_breaker"] = {
+            "max_portfolio_dd_nav_pct": max_portfolio_dd_nav_pct,
+            "active": circuit_breaker_active,
+        }
+    except Exception as exc:
+        LOG.warning("circuit_breaker_computation_failed: %s", exc)
+        enriched["portfolio_dd_pct"] = None
+        enriched["circuit_breaker"] = {
+            "max_portfolio_dd_nav_pct": None,
+            "active": False,
+        }
+
+    # Compute correlation group exposures
+    try:
+        from execution.risk_loader import load_correlation_groups_config
+        from execution.correlation_groups import compute_group_exposure_nav_pct
+
+        corr_cfg = load_correlation_groups_config()
+        
+        if corr_cfg.groups:
+            # Get positions from payload or existing state
+            positions_data = enriched.get("positions") or []
+            if not positions_data:
+                # Try to load from positions state file
+                positions_path = (state_dir or STATE_DIR) / "positions.json"
+                if positions_path.exists():
+                    try:
+                        with positions_path.open("r", encoding="utf-8") as f:
+                            positions_payload = json.load(f)
+                            positions_data = positions_payload.get("positions") or []
+                    except Exception:
+                        positions_data = []
+
+            # Get NAV for exposure calculation
+            nav_for_corr = enriched.get("nav_total") or enriched.get("nav") or 0
+            try:
+                nav_for_corr = float(nav_for_corr) if nav_for_corr else 0.0
+            except (TypeError, ValueError):
+                nav_for_corr = 0.0
+
+            if nav_for_corr > 0:
+                current_exposure = compute_group_exposure_nav_pct(
+                    positions=positions_data,
+                    nav_total_usd=nav_for_corr,
+                    corr_cfg=corr_cfg,
+                )
+                
+                correlation_groups_state = {}
+                for group_name, group_cfg in corr_cfg.groups.items():
+                    correlation_groups_state[group_name] = {
+                        "gross_nav_pct": current_exposure.get(group_name, 0.0),
+                        "max_group_nav_pct": group_cfg.max_group_nav_pct,
+                    }
+                enriched["correlation_groups"] = correlation_groups_state
+            else:
+                # NAV invalid - return empty but with caps for reference
+                enriched["correlation_groups"] = {
+                    group_name: {
+                        "gross_nav_pct": 0.0,
+                        "max_group_nav_pct": group_cfg.max_group_nav_pct,
+                    }
+                    for group_name, group_cfg in corr_cfg.groups.items()
+                }
+        else:
+            enriched["correlation_groups"] = {}
+    except Exception as exc:
+        LOG.warning("correlation_groups_computation_failed: %s", exc)
+        enriched["correlation_groups"] = {}
+    
+    # Compute risk mode
+    try:
+        nav_health = enriched.get("nav_health")
+        # Create a snapshot dict with dd_frac/daily_loss_frac for risk mode computation
+        risk_snapshot_for_mode = {
+            "dd_frac": dd_frac,
+            "daily_loss_frac": daily_loss_frac,
+        }
+        risk_mode_result = compute_risk_mode_from_state(
+            nav_health=nav_health,
+            risk_snapshot=risk_snapshot_for_mode,
+            router_health=router_health,
+        )
+        enriched["risk_mode"] = risk_mode_result.mode.value
+        enriched["risk_mode_reason"] = risk_mode_result.reason
+        enriched["risk_mode_score"] = risk_mode_result.score
+    except Exception as exc:
+        LOG.warning("risk_mode_computation_failed: %s", exc)
+        enriched["risk_mode"] = "HALTED"
+        enriched["risk_mode_reason"] = f"computation_error: {exc}"
+        enriched["risk_mode_score"] = 1.0
+    
+    # V7.4_C2: TP/SL registry canary check
+    try:
+        from execution.position_tp_sl_registry import get_all_tp_sl_positions
+        
+        # Get position count from positions state
+        positions_path = (state_dir or STATE_DIR) / "positions.json"
+        num_positions = 0
+        if positions_path.exists():
+            try:
+                with positions_path.open("r", encoding="utf-8") as f:
+                    positions_payload = json.load(f)
+                    rows = positions_payload.get("rows") or []
+                    # Count positions with non-zero qty
+                    num_positions = sum(
+                        1 for r in rows
+                        if abs(float(r.get("qty") or r.get("positionAmt") or 0)) > 0
+                    )
+            except Exception:
+                pass
+        
+        tp_sl_registry = get_all_tp_sl_positions()
+        num_registry_entries = len(tp_sl_registry)
+        registry_mismatch = bool(num_positions > 0 and num_registry_entries == 0)
+        
+        enriched["tp_sl_registry"] = {
+            "num_positions": num_positions,
+            "num_registry_entries": num_registry_entries,
+            "registry_mismatch": registry_mismatch,
+        }
+        
+        if registry_mismatch:
+            LOG.warning(
+                "[CANARY] TP/SL registry mismatch: %d positions, 0 registry entries — exit layer impaired!",
+                num_positions,
+            )
+    except Exception as exc:
+        LOG.debug("tp_sl_registry_canary_check_failed: %s", exc)
+        enriched["tp_sl_registry"] = {
+            "num_positions": 0,
+            "num_registry_entries": 0,
+            "registry_mismatch": False,
+        }
+    
+    # v7.5_A1: Add VaR and CVaR to risk snapshot
+    try:
+        from execution.vol_risk import (
+            load_var_config,
+            load_cvar_config,
+            compute_portfolio_var_from_positions,
+            compute_all_position_cvars,
+        )
+        
+        # Get NAV for VaR/CVaR calculation
+        nav_for_var = enriched.get("nav_total") or enriched.get("nav") or 0
+        try:
+            nav_for_var = float(nav_for_var) if nav_for_var else 0.0
+        except (TypeError, ValueError):
+            nav_for_var = 0.0
+        
+        var_cfg = load_var_config()
+        cvar_cfg = load_cvar_config()
+        
+        if nav_for_var > 0:
+            # Compute Portfolio VaR
+            if var_cfg.enabled:
+                var_result = compute_portfolio_var_from_positions(
+                    positions_data,
+                    nav_for_var,
+                    var_cfg,
+                )
+                enriched["var"] = {
+                    "portfolio_var_usd": var_result.var_usd,
+                    "portfolio_var_nav_pct": var_result.var_nav_pct,
+                    "max_portfolio_var_nav_pct": var_cfg.max_portfolio_var_nav_pct,
+                    "within_limit": var_result.within_limit,
+                    "portfolio_volatility": var_result.portfolio_volatility,
+                    "confidence": var_cfg.confidence,
+                    "n_assets": var_result.n_assets,
+                }
+            
+            # Compute Position CVaRs
+            if cvar_cfg.enabled:
+                cvar_results = compute_all_position_cvars(
+                    positions_data,
+                    nav_for_var,
+                    cvar_cfg,
+                )
+                enriched["cvar"] = {
+                    "per_symbol": {
+                        symbol: {
+                            "cvar_nav_pct": result.cvar_nav_pct,
+                            "limit": cvar_cfg.max_position_cvar_nav_pct,
+                            "within_limit": result.within_limit,
+                        }
+                        for symbol, result in cvar_results.items()
+                    },
+                    "max_position_cvar_nav_pct": cvar_cfg.max_position_cvar_nav_pct,
+                    "confidence": cvar_cfg.confidence,
+                }
+    except ImportError:
+        LOG.debug("vol_risk module not available for VaR/CVaR enrichment")
+    except Exception as exc:
+        LOG.debug("var_cvar_enrichment_failed: %s", exc)
+    
+    _write_state_file("risk_snapshot.json", enriched, state_dir)
 
 
 def write_execution_health_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
@@ -178,6 +489,60 @@ def write_symbol_scores_state(payload: Dict[str, Any], state_dir: pathlib.Path |
     _write_state_file("symbol_scores_v6.json", payload, state_dir)
 
 
+def _load_liveness_cfg() -> Dict[str, Any]:
+    cfg = _load_strategy_config()
+    diag_block = cfg.get("diagnostics") if isinstance(cfg, Mapping) else {}
+    if isinstance(diag_block, Mapping):
+        live = diag_block.get("liveness")
+        if isinstance(live, Mapping):
+            return dict(live)
+    return {}
+
+
+def write_runtime_diagnostics_state(
+    state_dir: pathlib.Path | None = None,
+    liveness_cfg: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Write runtime diagnostics (veto counters + exit pipeline health) to diagnostics.json.
+    """
+    cfg = dict(liveness_cfg) if isinstance(liveness_cfg, Mapping) else _load_liveness_cfg()
+    snapshot = build_runtime_diagnostics_snapshot_with_liveness(cfg)
+    vc = snapshot.veto_counters
+    es = snapshot.exit_pipeline_status
+    la = snapshot.liveness_alerts
+    payload = {
+        "runtime_diagnostics": {
+            "veto_counters": {
+                "by_reason": dict(vc.by_reason),
+                "total_signals": vc.total_signals,
+                "total_orders": vc.total_orders,
+                "total_vetoes": vc.total_vetoes,
+                "last_signal_ts": vc.last_signal_ts,
+                "last_order_ts": vc.last_order_ts,
+                "last_veto_ts": vc.last_veto_ts,
+            },
+            "exit_pipeline": {
+                "last_exit_scan_ts": es.last_exit_scan_ts,
+                "last_exit_trigger_ts": es.last_exit_trigger_ts,
+                "open_positions_count": es.open_positions_count,
+                "tp_sl_registered_count": es.tp_sl_registered_count,
+                "tp_sl_missing_count": es.tp_sl_missing_count,
+                "underwater_without_tp_sl_count": es.underwater_without_tp_sl_count,
+            },
+            "liveness": {
+                "idle_signals": bool(la.idle_signals) if la else False,
+                "idle_orders": bool(la.idle_orders) if la else False,
+                "idle_exits": bool(la.idle_exits) if la else False,
+                "idle_router": bool(la.idle_router) if la else False,
+                "details": dict(la.details) if la and la.details is not None else {},
+            },
+        }
+    }
+    _write_state_file("diagnostics.json", payload, state_dir)
+    return payload
+
+
 def write_router_policy_suggestions_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     _write_state_file("router_policy_suggestions_v6.json", payload, state_dir)
 
@@ -193,9 +558,538 @@ def write_pipeline_v6_shadow_state(payload: Dict[str, Any], state_dir: pathlib.P
 def write_pipeline_v6_compare_summary(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     _write_state_file("pipeline_v6_compare_summary.json", payload, state_dir)
 
+def _preserve_pipeline_intent(intent: Any) -> Any:
+    if not isinstance(intent, Mapping):
+        return intent
+    metadata = intent.get("metadata")
+    if isinstance(metadata, Mapping):
+        sanitized = dict(intent)
+        sanitized["metadata"] = dict(metadata)
+        return sanitized
+    return dict(intent)
+
+
+def write_pipeline_snapshot_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    if not isinstance(payload, Mapping):
+        _write_state_file("pipeline_snapshot.json", {}, state_dir)
+        return
+    enriched = dict(payload)
+    intents = enriched.get("intents")
+    if isinstance(intents, list):
+        enriched["intents"] = [_preserve_pipeline_intent(entry) for entry in intents]
+    _write_state_file("pipeline_snapshot.json", enriched, state_dir)
+
 
 def write_v6_runtime_probe_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     _write_state_file("v6_runtime_probe.json", payload, state_dir)
+
+
+def write_positions_ledger_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write positions_ledger.json with unified ledger view (v7.4_C3).
+    
+    This file contains the merged positions + TP/SL state from the position ledger.
+    """
+    _write_state_file("positions_ledger.json", payload, state_dir)
+
+
+def write_risk_advanced_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write risk_advanced.json with VaR and CVaR metrics (v7.5_A1).
+    
+    This file contains:
+    - Portfolio VaR (parametric EWMA)
+    - Per-position CVaR (Expected Shortfall)
+    """
+    _write_state_file("risk_advanced.json", payload, state_dir)
+
+
+def write_alpha_decay_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write alpha_decay.json with signal decay state (v7.5_A1).
+    
+    This file contains decay multipliers per symbol-direction pair.
+    """
+    _write_state_file("alpha_decay.json", payload, state_dir)
+
+
+def compute_and_write_risk_advanced_state(
+    positions: List[Dict[str, Any]],
+    nav_usd: float,
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute VaR/CVaR and write to state file (v7.5_A1).
+    
+    Args:
+        positions: List of position dicts with 'symbol' and 'notional'
+        nav_usd: Total portfolio NAV
+        state_dir: Optional state directory override
+        
+    Returns:
+        The computed risk advanced snapshot
+    """
+    try:
+        from execution.vol_risk import build_risk_advanced_snapshot
+        
+        snapshot = build_risk_advanced_snapshot(positions, nav_usd)
+        write_risk_advanced_state(snapshot, state_dir)
+        return snapshot
+    except ImportError:
+        LOG.debug("vol_risk module not available for risk_advanced state")
+        return {}
+    except Exception as exc:
+        LOG.warning("risk_advanced_computation_failed: %s", exc)
+        return {}
+
+
+def compute_and_write_alpha_decay_state(
+    symbols: List[str],
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute alpha decay and write to state file (v7.5_A1).
+    
+    Args:
+        symbols: List of trading pair symbols
+        state_dir: Optional state directory override
+        
+    Returns:
+        The computed alpha decay snapshot
+    """
+    try:
+        from execution.intel.symbol_score_v6 import build_alpha_decay_snapshot
+        
+        snapshot = build_alpha_decay_snapshot(symbols)
+        write_alpha_decay_state(snapshot, state_dir)
+        return snapshot
+    except ImportError:
+        LOG.debug("symbol_score_v6 alpha decay not available")
+        return {}
+    except Exception as exc:
+        LOG.warning("alpha_decay_computation_failed: %s", exc)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# v7.5_B1: Slippage and Liquidity State Publishing
+# ---------------------------------------------------------------------------
+
+def write_slippage_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write slippage.json with per-symbol slippage metrics (v7.5_B1).
+    
+    This file contains:
+    - EWMA expected slippage per symbol
+    - EWMA realized slippage per symbol
+    - Trade counts
+    """
+    _write_state_file("slippage.json", payload, state_dir)
+
+
+def write_liquidity_buckets_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write liquidity_buckets.json with symbol-bucket assignments (v7.5_B1).
+    
+    This file contains:
+    - Per-symbol bucket assignment
+    - Bucket configuration (max_spread_bps, default_maker_bias)
+    """
+    _write_state_file("liquidity_buckets.json", payload, state_dir)
+
+
+def write_router_quality_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write router_quality.json with per-symbol router quality scores (v7.5_B2).
+    
+    This file contains:
+    - Per-symbol router quality scores
+    - Slippage drift metrics
+    - Liquidity bucket assignments
+    - TWAP skip ratios
+    - Aggregate quality summary
+    """
+    _write_state_file("router_quality.json", payload, state_dir)
+
+
+def compute_and_write_slippage_state(
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute slippage metrics and write to state file (v7.5_B1).
+    
+    Returns:
+        The computed slippage snapshot
+    """
+    try:
+        from execution.router_metrics import build_slippage_metrics_snapshot
+        
+        snapshot = build_slippage_metrics_snapshot()
+        write_slippage_state(snapshot, state_dir)
+        return snapshot
+    except ImportError:
+        LOG.debug("slippage_model not available for slippage state")
+        return {}
+    except Exception as exc:
+        LOG.warning("slippage_state_computation_failed: %s", exc)
+        return {}
+
+
+def compute_and_write_liquidity_buckets_state(
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute liquidity bucket assignments and write to state file (v7.5_B1).
+    
+    Returns:
+        The computed liquidity buckets snapshot
+    """
+    try:
+        from execution.router_metrics import build_liquidity_buckets_snapshot
+        
+        snapshot = build_liquidity_buckets_snapshot()
+        write_liquidity_buckets_state(snapshot, state_dir)
+        return snapshot
+    except ImportError:
+        LOG.debug("liquidity_model not available for bucket state")
+        return {}
+    except Exception as exc:
+        LOG.warning("liquidity_buckets_state_computation_failed: %s", exc)
+        return {}
+
+
+def compute_and_write_router_quality_state(
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute router quality scores and write to state file (v7.5_B2).
+    
+    Returns:
+        The computed router quality snapshot
+    """
+    try:
+        from execution.router_metrics import build_router_quality_state_snapshot
+        
+        snapshot = build_router_quality_state_snapshot()
+        write_router_quality_state(snapshot, state_dir)
+        return snapshot
+    except ImportError:
+        LOG.debug("router_metrics not available for router quality state")
+        return {}
+    except Exception as exc:
+        LOG.warning("router_quality_state_computation_failed: %s", exc)
+        return {}
+
+
+def write_rv_momentum_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write rv_momentum.json with per-symbol relative momentum scores (v7.5_C1).
+    
+    This file contains:
+    - Per-symbol RV momentum scores
+    - Basket spread values (BTC vs ETH, L1 vs ALT, Meme vs Rest)
+    - Basket membership for each symbol
+    """
+    _write_state_file("rv_momentum.json", payload, state_dir)
+
+
+def compute_and_write_rv_momentum_state(
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute RV momentum scores and write to state file (v7.5_C1).
+    
+    Returns:
+        The computed RV momentum snapshot as dict
+    """
+    try:
+        from execution.rv_momentum import load_rv_config, build_rv_snapshot
+        
+        cfg = load_rv_config()
+        if not cfg.enabled:
+            return {}
+        
+        snapshot = build_rv_snapshot(cfg)
+        write_rv_momentum_state(snapshot.to_dict(), state_dir)
+        return snapshot.to_dict()
+    except ImportError:
+        LOG.debug("rv_momentum not available for RV momentum state")
+        return {}
+    except Exception as exc:
+        LOG.warning("rv_momentum_state_computation_failed: %s", exc)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# v7.5_C2: Factor Diagnostics & PnL Attribution State
+# ---------------------------------------------------------------------------
+
+
+def write_factor_diagnostics_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write factor_diagnostics.json with per-symbol normalized factor vectors and covariance (v7.5_C2).
+    
+    This file contains:
+    - Per-symbol normalized factor vectors
+    - Factor covariance and correlation matrices
+    - Factor volatilities
+    - Factor weights (v7.5_C3)
+    - Orthogonalization status (v7.5_C3)
+    """
+    _write_state_file("factor_diagnostics.json", payload, state_dir)
+
+
+def load_factor_diagnostics_state(state_dir: pathlib.Path | None = None) -> Dict[str, Any]:
+    """
+    Load factor_diagnostics.json state (v7.5_C3).
+    
+    Returns:
+        Loaded state dict or empty dict if not found
+    """
+    sd = state_dir or STATE_DIR
+    path = sd / "factor_diagnostics.json"
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def write_factor_pnl_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """
+    Write factor_pnl.json with factor PnL attribution (v7.5_C2).
+    
+    This file contains:
+    - PnL attributed to each factor
+    - Percentage contribution per factor
+    - Total PnL and trade count
+    """
+    _write_state_file("factor_pnl.json", payload, state_dir)
+
+
+def load_factor_pnl_state(state_dir: pathlib.Path | None = None) -> Dict[str, Any]:
+    """
+    Load factor_pnl.json state (v7.5_C3).
+    
+    Returns:
+        Loaded state dict or empty dict if not found
+    """
+    sd = state_dir or STATE_DIR
+    path = sd / "factor_pnl.json"
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def compute_and_write_factor_diagnostics_state(
+    hybrid_results: List[Dict[str, Any]] | None = None,
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute factor diagnostics and write to state file (v7.5_C2/C3).
+    
+    Args:
+        hybrid_results: List of hybrid_score() result dicts OR scores_snapshot dict
+        state_dir: Optional state directory override
+        
+    Returns:
+        The computed factor diagnostics snapshot as dict
+    """
+    try:
+        from execution.factor_diagnostics import (
+            load_factor_diagnostics_config,
+            extract_factor_vectors_from_hybrid_results,
+            build_factor_diagnostics_snapshot,
+            FactorVector,
+        )
+        from execution.intel.symbol_score_v6 import build_factor_vector
+        
+        cfg = load_factor_diagnostics_config()
+        if not cfg.enabled:
+            return {}
+        
+        factor_vectors: List[Any] = []
+        
+        # Handle different input formats
+        if hybrid_results is not None:
+            if isinstance(hybrid_results, dict) and "symbols" in hybrid_results:
+                # scores_snapshot format from build_symbol_scores
+                symbols_list = hybrid_results.get("symbols", [])
+                for entry in symbols_list:
+                    if not isinstance(entry, dict):
+                        continue
+                    symbol = entry.get("symbol", "")
+                    if not symbol:
+                        continue
+                    components = entry.get("components", {})
+                    # Build factor vector from scores_snapshot components
+                    factors = {
+                        "trend": 0.5,  # Default - not in scores_snapshot
+                        "carry": 0.0,  # Default - not in scores_snapshot
+                        "expectancy": float(components.get("expectancy", 0.5)),
+                        "router": float(components.get("router", 0.5)),
+                        "rv_momentum": 0.0,
+                        "router_quality": float(components.get("router", 0.5)),
+                        "vol_regime": 1.0,
+                    }
+                    fv = build_factor_vector(
+                        symbol=symbol,
+                        components=factors,
+                        hybrid_score=float(entry.get("score", 0.5)),
+                        direction="LONG",
+                        regime="normal",
+                    )
+                    factor_vectors.append(fv)
+            elif isinstance(hybrid_results, list):
+                # hybrid_score() results format
+                factor_vectors = extract_factor_vectors_from_hybrid_results(hybrid_results)
+        
+        if not factor_vectors:
+            # Try to load from symbol_scores state file as fallback
+            scores_path = STATE_DIR / "symbol_scores_v6.json"
+            if scores_path.exists():
+                try:
+                    with scores_path.open("r", encoding="utf-8") as f:
+                        scores_data = json.load(f)
+                    for entry in scores_data.get("symbols", []):
+                        if not isinstance(entry, dict):
+                            continue
+                        symbol = entry.get("symbol", "")
+                        if not symbol:
+                            continue
+                        components = entry.get("components", {})
+                        factors = {
+                            "trend": 0.5,
+                            "carry": 0.0,
+                            "expectancy": float(components.get("expectancy", 0.5)),
+                            "router": float(components.get("router", 0.5)),
+                            "rv_momentum": 0.0,
+                            "router_quality": float(components.get("router", 0.5)),
+                            "vol_regime": 1.0,
+                        }
+                        fv = build_factor_vector(
+                            symbol=symbol,
+                            components=factors,
+                            hybrid_score=float(entry.get("score", 0.5)),
+                            direction="LONG",
+                            regime="normal",
+                        )
+                        factor_vectors.append(fv)
+                except Exception:
+                    pass
+        
+        if not factor_vectors:
+            return {}
+        
+        # v7.5_C3: Load previous weights for EWMA smoothing
+        prev_weights = None
+        try:
+            from execution.factor_diagnostics import FactorWeights
+            prev_state = load_factor_diagnostics_state(state_dir)
+            prev_weights_dict = prev_state.get("factor_weights", {})
+            if isinstance(prev_weights_dict, dict) and prev_weights_dict.get("weights"):
+                prev_weights = FactorWeights(weights=prev_weights_dict.get("weights", {}))
+        except Exception:
+            pass
+        
+        # v7.5_C3: Load factor PnL for weight computation
+        factor_pnl = None
+        try:
+            pnl_state = load_factor_pnl_state(state_dir)
+            if pnl_state and "pnl_by_factor" in pnl_state:
+                factor_pnl = pnl_state.get("pnl_by_factor", {})
+        except Exception:
+            pass
+        
+        snapshot = build_factor_diagnostics_snapshot(
+            factor_vectors=factor_vectors,
+            cfg=cfg,
+            factor_pnl=factor_pnl,
+            prev_weights=prev_weights,
+        )
+        
+        write_factor_diagnostics_state(snapshot.to_dict(), state_dir)
+        return snapshot.to_dict()
+    except ImportError:
+        LOG.debug("factor_diagnostics not available")
+        return {}
+    except Exception as exc:
+        LOG.warning("factor_diagnostics_state_computation_failed: %s", exc)
+        return {}
+
+
+def compute_and_write_factor_pnl_state(
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute factor PnL attribution and write to state file (v7.5_C2).
+    
+    Returns:
+        The computed factor PnL snapshot as dict
+    """
+    try:
+        from execution.factor_pnl_attribution import (
+            build_factor_pnl_from_logs,
+        )
+        from execution.factor_diagnostics import load_factor_diagnostics_config
+        
+        cfg = load_factor_diagnostics_config()
+        if not cfg.enabled:
+            return {}
+        
+        snapshot = build_factor_pnl_from_logs(
+            lookback_days=cfg.pnl_attribution_lookback_days,
+            factor_names=cfg.factors,
+        )
+        
+        write_factor_pnl_state(snapshot.to_dict(), state_dir)
+        return snapshot.to_dict()
+    except ImportError:
+        LOG.debug("factor_pnl_attribution not available")
+        return {}
+    except Exception as exc:
+        LOG.warning("factor_pnl_state_computation_failed: %s", exc)
+        return {}
+
+
+def write_regimes_state(
+    payload: Dict[str, Any] | None = None,
+    state_dir: pathlib.Path | None = None,
+    *,
+    atr_value: Optional[float] = None,
+    dd_frac: Optional[float] = None,
+    atr_percentiles: Optional[Dict[str, float]] = None,
+) -> None:
+    """
+    Write regimes.json with ATR and drawdown regime classification.
+
+    Can either accept a pre-built payload or compute from raw values.
+
+    Args:
+        payload: Optional pre-built regime payload
+        state_dir: Optional state directory override
+        atr_value: ATR percentage value (used if payload is None)
+        dd_frac: Drawdown fraction 0-1 (used if payload is None)
+        atr_percentiles: Optional ATR percentile thresholds
+    """
+    from execution.utils.vol import build_regime_snapshot
+
+    if payload is not None:
+        enriched = dict(payload)
+    else:
+        enriched = build_regime_snapshot(
+            atr_value=atr_value,
+            dd_frac=dd_frac,
+            atr_percentiles=atr_percentiles,
+        )
+
+    _write_state_file("regimes.json", enriched, state_dir)
 
 
 def _coerce_synced_items(items: Any) -> List[Dict[str, Any]]:
@@ -845,6 +1739,15 @@ def normalize_positions(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def publish_positions(rows: List[Dict[str, Any]]) -> None:
     stats = _compute_exec_stats()
     payload = {"rows": rows, "updated": time.time(), "exec_stats": stats}
+    
+    # V7.4_C3: Add positions_ledger block
+    try:
+        from execution.position_ledger import build_position_ledger, ledger_to_dict
+        ledger = build_position_ledger()
+        payload["positions_ledger"] = ledger_to_dict(ledger)
+    except Exception as exc:
+        LOG.debug("positions_ledger_build_failed: %s", exc)
+    
     if not _firestore_enabled():
         _append_local_jsonl("positions", payload)
         try:
@@ -854,6 +1757,81 @@ def publish_positions(rows: List[Dict[str, Any]]) -> None:
         return
     cli = _fs_client()
     cli.document(f"{FS_ROOT}/positions").set(payload, merge=True)
+
+
+def publish_hybrid_scores(scores: List[Dict[str, Any]]) -> None:
+    """
+    Publish hybrid score rankings for dashboard display (v7.4 B1).
+    
+    Args:
+        scores: List of hybrid score results from rank_intents_by_hybrid_score()
+    """
+    payload = {"symbols": scores, "updated_ts": time.time()}
+    path = STATE_DIR / "hybrid_scores.json"
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, default=str))
+    except Exception as exc:
+        LOG.warning("publish_hybrid_scores failed: %s", exc)
+
+
+def publish_funding_snapshot(funding_data: Dict[str, Any]) -> None:
+    """
+    Publish funding rate snapshot for carry scoring (v7.4 B1).
+    
+    Args:
+        funding_data: Dict with 'symbols' key containing symbol->rate mappings
+    """
+    payload = {"symbols": funding_data.get("symbols", funding_data), "updated_ts": time.time()}
+    path = STATE_DIR / "funding_snapshot.json"
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, default=str))
+    except Exception as exc:
+        LOG.warning("publish_funding_snapshot failed: %s", exc)
+
+
+def publish_basis_snapshot(basis_data: Dict[str, Any]) -> None:
+    """
+    Publish basis (spot-perp spread) snapshot for carry scoring (v7.4 B1).
+    
+    Args:
+        basis_data: Dict with 'symbols' key containing symbol->basis_pct mappings
+    """
+    payload = {"symbols": basis_data.get("symbols", basis_data), "updated_ts": time.time()}
+    path = STATE_DIR / "basis_snapshot.json"
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, default=str))
+    except Exception as exc:
+        LOG.warning("publish_basis_snapshot failed: %s", exc)
+
+
+def publish_vol_regime_snapshot(symbols_data: List[Dict[str, Any]]) -> None:
+    """
+    Publish volatility regime snapshot for dashboard display (v7.4 B2).
+    
+    Args:
+        symbols_data: List of dicts with 'symbol', 'vol_regime', 'vol' (short/long/ratio)
+    """
+    # Build summary counts
+    summary = {"low": 0, "normal": 0, "high": 0, "crisis": 0}
+    for entry in symbols_data:
+        label = entry.get("vol_regime", "normal")
+        if label in summary:
+            summary[label] += 1
+    
+    payload = {
+        "symbols": symbols_data,
+        "vol_regime_summary": summary,
+        "updated_ts": time.time(),
+    }
+    path = STATE_DIR / "vol_regimes.json"
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, default=str))
+    except Exception as exc:
+        LOG.warning("publish_vol_regime_snapshot failed: %s", exc)
 
 
 def compute_nav() -> float:

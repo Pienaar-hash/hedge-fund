@@ -9,6 +9,50 @@
     "include_spot_treasury": true,
     "manual_nav_usdt": null
   },
+  "diagnostics": {
+    "enabled": true,
+    "veto_metrics": {
+      "window_signals": 500,
+      "window_seconds": 3600
+    },
+    "exit_pipeline": {
+      "tp_sl_canary_enabled": true,
+      "tp_sl_underwater_threshold_pct": -0.02
+    },
+    "liveness": {
+      "enabled": true,
+      "max_idle_signals_seconds": 900,
+      "max_idle_orders_seconds": 1800,
+      "max_idle_exits_seconds": 3600,
+      "max_idle_router_events_seconds": 1800
+    }
+  },
+  "hybrid_scoring": {
+    "default": {
+      "w_trend": 0.7,
+      "w_carry": 0.3,
+      "min_hybrid_score_long": 0.15,
+      "min_hybrid_score_short": 0.15
+    },
+    "tiers": {
+      "CORE": {
+        "w_trend": 0.6,
+        "w_carry": 0.4
+      },
+      "SATELLITE": {
+        "w_trend": 0.7,
+        "w_carry": 0.3
+      },
+      "TACTICAL": {
+        "w_trend": 0.8,
+        "w_carry": 0.2
+      },
+      "ALT-EXT": {
+        "w_trend": 0.5,
+        "w_carry": 0.5
+      }
+    }
+  },
   "sizing": {
     "default_leverage": 3,
     "slippage_bps": 3,
@@ -262,5 +306,179 @@
         }
       }
     }
-  ]
+  ],
+  "vol_target": {
+    "enabled": true,
+    "timeframes": ["15m"],
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
+    "base_per_trade_nav_pct": 0.015,
+    "min_per_trade_nav_pct": 0.005,
+    "max_per_trade_nav_pct": 0.03,
+    "target_vol": 0.015,
+    "min_vol": 0.003,
+    "max_vol": 0.08,
+    "min_vol_factor": 0.25,
+    "max_vol_factor": 2.0,
+    "atr_lookback": 14,
+    "use_atr_percentiles": true,
+    "require_trend_alignment": true,
+    "max_dd_regime": 2,
+    "max_risk_mode": "DEFENSIVE",
+    "min_signal_score": 0.0,
+    "sl_atr_mult": 2.0,
+    "tp_atr_mult": 3.0,
+    "min_rr": 1.2,
+    "side_mode": "trend",
+    "enable_tp_sl": true,
+    "trend": {
+      "htf_tf": "1h",
+      "fast_ema": 21,
+      "slow_ema": 50,
+      "min_trend_strength": 0.1,
+      "use_htf_rsi_filter": true,
+      "rsi_overbought": 70,
+      "rsi_oversold": 30
+    },
+    "carry": {
+      "use_funding": true,
+      "min_funding_annualized": 0.0,
+      "max_funding_annualized": 0.5,
+      "funding_weight": 0.3,
+      "use_basis": false,
+      "max_basis_pct": 0.1,
+      "basis_weight": 0.2
+    }
+  },
+  "vol_regimes": {
+    "enabled": true,
+    "defaults": {
+      "short_window_bars": 168,
+      "long_window_bars": 720,
+      "short_halflife_bars": 84,
+      "long_halflife_bars": 360,
+      "ratio_thresholds": {
+        "low": 0.6,
+        "normal": 1.2,
+        "high": 1.8
+      }
+    },
+    "sizing_multipliers": {
+      "CORE": {
+        "low": 1.15,
+        "normal": 1.0,
+        "high": 0.75,
+        "crisis": 0.5
+      },
+      "SATELLITE": {
+        "low": 1.1,
+        "normal": 1.0,
+        "high": 0.7,
+        "crisis": 0.4
+      },
+      "TACTICAL": {
+        "low": 1.0,
+        "normal": 0.9,
+        "high": 0.6,
+        "crisis": 0.3
+      },
+      "ALT-EXT": {
+        "low": 0.9,
+        "normal": 0.8,
+        "high": 0.5,
+        "crisis": 0.2
+      }
+    },
+    "hybrid_weight_modifiers": {
+      "default": {
+        "low":    { "carry": 1.0,  "expectancy": 1.0,  "router": 1.0  },
+        "normal": { "carry": 1.0,  "expectancy": 1.0,  "router": 1.0  },
+        "high":   { "carry": 0.7,  "expectancy": 0.9,  "router": 1.0  },
+        "crisis": { "carry": 0.4,  "expectancy": 0.8,  "router": 1.1  }
+      }
+    }
+  },
+  "risk_advanced": {
+    "var": {
+      "enabled": true,
+      "confidence": 0.99,
+      "lookback_bars": 500,
+      "halflife_bars": 100,
+      "max_portfolio_var_nav_pct": 0.12
+    },
+    "cvar": {
+      "enabled": true,
+      "confidence": 0.95,
+      "lookback_bars": 400,
+      "max_position_cvar_nav_pct": 0.04
+    }
+  },
+  "alpha_decay": {
+    "enabled": true,
+    "half_life_minutes": 45,
+    "min_decay_multiplier": 0.35
+  },
+  "router_quality": {
+    "enabled": true,
+    "base_score": 0.8,
+    "min_score": 0.2,
+    "max_score": 1.0,
+    "slippage_drift_bps_thresholds": {
+      "green": 2.0,
+      "yellow": 6.0
+    },
+    "bucket_penalties": {
+      "A_HIGH": 0.0,
+      "B_MEDIUM": -0.05,
+      "C_LOW": -0.15
+    },
+    "twap_skip_penalty": 0.10,
+    "low_quality_threshold": 0.5,
+    "high_quality_threshold": 0.9,
+    "low_quality_hybrid_multiplier": 0.5,
+    "high_quality_hybrid_multiplier": 1.05,
+    "min_for_emission": 0.35
+  },
+  "rv_momentum": {
+    "enabled": true,
+    "lookback_bars": 48,
+    "half_life_bars": 24,
+    "normalize_mode": "zscore",
+    "btc_vs_eth_weight": 0.35,
+    "l1_vs_alt_weight": 0.35,
+    "meme_vs_rest_weight": 0.20,
+    "per_symbol_weight": 0.10,
+    "max_abs_score": 1.0,
+    "hybrid_weight": 0.10,
+    "rv_min_for_long": -0.5,
+    "rv_max_for_short": 0.5
+  },
+  "factor_diagnostics": {
+    "enabled": true,
+    "factors": [
+      "trend",
+      "carry",
+      "rv_momentum",
+      "router_quality",
+      "expectancy",
+      "vol_regime"
+    ],
+    "normalization_mode": "zscore",
+    "covariance_lookback_days": 30,
+    "pnl_attribution_lookback_days": 14,
+    "max_abs_zscore": 3.0,
+    "orthogonalization": {
+      "enabled": true,
+      "method": "gram_schmidt"
+    },
+    "auto_weighting": {
+      "enabled": true,
+      "mode": "vol_inverse_ir",
+      "min_weight": 0.05,
+      "max_weight": 0.40,
+      "normalize_to_one": true,
+      "smoothing_alpha": 0.2
+    }
+  },
+  "strategy_adaptation": {},
+  "strategy_weighting": {}
 }

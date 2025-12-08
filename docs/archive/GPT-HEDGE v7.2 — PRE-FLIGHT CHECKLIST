@@ -1,0 +1,346 @@
+Below is the **v7.2 Pre-Flight Checklist** — the same format real quant teams use before turning on an adaptive engine in live/testnet.
+
+It’s **fast**, **operational**, **diagnostic-rich**, and covers **risk, router, adaptation, sizing, telemetry, and dashboard** readiness.
+
+You can drop this straight into `docs/runbooks/v7_preflight_checklist.md`.
+
+---
+
+# 🔥 **GPT-HEDGE v7.2 — PRE-FLIGHT CHECKLIST**
+
+### *Live / Testnet Activation Checklist (Adaptive Strategies + Router Autotune + Attribution)*
+
+> **Goal:** Confirm that *every adaptive subsystem* (Strategy Adaptation, Router Autotune, PnL Attribution, Diagnostics, Adaptive Weighting) is functioning correctly **before allowing live trades**.
+
+---
+
+# 1) **Process Health**
+
+Make sure everything *runs* before evaluating behavior.
+
+## ✅ 1.1 Supervisor Status
+
+On the VPS:
+
+```
+sudo supervisorctl status
+```
+
+Expected:
+
+* `hedge-executor` — RUNNING
+* `hedge-dashboard` — RUNNING
+* `hedge-sync_state` — RUNNING
+* `hedge-pipeline-shadow-heartbeat` — RUNNING
+* `hedge-pipeline-compare` — RUNNING (if enabled)
+
+**Red flag:** Anything not running or restarting in a loop.
+
+---
+
+# 2) **State Telemetry Sanity**
+
+All adaptive logic depends on fresh `logs/state/*.json` surfaces.
+
+## ✅ 2.1 Check NAV freshness
+
+File: `logs/state/nav.json`
+
+Look for:
+
+```
+"age_s": < 10
+"sources_ok": true
+```
+
+**Red flags:**
+
+* age_s > 30
+* missing wallet info
+* sources_ok = false
+* NAV = 0
+
+---
+
+# 3) **Risk Mode Consistency**
+
+Strategy Adaptation, Router Autotune, and Weighting *all depend on this*.
+
+## Files:
+
+* `logs/state/risk_snapshot.json`
+* Dashboard → "Risk Health"
+
+## Expected:
+
+```
+"risk_mode": "OK"   (or WARN)
+"dd_frac": < 0.02
+"daily_loss_frac": < 0.02
+```
+
+### Simulate risk modes:
+
+You must confirm each branch works before live deployment.
+
+| Condition     | Method                                                | Expected Effect                                              |
+| ------------- | ----------------------------------------------------- | ------------------------------------------------------------ |
+| **DEFENSIVE** | temporarily set dd_frac ≥0.30 in the JSON and restart | ↓ adaptive sizing, ↓ adaptive weights, router halves offsets |
+| **HALTED**    | set dd_frac ≥0.30 *and* risk_mode override            | All strategies disabled, maker-first disabled                |
+
+Watch screener logs to verify.
+
+---
+
+# 4) **Regime Telemetry Check**
+
+File: `logs/state/regimes.json`
+
+Verify:
+
+```
+"atr_regime": 0–3
+"dd_regime": 0–3
+```
+
+**Simulate changes** by editing ATR/DD values (temporary override) → confirm:
+
+* Adaptive sizing shrink factors change
+* Adaptive weights change
+* Screener’s `metadata.adaptive` matches expected factor
+
+---
+
+# 5) **Router Autotune Functionality Check**
+
+## Files:
+
+* `logs/state/router_health.json`
+* Dashboard → "Router Gauge"
+
+## Verify baseline metrics:
+
+```
+maker_reliability: 0.6–1.0
+adaptive_offset_bps: > 0
+maker_first: true (if risk_mode=OK)
+```
+
+### Simulate degraded router:
+
+Manually edit router stats:
+
+* Increase `fallback_count`
+* Increase `reject_count`
+* Increase `avg_slippage_bps`
+
+Expected:
+
+* maker_reliability drops
+* adaptive_offset_bps decreases (0.7× or 0.4×)
+* maker_first flips to false if reliability < 0.6 or risk_mode=DEFENSIVE
+
+---
+
+# 6) **PnL Attribution Pipeline**
+
+Check correctness **before** entering live.
+
+## Files:
+
+* `logs/state/pnl_attribution.json`
+* Dashboard → Attribution tab
+
+### H1 (core):
+
+Look for:
+
+```
+per_symbol.{symbol}.total_pnl
+per_strategy.{strategy}.total_pnl
+summary.total_pnl
+summary.win_rate
+```
+
+### H2 (extended):
+
+Confirm:
+
+```
+per_regime.atr
+per_regime.dd
+per_risk_mode.OK|WARN|DEFENSIVE|HALTED
+per_day.{YYYY-MM-DD}
+```
+
+**Red flag:** Missing keys → adaptation/weighting may have stale inputs.
+
+---
+
+# 7) **Strategy Adaptation & Weighting Integration**
+
+## Files:
+
+* `execution logs` (screener layer)
+* `logs/state/pipeline_snapshot.json` (after wiring)
+* Dashboard → Diagnostics
+
+Confirm for each emitted intent:
+
+```
+intent.metadata.adaptive.atr_regime
+intent.metadata.adaptive.dd_regime
+intent.metadata.adaptive.risk_mode
+intent.metadata.adaptive.final_factor
+
+intent.metadata.adaptive_weight.final_weight
+```
+
+**Red flags:**
+
+* Missing metadata blocks
+* Weight always 1.0
+* Shrink factors unaffected by regime/risk changes
+
+---
+
+# 8) **Sizing Invariant Check**
+
+Ensure adaptive weighting + shrink factors **don’t break unlevered sizing**.
+
+Inspect the executor logs:
+
+```
+qty = adaptive_gross_usd / mark_price
+```
+
+Verify:
+
+* **Never** multiplies qty by leverage
+* `adaptive_gross_usd` = base_gross_usd × (weight × shrink_factor)
+* No outlier qty spikes
+
+---
+
+# 9) **Dashboard Integration Check**
+
+## Critical tabs:
+
+### 1. Overview
+
+* Risk Mode widget accurate
+* Router gauge present
+* Equity curve present
+* No missing-key errors
+
+### 2. Attribution
+
+* Per-symbol PnL
+* Per-strategy PnL
+* Regime/risk-mode panels
+* Daily PnL strip
+
+### 3. Diagnostics
+
+* Drawdown snapshot
+* Worst-symbol table
+* Correlation heatmap fallback
+* Regime PnL bars
+
+**Red flag:** Dashboard crashes on missing fields → adaptation surfaces missing.
+
+---
+
+# 10) **Shadow Pipeline Alignment**
+
+Run:
+
+```
+PYTHONPATH=. EXECUTOR_ONCE=1 DRY_RUN=1 python scripts/strategy_probe.py
+```
+
+Expected:
+
+* Signals generated
+* Same ATR/DD/risk_mode classification
+* No adaptation crashes
+* No KeyErrors on adaptive metadata
+
+**Red flag:** Shadow and live diverge fundamentally → stop.
+
+---
+
+# 11) **End-to-End Dry-Run Test**
+
+Enable:
+
+```
+DRY_RUN=1
+BINANCE_TESTNET=1
+EXECUTOR_ONCE=1
+```
+
+Start the executor once and check logs:
+
+* Intents generated
+* Adaptive factors applied
+* Router picks correct maker/taker path
+* Orders not pushed to exchange (dry-run prevented)
+
+---
+
+# 12) **Go-Live / Go-Testnet Lock-In**
+
+If all checks pass:
+
+* Remove overrides
+* Restart services
+* Enable real execution:
+
+```
+DRY_RUN=0
+BINANCE_TESTNET=1   # or 0 for full live
+```
+
+Monitor:
+
+* Risk mode
+* Router reliability
+* Attribution
+* Position counts
+* Sizer outputs
+
+for the first 15 minutes.
+
+---
+
+# 🔧 Optional Simulations Before Launch
+
+These ensure the adaptive logic is behaving predictably:
+
+| Simulation               | How                                  | Expected                             |
+| ------------------------ | ------------------------------------ | ------------------------------------ |
+| High ATR regime          | Set `atr_value` high in regimes.json | Shrink factor reduce, weights shrink |
+| Deep DD state            | Set `dd_frac >= 0.30`                | Strategies disabled / weights zero   |
+| Router degradation       | Inflate fallback/reject counts       | maker_first flips to false           |
+| Bad strategy performance | Set winrate < 40% in pnl_attr        | Weight reduced to 0.7                |
+| Good performance         | winrate > 60%                        | Weight boosted to 1.1                |
+
+---
+
+# 🟩 **Pre-Flight Pass Criteria**
+
+You’re good to run live/testnet when:
+
+* ✔ All state surfaces fresh
+* ✔ Risk Mode = OK (or WARN with no exposure)
+* ✔ Regimes stable and sane
+* ✔ Router health score ≥ 0.5
+* ✔ Equity curve loads
+* ✔ Attribution surfaces complete
+* ✔ Strategy metadata includes weight + adaptation
+* ✔ No UI or executor crashes
+* ✔ Qty scaling correct & stable
+* ✔ Shadow pipeline consistent
+
+---

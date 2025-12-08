@@ -13,7 +13,7 @@ import logging
 import os
 import time
 import execution.drawdown_tracker as drawdown_tracker
-from execution.drawdown_tracker import load_peak_state, save_peak_state
+from execution.drawdown_tracker import load_peak_state, save_peak_state, get_portfolio_dd_state
 from execution.nav import (
     compute_trading_nav,
     compute_gross_exposure_usd,
@@ -34,7 +34,44 @@ from .utils.metrics import (
 from .utils.toggle import disable_symbol_temporarily, is_symbol_disabled
 from execution.exchange_utils import get_balances, is_dry_run
 from execution.log_utils import get_logger, log_event, safe_dump
-from execution.risk_loader import load_risk_config, load_symbol_caps, normalize_percentage
+from execution.risk_loader import (
+    load_risk_config,
+    load_symbol_caps,
+    normalize_percentage,
+    load_correlation_groups_config,
+)
+from execution.correlation_groups import (
+    compute_group_exposure_nav_pct,
+    compute_hypothetical_group_exposure_nav_pct,
+)
+from execution.diagnostics_metrics import record_veto
+
+
+def _normalize_observed_pct(value: float) -> float:
+    """
+    Normalize observed drawdown/loss values to fractions (0-1).
+
+    The drawdown tracker stores dd_pct as percent-style (e.g., 0.996 means 0.996%).
+    Config caps are normalized to fractions (e.g., 0.30 means 30%).
+    This helper converts observed values to match the fraction convention.
+
+    IMPORTANT: drawdown_tracker always produces percent-style values via:
+        dd_pct = (dd_abs / peak) * 100.0
+    So we must ALWAYS divide by 100 to get the fraction.
+    """
+    try:
+        # drawdown_tracker always produces percent-style values:
+        #   e.g. 0.996 → 0.996%
+        # Always convert to fraction:
+        frac = float(value) / 100.0
+        if frac < 0:
+            return 0.0
+        if frac > 1.0:
+            # Cap at 100% fraction
+            return 1.0
+        return frac
+    except Exception:
+        return 0.0
 
 LOGGER = logging.getLogger("risk_limits")
 
@@ -353,6 +390,10 @@ def _emit_veto(
             "observations": observations_section,
             "gate": normalized_detail.get("gate"),
         }
+        try:
+            record_veto(payload["veto_reason"])
+        except Exception:
+            pass
         log_event(LOG_VETOES, "risk_veto", safe_dump(payload))
     except Exception:
         pass
@@ -413,6 +454,30 @@ def _peak_from_nav_log(limit: int = 200) -> float:
         except Exception:
             continue
     return peak_val
+
+
+def _nav_history_from_log(limit: int = 200) -> List[float]:
+    """Load NAV history from nav_log.json for portfolio DD computation."""
+    path = "logs/nav_log.json"
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return []
+    series = data[-limit:] if isinstance(data, list) else [data]
+    nav_values: List[float] = []
+    for entry in series:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            nav_val = _as_float(entry.get("nav") or entry.get("nav_usd"))
+            if nav_val > 0:
+                nav_values.append(nav_val)
+        except Exception:
+            continue
+    return nav_values
 
 
 def _drawdown_snapshot(g_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
@@ -928,6 +993,10 @@ def check_order(
         restricted = set()
     if restricted and sym.upper() in restricted:
         details.setdefault("reasons", []).append("restricted_symbol")
+        try:
+            record_veto("restricted_symbol")
+        except Exception:
+            pass
         return False, details
 
     # Non-prod dry-run guard (skip on testnet)
@@ -937,6 +1006,10 @@ def check_order(
             pass
         else:
             details.setdefault("reasons", []).append("non_prod_env_guard")
+            try:
+                record_veto("non_prod_env_guard")
+            except Exception:
+                pass
             return False, details
 
     # Universe guard (exact symbol match)
@@ -946,6 +1019,10 @@ def check_order(
         universe_set = set()
     if universe_set and sym.upper() not in universe_set:
         details.setdefault("reasons", []).append("symbol_not_in_universe")
+        try:
+            record_veto("symbol_not_in_universe")
+        except Exception:
+            pass
         return False, details
 
     nav_threshold_raw = g_cfg.get("nav_freshness_seconds")
@@ -1077,6 +1154,275 @@ def check_order(
         detail_payload["nav_fresh"] = False
         nav_fresh_flag = False
 
+    # Portfolio Drawdown Circuit Breaker check
+    cb_cfg = cfg.get("circuit_breakers") or {}
+    max_portfolio_dd_nav_pct = cb_cfg.get("max_portfolio_dd_nav_pct")
+    dd_state_for_circuit: Optional[Any] = None
+    circuit_breaker_active = False
+
+    if max_portfolio_dd_nav_pct is not None:
+        try:
+            max_dd_threshold = float(max_portfolio_dd_nav_pct)
+            nav_history = _nav_history_from_log(limit=200)
+            dd_state_for_circuit = get_portfolio_dd_state(nav_history)
+
+            if dd_state_for_circuit is not None and dd_state_for_circuit.current_dd_pct >= max_dd_threshold:
+                circuit_breaker_active = True
+                reasons.append("portfolio_dd_circuit")
+                thresholds.setdefault("max_portfolio_dd_nav_pct", max_dd_threshold)
+                details["portfolio_dd_circuit"] = {
+                    "current_dd_pct": dd_state_for_circuit.current_dd_pct,
+                    "peak_nav_usd": dd_state_for_circuit.peak_nav_usd,
+                    "latest_nav_usd": dd_state_for_circuit.latest_nav_usd,
+                    "max_portfolio_dd_nav_pct": max_dd_threshold,
+                }
+                LOGGER.warning(
+                    "[risk] portfolio_dd_circuit triggered dd=%.4f (%.2f%%) limit=%.4f (%.2f%%) peak=%.2f nav=%.2f",
+                    dd_state_for_circuit.current_dd_pct,
+                    dd_state_for_circuit.current_dd_pct * 100.0,
+                    max_dd_threshold,
+                    max_dd_threshold * 100.0,
+                    dd_state_for_circuit.peak_nav_usd,
+                    dd_state_for_circuit.latest_nav_usd,
+                )
+                # Emit veto for circuit breaker
+                _emit_veto(
+                    symbol=sym,
+                    strategy=strategy_name,
+                    reason="portfolio_dd_circuit",
+                    signal_ts=signal_ts,
+                    qty=qty_req,
+                    detail={
+                        "gate": "portfolio_dd_circuit",
+                        "reasons": ["portfolio_dd_circuit"],
+                        "thresholds": {"max_portfolio_dd_nav_pct": max_dd_threshold},
+                        "observations": {
+                            "current_dd_pct": dd_state_for_circuit.current_dd_pct,
+                            "peak_nav_usd": dd_state_for_circuit.peak_nav_usd,
+                            "latest_nav_usd": dd_state_for_circuit.latest_nav_usd,
+                        },
+                    },
+                    context=nav_context,
+                )
+        except Exception as exc:
+            LOGGER.error("[risk] portfolio_dd_circuit check failed: %s", exc)
+
+    # Store circuit breaker state for state_publish consumption
+    details["circuit_breaker"] = {
+        "max_portfolio_dd_nav_pct": max_portfolio_dd_nav_pct,
+        "active": circuit_breaker_active,
+        "current_dd_pct": dd_state_for_circuit.current_dd_pct if dd_state_for_circuit else None,
+    }
+
+    # Correlation Exposure Caps check
+    correlation_groups_config = load_correlation_groups_config()
+    correlation_group_exposures: Dict[str, Dict[str, Any]] = {}
+
+    if correlation_groups_config.groups and nav_f > 0:
+        try:
+            # Get current positions for correlation check
+            positions_for_corr = []
+            live_pos = getattr(state, "live_positions", {}) or {}
+            if isinstance(live_pos, Mapping):
+                for pos_sym, pos_data in live_pos.items():
+                    if isinstance(pos_data, Mapping):
+                        positions_for_corr.append({"symbol": pos_sym, **pos_data})
+                    elif isinstance(pos_data, (int, float)):
+                        positions_for_corr.append({"symbol": pos_sym, "notional": abs(float(pos_data))})
+
+            # Compute current group exposures
+            current_exposure = compute_group_exposure_nav_pct(
+                positions=positions_for_corr,
+                nav_total_usd=nav_f,
+                corr_cfg=correlation_groups_config,
+            )
+
+            # Compute hypothetical exposures with this order
+            hypothetical_exposure = compute_hypothetical_group_exposure_nav_pct(
+                positions=positions_for_corr,
+                nav_total_usd=nav_f,
+                corr_cfg=correlation_groups_config,
+                order_symbol=sym,
+                order_notional_usd=float(requested_notional),
+            )
+
+            # Check against caps
+            for group_name, group_cfg in correlation_groups_config.groups.items():
+                before = current_exposure.get(group_name, 0.0)
+                after = hypothetical_exposure.get(group_name, 0.0)
+                cap = group_cfg.max_group_nav_pct
+
+                # Store for state_publish
+                correlation_group_exposures[group_name] = {
+                    "gross_nav_pct": before,
+                    "max_group_nav_pct": cap,
+                }
+
+                if after > cap:
+                    reasons.append("correlation_cap")
+                    thresholds.setdefault("correlation_cap", {
+                        "group_name": group_name,
+                        "max_group_nav_pct": cap,
+                    })
+                    details["correlation_cap"] = {
+                        "group_name": group_name,
+                        "group_nav_pct_before": before,
+                        "group_nav_pct_after": after,
+                        "max_group_nav_pct": cap,
+                    }
+                    LOGGER.warning(
+                        "[risk] correlation_cap triggered group=%s before=%.4f after=%.4f cap=%.4f",
+                        group_name,
+                        before,
+                        after,
+                        cap,
+                    )
+                    # Emit veto for correlation cap
+                    _emit_veto(
+                        symbol=sym,
+                        strategy=strategy_name,
+                        reason="correlation_cap",
+                        signal_ts=signal_ts,
+                        qty=qty_req,
+                        detail={
+                            "gate": "correlation_cap",
+                            "reasons": ["correlation_cap"],
+                            "thresholds": {"max_group_nav_pct": cap},
+                            "observations": {
+                                "group_name": group_name,
+                                "group_nav_pct_before": before,
+                                "group_nav_pct_after": after,
+                            },
+                        },
+                        context=nav_context,
+                    )
+                    break  # Only emit first correlation cap veto
+        except Exception as exc:
+            LOGGER.error("[risk] correlation_cap check failed: %s", exc)
+
+    # Store correlation group exposures for state_publish consumption
+    details["correlation_groups"] = correlation_group_exposures
+
+    # ---------------------------------------------------------------------------
+    # v7.5_A1: Portfolio VaR and Position CVaR Vetoes
+    # ---------------------------------------------------------------------------
+    try:
+        from execution.vol_risk import (
+            load_var_config,
+            load_cvar_config,
+            compute_portfolio_var_from_positions,
+            compute_position_cvar_for_symbol,
+            check_portfolio_var_limit,
+            check_position_cvar_limit,
+        )
+        
+        # Get positions for VaR/CVaR calculation
+        var_positions = []
+        live_positions_for_var = getattr(state, "live_positions", {}) or {}
+        if isinstance(live_positions_for_var, Mapping):
+            for pos_sym, pos_data in live_positions_for_var.items():
+                if isinstance(pos_data, Mapping):
+                    notional = abs(float(pos_data.get("notional", 0) or 0))
+                    if notional <= 0:
+                        # Try to compute from positionAmt * price
+                        amt = float(pos_data.get("positionAmt", 0) or 0)
+                        px = float(pos_data.get("markPrice", pos_data.get("entryPrice", 0)) or 0)
+                        notional = abs(amt * px)
+                    if notional > 0:
+                        var_positions.append({"symbol": pos_sym, "notional": notional})
+                elif isinstance(pos_data, (int, float)):
+                    var_positions.append({"symbol": pos_sym, "notional": abs(float(pos_data))})
+        
+        # Load strategy config for VaR/CVaR settings
+        strategy_cfg = None
+        try:
+            import json as _json
+            with open("config/strategy_config.json") as _f:
+                strategy_cfg = _json.load(_f)
+        except Exception:
+            strategy_cfg = {}
+        
+        var_cfg = load_var_config(strategy_cfg)
+        cvar_cfg = load_cvar_config(strategy_cfg)
+        
+        # Portfolio VaR check
+        if var_cfg.enabled and nav_f > 0 and var_positions:
+            var_result = compute_portfolio_var_from_positions(var_positions, nav_f, var_cfg)
+            should_veto_var, var_veto_detail = check_portfolio_var_limit(var_result, var_cfg)
+            
+            details["portfolio_var"] = {
+                "var_nav_pct": var_result.var_nav_pct,
+                "var_usd": var_result.var_usd,
+                "max_portfolio_var_nav_pct": var_cfg.max_portfolio_var_nav_pct,
+                "within_limit": var_result.within_limit,
+            }
+            
+            if should_veto_var:
+                reasons.append("portfolio_var_limit")
+                thresholds.setdefault("max_portfolio_var_nav_pct", var_cfg.max_portfolio_var_nav_pct)
+                details["portfolio_var_veto"] = var_veto_detail
+                LOGGER.warning(
+                    "[risk] portfolio_var_limit triggered var=%.4f (%.2f%%) limit=%.4f (%.2f%%)",
+                    var_result.var_nav_pct,
+                    var_result.var_nav_pct * 100.0,
+                    var_cfg.max_portfolio_var_nav_pct,
+                    var_cfg.max_portfolio_var_nav_pct * 100.0,
+                )
+                _emit_veto(
+                    symbol=sym,
+                    strategy=strategy_name,
+                    reason="portfolio_var_limit",
+                    signal_ts=signal_ts,
+                    qty=qty_req,
+                    detail=var_veto_detail,
+                    context=nav_context,
+                )
+        
+        # Position CVaR check for the symbol being traded
+        requested_notional_f = float(requested_notional or 0)
+        if cvar_cfg.enabled and nav_f > 0 and requested_notional_f > 0:
+            cvar_result = compute_position_cvar_for_symbol(
+                sym,
+                requested_notional_f,
+                nav_f,
+                cvar_cfg,
+            )
+            should_veto_cvar, cvar_veto_detail = check_position_cvar_limit(cvar_result, cvar_cfg)
+            
+            details["position_cvar"] = {
+                "symbol": sym,
+                "cvar_nav_pct": cvar_result.cvar_nav_pct,
+                "cvar_usd": cvar_result.cvar_usd,
+                "max_position_cvar_nav_pct": cvar_cfg.max_position_cvar_nav_pct,
+                "within_limit": cvar_result.within_limit,
+            }
+            
+            if should_veto_cvar:
+                reasons.append("position_cvar_limit")
+                thresholds.setdefault("max_position_cvar_nav_pct", cvar_cfg.max_position_cvar_nav_pct)
+                details["position_cvar_veto"] = cvar_veto_detail
+                LOGGER.warning(
+                    "[risk] position_cvar_limit triggered symbol=%s cvar=%.4f (%.2f%%) limit=%.4f (%.2f%%)",
+                    sym,
+                    cvar_result.cvar_nav_pct,
+                    cvar_result.cvar_nav_pct * 100.0,
+                    cvar_cfg.max_position_cvar_nav_pct,
+                    cvar_cfg.max_position_cvar_nav_pct * 100.0,
+                )
+                _emit_veto(
+                    symbol=sym,
+                    strategy=strategy_name,
+                    reason="position_cvar_limit",
+                    signal_ts=signal_ts,
+                    qty=qty_req,
+                    detail=cvar_veto_detail,
+                    context=nav_context,
+                )
+    except ImportError:
+        LOGGER.debug("[risk] vol_risk module not available, skipping VaR/CVaR checks")
+    except Exception as exc:
+        LOGGER.error("[risk] VaR/CVaR check failed: %s", exc)
+
     # Block duplicate exposure if a live position already exists
     try:
         pos_amt = 0.0
@@ -1192,40 +1538,66 @@ def check_order(
     details["fee_pnl"] = fee_snapshot
 
     try:
-        max_nav_drawdown_pct = float(g_cfg.get("max_nav_drawdown_pct", 0.0) or 0.0)
+        max_nav_drawdown_pct_raw = float(g_cfg.get("max_nav_drawdown_pct", 0.0) or 0.0)
     except Exception:
-        max_nav_drawdown_pct = 0.0
-    if drawdown_usable and max_nav_drawdown_pct > 0.0 and dd_pct >= max_nav_drawdown_pct:
+        max_nav_drawdown_pct_raw = 0.0
+    # Normalize config cap to fraction (0-1) to handle both percent-style and fractional configs
+    max_nav_drawdown_pct = normalize_percentage(max_nav_drawdown_pct_raw)
+    # Normalize observed drawdown to fraction (0-1) to match config cap convention
+    dd_pct_frac = _normalize_observed_pct(dd_pct)
+    if drawdown_usable and max_nav_drawdown_pct > 0.0 and dd_pct_frac >= max_nav_drawdown_pct:
         reasons.append("nav_drawdown_limit")
         thresholds.setdefault("max_nav_drawdown_pct", max_nav_drawdown_pct)
-        thresholds.setdefault("observed_drawdown_pct", dd_pct)
+        thresholds.setdefault("observed_drawdown_pct", dd_pct)  # raw percent for logging
         thresholds.setdefault("drawdown_nav", dd_nav_snapshot)
         thresholds.setdefault("drawdown_peak", dd_peak)
+        # Log normalized fractions for unambiguous debugging
+        details["drawdown_guard"] = {
+            "observed_dd_frac": dd_pct_frac,
+            "cap_dd_frac": max_nav_drawdown_pct,
+        }
         LOGGER.warning(
-            "[risk] drawdown_exceeded dd=%.1f%% limit=%.1f%% peak=%.2f nav=%.2f",
+            "[risk] drawdown_exceeded dd=%.4f (%.2f%%) limit=%.4f (%.2f%%) peak=%.2f nav=%.2f",
+            dd_pct_frac,
             dd_pct,
             max_nav_drawdown_pct,
+            max_nav_drawdown_pct * 100.0,
             dd_peak,
             dd_nav_snapshot,
         )
 
     # Daily loss limit (portfolio) sourced from drawdown tracker.
     try:
-        day_lim = float(g_cfg.get("daily_loss_limit_pct", 0.0) or 0.0)
+        day_lim_raw = float(g_cfg.get("daily_loss_limit_pct", 0.0) or 0.0)
     except Exception:
-        day_lim = 0.0
+        day_lim_raw = 0.0
+    # Normalize config cap to fraction (0-1) to handle both percent-style and fractional configs
+    day_lim = normalize_percentage(day_lim_raw)
     observed_daily_loss_pct = daily_loss_pct if daily_loss_pct is not None else dd_pct
     if day_lim > 0.0:
-        observed_dd = observed_daily_loss_pct
+        observed_dd_raw = observed_daily_loss_pct
         if daily_pnl_state < 0.0:
-            observed_dd = max(observed_dd, abs(daily_pnl_state))
-        if observed_dd >= day_lim:
+            observed_dd_raw = max(observed_dd_raw, abs(daily_pnl_state))
+        # Normalize observed daily loss to fraction (0-1) to match config cap convention
+        observed_dd_frac = _normalize_observed_pct(observed_dd_raw)
+        if observed_dd_frac >= day_lim:
             reasons.append("day_loss_limit")
             thresholds.setdefault("daily_loss_limit_pct", day_lim)
-            thresholds.setdefault("observed_daily_drawdown_pct", observed_dd)
+            thresholds.setdefault("observed_daily_drawdown_pct", observed_dd_raw)  # raw percent for logging
             thresholds.setdefault("drawdown_peak", dd_peak)
             thresholds.setdefault("drawdown_nav", dd_nav_snapshot)
-            LOGGER.warning("[risk] veto daily_loss_limit dd=%.1f%% limit=%.1f%%", observed_dd, day_lim)
+            # Log normalized fractions for unambiguous debugging
+            details["daily_loss_guard"] = {
+                "observed_day_loss_frac": observed_dd_frac,
+                "cap_day_loss_frac": day_lim,
+            }
+            LOGGER.warning(
+                "[risk] veto daily_loss_limit dd=%.4f (%.2f%%) limit=%.4f (%.2f%%)",
+                observed_dd_frac,
+                observed_dd_raw,
+                day_lim,
+                day_lim * 100.0,
+            )
     if not drawdown_usable and dd_stale_flags:
         details.setdefault("warnings", [])
         if "drawdown_stale" not in details["warnings"]:

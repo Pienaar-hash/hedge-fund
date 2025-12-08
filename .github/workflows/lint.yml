@@ -1,0 +1,44 @@
+name: Lint
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Minimal Lint Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mypy
+
+      - name: Run Ruff
+        run: |
+          ruff check .
+
+      - name: Run Mypy (Ignore Missing Imports)
+        run: |
+          mypy --ignore-missing-imports --pretty execution dashboard scripts

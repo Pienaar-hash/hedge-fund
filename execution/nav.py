@@ -211,7 +211,7 @@ def _ticker_last_price(symbol: str) -> float:
 
 
 def _attach_aum(nav_total: float, snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    """Augment NAV snapshot with off-exchange holdings and total AUM."""
+    """Augment NAV snapshot with off-exchange holdings without inflating NAV."""
     holdings = load_offexchange_holdings()
     offexchange_usd: Dict[str, Dict[str, Any]] = {}
     for sym, data in holdings.items():
@@ -253,7 +253,6 @@ def _attach_aum(nav_total: float, snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "usd_value": usd_value,
         }
     off_total = sum(v.get("usd_value", 0.0) or 0.0 for v in offexchange_usd.values())
-    aum_total = float(nav_total) + float(off_total)
     try:
         import logging
 
@@ -268,7 +267,8 @@ def _attach_aum(nav_total: float, snapshot: Dict[str, Any]) -> Dict[str, Any]:
     snapshot["aum"] = {
         "futures": float(nav_total),
         "offexchange": offexchange_usd,
-        "total": aum_total,
+        # Include off-exchange assets in AUM total for reporting, but NAV (nav_total) remains futures-only.
+        "total": float(nav_total + off_total),
     }
     return snapshot
 

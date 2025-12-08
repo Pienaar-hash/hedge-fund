@@ -4,6 +4,7 @@ v5.9 Execution Hardening — Router upgrades
 - Fee-aware effective price calculator
 - Child-order aggregation by min-notional
 - Auto-cancel/refresh on low fill ratio
+v7.5_B1: Added slippage tracking, spread-aware TWAP, liquidity buckets
 """
 
 from __future__ import annotations
@@ -12,13 +13,15 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Mapping, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import requests
 
 from execution import exchange_utils as ex
+from execution.exchange_precision import normalize_price, normalize_qty
 from execution.log_utils import get_logger, log_event, safe_dump
 from execution.intel.maker_offset import suggest_maker_offset_bps
+from execution.intel.router_autotune_shared import suggest_autotune_for_symbol
 from execution.intel.router_policy import router_policy, RouterPolicy
 from execution.intel.router_autotune_apply_v6 import (
     APPLY_ENABLED as AUTOTUNE_APPLY_ENABLED,
@@ -26,8 +29,29 @@ from execution.intel.router_autotune_apply_v6 import (
     get_current_risk_mode,
     apply_router_suggestion,
 )
-from execution.runtime_config import load_runtime_config
+from execution.diagnostics_metrics import record_order_placed
+from execution.runtime_config import load_runtime_config, get_twap_config, TWAPConfig
 from execution.utils.execution_health import record_execution_error
+
+# v7.5_B1: Slippage and liquidity imports
+try:
+    from execution.liquidity_model import (
+        get_liquidity_model,
+        get_bucket_for_symbol,
+        LiquidityBucketConfig,
+    )
+    from execution.slippage_model import (
+        SlippageObservation,
+        estimate_expected_slippage_bps,
+        compute_realized_slippage_bps,
+        compute_spread_bps,
+        record_slippage_observation,
+        load_slippage_config,
+        SlippageConfig,
+    )
+    _SLIPPAGE_AVAILABLE = True
+except ImportError:
+    _SLIPPAGE_AVAILABLE = False
 
 __all__ = [
     "route_order",
@@ -38,6 +62,10 @@ __all__ = [
     "chunk_qty",
     "submit_limit",
     "monitor_and_refresh",
+    "should_use_twap",
+    "split_twap_slices",
+    "ChildOrderResult",
+    "TWAPResult",
 ]
 
 _RUNTIME_CFG = load_runtime_config()
@@ -103,6 +131,107 @@ TRADING_WINDOW = _TRADING_WINDOW
 OFFPEAK_CFG = _OFFPEAK_CFG
 PRIORITY_CFG = _PRIORITY_CFG
 
+# v7.5_B1: Load slippage config
+_SLIPPAGE_CFG: Optional["SlippageConfig"] = None
+
+
+def _get_slippage_config() -> Optional["SlippageConfig"]:
+    """Get cached slippage configuration."""
+    global _SLIPPAGE_CFG
+    if _SLIPPAGE_CFG is None and _SLIPPAGE_AVAILABLE:
+        try:
+            _SLIPPAGE_CFG = load_slippage_config()
+        except Exception:
+            _SLIPPAGE_CFG = None
+    return _SLIPPAGE_CFG
+
+
+def get_market_microstructure(
+    symbol: str,
+    depth_levels: int = 5,
+) -> Tuple[float, float, float, List[Tuple[float, float]], List[Tuple[float, float]]]:
+    """
+    Fetch market microstructure data from exchange.
+    
+    Returns:
+        (best_bid, best_ask, spread_bps, bids, asks)
+        where bids/asks are lists of (price, qty) up to depth_levels.
+    """
+    try:
+        book = ex.get_orderbook(symbol, limit=depth_levels)
+        bids = [(float(p), float(q)) for p, q in book.get("bids", [])[:depth_levels]]
+        asks = [(float(p), float(q)) for p, q in book.get("asks", [])[:depth_levels]]
+        
+        best_bid = bids[0][0] if bids else 0.0
+        best_ask = asks[0][0] if asks else 0.0
+        
+        if best_bid > 0 and best_ask > 0:
+            mid = (best_bid + best_ask) / 2.0
+            spread_bps = (best_ask - best_bid) / mid * 10000.0
+        else:
+            spread_bps = 0.0
+        
+        return best_bid, best_ask, spread_bps, bids, asks
+    except Exception as exc:
+        _LOG.debug("failed to get orderbook for %s: %s", symbol, exc)
+        return 0.0, 0.0, 0.0, [], []
+
+
+def _record_slippage(
+    symbol: str,
+    side: str,
+    notional_usd: float,
+    fill_price: float,
+    mid_price: float,
+    spread_bps: float,
+    is_maker: bool,
+    depth: Optional[List[Tuple[float, float]]] = None,
+) -> None:
+    """
+    Record a slippage observation after order fill.
+    
+    Args:
+        symbol: Trading symbol
+        side: "BUY" or "SELL"
+        notional_usd: Filled notional in USD
+        fill_price: Average fill price
+        mid_price: Mid price at time of order
+        spread_bps: Spread in bps at time of order
+        is_maker: Whether this was a maker fill
+        depth: Order book depth (asks for BUY, bids for SELL)
+    """
+    if not _SLIPPAGE_AVAILABLE:
+        return
+    
+    try:
+        # Compute realized slippage
+        realized_bps = compute_realized_slippage_bps(side, fill_price, mid_price)
+        
+        # Compute expected slippage from depth
+        expected_bps = 0.0
+        if depth and mid_price > 0:
+            qty = notional_usd / mid_price if mid_price > 0 else 0.0
+            expected_bps = estimate_expected_slippage_bps(side, qty, depth, mid_price)
+        
+        obs = SlippageObservation(
+            symbol=symbol,
+            side=side,
+            notional_usd=notional_usd,
+            expected_bps=expected_bps,
+            realized_bps=realized_bps,
+            spread_bps=spread_bps,
+            maker=is_maker,
+        )
+        
+        record_slippage_observation(obs)
+        
+        _LOG.debug(
+            "[slippage] %s %s: expected=%.2f realized=%.2f spread=%.2f maker=%s",
+            symbol, side, expected_bps, realized_bps, spread_bps, is_maker
+        )
+    except Exception as exc:
+        _LOG.debug("failed to record slippage: %s", exc)
+
 
 @dataclass
 class PlaceOrderResult:
@@ -117,6 +246,118 @@ class PlaceOrderResult:
     placed_ts: float = field(default_factory=time.time)
     filled_qty: float = 0.0
     raw: Dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# TWAP Execution Support (v7.4 C1)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ChildOrderResult:
+    """Result of a single TWAP slice execution."""
+    slice_index: int
+    slice_count: int
+    slice_qty: float
+    order_id: str
+    status: str
+    filled_qty: float
+    avg_price: float | None
+    is_maker: bool
+    slippage_bps: float
+    latency_ms: float | None
+    raw: Dict[str, Any] | None = None
+
+
+@dataclass
+class TWAPResult:
+    """Aggregate result of TWAP execution."""
+    parent_symbol: str
+    parent_side: str
+    parent_qty: float
+    parent_gross_usd: float
+    execution_style: str  # "twap" or "single"
+    slices: int
+    interval_seconds: float
+    children: list[ChildOrderResult] = field(default_factory=list)
+    total_filled_qty: float = 0.0
+    weighted_avg_price: float | None = None
+    avg_slippage_bps: float = 0.0
+    total_latency_ms: float = 0.0
+    maker_count: int = 0
+    taker_count: int = 0
+    success: bool = True
+    error: str | None = None
+
+
+def should_use_twap(
+    gross_usd: float,
+    twap_cfg: TWAPConfig,
+) -> bool:
+    """
+    Determine if TWAP should be used for this order.
+    
+    Args:
+        gross_usd: Gross notional value of the order in USD
+        twap_cfg: TWAP configuration
+    
+    Returns:
+        True if TWAP should be used
+    """
+    return (
+        twap_cfg.enabled
+        and gross_usd >= twap_cfg.min_notional_usd
+        and twap_cfg.slices > 1
+    )
+
+
+def split_twap_slices(
+    total_qty: float,
+    slices: int,
+    min_slice_notional: float = 0.0,
+    price: float = 1.0,
+) -> list[float]:
+    """
+    Split total quantity into TWAP slices.
+    
+    Args:
+        total_qty: Total quantity to split
+        slices: Desired number of slices
+        min_slice_notional: Minimum notional per slice (optional)
+        price: Reference price for notional calculation
+    
+    Returns:
+        List of slice quantities (sum equals total_qty)
+    """
+    if total_qty <= 0 or slices <= 0:
+        return []
+    
+    if slices == 1:
+        return [total_qty]
+    
+    # Check if each slice meets minimum notional
+    if min_slice_notional > 0 and price > 0:
+        slice_qty = total_qty / slices
+        slice_notional = slice_qty * price
+        
+        # If slice is too small, reduce number of slices
+        while slice_notional < min_slice_notional and slices > 1:
+            slices -= 1
+            slice_qty = total_qty / slices
+            slice_notional = slice_qty * price
+    
+    if slices == 1:
+        return [total_qty]
+    
+    # Compute equal slices
+    base_qty = total_qty / slices
+    quantities = [base_qty] * slices
+    
+    # Adjust last slice for rounding error
+    remainder = total_qty - sum(quantities)
+    if remainder != 0:
+        quantities[-1] += remainder
+    
+    return quantities
 
 
 def _bps(a: float | None, b: float | None) -> float:
@@ -308,6 +549,331 @@ def monitor_and_refresh(
         reprice_wider(order)
         return
 
+
+# ---------------------------------------------------------------------------
+# TWAP Execution Implementation (v7.4 C1)
+# ---------------------------------------------------------------------------
+
+LOG_TWAP_EVENTS = None  # Lazy init to avoid circular imports
+
+
+def _get_twap_logger():
+    """Get TWAP events logger (lazy init)."""
+    global LOG_TWAP_EVENTS
+    if LOG_TWAP_EVENTS is None:
+        LOG_TWAP_EVENTS = get_logger("logs/execution/twap_events.jsonl")
+    return LOG_TWAP_EVENTS
+
+
+def _route_twap(
+    intent: Mapping[str, Any],
+    risk_ctx: Mapping[str, Any],
+    twap_cfg: TWAPConfig,
+    dry_run: bool = False,
+    sleep_func: Callable[[float], None] | None = None,
+) -> TWAPResult:
+    """
+    Execute a TWAP for the given intent.
+    
+    Splits quantity into N slices, calls existing maker-first routing for each,
+    and sleeps between slices as configured.
+    
+    Args:
+        intent: Order intent with symbol, side, qty, etc.
+        risk_ctx: Risk context from check_order
+        twap_cfg: TWAP configuration
+        dry_run: If True, skip actual order placement
+        sleep_func: Optional sleep function (for testing)
+    
+    Returns:
+        TWAPResult with aggregated execution data
+    """
+    sleep_fn = sleep_func or time.sleep
+    symbol = str(intent.get("symbol") or intent.get("pair") or "").upper()
+    side = str(intent.get("side") or intent.get("signal") or "").upper()
+    if side in ("LONG",):
+        side = "BUY"
+    elif side in ("SHORT",):
+        side = "SELL"
+    
+    total_qty = float(intent.get("quantity") or intent.get("qty") or 0)
+    price = float(intent.get("price") or risk_ctx.get("price") or 0)
+    gross_usd = total_qty * price if price > 0 else 0
+    
+    result = TWAPResult(
+        parent_symbol=symbol,
+        parent_side=side,
+        parent_qty=total_qty,
+        parent_gross_usd=gross_usd,
+        execution_style="twap",
+        slices=twap_cfg.slices,
+        interval_seconds=twap_cfg.interval_seconds,
+    )
+    
+    # Compute slice quantities
+    slice_quantities = split_twap_slices(
+        total_qty=total_qty,
+        slices=twap_cfg.slices,
+        min_slice_notional=MIN_CHILD_NOTIONAL,
+        price=price,
+    )
+    
+    actual_slices = len(slice_quantities)
+    result.slices = actual_slices
+    
+    if actual_slices == 0:
+        result.success = False
+        result.error = "no_valid_slices"
+        return result
+    
+    # Log TWAP start
+    twap_logger = _get_twap_logger()
+    
+    # v7.5_B1: Get liquidity bucket and slippage config for spread-aware TWAP
+    bucket_config = None
+    slippage_cfg = _get_slippage_config()
+    spread_pause_factor = 1.5
+    if _SLIPPAGE_AVAILABLE:
+        try:
+            bucket_config = get_bucket_for_symbol(symbol)
+            if slippage_cfg:
+                spread_pause_factor = slippage_cfg.spread_pause_factor
+        except Exception:
+            pass
+    
+    twap_start_event = {
+        "event": "twap_start",
+        "symbol": symbol,
+        "side": side,
+        "total_qty": total_qty,
+        "gross_usd": gross_usd,
+        "slices": actual_slices,
+        "interval_seconds": twap_cfg.interval_seconds,
+        "slice_quantities": slice_quantities,
+        "liquidity_bucket": bucket_config.name if bucket_config else None,
+        "ts": time.time(),
+    }
+    try:
+        log_event(twap_logger, "twap_start", safe_dump(twap_start_event))
+    except Exception:
+        pass
+    
+    skipped_slices = 0
+    
+    # Execute each slice
+    for i, slice_qty in enumerate(slice_quantities):
+        # v7.5_B1: Check spread before each slice
+        if bucket_config and slippage_cfg and slippage_cfg.enabled:
+            try:
+                _, _, current_spread_bps, _, _ = get_market_microstructure(
+                    symbol, slippage_cfg.depth_levels
+                )
+                max_spread_bps = bucket_config.max_spread_bps
+                pause_thresh_bps = max_spread_bps * spread_pause_factor
+                
+                if current_spread_bps > pause_thresh_bps:
+                    _LOG.info(
+                        "[twap-spread] skipping slice %d/%d: symbol=%s spread_bps=%.2f thresh=%.2f",
+                        i + 1, actual_slices, symbol, current_spread_bps, pause_thresh_bps
+                    )
+                    skipped_slices += 1
+                    
+                    # Log skipped slice
+                    skip_event = {
+                        "event": "twap_slice_skipped",
+                        "symbol": symbol,
+                        "side": side,
+                        "slice_index": i,
+                        "slice_count": actual_slices,
+                        "reason": "spread_too_wide",
+                        "spread_bps": current_spread_bps,
+                        "threshold_bps": pause_thresh_bps,
+                        "ts": time.time(),
+                    }
+                    try:
+                        log_event(twap_logger, "twap_slice_skipped", safe_dump(skip_event))
+                    except Exception:
+                        pass
+                    
+                    # Sleep before trying next slice
+                    sleep_fn(twap_cfg.interval_seconds)
+                    continue
+            except Exception as exc:
+                _LOG.debug("spread check failed for %s: %s", symbol, exc)
+        
+        slice_intent = dict(intent)
+        slice_intent["quantity"] = slice_qty
+        slice_intent["qty"] = slice_qty
+        slice_intent["_twap_slice"] = True
+        slice_intent["_twap_slice_index"] = i
+        slice_intent["_twap_slice_count"] = actual_slices
+        
+        slice_risk_ctx = dict(risk_ctx)
+        
+        try:
+            t0 = time.perf_counter()
+            exchange_response = route_order(slice_intent, slice_risk_ctx, dry_run)
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+        except Exception as exc:
+            child = ChildOrderResult(
+                slice_index=i,
+                slice_count=actual_slices,
+                slice_qty=slice_qty,
+                order_id="",
+                status="FAILED",
+                filled_qty=0.0,
+                avg_price=None,
+                is_maker=False,
+                slippage_bps=0.0,
+                latency_ms=None,
+                raw={"error": str(exc)},
+            )
+            result.children.append(child)
+            result.success = False
+            result.error = str(exc)
+            
+            # Log slice error
+            _log_twap_slice(
+                twap_logger, symbol, side, i, actual_slices, slice_qty,
+                gross_usd, twap_cfg, child, "error"
+            )
+            continue
+        
+        # Extract result data
+        raw = exchange_response.get("raw") or {}
+        router_meta = exchange_response.get("router_meta") or {}
+        is_maker = bool(router_meta.get("is_maker_final"))
+        avg_price = exchange_response.get("price")
+        filled_qty = exchange_response.get("qty") or 0.0
+        status = exchange_response.get("status") or "UNKNOWN"
+        
+        # Compute slippage for this slice
+        mark_px = float(intent.get("mark_price") or price or 0)
+        slip_bps = 0.0
+        if mark_px > 0 and avg_price:
+            diff = (avg_price - mark_px) / mark_px * 10_000.0
+            if side == "SELL":
+                diff *= -1.0
+            slip_bps = diff
+        
+        child = ChildOrderResult(
+            slice_index=i,
+            slice_count=actual_slices,
+            slice_qty=slice_qty,
+            order_id=str(exchange_response.get("order_id") or ""),
+            status=status,
+            filled_qty=float(filled_qty) if filled_qty else 0.0,
+            avg_price=float(avg_price) if avg_price else None,
+            is_maker=is_maker,
+            slippage_bps=slip_bps,
+            latency_ms=latency_ms,
+            raw=raw,
+        )
+        result.children.append(child)
+        
+        # Update aggregates
+        result.total_filled_qty += child.filled_qty
+        result.total_latency_ms += latency_ms or 0.0
+        if is_maker:
+            result.maker_count += 1
+        else:
+            result.taker_count += 1
+        
+        # Log slice completion
+        _log_twap_slice(
+            twap_logger, symbol, side, i, actual_slices, slice_qty,
+            gross_usd, twap_cfg, child, "complete"
+        )
+        
+        # Sleep between slices (except after last)
+        if i < actual_slices - 1 and twap_cfg.interval_seconds > 0:
+            sleep_fn(twap_cfg.interval_seconds)
+    
+    # Compute weighted average price
+    total_value = 0.0
+    total_qty_filled = 0.0
+    for child in result.children:
+        if child.avg_price and child.filled_qty > 0:
+            total_value += child.avg_price * child.filled_qty
+            total_qty_filled += child.filled_qty
+    
+    if total_qty_filled > 0:
+        result.weighted_avg_price = total_value / total_qty_filled
+    
+    # Compute average slippage
+    slip_sum = sum(c.slippage_bps for c in result.children)
+    if result.children:
+        result.avg_slippage_bps = slip_sum / len(result.children)
+    
+    # Log TWAP complete
+    twap_complete_event = {
+        "event": "twap_complete",
+        "symbol": symbol,
+        "side": side,
+        "total_qty": total_qty,
+        "total_filled_qty": result.total_filled_qty,
+        "weighted_avg_price": result.weighted_avg_price,
+        "avg_slippage_bps": result.avg_slippage_bps,
+        "slices_executed": len(result.children),
+        "slices_skipped": skipped_slices,  # v7.5_B1: track skipped slices
+        "maker_count": result.maker_count,
+        "taker_count": result.taker_count,
+        "total_latency_ms": result.total_latency_ms,
+        "success": result.success,
+        "ts": time.time(),
+    }
+    try:
+        log_event(twap_logger, "twap_complete", safe_dump(twap_complete_event))
+    except Exception:
+        pass
+    
+    return result
+
+
+def _log_twap_slice(
+    logger,
+    symbol: str,
+    side: str,
+    slice_index: int,
+    slice_count: int,
+    slice_qty: float,
+    parent_gross_usd: float,
+    twap_cfg: TWAPConfig,
+    child: ChildOrderResult,
+    status: str,
+) -> None:
+    """Log a TWAP slice event."""
+    event = {
+        "event": f"twap_slice_{status}",
+        "execution_style": "twap",
+        "symbol": symbol,
+        "side": side,
+        "twap": {
+            "slice_index": slice_index,
+            "slice_count": slice_count,
+            "slice_qty": slice_qty,
+            "parent_gross_usd": parent_gross_usd,
+            "twap_cfg": {
+                "min_notional_usd": twap_cfg.min_notional_usd,
+                "slices": twap_cfg.slices,
+                "interval_seconds": twap_cfg.interval_seconds,
+            },
+        },
+        "order_id": child.order_id,
+        "status": child.status,
+        "filled_qty": child.filled_qty,
+        "avg_price": child.avg_price,
+        "is_maker": child.is_maker,
+        "slippage_bps": child.slippage_bps,
+        "latency_ms": child.latency_ms,
+        "ts": time.time(),
+    }
+    try:
+        log_event(logger, event["event"], safe_dump(event))
+    except Exception:
+        pass
+
+
 _LOG = logging.getLogger("order_router")
 LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
 LOG_ROUTER_DECISIONS = get_logger("logs/execution/router_decisions.jsonl")
@@ -496,17 +1062,37 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     )
     maker_qty = _to_float(risk_ctx.get("maker_qty"))
     maker_price = _to_float(risk_ctx.get("maker_price") or price)
-    policy = router_policy(symbol)
+    policy_probe = router_policy(symbol)
     try:
-        base_offset_bps = float(policy.offset_bps) if policy.offset_bps is not None else float(suggest_maker_offset_bps(symbol))
+        base_offset_bps = float(policy_probe.offset_bps) if policy_probe.offset_bps is not None else float(suggest_maker_offset_bps(symbol))
     except Exception:
         base_offset_bps = 2.0
+    adjusted_offset_bps = base_offset_bps
+    dynamic_autotune: Dict[str, Any] = {}
+    maker_first_override = policy_probe.maker_first
+    try:
+        dynamic_autotune = suggest_autotune_for_symbol(
+            symbol,
+            base_offset_bps,
+            min_offset_bps=getattr(maker_offset, "MIN_OFFSET_BPS", 0.5),
+        )
+        adjusted_offset_bps = float(dynamic_autotune.get("adaptive_offset_bps") or base_offset_bps)
+        maker_first_override = bool(dynamic_autotune.get("maker_first"))
+    except Exception:
+        dynamic_autotune = {}
+    policy = RouterPolicy(
+        maker_first=maker_first_override,
+        taker_bias=policy_probe.taker_bias,
+        quality=policy_probe.quality,
+        reason=policy_probe.reason,
+        offset_bps=adjusted_offset_bps,
+    )
     policy_snapshot = {
         "maker_first": policy.maker_first,
         "taker_bias": policy.taker_bias,
         "quality": policy.quality,
         "reason": policy.reason,
-        "offset_bps": base_offset_bps,
+        "offset_bps": adjusted_offset_bps,
     }
     router_decision: Dict[str, Any] = {
         "symbol": symbol,
@@ -516,13 +1102,15 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         "policy_quality": policy.quality,
         "policy_maker_first": policy.maker_first,
         "policy_taker_bias": policy.taker_bias,
-        "offset_bps": base_offset_bps,
+        "offset_bps": adjusted_offset_bps,
         "spread_bps": spread_bps,
+        "maker_reliability": float(dynamic_autotune.get("maker_reliability") or 0.0),
+        "effective_reliability": float(dynamic_autotune.get("effective_reliability") or dynamic_autotune.get("maker_reliability") or 0.0),
+        "risk_mode_dynamic": dynamic_autotune.get("risk_mode"),
         "reasons": [],
     }
     policy_before_snapshot = dict(policy_snapshot)
     policy_after_snapshot = dict(policy_snapshot)
-    adjusted_offset_bps = base_offset_bps
     risk_mode = "normal"
     autotune_applied = False
     if AUTOTUNE_APPLY_ENABLED:
@@ -621,6 +1209,8 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             adaptive_bps = adjusted_offset_bps
             adjusted_price = _apply_offset(maker_price, adaptive_bps, side)
             maker_px = effective_px(adjusted_price, side, is_maker=True) or adjusted_price
+            # Normalize price to exchange tickSize precision
+            maker_px = normalize_price(symbol, maker_px)
             maker_result = submit_limit(symbol, maker_px, maker_qty, side)
             latency_ms = (time.perf_counter() - t0) * 1000.0
             router_decision["maker_offset_bps"] = adaptive_bps
@@ -736,13 +1326,54 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             "before": policy_before_snapshot,
             "after": policy_after_snapshot,
             "risk_mode": risk_mode,
+            "dynamic": dynamic_autotune,
         },
         "decision": {**router_decision, "spread_clamped": spread_clamped},
     }
+    
+    # v7.5_B1: Record slippage observation for filled orders
+    if accepted and executed_qty_float and executed_qty_float > 0 and avg_price_float:
+        try:
+            mid_price = _to_float(risk_ctx.get("mid_price") or maker_price)
+            notional_usd = executed_qty_float * avg_price_float
+            obs_spread_bps = spread_bps if spread_bps else 0.0
+            
+            # Get depth for expected slippage calculation
+            depth = None
+            if _SLIPPAGE_AVAILABLE:
+                slippage_cfg = _get_slippage_config()
+                if slippage_cfg and slippage_cfg.enabled:
+                    try:
+                        _, _, _, bids, asks = get_market_microstructure(
+                            symbol, slippage_cfg.depth_levels
+                        )
+                        # Use asks for BUY, bids for SELL
+                        depth = asks if side == "BUY" else bids
+                    except Exception:
+                        pass
+            
+            _record_slippage(
+                symbol=symbol,
+                side=side,
+                notional_usd=notional_usd,
+                fill_price=avg_price_float,
+                mid_price=mid_price or avg_price_float,
+                spread_bps=obs_spread_bps,
+                is_maker=maker_used,
+                depth=depth,
+            )
+        except Exception as exc:
+            _LOG.debug("slippage recording failed: %s", exc)
+    
     try:
         target_ctx["route_decision"] = router_meta["decision"]
     except Exception:
         pass
+    if accepted:
+        try:
+            record_order_placed()
+        except Exception:
+            pass
     result: Dict[str, Any] = {
         "accepted": accepted,
         "reason": reason,
@@ -795,6 +1426,45 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
         or _to_float(base_intent.get("price"))
     )
     submit_px = _to_float(base_intent.get("price")) or _to_float(router_ctx.get("price"))
+    
+    # --- TWAP Decision (v7.4 C1) ---
+    # Check if this intent should use TWAP execution
+    twap_cfg = get_twap_config()
+    qty_float_check = _to_float(base_intent.get("quantity") or base_intent.get("qty"))
+    price_check = mark_px or submit_px or 0.0
+    gross_usd = (qty_float_check or 0) * price_check
+    
+    # Skip TWAP for slices (already in TWAP) or explicitly disabled
+    is_twap_slice = bool(base_intent.get("_twap_slice"))
+    use_twap = (
+        not is_twap_slice
+        and should_use_twap(gross_usd, twap_cfg)
+    )
+    
+    if use_twap:
+        # Execute via TWAP path
+        twap_result = _route_twap(
+            intent=base_intent,
+            risk_ctx=router_ctx,
+            twap_cfg=twap_cfg,
+            dry_run=dry_run,
+        )
+        
+        # Convert TWAPResult to exchange_response format
+        exchange_response = _twap_result_to_exchange_response(twap_result)
+        
+        # Build router_metrics for TWAP
+        router_metrics = _build_twap_metrics(
+            twap_result=twap_result,
+            attempt_id=attempt_id,
+            timing=timing,
+            mark_px=mark_px,
+            submit_px=submit_px,
+            retry_count=retry_count,
+            router_ctx=router_ctx,
+        )
+        
+        return exchange_response, router_metrics
 
     try:
         exchange_response = route_order(base_intent, router_ctx, dry_run)
@@ -913,4 +1583,172 @@ def route_intent(intent: Dict[str, Any], attempt_id: str) -> Tuple[Dict[str, Any
     router_metrics["policy_before"] = autotune_meta.get("before")
     router_metrics["policy_after"] = autotune_meta.get("after")
     router_metrics["decision"] = router_meta.get("decision") if isinstance(router_meta, Mapping) else router_ctx.get("route_decision")
+    router_metrics["execution_style"] = "single"  # v7.4 C1: tag non-TWAP orders
     return exchange_response, router_metrics
+
+
+# ---------------------------------------------------------------------------
+# TWAP Result Converters (v7.4 C1)
+# ---------------------------------------------------------------------------
+
+def _twap_result_to_exchange_response(twap_result: TWAPResult) -> Dict[str, Any]:
+    """
+    Convert TWAPResult to exchange_response format for compatibility.
+    
+    Args:
+        twap_result: TWAP execution result
+    
+    Returns:
+        Dict matching route_order return format
+    """
+    # Aggregate order IDs from children
+    child_order_ids = [c.order_id for c in twap_result.children if c.order_id]
+    first_order_id = child_order_ids[0] if child_order_ids else ""
+    
+    # Determine overall status
+    statuses = [c.status for c in twap_result.children]
+    if all(s in ("FILLED", "NEW", "PARTIALLY_FILLED") for s in statuses):
+        status = "FILLED" if twap_result.total_filled_qty >= twap_result.parent_qty * 0.99 else "PARTIALLY_FILLED"
+    elif any(s == "FAILED" for s in statuses):
+        status = "PARTIALLY_FILLED" if twap_result.total_filled_qty > 0 else "REJECTED"
+    else:
+        status = "FILLED"
+    
+    accepted = status not in ("REJECTED", "FAILED")
+    
+    return {
+        "accepted": accepted,
+        "reason": twap_result.error,
+        "order_id": first_order_id,
+        "status": status,
+        "price": twap_result.weighted_avg_price,
+        "qty": twap_result.total_filled_qty,
+        "raw": {
+            "twap": True,
+            "slices": twap_result.slices,
+            "children": [
+                {
+                    "slice_index": c.slice_index,
+                    "order_id": c.order_id,
+                    "status": c.status,
+                    "filled_qty": c.filled_qty,
+                    "avg_price": c.avg_price,
+                    "is_maker": c.is_maker,
+                    "slippage_bps": c.slippage_bps,
+                }
+                for c in twap_result.children
+            ],
+            "total_filled_qty": twap_result.total_filled_qty,
+            "weighted_avg_price": twap_result.weighted_avg_price,
+        },
+        "request_id": None,
+        "latency_ms": twap_result.total_latency_ms,
+        "exchange_filters_used": {},
+        "client_order_id": None,
+        "transact_time": None,
+        "router_meta": {
+            "maker_start": True,
+            "is_maker_final": twap_result.maker_count > twap_result.taker_count,
+            "used_fallback": twap_result.taker_count > 0,
+            "execution_style": "twap",
+            "twap": {
+                "slices": twap_result.slices,
+                "interval_seconds": twap_result.interval_seconds,
+                "maker_count": twap_result.maker_count,
+                "taker_count": twap_result.taker_count,
+                "avg_slippage_bps": twap_result.avg_slippage_bps,
+            },
+        },
+    }
+
+
+def _build_twap_metrics(
+    twap_result: TWAPResult,
+    attempt_id: str,
+    timing: Dict[str, Any],
+    mark_px: float | None,
+    submit_px: float | None,
+    retry_count: int,
+    router_ctx: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Build router_metrics dict for TWAP execution.
+    
+    Args:
+        twap_result: TWAP execution result
+        attempt_id: Unique attempt identifier
+        timing: Timing information
+        mark_px: Mark price
+        submit_px: Submitted price
+        retry_count: Number of retries
+        router_ctx: Router context
+    
+    Returns:
+        Router metrics dict
+    """
+    policy_meta = router_ctx.get("router_policy") or {}
+    
+    return {
+        "attempt_id": attempt_id,
+        "venue": "binance_futures",
+        "route": "twap",
+        "execution_style": "twap",
+        "prices": {
+            "mark": mark_px,
+            "submitted": submit_px,
+            "avg_fill": twap_result.weighted_avg_price,
+        },
+        "qty": {
+            "contracts": twap_result.parent_qty,
+            "notional_usd": twap_result.parent_gross_usd,
+        },
+        "timing_ms": {
+            "decision": _to_float(timing.get("decision")),
+            "submit": _to_float(timing.get("submit")),
+            "ack": twap_result.total_latency_ms,
+            "fill": _to_float(timing.get("fill")),
+        },
+        "result": {
+            "status": "FILLED" if twap_result.success else "REJECTED",
+            "retries": retry_count,
+            "cancelled": False,
+        },
+        "fees_usd": None,
+        "slippage_bps": twap_result.avg_slippage_bps,
+        "ack_latency_ms": twap_result.total_latency_ms,
+        "maker_start": True,
+        "is_maker_final": twap_result.maker_count > twap_result.taker_count,
+        "used_fallback": twap_result.taker_count > 0,
+        "policy": {
+            "maker_first": bool(policy_meta.get("maker_first")),
+            "taker_bias": policy_meta.get("taker_bias"),
+            "quality": policy_meta.get("quality"),
+            "reason": policy_meta.get("reason"),
+            "offset_bps": policy_meta.get("offset_bps"),
+        },
+        "autotune_applied": False,
+        "policy_before": None,
+        "policy_after": None,
+        "decision": None,
+        "twap": {
+            "slices": twap_result.slices,
+            "slices_executed": len(twap_result.children),
+            "interval_seconds": twap_result.interval_seconds,
+            "maker_count": twap_result.maker_count,
+            "taker_count": twap_result.taker_count,
+            "total_filled_qty": twap_result.total_filled_qty,
+            "weighted_avg_price": twap_result.weighted_avg_price,
+            "avg_slippage_bps": twap_result.avg_slippage_bps,
+            "children": [
+                {
+                    "slice_index": c.slice_index,
+                    "order_id": c.order_id,
+                    "status": c.status,
+                    "filled_qty": c.filled_qty,
+                    "is_maker": c.is_maker,
+                    "slippage_bps": c.slippage_bps,
+                }
+                for c in twap_result.children
+            ],
+        },
+    }

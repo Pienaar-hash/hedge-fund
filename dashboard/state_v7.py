@@ -15,8 +15,38 @@ NAV_DETAIL_PATH = Path(os.getenv("NAV_DETAIL_PATH") or (STATE_DIR / "nav.json"))
 KPI_V7_STATE_PATH = Path(os.getenv("KPI_V7_STATE_PATH") or (STATE_DIR / "kpis_v7.json"))
 POSITIONS_STATE_PATH = Path(os.getenv("POSITIONS_STATE_PATH") or (STATE_DIR / "positions_state.json"))
 POSITIONS_PATH = Path(os.getenv("POSITIONS_PATH") or (STATE_DIR / "positions.json"))
+POSITIONS_LEDGER_PATH = Path(os.getenv("POSITIONS_LEDGER_PATH") or (STATE_DIR / "positions_ledger.json"))
+TP_SL_REGISTRY_PATH = Path(os.getenv("TP_SL_REGISTRY_PATH") or (STATE_DIR / "position_tp_sl.json"))
 ROUTER_STATE_PATH = Path(os.getenv("ROUTER_STATE_PATH") or (STATE_DIR / "router.json"))
 ROUTER_HEALTH_STATE_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))
+DIAGNOSTICS_STATE_PATH = Path(os.getenv("DIAGNOSTICS_STATE_PATH") or (STATE_DIR / "diagnostics.json"))
+RISK_STATE_PATH = Path(os.getenv("RISK_STATE_PATH") or (STATE_DIR / "risk_snapshot.json"))
+STATE_FILE_SPECS: Dict[str, Dict[str, Any]] = {
+    "nav_state": {
+        "path": str(NAV_STATE_PATH),
+        "required_keys": ["total_equity", "drawdown"],
+    },
+    "positions_state": {
+        "path": str(POSITIONS_STATE_PATH),
+        "required_keys": ["updated_at"],
+    },
+    "risk_snapshot": {
+        "path": str(RISK_STATE_PATH),
+        "required_keys": ["updated_ts", "risk_mode", "dd_state"],
+    },
+    "runtime_diagnostics": {
+        "path": str(DIAGNOSTICS_STATE_PATH),
+        "required_keys": ["runtime_diagnostics"],
+    },
+}
+FUNDING_SNAPSHOT_PATH = Path(os.getenv("FUNDING_SNAPSHOT_PATH") or (STATE_DIR / "funding_snapshot.json"))
+BASIS_SNAPSHOT_PATH = Path(os.getenv("BASIS_SNAPSHOT_PATH") or (STATE_DIR / "basis_snapshot.json"))
+HYBRID_SCORES_PATH = Path(os.getenv("HYBRID_SCORES_PATH") or (STATE_DIR / "hybrid_scores.json"))
+VOL_REGIMES_PATH = Path(os.getenv("VOL_REGIMES_PATH") or (STATE_DIR / "vol_regimes.json"))
+ROUTER_QUALITY_PATH = Path(os.getenv("ROUTER_QUALITY_PATH") or (STATE_DIR / "router_quality.json"))
+RV_MOMENTUM_PATH = Path(os.getenv("RV_MOMENTUM_PATH") or (STATE_DIR / "rv_momentum.json"))
+FACTOR_DIAGNOSTICS_PATH = Path(os.getenv("FACTOR_DIAGNOSTICS_PATH") or (STATE_DIR / "factor_diagnostics.json"))
+FACTOR_PNL_PATH = Path(os.getenv("FACTOR_PNL_PATH") or (STATE_DIR / "factor_pnl.json"))
 
 # Config paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -187,6 +217,343 @@ def load_kpis_v7(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return default or {}
 
 
+def load_router_quality(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Load router quality state from file (v7.5_B2).
+    
+    Returns:
+        Dict with:
+        - enabled: bool
+        - summary: aggregate metrics
+        - symbols: per-symbol router quality snapshots
+    """
+    try:
+        return _load_state_json(ROUTER_QUALITY_PATH, default or {}) or (default or {})
+    except Exception:
+        return default or {}
+
+
+def get_symbol_router_quality_score(
+    symbol: str,
+    router_quality_state: Optional[Dict[str, Any]] = None,
+    default: float = 0.8,
+) -> float:
+    """
+    Get router quality score for a symbol (v7.5_B2).
+    
+    Args:
+        symbol: Trading pair symbol
+        router_quality_state: Pre-loaded state or None to load
+        default: Default score if not found
+        
+    Returns:
+        Router quality score in [0, 1]
+    """
+    if router_quality_state is None:
+        router_quality_state = load_router_quality()
+    
+    symbols = router_quality_state.get("symbols", {})
+    symbol_data = symbols.get(symbol.upper(), {})
+    
+    if isinstance(symbol_data, dict):
+        return float(symbol_data.get("score", default))
+    
+    return default
+
+
+def load_rv_momentum(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Load RV momentum state from file (v7.5_C1).
+    
+    Returns:
+        Dict with:
+        - updated_ts: timestamp
+        - per_symbol: per-symbol RV scores and basket membership
+        - spreads: basket spreads (btc_vs_eth, l1_vs_alt, meme_vs_rest)
+    """
+    try:
+        return _load_state_json(RV_MOMENTUM_PATH, default or {}) or (default or {})
+    except Exception:
+        return default or {}
+
+
+def get_symbol_rv_momentum_score(
+    symbol: str,
+    rv_momentum_state: Optional[Dict[str, Any]] = None,
+    default: float = 0.0,
+) -> float:
+    """
+    Get RV momentum score for a symbol (v7.5_C1).
+    
+    Args:
+        symbol: Trading pair symbol
+        rv_momentum_state: Pre-loaded state or None to load
+        default: Default score if not found
+        
+    Returns:
+        RV momentum score in [-1, 1]
+    """
+    if rv_momentum_state is None:
+        rv_momentum_state = load_rv_momentum()
+    
+    per_symbol = rv_momentum_state.get("per_symbol", {})
+    symbol_data = per_symbol.get(symbol.upper(), {})
+    
+    if isinstance(symbol_data, dict):
+        return float(symbol_data.get("score", default))
+    
+    return default
+
+
+def get_rv_momentum_spreads(
+    rv_momentum_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    """
+    Get RV momentum basket spreads (v7.5_C1).
+    
+    Args:
+        rv_momentum_state: Pre-loaded state or None to load
+        
+    Returns:
+        Dict with spread values for btc_vs_eth, l1_vs_alt, meme_vs_rest
+    """
+    if rv_momentum_state is None:
+        rv_momentum_state = load_rv_momentum()
+    
+    spreads = rv_momentum_state.get("spreads", {})
+    return {
+        "btc_vs_eth": float(spreads.get("btc_vs_eth", 0.0)),
+        "l1_vs_alt": float(spreads.get("l1_vs_alt", 0.0)),
+        "meme_vs_rest": float(spreads.get("meme_vs_rest", 0.0)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# v7.5_C2: Factor Diagnostics & PnL Attribution Loaders
+# ---------------------------------------------------------------------------
+
+
+def load_factor_diagnostics_state(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Load factor diagnostics state from file (v7.5_C2).
+    
+    Returns:
+        Dict with:
+        - updated_ts: timestamp
+        - per_symbol: per-symbol normalized factor vectors
+        - covariance: factor covariance and correlation matrices
+        - config: factor diagnostics configuration
+    """
+    try:
+        return _load_state_json(FACTOR_DIAGNOSTICS_PATH, default or {}) or (default or {})
+    except Exception:
+        return default or {}
+
+
+def load_factor_pnl_state(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Load factor PnL attribution state from file (v7.5_C2).
+    
+    Returns:
+        Dict with:
+        - by_factor: PnL attributed to each factor
+        - pct_by_factor: percentage contribution per factor
+        - total_pnl_usd: total PnL over window
+        - window_days: lookback window
+        - trade_count: number of trades included
+    """
+    try:
+        return _load_state_json(FACTOR_PNL_PATH, default or {}) or (default or {})
+    except Exception:
+        return default or {}
+
+
+def get_factor_correlation_matrix(
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[str], List[List[float]]]:
+    """
+    Get factor correlation matrix from diagnostics state (v7.5_C2).
+    
+    Args:
+        factor_diagnostics_state: Pre-loaded state or None to load
+        
+    Returns:
+        Tuple of (factor_names, correlation_matrix as 2D list)
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    
+    covariance = factor_diagnostics_state.get("covariance", {})
+    factors = covariance.get("factors", [])
+    corr_matrix = covariance.get("correlation_matrix", [])
+    
+    return factors, corr_matrix
+
+
+def get_factor_volatilities(
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    """
+    Get per-factor volatilities from diagnostics state (v7.5_C2).
+    
+    Args:
+        factor_diagnostics_state: Pre-loaded state or None to load
+        
+    Returns:
+        Dict mapping factor name to volatility
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    
+    covariance = factor_diagnostics_state.get("covariance", {})
+    return covariance.get("factor_vols", {})
+
+
+def get_symbol_factor_fingerprint(
+    symbol: str,
+    direction: str = "LONG",
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    """
+    Get normalized factor fingerprint for a symbol (v7.5_C2).
+    
+    Args:
+        symbol: Trading pair symbol
+        direction: LONG or SHORT
+        factor_diagnostics_state: Pre-loaded state or None to load
+        
+    Returns:
+        Dict mapping factor name to normalized value
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    
+    per_symbol = factor_diagnostics_state.get("per_symbol", {})
+    key = f"{symbol.upper()}:{direction.upper()}"
+    symbol_data = per_symbol.get(key, {})
+    
+    if isinstance(symbol_data, dict):
+        return symbol_data.get("factors", {})
+    
+    return {}
+
+
+def get_factor_pnl_summary(
+    factor_pnl_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Get factor PnL attribution summary (v7.5_C2).
+    
+    Args:
+        factor_pnl_state: Pre-loaded state or None to load
+        
+    Returns:
+        Dict with by_factor, pct_by_factor, total_pnl_usd, trade_count
+    """
+    if factor_pnl_state is None:
+        factor_pnl_state = load_factor_pnl_state()
+    
+    return {
+        "by_factor": factor_pnl_state.get("by_factor", {}),
+        "pct_by_factor": factor_pnl_state.get("pct_by_factor", {}),
+        "total_pnl_usd": float(factor_pnl_state.get("total_pnl_usd", 0.0)),
+        "trade_count": int(factor_pnl_state.get("trade_count", 0)),
+        "window_days": int(factor_pnl_state.get("window_days", 14)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# v7.5_C3: Factor Weights & Orthogonalization Loaders
+# ---------------------------------------------------------------------------
+
+
+def get_factor_weights(
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    """
+    Get auto-computed factor weights from diagnostics state (v7.5_C3).
+    
+    Args:
+        factor_diagnostics_state: Pre-loaded state or None to load
+        
+    Returns:
+        Dict mapping factor name to weight
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    
+    factor_weights = factor_diagnostics_state.get("factor_weights", {})
+    if isinstance(factor_weights, dict):
+        return factor_weights.get("weights", {})
+    return {}
+
+
+def get_factor_ir(
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    """
+    Get per-factor information ratios from diagnostics state (v7.5_C3).
+    
+    Args:
+        factor_diagnostics_state: Pre-loaded state or None to load
+        
+    Returns:
+        Dict mapping factor name to IR value
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    
+    factor_weights = factor_diagnostics_state.get("factor_weights", {})
+    if isinstance(factor_weights, dict):
+        return factor_weights.get("factor_ir", {})
+    return {}
+
+
+def get_orthogonalization_status(
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, bool]:
+    """
+    Get orthogonalization and auto-weighting status (v7.5_C3).
+    
+    Args:
+        factor_diagnostics_state: Pre-loaded state or None to load
+        
+    Returns:
+        Tuple of (orthogonalization_enabled, auto_weighting_enabled)
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    
+    ortho_enabled = bool(factor_diagnostics_state.get("orthogonalization_enabled", False))
+    auto_weight_enabled = bool(factor_diagnostics_state.get("auto_weighting_enabled", False))
+    
+    return ortho_enabled, auto_weight_enabled
+
+
+def get_orthogonalized_factors(
+    symbol: str,
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    """
+    Get orthogonalized factor values for a symbol (v7.5_C3).
+    
+    Args:
+        symbol: Trading pair symbol
+        factor_diagnostics_state: Pre-loaded state or None to load
+        
+    Returns:
+        Dict mapping factor name to orthogonalized value
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    
+    orthogonalized = factor_diagnostics_state.get("orthogonalized", {})
+    if isinstance(orthogonalized, dict):
+        per_symbol = orthogonalized.get("per_symbol", {})
+        return per_symbol.get(symbol.upper(), {})
+    return {}
+
+
 def _symbol_meta(symbol: str, kpis_symbols: Dict[str, Any]) -> Dict[str, Any]:
     if not symbol:
         return {}
@@ -307,6 +674,137 @@ def _load_router_payload() -> Dict[str, Any]:
         if isinstance(payload, dict) and payload:
             return payload
     return {}
+
+
+def load_funding_snapshot() -> Dict[str, Any]:
+    """Load funding rate snapshot for carry scoring."""
+    return _safe_load_json(FUNDING_SNAPSHOT_PATH, {})
+
+
+def load_basis_snapshot() -> Dict[str, Any]:
+    """Load basis (spot-perp spread) snapshot for carry scoring."""
+    return _safe_load_json(BASIS_SNAPSHOT_PATH, {})
+
+
+def load_hybrid_scores() -> Dict[str, Any]:
+    """Load hybrid score rankings for intel display."""
+    return _safe_load_json(HYBRID_SCORES_PATH, {})
+
+
+def load_vol_regimes() -> Dict[str, Any]:
+    """Load volatility regime snapshot for dashboard display (v7.4 B2)."""
+    return _safe_load_json(VOL_REGIMES_PATH, {})
+
+
+def load_positions_ledger() -> Dict[str, Any]:
+    """
+    Load positions_ledger from the state file or positions.json (v7.4_C3).
+    
+    The ledger contains unified position + TP/SL data.
+    Falls back to extracting from positions.json if dedicated file doesn't exist.
+    """
+    # Try dedicated ledger file first
+    ledger_data = _safe_load_json(POSITIONS_LEDGER_PATH, {})
+    if ledger_data:
+        return ledger_data
+    
+    # Fallback: check if positions_ledger is embedded in positions.json
+    positions_payload = _load_positions_payload()
+    if "positions_ledger" in positions_payload:
+        return {"entries": positions_payload["positions_ledger"], "updated_ts": positions_payload.get("updated")}
+    
+    return {}
+
+
+def load_positions_state() -> List[Dict[str, Any]]:
+    """
+    Load positions from state file (v7.4_C3).
+    
+    Returns list of position dicts.
+    """
+    payload = _load_positions_payload()
+    rows = payload.get("rows") or payload.get("positions") or []
+    if isinstance(rows, list):
+        return rows
+    return []
+
+
+def load_runtime_diagnostics_state() -> Dict[str, Any]:
+    """
+    Load runtime diagnostics (veto counters, exit pipeline) from diagnostics.json.
+    """
+    try:
+        data = _safe_load_json(DIAGNOSTICS_STATE_PATH, {})
+        if isinstance(data, dict):
+            return data.get("runtime_diagnostics", {}) or {}
+    except Exception:
+        return {}
+    return {}
+
+
+def iter_state_file_specs():
+    """Yield (name, spec) for known state files and required top-level keys."""
+    return STATE_FILE_SPECS.items()
+
+
+def get_ledger_consistency_status() -> Dict[str, Any]:
+    """
+    Check consistency between positions and ledger (v7.4_C3).
+    
+    Returns:
+        Dict with:
+        - status: "ok" | "partial" | "error"
+        - num_positions: count of raw positions
+        - num_ledger: count of ledger entries
+        - num_with_tp_sl: count of entries with TP/SL
+        - message: human-readable status
+    """
+    positions = load_positions_state()
+    ledger_data = load_positions_ledger()
+    
+    # Count non-zero positions
+    num_positions = 0
+    for pos in positions:
+        qty = _safe_float(pos.get("qty") or pos.get("positionAmt") or 0)
+        if qty is not None and abs(qty) > 0:
+            num_positions += 1
+    
+    # Count ledger entries
+    ledger_entries = ledger_data.get("entries", ledger_data)
+    if isinstance(ledger_entries, dict):
+        num_ledger = len(ledger_entries)
+        num_with_tp_sl = sum(
+            1 for e in ledger_entries.values()
+            if isinstance(e, dict) and (e.get("tp") is not None or e.get("sl") is not None)
+        )
+    else:
+        num_ledger = 0
+        num_with_tp_sl = 0
+    
+    # Determine status
+    if num_positions == 0:
+        status = "ok"
+        message = "No open positions"
+    elif num_ledger == 0:
+        status = "error"
+        message = f"⚠️ {num_positions} positions but ledger is empty"
+    elif num_with_tp_sl < num_ledger:
+        status = "partial"
+        message = f"🟡 {num_with_tp_sl}/{num_ledger} positions have TP/SL"
+    elif num_positions == num_ledger:
+        status = "ok"
+        message = f"🟢 {num_ledger} positions, all with TP/SL"
+    else:
+        status = "partial"
+        message = f"🟡 {num_positions} positions, {num_ledger} ledger entries"
+    
+    return {
+        "status": status,
+        "num_positions": num_positions,
+        "num_ledger": num_ledger,
+        "num_with_tp_sl": num_with_tp_sl,
+        "message": message,
+    }
 
 
 def load_all_state() -> Dict[str, Any]:

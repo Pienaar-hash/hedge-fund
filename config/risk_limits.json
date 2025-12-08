@@ -96,5 +96,13 @@
     "max_nav_drawdown_pct": 0.95,
     "daily_loss_limit_pct": 0.50,
     "log_notice": true
+  },
+  "circuit_breakers": {
+    "max_portfolio_dd_nav_pct": 0.10
+  },
+  "nav_anomalies": {
+    "enabled": true,
+    "max_multiplier_intraday": 3.0,
+    "max_gap_abs_usd": 20000.0
   }
 }

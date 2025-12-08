@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Tuple, Mapping, Optional
 
 import os
 from .exchange_utils import get_klines, get_price, get_symbol_filters
+from .exchange_precision import normalize_qty, normalize_price
 from .orderbook_features import evaluate_entry_gate
 from .signal_generator import (
     normalize_intent as generator_normalize_intent,
@@ -23,8 +24,53 @@ from .universe_resolver import (
     symbol_target_leverage,
 )
 from .nav import PortfolioSnapshot, nav_health_snapshot
+from execution.strategy_adaptation import (
+    adaptive_sizing,
+    attach_adaptive_metadata,
+    load_regime_snapshot,
+    load_risk_snapshot,
+    strategy_enablement,
+)
+from execution.position_sizing import compute_adaptive_weight
 from execution.v6_flags import get_flags, log_v6_flag_snapshot
 from execution.risk_limits import check_order
+from execution.strategies.vol_target import generate_vol_target_intent
+from execution.utils.vol import (
+    atr_pct,
+    compute_vol_regime_from_prices,
+    load_vol_regime_config,
+    get_sizing_multiplier,
+    build_vol_regime_snapshot,
+)
+from execution.intel.symbol_score_v6 import (
+    load_expectancy_snapshot,
+    load_router_health_snapshot,
+    load_funding_rate_snapshot,
+    load_basis_snapshot,
+    rank_intents_by_hybrid_score,
+)
+from execution.diagnostics_metrics import record_signal_emitted
+
+# v7.5_B2: Router quality imports
+try:
+    from execution.router_metrics import (
+        load_router_quality_config,
+        get_router_quality_score,
+    )
+    _ROUTER_QUALITY_AVAILABLE = True
+except ImportError:
+    _ROUTER_QUALITY_AVAILABLE = False
+
+# v7.5_C1: RV Momentum imports
+try:
+    from execution.rv_momentum import (
+        load_rv_config,
+        get_rv_score,
+        RvConfig,
+    )
+    _RV_MOMENTUM_AVAILABLE = True
+except ImportError:
+    _RV_MOMENTUM_AVAILABLE = False
 
 try:
     from .ml.predict import score_symbol as _score_symbol
@@ -314,6 +360,15 @@ def _load_risk_cfg() -> Dict[str, Any]:
     return cfg
 
 
+def _load_pnl_attribution(path: str = "logs/state/pnl_attribution.json") -> Mapping[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, Mapping) else {}
+    except Exception:
+        return {}
+
+
 def _load_pairs_cfg() -> Dict[str, Any]:
     try:
         payload = json.load(open(os.getenv("PAIRS_UNIVERSE_CONFIG", "config/pairs_universe.json")))
@@ -505,6 +560,22 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
     except Exception:
         base_cfg = {}
 
+    strategy_adaptation_cfg: dict[str, Any] = {}
+    try:
+        raw_adaptation_cfg = base_cfg.get("strategy_adaptation")
+        if isinstance(raw_adaptation_cfg, Mapping):
+            strategy_adaptation_cfg = {str(k): v for k, v in raw_adaptation_cfg.items()}
+    except Exception:
+        strategy_adaptation_cfg = {}
+
+    strategy_weighting_cfg: dict[str, Any] = {}
+    try:
+        raw_weight_cfg = base_cfg.get("strategy_weighting")
+        if isinstance(raw_weight_cfg, Mapping):
+            strategy_weighting_cfg = {str(k): v for k, v in raw_weight_cfg.items()}
+    except Exception:
+        strategy_weighting_cfg = {}
+
     ml_cfg = (base_cfg.get("ml") or {})
     ml_enabled = bool(ml_cfg.get("enabled")) and _score_symbol is not None
     out: List[Dict[str, Any]] = []
@@ -570,6 +641,13 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         pass
     ml_threshold = float(ml_cfg.get("prob_threshold", 0.0) or 0.0)
 
+    regime_state = load_regime_snapshot()
+    risk_state = load_risk_snapshot()
+    atr_regime = regime_state.get("atr_regime")
+    dd_regime = regime_state.get("dd_regime")
+    risk_mode = risk_state.get("risk_mode") or "OK"
+    pnl_attribution = _load_pnl_attribution()
+
     def _decide_signal(z: float, rsi: float, entry_cfg: Mapping[str, Any], entry_forced: bool) -> Optional[str]:
         band_raw = entry_cfg.get("band") or DEFAULT_RSI_BAND
         low, high = DEFAULT_RSI_BAND
@@ -620,12 +698,18 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             print(f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["not_listed"]}}')
             continue
         try:
-            kl = get_klines(sym, tf, limit=150)
+            kl = get_klines(sym, tf, limit=750)  # Extended for vol regime computation
             closes = [row[4] for row in kl]
             price = get_price(sym)
             rsi = _rsi(closes, 14)
             z = _zscore(closes, 20)
             trend = _trend_filter(closes, 20)
+            
+            # Compute vol regime (v7.4 B2)
+            vol_regime_cfg = load_vol_regime_config(base_cfg)
+            vol_regime = compute_vol_regime_from_prices(closes, vol_regime_cfg)
+            vol_regime_label = vol_regime.label
+            
             filters = get_symbol_filters(sym)
             notional_filter = (
                 filters.get("MIN_NOTIONAL")
@@ -648,11 +732,18 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         sym_min_notional = symbol_min_notional(sym_key)
         sym_floor = max(symbol_min_gross(sym_key), 0.0)
         min_notional = max(sym_floor, sym_min_notional, exch_min_notional, min_qty_notional)
-        requested_notional = max(nav * per_trade_nav_pct, min_notional) if nav > 0 else min_notional
+        
+        # Apply vol regime sizing multiplier (v7.4 B2)
+        tier = str(params.get("bucket", "CORE")).upper()
+        vol_sizing_mult = get_sizing_multiplier(tier, vol_regime_label, base_cfg)
+        effective_per_trade_nav_pct = per_trade_nav_pct * vol_sizing_mult
+        
+        requested_notional = max(nav * effective_per_trade_nav_pct, min_notional) if nav > 0 else min_notional
         try:
             print(
                 f"[sigdbg] sym={sym} tf={tf} price={price:.4f} nav={nav:.4f} "
-                f"per_trade_nav_pct={per_trade_nav_pct:.4f} lev={lev:.2f} "
+                f"per_trade_nav_pct={per_trade_nav_pct:.4f} vol_regime={vol_regime_label} "
+                f"vol_sizing_mult={vol_sizing_mult:.2f} effective_pct={effective_per_trade_nav_pct:.4f} "
                 f"min_notional={min_notional:.4f} open_gross={current_portfolio_gross:.4f}"
             )
         except Exception:
@@ -761,8 +852,48 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             current_portfolio_gross = max(current_portfolio_gross - reduce_notional, 0.0)
             tier_gross[tier_key] = max(tier_gross.get(tier_key, 0.0) - reduce_notional, 0.0)
             open_positions_count = max(open_positions_count - 1, 0)
-        gross_usd = requested_notional  # unlevered sizing; leverage is metadata only
+        strategy_id = str(scfg.get("id") or sym_key)
+        adapt_override = strategy_adaptation_cfg.get(strategy_id) or strategy_adaptation_cfg.get(sym_key) or {}
+        if not isinstance(adapt_override, Mapping):
+            adapt_override = {}
+        weight_cfg = strategy_weighting_cfg.get(strategy_id) or strategy_weighting_cfg.get(sym_key) or {}
+        if not isinstance(weight_cfg, Mapping):
+            weight_cfg = {}
+        if not strategy_enablement(strategy_id, atr_regime, dd_regime, risk_mode, adapt_override):
+            veto_reasons: List[str] = []
+            if str(risk_mode).upper() == "HALTED":
+                veto_reasons.append("risk_mode_halted")
+            try:
+                dd_idx = int(dd_regime)
+            except Exception:
+                dd_idx = 0
+            if dd_idx >= 3:
+                veto_reasons.append("dd_regime_critical")
+            if not veto_reasons:
+                veto_reasons.append("adaptive_disable")
+            print(
+                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":{json.dumps(veto_reasons)}}}'
+            )
+            continue
+        final_weight = compute_adaptive_weight(
+            strategy_id,
+            regime_state,
+            risk_state,
+            pnl_attribution,
+            weight_cfg,
+        )
+        weighted_notional = requested_notional * final_weight
+        gross_usd, final_factor = adaptive_sizing(
+            sym_key,
+            weighted_notional,
+            atr_regime,
+            dd_regime,
+            risk_mode,
+            adapt_override,
+        )
         qty_est = gross_usd / price if price > 0 else 0.0
+        # Normalize qty to exchange stepSize precision
+        qty_est = normalize_qty(sym_key, qty_est)
         sizing_notes = {
             "floors": {
                 "symbol_min_gross": sym_floor,
@@ -773,6 +904,9 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "nav_used": nav,
             "nav_age_s": nav_age,
             "nav_sources_ok": nav_sources_ok,
+            "vol_regime": vol_regime_label,
+            "vol_sizing_mult": vol_sizing_mult,
+            "effective_per_trade_nav_pct": effective_per_trade_nav_pct,
         }
         intent = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
@@ -793,7 +927,23 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "symbol_caps": (rlc.get("per_symbol") or {}).get(sym_key, {}) if isinstance(rlc, Mapping) else {},
             "sizing_notes": sizing_notes,
             "per_symbol_limits": rlc.get("per_symbol") if isinstance(rlc, Mapping) else {},
+            "vol_regime": vol_regime_label,
+            "vol": {
+                "short": round(vol_regime.vol_short, 6),
+                "long": round(vol_regime.vol_long, 6),
+                "ratio": round(vol_regime.ratio, 4),
+            },
+            "tier": tier,
         }
+        metadata_block = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+        metadata_block["adaptive_weight"] = {
+            "final_weight": final_weight,
+            "risk_mode": risk_mode,
+            "atr_regime": atr_regime,
+            "dd_regime": dd_regime,
+        }
+        intent["metadata"] = metadata_block
+        attach_adaptive_metadata(intent, atr_regime, dd_regime, risk_mode, final_factor)
         if ml_prob is not None:
             intent["ml_prob"] = ml_prob
         # Add trend context to intent for downstream tracking
@@ -826,6 +976,227 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "entry": price,  # New position entry = current price
             "notional": gross_usd,
         }
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Vol Target Strategy Integration (v7.3)
+    # ─────────────────────────────────────────────────────────────────────────────
+    vol_cfg = base_cfg.get("vol_target", {})
+    if vol_cfg.get("enabled", False):
+        vol_target_symbols = vol_cfg.get("symbols", [])
+        vol_target_timeframes = vol_cfg.get("timeframes", ["15m"])
+        for vol_sym in vol_target_symbols:
+            vol_sym_key = str(vol_sym).upper()
+            # Skip if not in allowed set
+            if allowed_set and vol_sym_key not in allowed_set:
+                continue
+            for vol_tf in vol_target_timeframes:
+                attempted += 1
+                try:
+                    vol_price = get_price(vol_sym_key)
+                    vol_klines = get_klines(vol_sym_key, vol_tf, limit=150)
+                    vol_closes = [row[4] for row in vol_klines]
+                    vol_highs = [row[2] for row in vol_klines]
+                    vol_lows = [row[3] for row in vol_klines]
+                    vol_trend = _trend_filter(vol_closes, 20)
+
+                    # Compute ATR value from klines (True Range)
+                    atr_lookback = vol_cfg.get("atr_lookback", 14)
+                    if len(vol_closes) >= atr_lookback + 1:
+                        tr_values = []
+                        for i in range(-atr_lookback, 0):
+                            high = vol_highs[i]
+                            low = vol_lows[i]
+                            prev_close = vol_closes[i - 1]
+                            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                            tr_values.append(tr)
+                        vol_atr_value = sum(tr_values) / len(tr_values) if tr_values else 0.0
+                    else:
+                        vol_atr_value = 0.0
+
+                    # Determine trend alignment for vol_target (symmetric, defaults to BUY)
+                    vol_trend_aligned = vol_trend in ("BULL", "NEUTRAL")
+
+                    vol_intent = generate_vol_target_intent(
+                        symbol=vol_sym_key,
+                        timeframe=vol_tf,
+                        price=vol_price,
+                        nav=nav,
+                        atr_value=vol_atr_value,
+                        regimes_snapshot=regime_state,
+                        risk_snapshot=risk_state,
+                        trend=vol_trend,
+                        trend_aligned=vol_trend_aligned,
+                        strategy_cfg=vol_cfg,
+                    )
+
+                    if vol_intent is not None:
+                        # Add trend fields for consistency
+                        vol_intent["trend"] = vol_trend
+                        vol_intent["trend_aligned"] = vol_trend_aligned
+                        vol_intent["nav_used"] = nav
+                        vol_intent["nav_age_s"] = nav_age
+                        vol_intent["nav_sources_ok"] = nav_sources_ok
+
+                        # Apply adaptive sizing
+                        vol_gross = vol_intent.get("gross_usd", 0.0)
+                        vol_adapted_gross, vol_factor = adaptive_sizing(
+                            vol_sym_key,
+                            vol_gross,
+                            atr_regime,
+                            dd_regime,
+                            risk_mode,
+                            {},
+                        )
+                        vol_intent["gross_usd"] = vol_adapted_gross
+                        attach_adaptive_metadata(vol_intent, atr_regime, dd_regime, risk_mode, vol_factor)
+
+                        # Compute qty from adapted gross
+                        vol_qty_est = vol_adapted_gross / vol_price if vol_price > 0 else 0.0
+                        vol_qty_est = normalize_qty(vol_sym_key, vol_qty_est)
+                        vol_intent["qty"] = abs(vol_qty_est)
+                        vol_intent["leverage"] = float(symbol_target_leverage(vol_sym_key) or 1.0)
+
+                        decision_payload = {
+                            "symbol": vol_sym_key,
+                            "tf": vol_tf,
+                            "intent": vol_intent,
+                            "strategy": "vol_target",
+                        }
+                        print(f'[decision] {json.dumps(decision_payload)}')
+                        out.append(vol_intent)
+
+                except Exception as vol_exc:
+                    print(f"{LOG_TAG} vol_target {vol_sym} {vol_tf} error: {vol_exc}")
+                    continue
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Hybrid Score Ranking (v7.4 B1) + Router Quality Filtering (v7.5_B2)
+    # ─────────────────────────────────────────────────────────────────────────────
+    hybrid_cfg = base_cfg.get("hybrid_scoring", {})
+    if hybrid_cfg.get("enabled", False) and len(out) > 0:
+        intent_ranking_cfg = hybrid_cfg.get("intent_ranking", {})
+        rank_by_hybrid = intent_ranking_cfg.get("rank_by_hybrid_score", True)
+        filter_below = intent_ranking_cfg.get("filter_below_threshold", False)
+        
+                # v7.5_B2: Load router quality config for filtering
+        rq_config = None
+        rq_min_for_emission = 0.0
+        if _ROUTER_QUALITY_AVAILABLE:
+            try:
+                rq_config = load_router_quality_config(base_cfg)
+                if rq_config.enabled:
+                    rq_min_for_emission = rq_config.min_for_emission
+            except Exception:
+                pass
+        
+        # v7.5_C1: Load RV momentum config
+        rv_config: "RvConfig | None" = None
+        rv_min_for_long = -1.0
+        rv_max_for_short = 1.0
+        if _RV_MOMENTUM_AVAILABLE:
+            try:
+                rv_config = load_rv_config(base_cfg)
+                if rv_config and rv_config.enabled:
+                    rv_min_for_long = base_cfg.get("rv_momentum", {}).get("rv_min_for_long", -0.5)
+                    rv_max_for_short = base_cfg.get("rv_momentum", {}).get("rv_max_for_short", 0.5)
+            except Exception:
+                pass
+        
+        if rank_by_hybrid:
+            try:
+                # Load snapshots for hybrid scoring
+                expectancy_snap = load_expectancy_snapshot()
+                router_snap = load_router_health_snapshot()
+                funding_snap = load_funding_rate_snapshot()
+                basis_snap = load_basis_snapshot()
+                
+                # Determine current regime (from regime_state if available)
+                current_regime = None
+                if regime_state and isinstance(regime_state, dict):
+                    current_regime = regime_state.get("atr_regime") or regime_state.get("regime")
+                
+                # Rank intents by hybrid score
+                ranked_results = rank_intents_by_hybrid_score(
+                    intents=out,
+                    expectancy_snapshot=expectancy_snap,
+                    router_health_snapshot=router_snap,
+                    funding_snapshot=funding_snap,
+                    basis_snapshot=basis_snap,
+                    regime=current_regime,
+                    strategy_config=base_cfg,
+                    filter_below_threshold=filter_below,
+                )
+                
+                # Rebuild out list from ranked results, preserving original intents
+                if ranked_results:
+                    ranked_out = []
+                    rq_filtered_count = 0
+                    
+                    for result in ranked_results:
+                        # Get original intent and add hybrid_score metadata
+                        intent = result.get("intent", {})
+                        symbol = str(intent.get("symbol", "")).upper()
+                        direction = str(intent.get("direction", "LONG")).upper()
+                        
+                        # v7.5_B2: Filter by router quality
+                        rq_score = None
+                        if rq_config and rq_config.enabled and _ROUTER_QUALITY_AVAILABLE:
+                            try:
+                                rq_score = get_router_quality_score(symbol, rq_config)
+                                if rq_score < rq_min_for_emission:
+                                    rq_filtered_count += 1
+                                    continue  # Skip low router quality symbols
+                            except Exception:
+                                pass  # If we can't get score, don't filter
+                        
+                        # v7.5_C1: Get RV momentum score and apply mild filter
+                        rv_score_val = 0.0
+                        rv_filtered = False
+                        if rv_config and rv_config.enabled and _RV_MOMENTUM_AVAILABLE:
+                            try:
+                                rv_score_val = get_rv_score(symbol)
+                                # Filter: very negative RV for LONG, very positive for SHORT
+                                if direction == "LONG" and rv_score_val < rv_min_for_long:
+                                    rv_filtered = True
+                                elif direction == "SHORT" and rv_score_val > rv_max_for_short:
+                                    rv_filtered = True
+                            except Exception:
+                                pass
+                        
+                        if rv_filtered:
+                            continue  # Skip filtered by RV momentum
+                        
+                        intent["hybrid_score"] = result.get("hybrid_score", 0.5)
+                        intent["hybrid_passes_threshold"] = result.get("passes_threshold", True)
+                        intent["hybrid_components"] = result.get("components", {})
+                        intent["router_quality_score"] = rq_score
+                        intent["rv_momentum_score"] = rv_score_val
+                        ranked_out.append(intent)
+                    
+                    # v7.5_B2 + C1: Secondary sort by router_quality + rv_momentum for tie-breaking
+                    # Stable sort: first by hybrid_score desc, then by router_quality desc, then rv_momentum desc
+                    ranked_out.sort(
+                        key=lambda x: (
+                            x.get("hybrid_score", 0.0),
+                            x.get("router_quality_score") or 0.8,
+                            x.get("rv_momentum_score") or 0.0,
+                        ),
+                        reverse=True,
+                    )
+                    
+                    if rq_filtered_count > 0:
+                        print(f"{LOG_TAG} router_quality filter: {rq_filtered_count} intents dropped (min={rq_min_for_emission:.2f})")
+                    print(f"{LOG_TAG} hybrid ranking: {len(out)} -> {len(ranked_out)} intents (filter={filter_below})")
+                    out = ranked_out
+            except Exception as hybrid_err:
+                print(f"{LOG_TAG} hybrid ranking error (keeping original order): {hybrid_err}")
+
+    for _ in out:
+        try:
+            record_signal_emitted()
+        except Exception:
+            pass
+
     print(f"{LOG_TAG} attempted={attempted} emitted={len(out)}")
     return IntentBatch(out, attempted)
 

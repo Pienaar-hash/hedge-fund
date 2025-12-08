@@ -37,13 +37,29 @@ from dashboard.live_helpers import (
     load_shadow_head,
     load_compare_summary,
 )
-from dashboard.intel_panel import render_intel_panel
+from dashboard.intel_panel import render_intel_panel, render_hybrid_scores_panel, render_carry_scores_panel, render_vol_regimes_panel
 from dashboard.pipeline_panel import render_pipeline_parity
 from dashboard.router_policy import render_router_policy_panel
 from dashboard.router_health import load_router_health, is_empty_router_health
 from dashboard import kpi_panel
-from dashboard.state_v7 import load_all_state
+from dashboard.state_v7 import (
+    load_all_state,
+    load_funding_snapshot,
+    load_basis_snapshot,
+    load_hybrid_scores,
+    load_vol_regimes,
+    load_runtime_diagnostics_state,
+)
 from dashboard.research_panel import render_research_panel
+from dashboard.risk_panel import (
+    render_risk_health_card,
+    load_risk_snapshot,
+    render_exit_pipeline_status,
+    render_veto_heatmap,
+    render_liveness_status,
+)
+from dashboard.regime_panel import render_regime_card, load_regimes_snapshot
+from dashboard.router_gauge import render_router_gauge
 from dashboard.trader_toys import (
     inject_trader_toys_css,
     render_liquid_gauge,
@@ -52,7 +68,6 @@ from dashboard.trader_toys import (
     render_pulse_indicator,
     render_gauge_panel,
 )
-
 LOG = logging.getLogger("dash.app")
 if not LOG.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -663,6 +678,36 @@ def main() -> None:
             <style>.liquid-gauge.{cap_color}::before {{ height: {min(100, risk_capacity_pct):.0f}%; }}</style>
             """, unsafe_allow_html=True)
 
+        # ===== RISK HEALTH CARD (v7) =====
+        st.markdown("---")
+        risk_snapshot = load_risk_snapshot()
+        if risk_snapshot:
+            render_risk_health_card(
+                snapshot=risk_snapshot,
+                nav_value=nav_value,
+                gross_exposure=gross_exp,
+                cap_drawdown=0.30,  # 30% max drawdown cap
+                cap_daily_loss=0.10,  # 10% daily loss cap
+            )
+        diagnostics_state = load_runtime_diagnostics_state()
+        if diagnostics_state:
+            render_veto_heatmap(diagnostics_state)
+            render_exit_pipeline_status(diagnostics_state)
+            render_liveness_status(diagnostics_state)
+
+        # ===== REGIME HEATMAP (v7) =====
+        st.markdown("---")
+        st.markdown("#### 🌡️ ATR/DD Regime Heatmap")
+        regimes_state = load_regimes_snapshot()
+        if regimes_state:
+            render_regime_card(regimes_state)
+        else:
+            st.info("Regime data unavailable - waiting for state sync")
+
+        # ===== ROUTER HEALTH GAUGE (v7) =====
+        st.markdown("---")
+        render_router_gauge(router_health_state or {})
+
         st.markdown("---")
         
         # AUM Section
@@ -705,7 +750,7 @@ def main() -> None:
                 fig = go.Figure(data=[go.Pie(
                     labels=labels,
                     values=values,
-                    hole=0.55,
+                    hole=0.65,  # Larger hole for true ring appearance
                     textinfo='label+percent',
                     textposition='inside',
                     textfont=dict(size=12, color='#fff'),
@@ -722,12 +767,7 @@ def main() -> None:
                     showlegend=False,
                     paper_bgcolor='rgba(0,0,0,0)',
                     plot_bgcolor='rgba(0,0,0,0)',
-                    annotations=[dict(
-                        text=f'<b>${total_usd:,.0f}</b>',
-                        x=0.5, y=0.5,
-                        font=dict(size=18, color='#00d4ff'),
-                        showarrow=False
-                    )]
+                    annotations=[]  # Remove central label - true ring style
                 )
                 st.plotly_chart(fig, use_container_width=True)
         
@@ -1154,6 +1194,16 @@ def main() -> None:
         st.metric("NAV Source", nav.get("source") or "nav_state.json")
         st.metric("NAV Age", _format_age_seconds(nav.get("age_s")))
         st.markdown("---")
+        with st.expander("Vol Regimes (v7.4)", expanded=False):
+            vol_regimes = load_vol_regimes()
+            _safe_panel("Vol Regimes Panel", render_vol_regimes_panel, vol_regimes)
+        with st.expander("Hybrid Scores (v7.4)", expanded=False):
+            hybrid_scores = load_hybrid_scores()
+            _safe_panel("Hybrid Scores Panel", render_hybrid_scores_panel, hybrid_scores)
+        with st.expander("Carry Components (v7.4)", expanded=False):
+            funding_snap = load_funding_snapshot()
+            basis_snap = load_basis_snapshot()
+            _safe_panel("Carry Scores Panel", render_carry_scores_panel, funding_snap, basis_snap)
         with st.expander("Intel v6", expanded=False):
             _safe_panel("Intel Panel", render_intel_panel, expectancy_v6, symbol_scores_v6, risk_allocator_v6)
         with st.expander("Pipeline v6", expanded=False):

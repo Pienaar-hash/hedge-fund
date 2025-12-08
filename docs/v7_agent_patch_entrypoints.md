@@ -14,3 +14,9 @@
   - `strategy_config.json`: sizing params, per_trade_nav_pct, leverage metadata.
   - `runtime.yaml`: router/runtime knobs (offsets, fees, child size).
   - `pairs_universe.json`, `symbol_tiers.json`: universe/tiers for gating.
+
+### Diagnostics Patch Entrypoints (v7.5_S0_B/S0_C)
+- Extend veto metrics via `execution/diagnostics_metrics.py` (record_veto/compute_liveness_alerts).
+- Exit diagnostics via `execution/exit_scanner.py` and `diagnostics_metrics.update_exit_pipeline_status`.
+- Liveness wiring via `write_runtime_diagnostics_state` (state_publish) and dashboard risk panel.
+- Avoid refactoring core semantics in `risk_limits.check_order`, `executor_live` main loop, or `drawdown_tracker`; diagnostics must stay side-effect-free.

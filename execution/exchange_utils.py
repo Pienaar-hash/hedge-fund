@@ -25,6 +25,14 @@ except Exception:  # pragma: no cover - optional dependency
 from execution.utils import get_coingecko_prices, load_json
 from execution.risk_loader import load_risk_config
 from execution.universe_resolver import symbol_min_gross
+from execution.exchange_precision import (
+    normalize_price,
+    normalize_qty,
+    format_price,
+    format_qty,
+    meets_min_notional,
+    clamp_to_min_notional,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s [exutil] %(message)s"
@@ -623,6 +631,57 @@ def get_klines(symbol: str, interval: str, limit: int = 150) -> List[List[float]
             continue
         out.append([open_time, open_p, high_p, low_p, close_p, volume])
     return out
+
+
+def get_orderbook(symbol: str, limit: int = 5) -> Dict[str, Any]:
+    """
+    Fetch order book depth for a USD-M symbol.
+    
+    Args:
+        symbol: Trading pair (e.g., "BTCUSDT")
+        limit: Number of levels to fetch (default 5, max 1000)
+        
+    Returns:
+        {"bids": [[price, qty], ...], "asks": [[price, qty], ...]}
+        Bids are sorted descending (best bid first).
+        Asks are sorted ascending (best ask first).
+    """
+    sym = str(symbol or "").upper()
+    if not sym:
+        raise ValueError("symbol_required")
+    
+    # Clamp limit to Binance's valid values
+    valid_limits = [5, 10, 20, 50, 100, 500, 1000]
+    limit = max(5, min(1000, int(limit or 5)))
+    # Round to nearest valid limit
+    for vl in valid_limits:
+        if limit <= vl:
+            limit = vl
+            break
+    
+    if is_dry_run():
+        # Return mock orderbook for dry run
+        mock_price = 50000.0 if "BTC" in sym else 2000.0
+        spread = mock_price * 0.0001  # 1 bps spread
+        return {
+            "bids": [[mock_price - spread, 1.0] for _ in range(limit)],
+            "asks": [[mock_price + spread, 1.0] for _ in range(limit)],
+        }
+    
+    try:
+        r = _req(
+            "GET",
+            "/fapi/v1/depth",
+            params={"symbol": sym, "limit": limit},
+        )
+        data = r.json()
+        return {
+            "bids": data.get("bids", []),
+            "asks": data.get("asks", []),
+        }
+    except Exception as exc:
+        _LOG.warning("[orderbook] fetch_failed symbol=%s error=%s", sym, exc)
+        return {"bids": [], "asks": []}
 
 
 def get_price(symbol: str, venue: str = "auto", signed: bool = False) -> float:
@@ -1309,17 +1368,55 @@ def send_order(
     side_u = str(side or "").upper()
     sym_u = str(symbol or "").upper()
 
+    # ─────────────────────────────────────────────────────────────────────
+    # PRECISION NORMALIZATION (v7.2-alpha2)
+    # Apply exchange filters (tickSize, stepSize, minNotional) to prevent
+    # -1111 "Precision is over the maximum defined" errors.
+    # ─────────────────────────────────────────────────────────────────────
+    norm_qty = float(quantity) if quantity is not None else 0.0
+    norm_price = float(price) if price not in (None, "", 0, 0.0) else 0.0
+
+    if norm_qty > 0:
+        # Step 1: Normalize quantity to stepSize
+        norm_qty = normalize_qty(sym_u, norm_qty)
+
+    if norm_price > 0 and ord_type != "MARKET":
+        # Step 2: Normalize price to tickSize
+        norm_price = normalize_price(sym_u, norm_price)
+
+        # Step 3: Ensure minNotional (only for non-market orders with valid price)
+        if norm_qty > 0 and not meets_min_notional(sym_u, norm_price, norm_qty):
+            adjusted_qty = clamp_to_min_notional(sym_u, norm_price, norm_qty)
+            norm_qty = normalize_qty(sym_u, adjusted_qty)
+            _LOG.debug(
+                "[precision] adjusted qty for minNotional: %s %s %.6f -> %.6f @ %.4f",
+                sym_u, side_u, float(quantity), norm_qty, norm_price
+            )
+
+    # Log precision adjustments if they occurred
+    if norm_qty != float(quantity or 0):
+        _LOG.info(
+            "[precision] qty normalized: %s %.8f -> %.8f",
+            sym_u, float(quantity or 0), norm_qty
+        )
+    if norm_price > 0 and price and norm_price != float(price):
+        _LOG.info(
+            "[precision] price normalized: %s %.8f -> %.8f",
+            sym_u, float(price), norm_price
+        )
+    # ─────────────────────────────────────────────────────────────────────
+
     params: Dict[str, Any] = {
         "symbol": sym_u,
         "side": side_u,
         "type": ord_type,
     }
 
-    if quantity is not None:
-        params["quantity"] = str(quantity if not isinstance(quantity, Decimal) else f"{quantity:f}")
+    if norm_qty > 0:
+        params["quantity"] = format_qty(sym_u, norm_qty)
 
-    if ord_type != "MARKET" and price not in (None, "", 0, 0.0):
-        params["price"] = str(price)
+    if ord_type != "MARKET" and norm_price > 0:
+        params["price"] = format_price(sym_u, norm_price)
 
     tif = str(extra.get("timeInForce") or "").upper()
     if ord_type != "MARKET" and tif:

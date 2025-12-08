@@ -3,6 +3,23 @@ trading_window:
   end_utc: 17     # v6.4: expanded from 16 - capture full EU/US overlap
   # Avoid 01:00-04:00 UTC (Asian session showed -$28/trade avg)
   disabled_days: [5, 6]  # v6.4: disable Sat/Sun (-$40.86 on Sat)
+
+# Router configuration
+router:
+  # TWAP execution for large orders (v7.4 C1)
+  twap:
+    enabled: true
+    min_notional_usd: 500.0    # minimum gross USD notional to trigger TWAP
+    slices: 4                   # number of child orders per TWAP execution
+    interval_seconds: 10        # sleep time between slices
+  # Slippage model settings (v7.5 B1)
+  slippage:
+    enabled: true
+    ewma_halflife_trades: 50      # EWMA halflife in number of trades
+    max_expected_slippage_bps: 15 # optional future veto use
+    depth_levels: 5               # order book levels to sample for expected cost
+    spread_pause_factor: 1.5      # pause TWAP slice if spread > factor * bucket.max_spread_bps
+
 # Directional bias based on performance data
 directional_bias:
   # LONG: +$105 (85% WR), SHORT: -$125 (69% WR)
@@ -34,5 +51,5 @@ risk:
 # Signal gate tunables
 signal_gate:
   atr_lookback: 50
-  atr_mult: 4.0          # multiplier vs median ATR; increase to allow higher vol
+  atr_mult: 8.0          # multiplier vs median ATR; increase to allow higher vol
   expectancy_min: -0.10  # minimum rolling expectancy to allow trade

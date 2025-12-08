@@ -1,4 +1,0 @@
-v7 dashboard rebuild notes:
-- Unified loader: dashboard/state_v7.py returns state["nav"], state["aum"], state["kpis"], state["positions"], state["router"], state["meta"].
-- nav_helpers no longer exports legacy load_nav_state/load_nav_with_aum/nav_state_age_seconds to force dashboard usage of load_all_state().
-- Known gaps: router aggregates depend on router_health.json (maker/fallback may be None if file lacks data); symbol-level dd/atr/pnl follow whatever kpis_v7.json publishes; AUM slices empty when nav payload omits breakdowns.

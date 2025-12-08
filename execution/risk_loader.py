@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import logging
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 RISK_LIMITS_PATH = Path("config/risk_limits.json")
 PAIRS_UNIVERSE_PATH = Path("config/pairs_universe.json")
+CORRELATION_GROUPS_PATH = Path("config/correlation_groups.json")
 LOGGER = logging.getLogger("risk_loader")
 
 
@@ -135,6 +137,14 @@ def load_risk_config() -> Dict[str, Any]:
                 entry["symbol_drawdown_cap_pct"] = normalize_percentage(entry["symbol_drawdown_cap_pct"])
     risk_cfg = apply_testnet_overrides(risk_cfg)
 
+    # Normalize circuit_breakers config
+    cb_cfg = risk_cfg.get("circuit_breakers") or {}
+    if isinstance(cb_cfg, dict):
+        max_dd = cb_cfg.get("max_portfolio_dd_nav_pct")
+        if max_dd is not None:
+            cb_cfg["max_portfolio_dd_nav_pct"] = normalize_percentage(max_dd)
+        risk_cfg["circuit_breakers"] = cb_cfg
+
     quotes = set()
     try:
         for q in risk_cfg.get("quote_symbols") or []:
@@ -176,4 +186,79 @@ __all__ = [
     "load_risk_config",
     "load_symbol_caps",
     "normalize_percentage",
+    "CorrelationGroupConfig",
+    "CorrelationGroupsConfig",
+    "load_correlation_groups_config",
 ]
+
+
+# --- Correlation Groups Config ---
+
+@dataclass
+class CorrelationGroupConfig:
+    """Configuration for a single correlation group."""
+    max_group_nav_pct: float
+    symbols: List[str] = field(default_factory=list)
+
+
+@dataclass
+class CorrelationGroupsConfig:
+    """Configuration for all correlation groups."""
+    groups: Dict[str, CorrelationGroupConfig] = field(default_factory=dict)
+
+
+@lru_cache(maxsize=1)
+def load_correlation_groups_config(
+    config_path: Path = CORRELATION_GROUPS_PATH,
+) -> CorrelationGroupsConfig:
+    """
+    Load and normalize correlation groups configuration.
+
+    Returns CorrelationGroupsConfig with empty groups if file is missing,
+    malformed, or empty.
+    """
+    try:
+        if not config_path.exists():
+            return CorrelationGroupsConfig(groups={})
+
+        with open(config_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+
+        if not isinstance(data, dict):
+            return CorrelationGroupsConfig(groups={})
+
+        raw_groups = data.get("groups")
+        if not isinstance(raw_groups, dict):
+            return CorrelationGroupsConfig(groups={})
+
+        groups: Dict[str, CorrelationGroupConfig] = {}
+        for group_name, group_data in raw_groups.items():
+            if not isinstance(group_data, dict):
+                continue
+
+            symbols_raw = group_data.get("symbols")
+            if not isinstance(symbols_raw, list):
+                continue
+
+            symbols = [str(s).upper() for s in symbols_raw if s]
+            if not symbols:
+                continue
+
+            max_pct_raw = group_data.get("max_group_nav_pct")
+            if max_pct_raw is None:
+                continue
+
+            max_pct = normalize_percentage(max_pct_raw)
+            if max_pct <= 0:
+                continue
+
+            groups[str(group_name)] = CorrelationGroupConfig(
+                max_group_nav_pct=max_pct,
+                symbols=symbols,
+            )
+
+        return CorrelationGroupsConfig(groups=groups)
+
+    except Exception as exc:
+        LOGGER.error("[risk_loader] load_correlation_groups_config failed: %s", exc)
+        return CorrelationGroupsConfig(groups={})

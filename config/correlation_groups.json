@@ -1,0 +1,12 @@
+{
+  "groups": {
+    "L1_bluechips": {
+      "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+      "max_group_nav_pct": 0.35
+    },
+    "L2_alts": {
+      "symbols": ["DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
+      "max_group_nav_pct": 0.25
+    }
+  }
+}

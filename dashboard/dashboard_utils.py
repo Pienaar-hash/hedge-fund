@@ -421,6 +421,27 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def format_fraction(value: Any, nd: int = 4) -> str:
+    """
+    Format a fractional value (0-1) as a string with specified decimal places.
+    Returns "–" if value is None or not numeric.
+    
+    Args:
+        value: The fractional value to format (e.g., 0.0114 for 1.14%)
+        nd: Number of decimal places (default 4)
+    
+    Returns:
+        Formatted string like "0.0114" or "–" if invalid
+    """
+    if value is None:
+        return "–"
+    try:
+        v = float(value)
+        return f"{v:.{nd}f}"
+    except (TypeError, ValueError):
+        return "–"
+
+
 def load_treasury_cache(payload: Any | None = None, path: str | None = None) -> Dict[str, Any]:
     """Return normalized treasury cache with assets, totals, and timestamp."""
 

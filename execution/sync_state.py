@@ -162,6 +162,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple  # noqa: E402
 from execution.drawdown_tracker import (  # noqa: E402
     compute_intraday_drawdown,
     load_peak_state,
+    load_nav_anomaly_config,
     mirror_peak_state_to_firestore,
     save_peak_state,
 )
@@ -181,6 +182,7 @@ RISK_STATE_PATH: str = os.path.join(LOGS_DIR, "state", "risk_snapshot.json")
 ROUTER_STATE_PATH: str = os.path.join(LOGS_DIR, "state", "router_health.json")
 EXPECTANCY_STATE_PATH: str = os.path.join(LOGS_DIR, "state", "expectancy_v6.json")
 KPI_V7_STATE_PATH: str = os.path.join(LOGS_DIR, "state", "kpis_v7.json")
+POSITIONS_STATE_SYNC_PATH: str = os.path.join(LOGS_DIR, "state", "positions_state_sync.json")
 print(f"[sync] file paths => NAV_LOG={NAV_LOG}", flush=True)
 
 # ------------------------------ Settings ------------------------------------
@@ -1402,12 +1404,14 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
     nav_for_drawdown = nav_total_equity
     if nav_for_drawdown <= 0.0:
         nav_for_drawdown = _to_float(nav_payload.get("total_equity"))
+    risk_limits_cfg = _load_risk_limits_config()
     reset_tz = _reset_timezone_name()
     realized_today = _fetch_realized_pnl_today(reset_tz)
     drawdown_state = compute_intraday_drawdown(
         nav_for_drawdown,
         realized_today,
         reset_timezone=reset_tz,
+        nav_anomaly_cfg=load_nav_anomaly_config(risk_limits_cfg),
     )
     drawdown_state.setdefault("peak_nav", drawdown_state.get("peak"))
     drawdown_state.setdefault("daily_peak", drawdown_state.get("peak"))
@@ -1489,10 +1493,11 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         label="nav_state"
     )
 
+    # Mirror positions for diagnostics; executor_live is the canonical writer for positions_state.json
     _write_json_cache(
-        os.path.join(LOGS_DIR, "state", "positions_state.json"),
+        POSITIONS_STATE_SYNC_PATH,
         pos_payload,
-        label="positions_state"
+        label="positions_state_sync",
     )
 
     _write_json_cache(

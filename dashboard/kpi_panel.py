@@ -9,6 +9,7 @@ from typing import Any, Dict
 import streamlit as st
 
 from dashboard.nav_helpers import safe_float, safe_format
+from dashboard.dashboard_utils import format_fraction
 
 st.markdown(
     """
@@ -78,6 +79,10 @@ def render_kpis_overview(kpis: Dict[str, Any]) -> None:
     drawdown_pct = safe_float(dd_block.get("dd_pct") or risk_block.get("dd_pct"))
     atr_ratio = safe_float(atr_block.get("median_ratio"))
     
+    # Get normalized fractional values (graceful fallback for older state files)
+    dd_frac = kpis.get("dd_frac")
+    daily_loss_frac = kpis.get("daily_loss_frac")
+    
     dd_label = dd_state
     if drawdown_pct is not None:
         try:
@@ -95,6 +100,12 @@ def render_kpis_overview(kpis: Dict[str, Any]) -> None:
     cols2 = st.columns(2)
     cols2[0].metric("Maker Fill Ratio", safe_format(maker_fill_ratio, nd=2) if maker_fill_ratio is not None else "–")
     cols2[1].metric("Fallback Ratio", safe_format(fallback_ratio, nd=2) if fallback_ratio is not None else "–")
+    
+    # Show normalized fractional values if available
+    if dd_frac is not None or daily_loss_frac is not None:
+        frac_cols = st.columns(2)
+        frac_cols[0].metric("DD Fraction", format_fraction(dd_frac, nd=4))
+        frac_cols[1].metric("Daily Loss Fraction", format_fraction(daily_loss_frac, nd=4))
     
     if atr_ratio is not None:
         st.caption(f"ATR Ratio (median): {safe_format(atr_ratio, nd=3)}")

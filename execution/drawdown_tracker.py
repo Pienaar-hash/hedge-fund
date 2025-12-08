@@ -1,13 +1,132 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 PEAK_STATE_PATH = os.path.join("logs", "cache", "peak_state.json")
+LOGGER = logging.getLogger("drawdown_tracker")
+
+
+@dataclass
+class NavAnomalyConfig:
+    """Config for NAV anomaly detection."""
+    enabled: bool = False
+    max_multiplier_intraday: float = 3.0
+    max_gap_abs_usd: float = 20000.0
+
+
+@dataclass
+class PortfolioDDState:
+    """Portfolio drawdown state for circuit breaker checks."""
+    current_dd_pct: float  # e.g. 0.032 for 3.2%
+    peak_nav_usd: float
+    latest_nav_usd: float
+
+
+def load_nav_anomaly_config(cfg: Optional[Mapping[str, Any]] = None) -> NavAnomalyConfig:
+    """
+    Resolve NavAnomalyConfig from risk config or provided block.
+
+    Accepts either the full risk config (expects `nav_anomalies` key)
+    or the nav_anomalies sub-block directly.
+    """
+    default = NavAnomalyConfig()
+    block: Mapping[str, Any] = {}
+    if cfg is None:
+        try:
+            from execution.risk_loader import load_risk_config
+
+            cfg = load_risk_config()
+        except Exception:
+            cfg = {}
+    if isinstance(cfg, Mapping):
+        candidate = cfg.get("nav_anomalies") if isinstance(cfg.get("nav_anomalies"), Mapping) else None
+        if candidate is None and cfg:
+            candidate = cfg if isinstance(cfg, Mapping) else {}
+        if isinstance(candidate, Mapping):
+            block = candidate
+
+    try:
+        enabled = bool(block.get("enabled", default.enabled))
+    except Exception:
+        enabled = default.enabled
+
+    def _cfg_float(key: str, fallback: float) -> float:
+        try:
+            val = float(block.get(key, fallback))
+            return val if val > 0 else fallback
+        except Exception:
+            return fallback
+
+    max_multiplier = _cfg_float("max_multiplier_intraday", default.max_multiplier_intraday)
+    max_gap = _cfg_float("max_gap_abs_usd", default.max_gap_abs_usd)
+    return NavAnomalyConfig(
+        enabled=enabled,
+        max_multiplier_intraday=max_multiplier,
+        max_gap_abs_usd=max_gap,
+    )
+
+
+def is_nav_anomalous(previous_peak: float, new_nav: float, cfg: NavAnomalyConfig) -> bool:
+    """
+    Returns True if new_nav is likely bogus relative to previous peak.
+    """
+    if not cfg or not cfg.enabled:
+        return False
+    try:
+        prev = float(previous_peak)
+        nav_val = float(new_nav)
+    except Exception:
+        return False
+    if prev <= 0:
+        return False
+    if nav_val > prev * cfg.max_multiplier_intraday:
+        return True
+    if nav_val - prev > cfg.max_gap_abs_usd:
+        return True
+    return False
+
+
+def get_portfolio_dd_state(nav_history: Sequence[float]) -> Optional[PortfolioDDState]:
+    """
+    Given a sequence of NAV observations (in USD), compute:
+    - peak NAV
+    - latest NAV
+    - current drawdown percentage from peak (as fraction, e.g. 0.10 = 10%)
+
+    Return None if nav_history is empty or invalid.
+    """
+    if not nav_history:
+        return None
+
+    # Filter out non-positive values
+    valid_navs = [n for n in nav_history if isinstance(n, (int, float)) and n > 0]
+    if not valid_navs:
+        return None
+
+    peak_nav_usd = max(valid_navs)
+    latest_nav_usd = valid_navs[-1]
+
+    if peak_nav_usd <= 0:
+        return PortfolioDDState(
+            current_dd_pct=0.0,
+            peak_nav_usd=0.0,
+            latest_nav_usd=latest_nav_usd,
+        )
+
+    current_dd_pct = (peak_nav_usd - latest_nav_usd) / peak_nav_usd
+
+    return PortfolioDDState(
+        current_dd_pct=max(0.0, current_dd_pct),  # Clamp to non-negative
+        peak_nav_usd=peak_nav_usd,
+        latest_nav_usd=latest_nav_usd,
+    )
 
 
 def _ensure_dir() -> None:
@@ -77,6 +196,7 @@ def compute_intraday_drawdown(
     reset_timezone: str = "UTC",
     now: Optional[datetime] = None,
     state: Optional[Dict[str, Any]] = None,
+    nav_anomaly_cfg: Optional[NavAnomalyConfig] = None,
 ) -> Dict[str, Any]:
     base_state = dict(state or load_peak_state())
     tz = _resolve_timezone(reset_timezone)
@@ -96,10 +216,19 @@ def compute_intraday_drawdown(
             realized_today = realized_cached
 
     previous_peak = _as_float(base_state.get("peak") or base_state.get("peak_equity"))
-    if prev_day != day_key or previous_peak <= 0.0:
-        peak = max(nav_value, previous_peak, 0.0)
+    anomaly_cfg = nav_anomaly_cfg or load_nav_anomaly_config()
+    peak_candidate = max(nav_value, previous_peak, 0.0)
+    if previous_peak > 0 and nav_value > previous_peak and is_nav_anomalous(previous_peak, nav_value, anomaly_cfg):
+        LOGGER.warning(
+            "nav_anomaly_detected prev_peak=%s nav=%s max_multiplier=%s max_gap_abs_usd=%s",
+            previous_peak,
+            nav_value,
+            anomaly_cfg.max_multiplier_intraday,
+            anomaly_cfg.max_gap_abs_usd,
+        )
+        peak = previous_peak
     else:
-        peak = max(previous_peak, nav_value)
+        peak = peak_candidate
 
     if peak <= 0.0:
         dd_abs = 0.0
@@ -157,8 +286,13 @@ def mirror_peak_state_to_firestore(
 
 
 __all__ = [
+    "NavAnomalyConfig",
+    "PortfolioDDState",
     "compute_intraday_drawdown",
+    "get_portfolio_dd_state",
+    "is_nav_anomalous",
     "load_peak_state",
+    "load_nav_anomaly_config",
     "mirror_peak_state_to_firestore",
     "save_peak_state",
 ]

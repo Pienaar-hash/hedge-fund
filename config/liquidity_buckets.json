@@ -1,0 +1,23 @@
+{
+  "buckets": {
+    "A_HIGH": {
+      "symbols": ["BTCUSDT", "ETHUSDT"],
+      "max_spread_bps": 5,
+      "default_maker_bias": 0.8
+    },
+    "B_MEDIUM": {
+      "symbols": ["SOLUSDT", "LTCUSDT", "LINKUSDT", "XRPUSDT", "BNBUSDT", "ADAUSDT"],
+      "max_spread_bps": 12,
+      "default_maker_bias": 0.6
+    },
+    "C_LOW": {
+      "symbols": ["DOGEUSDT", "SUIUSDT", "WIFUSDT", "PEPEUSDT", "SHIBUSDT", "FLOKIUSDT"],
+      "max_spread_bps": 25,
+      "default_maker_bias": 0.4
+    }
+  },
+  "defaults": {
+    "max_spread_bps": 15,
+    "default_maker_bias": 0.5
+  }
+}

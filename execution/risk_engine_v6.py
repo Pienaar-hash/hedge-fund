@@ -8,6 +8,7 @@ can reason about risk outcomes without directly invoking risk_limits.
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 import json
 import time
 import logging
@@ -22,6 +23,215 @@ from execution.universe_resolver import universe_by_symbol
 from execution.utils import metrics
 from execution.utils import vol as vol_utils
 from execution.utils.execution_health import compute_execution_health, summarize_atr_regimes
+
+
+class RiskMode(str, Enum):
+    """Risk mode classification for the trading system."""
+    OK = "OK"
+    WARN = "WARN"
+    DEFENSIVE = "DEFENSIVE"
+    HALTED = "HALTED"
+
+
+# Risk mode thresholds
+_NAV_STALE_THRESHOLD_S = 90  # HALTED when nav_age_s > 90
+_DD_DEFENSIVE_THRESHOLD = 0.30  # DEFENSIVE when dd_frac >= 0.30
+_DAILY_LOSS_DEFENSIVE_THRESHOLD = 0.10  # DEFENSIVE when daily_loss_frac >= 0.10
+_FALLBACK_WARN_THRESHOLD = 0.5  # WARN when fallback ratio > threshold
+
+
+@dataclass
+class RiskModeResult:
+    """Result of risk mode classification."""
+    mode: RiskMode
+    reason: str
+    score: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "risk_mode": self.mode.value,
+            "risk_mode_reason": self.reason,
+            "risk_mode_score": self.score,
+        }
+
+
+def classify_risk_mode(
+    *,
+    nav_age_s: Optional[float] = None,
+    sources_ok: Optional[bool] = None,
+    dd_frac: Optional[float] = None,
+    daily_loss_frac: Optional[float] = None,
+    router_degraded: bool = False,
+    maker_first_disabled_cycles: int = 0,
+    fallback_ratio: Optional[float] = None,
+    config_load_failed: bool = False,
+) -> RiskModeResult:
+    """
+    Classify the current risk mode based on system health metrics.
+
+    Risk Mode Classification (in order of severity):
+    1) HALTED:
+       - nav_age_s > 90
+       - or sources_ok == false
+       - or risk engine fails to load config
+
+    2) DEFENSIVE:
+       - dd_frac >= 0.30
+       - or daily_loss_frac >= 0.10
+
+    3) WARN:
+       - router degraded (router.health.degraded == true)
+       - or maker_first=false for >5 cycles
+       - or fallback ratio > threshold
+
+    4) OK:
+       - none of the above
+
+    Score rules:
+    - HALTED → 1.0
+    - DEFENSIVE → min(1.0, dd_frac / 0.30)
+    - WARN → 0.5
+    - OK → 0.0
+    """
+    # 1) HALTED checks
+    if config_load_failed:
+        return RiskModeResult(
+            mode=RiskMode.HALTED,
+            reason="risk_config_load_failed",
+            score=1.0,
+        )
+
+    if sources_ok is False:
+        return RiskModeResult(
+            mode=RiskMode.HALTED,
+            reason="nav_sources_unavailable",
+            score=1.0,
+        )
+
+    if nav_age_s is not None and nav_age_s > _NAV_STALE_THRESHOLD_S:
+        return RiskModeResult(
+            mode=RiskMode.HALTED,
+            reason=f"nav_stale_age={nav_age_s:.0f}s",
+            score=1.0,
+        )
+
+    # 2) DEFENSIVE checks
+    dd_frac_safe = dd_frac or 0.0
+    daily_loss_frac_safe = daily_loss_frac or 0.0
+
+    if dd_frac_safe >= _DD_DEFENSIVE_THRESHOLD:
+        score = min(1.0, dd_frac_safe / _DD_DEFENSIVE_THRESHOLD)
+        return RiskModeResult(
+            mode=RiskMode.DEFENSIVE,
+            reason=f"drawdown_high_dd_frac={dd_frac_safe:.4f}",
+            score=score,
+        )
+
+    if daily_loss_frac_safe >= _DAILY_LOSS_DEFENSIVE_THRESHOLD:
+        score = min(1.0, daily_loss_frac_safe / _DAILY_LOSS_DEFENSIVE_THRESHOLD)
+        return RiskModeResult(
+            mode=RiskMode.DEFENSIVE,
+            reason=f"daily_loss_high_frac={daily_loss_frac_safe:.4f}",
+            score=score,
+        )
+
+    # 3) WARN checks
+    if router_degraded:
+        return RiskModeResult(
+            mode=RiskMode.WARN,
+            reason="router_degraded",
+            score=0.5,
+        )
+
+    if maker_first_disabled_cycles > 5:
+        return RiskModeResult(
+            mode=RiskMode.WARN,
+            reason=f"maker_first_disabled_cycles={maker_first_disabled_cycles}",
+            score=0.5,
+        )
+
+    if fallback_ratio is not None and fallback_ratio > _FALLBACK_WARN_THRESHOLD:
+        return RiskModeResult(
+            mode=RiskMode.WARN,
+            reason=f"high_fallback_ratio={fallback_ratio:.2f}",
+            score=0.5,
+        )
+
+    # 4) OK - healthy state
+    return RiskModeResult(
+        mode=RiskMode.OK,
+        reason="all_systems_healthy",
+        score=0.0,
+    )
+
+
+def compute_risk_mode_from_state(
+    *,
+    nav_health: Optional[Mapping[str, Any]] = None,
+    risk_snapshot: Optional[Mapping[str, Any]] = None,
+    router_health: Optional[Mapping[str, Any]] = None,
+    config_load_failed: bool = False,
+) -> RiskModeResult:
+    """
+    Compute risk mode from state file data.
+
+    Args:
+        nav_health: NAV health snapshot (from nav_health_snapshot() or state file)
+        risk_snapshot: Risk snapshot (from risk_snapshot.json)
+        router_health: Router health snapshot (from router_health.json)
+        config_load_failed: Whether risk config failed to load
+
+    Returns:
+        RiskModeResult with mode, reason, and score
+    """
+    # Extract NAV health metrics
+    nav_age_s: Optional[float] = None
+    sources_ok: Optional[bool] = None
+    if nav_health:
+        nav_age_s = nav_health.get("age_s")
+        sources_ok = nav_health.get("sources_ok")
+
+    # Extract risk metrics
+    dd_frac: Optional[float] = None
+    daily_loss_frac: Optional[float] = None
+    if risk_snapshot:
+        dd_frac = risk_snapshot.get("dd_frac")
+        daily_loss_frac = risk_snapshot.get("daily_loss_frac")
+
+    # Extract router health metrics
+    router_degraded = False
+    fallback_ratio: Optional[float] = None
+    maker_first_disabled_cycles = 0
+
+    if router_health:
+        summary = router_health.get("summary") or {}
+        quality_counts = summary.get("quality_counts") or {}
+        # Router is degraded if any symbols are degraded or broken
+        router_degraded = bool(quality_counts.get("degraded") or quality_counts.get("broken"))
+
+        # Check maker_first across all symbols
+        symbols = router_health.get("symbols") or router_health.get("per_symbol") or []
+        if symbols:
+            maker_first_disabled = sum(1 for s in symbols if not s.get("maker_first", True))
+            if maker_first_disabled > 0:
+                maker_first_disabled_cycles = maker_first_disabled
+
+            # Calculate average fallback ratio
+            fallback_values = [s.get("fallback_rate") or s.get("fallback_ratio") for s in symbols]
+            fallback_values = [v for v in fallback_values if v is not None]
+            if fallback_values:
+                fallback_ratio = sum(fallback_values) / len(fallback_values)
+
+    return classify_risk_mode(
+        nav_age_s=nav_age_s,
+        sources_ok=sources_ok,
+        dd_frac=dd_frac,
+        daily_loss_frac=daily_loss_frac,
+        router_degraded=router_degraded,
+        maker_first_disabled_cycles=maker_first_disabled_cycles,
+        fallback_ratio=fallback_ratio,
+        config_load_failed=config_load_failed,
+    )
 
 
 @dataclass
@@ -268,4 +478,12 @@ class RiskEngineV6:
         }
 
 
-__all__ = ["RiskEngineV6", "OrderIntent", "RiskDecision"]
+__all__ = [
+    "RiskEngineV6",
+    "OrderIntent",
+    "RiskDecision",
+    "RiskMode",
+    "RiskModeResult",
+    "classify_risk_mode",
+    "compute_risk_mode_from_state",
+]

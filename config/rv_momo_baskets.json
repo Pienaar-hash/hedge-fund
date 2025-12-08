@@ -1,0 +1,13 @@
+{
+  "pairs": {
+    "btc_vs_eth": {
+      "long": "BTCUSDT",
+      "short": "ETHUSDT"
+    }
+  },
+  "baskets": {
+    "l1": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+    "alts": ["LTCUSDT", "LINKUSDT", "SUIUSDT"],
+    "meme": ["DOGEUSDT", "WIFUSDT"]
+  }
+}
