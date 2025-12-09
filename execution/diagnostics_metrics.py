@@ -6,7 +6,7 @@ from typing import Any, Dict, Mapping, Optional
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -24,10 +24,14 @@ class VetoCounters:
 class ExitPipelineStatus:
     last_exit_scan_ts: Optional[str] = None
     last_exit_trigger_ts: Optional[str] = None
+    last_router_event_ts: Optional[str] = None
     open_positions_count: int = 0
     tp_sl_registered_count: int = 0
     tp_sl_missing_count: int = 0
     underwater_without_tp_sl_count: int = 0
+    tp_sl_coverage_pct: float = 0.0
+    ledger_registry_mismatch: bool = False
+    mismatch_breakdown: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -37,6 +41,7 @@ class LivenessAlerts:
     idle_exits: bool = False
     idle_router: bool = False
     details: Dict[str, float] = field(default_factory=dict)
+    missing: Dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -93,17 +98,31 @@ def record_exit_trigger() -> None:
     _exit_status.last_exit_trigger_ts = _now_iso()
 
 
+def record_router_event() -> None:
+    _exit_status.last_router_event_ts = _now_iso()
+
+
 def update_exit_pipeline_status(
     open_positions_count: int,
     tp_sl_registered_count: int,
     tp_sl_missing_count: int,
     underwater_without_tp_sl_count: int,
+    *,
+    tp_sl_coverage_pct: Optional[float] = None,
+    ledger_registry_mismatch: Optional[bool] = None,
+    mismatch_breakdown: Optional[Mapping[str, int]] = None,
 ) -> None:
     es = _exit_status
     es.open_positions_count = int(open_positions_count)
     es.tp_sl_registered_count = int(tp_sl_registered_count)
     es.tp_sl_missing_count = int(tp_sl_missing_count)
     es.underwater_without_tp_sl_count = int(underwater_without_tp_sl_count)
+    if tp_sl_coverage_pct is not None:
+        es.tp_sl_coverage_pct = float(tp_sl_coverage_pct)
+    if ledger_registry_mismatch is not None:
+        es.ledger_registry_mismatch = bool(ledger_registry_mismatch)
+    if mismatch_breakdown is not None:
+        es.mismatch_breakdown = {k: int(v) for k, v in mismatch_breakdown.items()}
 
 
 def build_runtime_diagnostics_snapshot() -> RuntimeDiagnosticsSnapshot:
@@ -153,15 +172,29 @@ def compute_liveness_alerts(cfg: Optional[Mapping[str, Any]] = None) -> Liveness
 
     now = datetime.now(timezone.utc)
 
-    def check(ts_str: Optional[str], threshold: float, key: str, attr_name: str) -> None:
-        if threshold <= 0:
+    def check(
+        ts_str: Optional[str],
+        threshold: float,
+        key: str,
+        attr_name: str,
+        *,
+        force_detail: bool = False,
+    ) -> None:
+        record_detail = force_detail or threshold > 0
+        if not record_detail:
             return
         ts = _parse_iso(ts_str)
         if ts is None:
+            alerts.missing[key] = True
+            alerts.details[key] = float(threshold) + 1.0
+            if threshold > 0:
+                setattr(alerts, attr_name, True)
             return
         delta = (now - ts).total_seconds()
+        if delta < 0:
+            delta = 0.0
         alerts.details[key] = delta
-        if delta > threshold:
+        if threshold > 0 and delta > threshold:
             setattr(alerts, attr_name, True)
 
     vc = _veto_counters
@@ -170,7 +203,13 @@ def compute_liveness_alerts(cfg: Optional[Mapping[str, Any]] = None) -> Liveness
     check(vc.last_signal_ts, _threshold("max_idle_signals_seconds", 0), "signals_idle_seconds", "idle_signals")
     check(vc.last_order_ts, _threshold("max_idle_orders_seconds", 0), "orders_idle_seconds", "idle_orders")
     check(es.last_exit_trigger_ts, _threshold("max_idle_exits_seconds", 0), "exits_idle_seconds", "idle_exits")
-    check(vc.last_order_ts, _threshold("max_idle_router_events_seconds", 0), "router_idle_seconds", "idle_router")
+    check(
+        es.last_router_event_ts,
+        _threshold("max_idle_router_events_seconds", 0),
+        "router_idle_seconds",
+        "idle_router",
+        force_detail=True,
+    )
     return alerts
 
 
@@ -195,6 +234,7 @@ __all__ = [
     "record_veto",
     "record_exit_scan_run",
     "record_exit_trigger",
+    "record_router_event",
     "update_exit_pipeline_status",
     "build_runtime_diagnostics_snapshot",
     "build_runtime_diagnostics_snapshot_with_liveness",

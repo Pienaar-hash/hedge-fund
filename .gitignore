@@ -12,7 +12,21 @@ config/firebase_creds.old.json
 logs/*.json
 logs/**/*.jsonl
 logs/
+logs/state/
+logs/execution/
+*.log
+*.tmp
+*.swp
 
 venv/
 google-chrome-stable_current_amd64.deb
 data/ohlcv/
+.env
+__pycache__/
+outputs/
+.notebooks/
+
+# Treasury & sensitive financial data
+treasury/cointracker/*.csv
+treasury/cointracker/**/*.csv
+*.cointracker.csv

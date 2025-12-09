@@ -1,5 +1,5 @@
 # mypy: ignore-errors
-"""Streamlit dashboard for v6 runtime."""
+"""Streamlit dashboard for v7.6 runtime."""
 from __future__ import annotations
 
 import logging
@@ -49,6 +49,12 @@ from dashboard.state_v7 import (
     load_hybrid_scores,
     load_vol_regimes,
     load_runtime_diagnostics_state,
+    load_router_health_state as load_router_health_state_v7,
+    get_router_global_quality,
+    load_risk_snapshot as load_risk_snapshot_v7,
+    get_regime_badges,
+    validate_surface_health,
+    load_engine_metadata,
 )
 from dashboard.research_panel import render_research_panel
 from dashboard.risk_panel import (
@@ -68,6 +74,7 @@ from dashboard.trader_toys import (
     render_pulse_indicator,
     render_gauge_panel,
 )
+from dashboard.treasury_panel import render_treasury_panel
 LOG = logging.getLogger("dash.app")
 if not LOG.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -158,6 +165,58 @@ def _load_risk_snapshot() -> Dict:
     return {}
 
 
+def _regime_strip() -> None:
+    """Render top-of-dashboard regime badges (vol, DD, router, risk)."""
+    try:
+        risk = load_risk_snapshot_v7()
+        router = load_router_health_state_v7()
+        vol = load_vol_regimes()
+        badges = get_regime_badges(
+            vol_state=vol,
+            risk_snapshot=risk,
+            router_health=router,
+        )
+        cols = st.columns(4)
+        labels = {
+            "vol": "Vol",
+            "dd": "Drawdown",
+            "router": "Router",
+            "risk": "Risk",
+        }
+        for idx, key in enumerate(["vol", "dd", "router", "risk"]):
+            with cols[idx]:
+                badge = badges.get(key, "N/A")
+                st.metric(labels[key], badge)
+    except Exception as exc:  # pragma: no cover - render safety
+        LOG.debug("[dash] regime strip failed: %s", exc)
+        st.warning("Regime badges unavailable")
+
+
+def _system_health_panel() -> None:
+    try:
+        health = validate_surface_health()
+        meta = load_engine_metadata({})
+        expanded = any(health.values()) or bool(meta)
+        with st.expander("System Health", expanded=expanded):
+            if meta:
+                version = meta.get("engine_version", "unknown")
+                updated = meta.get("updated_ts") or meta.get("ts") or "n/a"
+                st.info(f"Engine version: {version} · updated {updated}")
+            if any(health.values()):
+                if health.get("missing_files"):
+                    st.warning(f"Missing: {', '.join(health['missing_files'])}")
+                if health.get("stale_files"):
+                    st.warning(f"Stale: {', '.join(health['stale_files'])}")
+                if health.get("schema_violations"):
+                    st.error(f"Schema: {', '.join(health['schema_violations'])}")
+                if health.get("cross_surface_violations"):
+                    st.warning(f"Cross-surface: {', '.join(health['cross_surface_violations'])}")
+            else:
+                st.success("All tracked surfaces healthy")
+    except Exception as exc:  # pragma: no cover - render safety
+        LOG.debug("[dash] system health panel failed: %s", exc)
+
+
 def render_runtime_strip(runtime_probe: Dict[str, Any]) -> None:
     if not runtime_probe:
         st.info("Runtime probe unavailable.")
@@ -195,7 +254,7 @@ def render_runtime_strip(runtime_probe: Dict[str, Any]) -> None:
             border-radius:10px;
             margin-bottom:0.5rem;
         ">
-            <div style="font-weight:700;">Runtime v6 · engine {engine_version}</div>
+            <div style="font-weight:700;">Runtime v7.6 · engine {engine_version}</div>
             <div style="font-weight:600;">{flags_html}</div>
             <div>nav_age_ms: {nav_age_ms if nav_age_ms is not None else 'n/a'}</div>
             <div>loop_latency_ms: {loop_latency_ms if loop_latency_ms is not None else 'n/a'}</div>
@@ -461,12 +520,13 @@ def render_positions_table(positions: List[Dict[str, Any]]) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Hedge — v6 Dashboard", layout="wide")
+    st.set_page_config(page_title="Hedge — v7.6 Dashboard", layout="wide")
     
     # Inject trader toys CSS
     inject_trader_toys_css()
     
     st.title("📊 Hedge — Portfolio Dashboard (v7)")
+    _regime_strip()
 
     state = load_all_state()
     nav = state.get("nav", {})
@@ -485,6 +545,7 @@ def main() -> None:
     pipeline_compare_summary = load_compare_summary()
     router_health_state = load_router_health_state()
     router_health = load_router_health(snapshot=router_health_state)
+    _system_health_panel()
     
     # Load NAV history for sparkline
     nav_history = _load_nav_history()
@@ -837,6 +898,10 @@ def main() -> None:
                     {extra_info}
                 </div>
                 ''', unsafe_allow_html=True)
+        
+        # Treasury Panel (v7.6) - Off-chain assets and yield
+        with st.expander("🏦 Treasury & Off-Chain Assets", expanded=False):
+            _safe_panel("Treasury Panel", render_treasury_panel)
         
         st.markdown("---")
         
@@ -1211,37 +1276,78 @@ def main() -> None:
             st.markdown("Raw Compare Summary")
             st.json(pipeline_compare_summary, expanded=False)
         with st.expander("Router v6", expanded=False):
-            if router_health and not is_empty_router_health(router_health):
-                st.metric("Symbols", int(router_health.summary.get("count", 0)))
-                if not router_health.per_symbol.empty:
-                    df_router = router_health.per_symbol.copy()
-                    if "value" in df_router.columns:
-                        try:
-                            df_router["value"] = pd.to_numeric(df_router["value"], errors="coerce").fillna(0.0).astype(float)
-                        except Exception:
-                            df_router["value"] = df_router["value"]
-                    for col in df_router.columns:
-                        col_lower = str(col).lower()
-                        if col_lower in {
-                            "value",
-                            "qty",
-                            "pnl",
-                            "notional",
-                            "dd_pct",
-                            "atr_ratio",
-                            "maker_fill_ratio",
-                            "fallback_ratio",
-                            "slip_q25",
-                            "slip_q50",
-                            "slip_q75",
-                            "reject_rate",
-                        }:
-                            df_router[col] = df_router[col].apply(safe_float)
-                    st.dataframe(df_router, use_container_width=True, height=360)
+            normalized_router_health = load_router_health_state_v7(snapshot=router_health_state or {})
+            global_quality = get_router_global_quality(normalized_router_health)
+            rh_block = normalized_router_health.get("router_health") if isinstance(normalized_router_health, dict) else {}
+            per_symbol_map = rh_block.get("per_symbol") if isinstance(rh_block, dict) else {}
+
+            col_q1, col_q2 = st.columns(2)
+            q_score = global_quality.get("quality_score")
+            col_q1.metric("Global Router Quality", f"{q_score:.3f}" if q_score is not None else "n/a")
+            col_q2.caption(
+                f"Router {global_quality.get('router_bucket') or '?'} · Slip {global_quality.get('slippage_drift_bucket') or '?'} · Latency {global_quality.get('latency_bucket') or '?'}"
+            )
+
+            if per_symbol_map:
+                rows = []
+                for sym, entry in per_symbol_map.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    rows.append(
+                        {
+                            "symbol": sym,
+                            "quality_score": safe_float(entry.get("quality_score")),
+                            "avg_slippage_bps": safe_float(entry.get("avg_slippage_bps")),
+                            "avg_latency_ms": safe_float(entry.get("avg_latency_ms")),
+                            "slippage_bucket": entry.get("slippage_drift_bucket"),
+                            "latency_bucket": entry.get("latency_bucket"),
+                            "twap_usage_ratio": safe_float(entry.get("twap_usage_ratio")),
+                        }
+                    )
+                df_router = pd.DataFrame(rows)
+                if not df_router.empty:
+                    st.dataframe(
+                        df_router.sort_values(by="quality_score", ascending=False),
+                        use_container_width=True,
+                        height=360,
+                    )
                 else:
                     st.info("No router per-symbol metrics yet.")
             else:
-                st.info("Router health unavailable.")
+                st.info("No router per-symbol metrics yet.")
+
+            with st.expander("Legacy Router Telemetry", expanded=False):
+                if router_health and not is_empty_router_health(router_health):
+                    st.metric("Symbols", int(router_health.summary.get("count", 0)))
+                    if not router_health.per_symbol.empty:
+                        df_router_legacy = router_health.per_symbol.copy()
+                        if "value" in df_router_legacy.columns:
+                            try:
+                                df_router_legacy["value"] = pd.to_numeric(df_router_legacy["value"], errors="coerce").fillna(0.0).astype(float)
+                            except Exception:
+                                df_router_legacy["value"] = df_router_legacy["value"]
+                        for col in df_router_legacy.columns:
+                            col_lower = str(col).lower()
+                            if col_lower in {
+                                "value",
+                                "qty",
+                                "pnl",
+                                "notional",
+                                "dd_pct",
+                                "atr_ratio",
+                                "maker_fill_ratio",
+                                "fallback_ratio",
+                                "slip_q25",
+                                "slip_q50",
+                                "slip_q75",
+                                "reject_rate",
+                            }:
+                                df_router_legacy[col] = df_router_legacy[col].apply(safe_float)
+                        st.dataframe(df_router_legacy, use_container_width=True, height=260)
+                    else:
+                        st.info("No legacy router metrics.")
+                else:
+                    st.info("Router health unavailable.")
             st.markdown("---")
             st.subheader("Router Policy Suggestions")
             suggestions_clean = router_suggestions_v6 if isinstance(router_suggestions_v6, dict) else {}

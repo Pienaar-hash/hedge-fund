@@ -18,10 +18,11 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Set
 
 LOG = logging.getLogger("position_ledger")
 
@@ -56,6 +57,34 @@ class PositionLedgerEntry:
     tp_sl: PositionTP_SL = field(default_factory=PositionTP_SL)
     created_ts: Optional[float] = None
     updated_ts: Optional[float] = None
+
+
+@dataclass
+class LedgerReconciliationReport:
+    """Mismatch summary between positions_state, ledger, and TP/SL registry."""
+
+    missing_ledger_positions: List[str] = field(default_factory=list)
+    ghost_ledger_entries: List[str] = field(default_factory=list)
+    missing_tp_sl_entries: List[str] = field(default_factory=list)
+    stale_tp_sl_entries: List[str] = field(default_factory=list)
+    position_keys: Set[str] = field(default_factory=set)
+
+    @property
+    def has_mismatch(self) -> bool:
+        return bool(
+            self.missing_ledger_positions
+            or self.ghost_ledger_entries
+            or self.missing_tp_sl_entries
+            or self.stale_tp_sl_entries
+        )
+
+    def breakdown_counts(self) -> Dict[str, int]:
+        return {
+            "missing_ledger_positions": len(self.missing_ledger_positions),
+            "ghost_ledger_entries": len(self.ghost_ledger_entries),
+            "missing_tp_sl_entries": len(self.missing_tp_sl_entries),
+            "stale_tp_sl_entries": len(self.stale_tp_sl_entries),
+        }
 
 
 def _to_decimal(val: Any) -> Optional[Decimal]:
@@ -124,6 +153,22 @@ def _normalize_qty(pos: Dict[str, Any]) -> Optional[Decimal]:
 def _make_key(symbol: str, side: Side) -> str:
     """Create registry key from symbol and position side."""
     return f"{symbol.upper()}:{side.upper()}"
+def _iter_positions_keys(positions_state: Dict[str, Any]) -> Set[str]:
+    """Extract position keys (SYMBOL:SIDE) from a positions_state payload."""
+    keys: Set[str] = set()
+    for pos in _extract_positions_list(positions_state):
+        symbol = (pos.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        side = _normalize_side(pos)
+        if not side:
+            continue
+        qty = _normalize_qty(pos)
+        entry_price = _normalize_entry_price(pos)
+        if qty is None or qty == 0 or entry_price is None or entry_price <= 0:
+            continue
+        keys.add(_make_key(symbol, side))
+    return keys
 
 
 # -----------------------------------------------------------------------------
@@ -493,3 +538,107 @@ def ledger_to_dict(ledger: Dict[str, PositionLedgerEntry]) -> Dict[str, Dict[str
         }
         for key, entry in ledger.items()
     }
+
+
+def build_positions_ledger_state(
+    ledger: Dict[str, PositionLedgerEntry],
+    *,
+    updated_at: Optional[str] = None,
+    tp_sl_levels: Optional[Dict[str, Any]] = None,
+    state_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Build a serializable snapshot of the position ledger.
+
+    Args:
+        ledger: Mapping of ledger entries keyed by "SYMBOL:SIDE".
+        updated_at: Optional ISO timestamp override.
+        tp_sl_levels: Optional precomputed TP/SL levels map.
+    """
+    entries_list: List[Dict[str, Any]] = []
+    for key, entry in ledger.items():
+        entries_list.append(
+            {
+                "position_key": key,
+                "symbol": entry.symbol,
+                "side": entry.side,
+                "qty": float(entry.qty),
+                "entry_price": float(entry.entry_price),
+                "tp": float(entry.tp_sl.tp) if entry.tp_sl.tp is not None else None,
+                "sl": float(entry.tp_sl.sl) if entry.tp_sl.sl is not None else None,
+                "created_ts": entry.created_ts,
+                "updated_ts": entry.updated_ts,
+            }
+        )
+
+    if tp_sl_levels is None:
+        try:
+            registry = load_tp_sl_registry(state_dir)
+            tp_sl_levels = {
+                key: {
+                    "tp": entry.get("take_profit_price") or entry.get("tp"),
+                    "sl": entry.get("stop_loss_price") or entry.get("sl"),
+                }
+                for key, entry in registry.items()
+                if isinstance(entry, dict)
+            }
+        except Exception:
+            tp_sl_levels = {}
+
+    return {
+        "updated_at": updated_at or datetime.now(timezone.utc).isoformat(),
+        "updated_ts": updated_at or datetime.now(timezone.utc).isoformat(),
+        "entries": entries_list,
+        "tp_sl_levels": tp_sl_levels or {},
+        "metadata": {
+            "version": "v1",
+            "entry_count": len(entries_list),
+        },
+    }
+
+
+# -----------------------------------------------------------------------------
+# Reconciliation (report-only)
+# -----------------------------------------------------------------------------
+
+
+def reconcile_ledger_and_registry(
+    positions_state: Dict[str, Any],
+    ledger: Dict[str, PositionLedgerEntry],
+    tp_sl_registry: Dict[str, Any],
+) -> LedgerReconciliationReport:
+    """
+    Pure reconciliation between live positions, ledger entries, and TP/SL registry.
+
+    Returns:
+        LedgerReconciliationReport with mismatch lists and counts; no side effects.
+    """
+    position_keys = _iter_positions_keys(positions_state)
+    ledger_keys = set(ledger.keys())
+    registry_keys = set(tp_sl_registry.keys()) if isinstance(tp_sl_registry, dict) else set()
+
+    missing_ledger = sorted(position_keys - ledger_keys)
+    ghost_ledger = sorted(ledger_keys - position_keys)
+
+    missing_tp_sl: List[str] = []
+    for key, entry in ledger.items():
+        tp_sl = entry.tp_sl
+        has_levels = tp_sl.tp is not None or tp_sl.sl is not None
+        reg_entry = tp_sl_registry.get(key) if isinstance(tp_sl_registry, dict) else None
+        reg_has_levels = False
+        if isinstance(reg_entry, dict):
+            reg_has_levels = (reg_entry.get("take_profit_price") is not None) or (
+                reg_entry.get("stop_loss_price") is not None
+            ) or (reg_entry.get("tp") is not None) or (reg_entry.get("sl") is not None)
+        if (not has_levels or not reg_has_levels) and key in ledger_keys:
+            missing_tp_sl.append(key)
+
+    stale_tp_sl = sorted(registry_keys - position_keys)
+
+    return LedgerReconciliationReport(
+        missing_ledger_positions=missing_ledger,
+        ghost_ledger_entries=ghost_ledger,
+        missing_tp_sl_entries=sorted(set(missing_tp_sl)),
+        stale_tp_sl_entries=stale_tp_sl,
+        position_keys=position_keys,
+    )

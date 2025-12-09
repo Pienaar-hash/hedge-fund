@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from execution import executor_live
+
+pytestmark = pytest.mark.integration
 
 
 def test_pub_tick_writes_state(monkeypatch):
@@ -29,9 +33,10 @@ def test_pub_tick_writes_state(monkeypatch):
     monkeypatch.setattr(executor_live, "write_nav_state", lambda payload: nav_values.append(payload))
     monkeypatch.setattr(
         executor_live,
-        "write_positions_state",
+        "write_positions_snapshot_state",
         lambda payload: positions_values.append(payload),
     )
+    monkeypatch.setattr(executor_live, "write_positions_state", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         executor_live,
         "write_synced_state",

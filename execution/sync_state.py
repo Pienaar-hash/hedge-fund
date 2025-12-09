@@ -15,7 +15,6 @@ if REPO_ROOT not in sys.path:
     print(f"[sync] PYTHONPATH bootstrapped: {REPO_ROOT}", flush=True)
 
 from execution.risk_loader import load_risk_config
-from execution.state_publish import build_kpis_v7
 try:
     from execution.firestore_utils import (
         get_db as _firestore_get_db,
@@ -1156,7 +1155,11 @@ def _exposure_from_positions(items: List[Dict[str, Any]]) -> Dict[str, float]:
         try:
             qty = float(it.get("qty", 0.0))
             price = float(
-                it.get("mark_price", it.get("mark", it.get("latest_price", 0.0)))
+                it.get("markPrice")
+                or it.get("mark_price")
+                or it.get("mark")
+                or it.get("latest_price")
+                or 0.0
             )
             pv = abs(qty) * price
             gross += pv
@@ -1305,21 +1308,8 @@ def _commit_leaderboard(db, positions: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _mirror_kpis_v7(nav_payload: Dict[str, Any]) -> None:
-    """Mirror kpis_v7.json into the state directory for dashboard consumption."""
-    try:
-        risk_snapshot = _load_existing_cache(RISK_STATE_PATH)
-        router_snapshot = _load_existing_cache(ROUTER_STATE_PATH)
-        expectancy_snapshot = _load_existing_cache(EXPECTANCY_STATE_PATH)
-        payload = build_kpis_v7(
-            time.time(),
-            nav_payload,
-            risk_snapshot,
-            router_snapshot,
-            expectancy_snapshot,
-        )
-        _write_json_cache(KPI_V7_STATE_PATH, payload, label="kpis_v7")
-    except Exception as exc:
-        LOGGER.warning("[sync] kpis_v7_mirror_failed: %s", exc, exc_info=True)
+    """No-op placeholder: kpis_v7.json is owned by executor (single-writer rule)."""
+    LOGGER.debug("[sync] skip kpis_v7 mirror (executor owns canonical writer)")
 
 
 def _publish_health(db, ok: bool, last_error: str) -> None:
@@ -1505,8 +1495,6 @@ def _sync_once_with_db(db) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, An
         lb_payload,
         label="leaderboard_state"
     )
-
-    _mirror_kpis_v7(nav_payload)
 
     return nav_payload, pos_payload, lb_payload
 

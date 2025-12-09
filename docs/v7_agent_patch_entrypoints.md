@@ -1,22 +1,31 @@
-## v7 Agent Patch Entrypoints
+# v7.6 Agent Patch Entrypoints
 
-- `execution/executor_live.py`: main loop wiring intents → risk → router; apply patches for execution flow, retries, telemetry hooks.
-- `execution/risk_engine_v6.py`: orchestrates risk evaluation; place new caps/toggles here; respects DRY_RUN/testnet flags.
-- `execution/risk_limits.py`: cap math, veto reasons, nav freshness; add/adjust thresholds or new guards here.
-- `execution/order_router.py`: maker/taker flow, post-only behaviour, offsets; adjust routing logic or metrics.
-- `execution/state_publish.py`: state files published to `logs/state/*`; extend for new telemetry fields or KPIs.
-- `execution/sync_state.py`: mirror/cleanup for dashboard; add handling for new state files.
-- `execution/signal_screener.py`: intent sizing/signals; ensure unlevered sizing contract is preserved; add new filters or signals.
-- `execution/intel/*` (maker_offset, router_policy, autotune, symbol_score): tuning hooks for offsets/policies/intel scores.
-- `dashboard/*.py` (panels/helpers): render new telemetry/KPIs; add new cards/tables; update router/intel views.
-- `config/*`:
-  - `risk_limits.json`: caps and overrides.
-  - `strategy_config.json`: sizing params, per_trade_nav_pct, leverage metadata.
-  - `runtime.yaml`: router/runtime knobs (offsets, fees, child size).
-  - `pairs_universe.json`, `symbol_tiers.json`: universe/tiers for gating.
+Use this as the single authoritative starting point for patchsets.
 
-### Diagnostics Patch Entrypoints (v7.5_S0_B/S0_C)
-- Extend veto metrics via `execution/diagnostics_metrics.py` (record_veto/compute_liveness_alerts).
-- Exit diagnostics via `execution/exit_scanner.py` and `diagnostics_metrics.update_exit_pipeline_status`.
-- Liveness wiring via `write_runtime_diagnostics_state` (state_publish) and dashboard risk panel.
-- Avoid refactoring core semantics in `risk_limits.check_order`, `executor_live` main loop, or `drawdown_tracker`; diagnostics must stay side-effect-free.
+## Pre-flight Checklist
+- Read `v7_manifest.json` for canonical state surfaces, owners, paths.
+- Confirm single-writer rule holds for the surface you will touch.
+- Plan tests: keep `make test-fast` green; run `make test-runtime` when touching state/telemetry; legacy is opt-in.
+- Avoid trading semantic changes unless explicitly requested.
+
+## Core Modules
+- Executor loop: `execution/executor_live.py`
+- Risk gates: `execution/risk_limits.py`, `execution/risk_engine_v6.py`
+- Router: `execution/order_router.py`, intel under `execution/intel/*`
+- Exits/ledger: `execution/exit_scanner.py`, `execution/position_ledger.py`, `execution/position_tp_sl_registry.py`
+- State publish: `execution/state_publish.py` (atomic writers), `execution/diagnostics_metrics.py`
+- Dashboard readers: `dashboard/state_v7.py`, panels under `dashboard/*`
+- Mirror: `execution/sync_state.py` (only owns `nav_state.json`)
+
+## State & Diagnostics Surfaces
+- Positions: `positions_state.json` (executor), `positions_ledger.json` (executor)
+- KPIs: `kpis_v7.json` (executor)
+- Diagnostics: `diagnostics.json` (executor; veto/exit/liveness with missing-ts semantics)
+- Risk/Router: `risk_snapshot.json`, `router_health.json`
+- NAV: `nav.json` (executor), `nav_state.json` (sync_state)
+
+## Patchset Rules
+- Use `state_publish` helpers for any new fields; update dashboard loaders + schema tests.
+- Diagnostics changes must remain side-effect-free (metrics only).
+- Runtime docs: refresh Architecture/State Contract/Diagnostics when adding surfaces.
+- Commit hygiene: respect repo layout (execution/, dashboard/, config/, tests/, docs/).

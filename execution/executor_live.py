@@ -31,6 +31,7 @@ from execution.universe_resolver import (
     universe_by_symbol,
 )
 from execution.runtime_config import load_runtime_config
+from execution.versioning import read_version
 from execution import telegram_alerts_v7
 from execution.utils.execution_health import record_execution_error, summarize_atr_regimes
 from execution.utils.metrics import router_effectiveness_7d
@@ -147,14 +148,7 @@ _KPI_V7_PUBLISH_INTERVAL_S = float(os.getenv("KPI_V7_PUBLISH_INTERVAL_S", str(_H
 _LAST_KPI_PUBLISH = 0.0
 _SYMBOL_ERROR_COOLDOWN: Dict[str, float] = {}
 
-_VERSION_PATH = Path(repo_root) / "VERSION"
-if _VERSION_PATH.is_file():
-    try:
-        _ENGINE_VERSION = _VERSION_PATH.read_text(encoding="utf-8").strip()
-    except Exception:
-        _ENGINE_VERSION = ""
-else:
-    _ENGINE_VERSION = "v6.0-beta-preview"
+_ENGINE_VERSION = read_version(default="v7.6")
 
 
 def get_v6_flag_snapshot() -> Dict[str, bool]:
@@ -424,16 +418,21 @@ def _maybe_emit_router_health_snapshot(force: bool = False) -> None:
     if not force and (now - _LAST_ROUTER_HEALTH_PUBLISH) < ROUTER_HEALTH_REFRESH_INTERVAL_S:
         return
     try:
+        router_stats_snapshot = get_router_stats_snapshot() if get_router_stats_snapshot else {}
+    except Exception as exc:
+        LOG.debug("[metrics] router_stats_snapshot_failed: %s", exc)
+        router_stats_snapshot = {}
+    try:
         snapshot = _build_router_health_snapshot()
     except Exception as exc:
         LOG.debug("[metrics] router_health_snapshot_failed: %s", exc)
         return
     try:
-        ROUTER_HEALTH_LOG.write({"ts": now, "snapshot": snapshot})
+        ROUTER_HEALTH_LOG.write({"ts": now, "snapshot": snapshot, "router_stats": router_stats_snapshot})
     except Exception as exc:
         LOG.debug("[metrics] router_health_log_failed: %s", exc)
     try:
-        write_router_health_state(snapshot)
+        write_router_health_state(snapshot, router_stats_snapshot=router_stats_snapshot)
         _LAST_ROUTER_HEALTH_PUBLISH = now
     except Exception as exc:
         LOG.debug("[metrics] router_health_state_write_failed: %s", exc)
@@ -461,6 +460,7 @@ def _maybe_emit_risk_snapshot(force: bool = False) -> None:
     except Exception as exc:
         LOG.debug("[metrics] execution_health_collect_failed: %s", exc)
         return
+    snapshot.setdefault("updated_ts", datetime.now(timezone.utc).isoformat())
     snapshot["risk_config_meta"] = {
         "testnet_overrides_active": bool((_RISK_CFG.get("_meta") or {}).get("testnet_overrides_active")),
         "max_nav_drawdown_pct": (_RISK_CFG.get("global") or {}).get("max_nav_drawdown_pct"),
@@ -607,6 +607,7 @@ def _maybe_publish_execution_intel() -> None:
         write_expectancy_state(expectancy_snapshot)
         router_health = _build_router_health_snapshot()
         scores_snapshot = symbol_score_v6.build_symbol_scores(expectancy_snapshot, router_health)
+        scores_snapshot.setdefault("updated_ts", now)
         write_symbol_scores_state(scores_snapshot)
         # RV momentum state (v7.5_C1)
         compute_and_write_rv_momentum_state()
@@ -666,6 +667,7 @@ try:
         submit_limit,
         effective_px,
         PlaceOrderResult,
+        get_router_stats_snapshot,
     )
 except Exception:
     _route_order = None  # type: ignore[assignment]
@@ -673,6 +675,7 @@ except Exception:
     submit_limit = None  # type: ignore[assignment]
     effective_px = None  # type: ignore[assignment]
     PlaceOrderResult = None  # type: ignore[assignment]
+    get_router_stats_snapshot = None  # type: ignore[assignment]
 from execution.risk_limits import (
     RiskState,
     check_order,
@@ -701,6 +704,8 @@ from execution.state_publish import (
     write_nav_state,
     write_pipeline_v6_shadow_state,
     write_positions_state,
+    write_positions_snapshot_state,
+    write_positions_ledger_state,
     write_risk_snapshot_state,
     write_router_health_state,
     write_kpis_v7_state,
@@ -708,6 +713,7 @@ from execution.state_publish import (
     write_execution_health_state,
     write_synced_state,
     write_v6_runtime_probe_state,
+    write_engine_metadata_state,
     compute_and_write_risk_advanced_state,
     compute_and_write_alpha_decay_state,
     write_runtime_diagnostics_state,
@@ -3553,11 +3559,11 @@ def _write_positions_state(positions_rows: List[Dict[str, Any]], *, updated_ts: 
             )
         assert entry_price is not None and entry_price > 0, "positions_state entry_price must be >0 for open positions"
         assert mark_price is not None and mark_price > 0, "positions_state mark_price must be >0 for open positions"
-    payload = {
-        "updated_ts": ts_value,
-        "positions": positions_rows,
-    }
-    _write_json_cache(POSITIONS_STATE_PATH, payload)
+    write_positions_state(
+        positions_rows,
+        path=POSITIONS_STATE_PATH,
+        updated_at=ts_value,
+    )
 
 
 def _json_default(value: Any) -> str:
@@ -3750,8 +3756,9 @@ def _pub_tick() -> None:
     _persist_nav_log(nav_val, rows)
     _persist_spot_state()
     now = time.time()
+    now_iso = datetime.now(timezone.utc).isoformat()
     nav_float = float(nav_val) if nav_val is not None else 0.0
-    nav_payload = {"nav": nav_float, "nav_usd": nav_float, "updated_ts": now}
+    nav_payload = {"nav": nav_float, "nav_usd": nav_float, "updated_ts": now_iso}
     if isinstance(nav_detail, Mapping):
         nav_payload["nav_detail"] = dict(nav_detail)
         # Flatten a few helpful fields for dashboard/state readers
@@ -3761,6 +3768,7 @@ def _pub_tick() -> None:
     nav_written = False
     positions_state_written = False
     positions_snapshot_written = False
+    positions_ledger_written = False
     risk_written = False
     scores_written = False
     diagnostics_written = False
@@ -3771,8 +3779,12 @@ def _pub_tick() -> None:
     except Exception as exc:
         LOG.error("[telemetry] nav_state_write_failed: %s", exc)
     positions_state_rows = _build_positions_state_rows(rows)
-    positions_state_ts = datetime.now(timezone.utc).isoformat()
-    positions_state_payload = {"positions": positions_state_rows, "updated_ts": positions_state_ts}
+    positions_state_ts = now_iso
+    positions_state_payload = {
+        "positions": positions_state_rows,
+        "updated_at": positions_state_ts,
+        "updated_ts": positions_state_ts,
+    }
     try:
         _write_positions_state(positions_state_rows, updated_ts=positions_state_ts)
         positions_state_written = True
@@ -3841,11 +3853,24 @@ def _pub_tick() -> None:
         "updated": now,
     }
     try:
-        write_positions_state(positions_payload)
+        write_positions_snapshot_state(positions_payload)
         positions_snapshot_written = True
     except Exception as exc:
         LOG.error("[telemetry] positions_snapshot_write_failed: %s", exc)
-    risk_payload = _LAST_RISK_SNAPSHOT or {"updated_ts": now, "symbols": []}
+    try:
+        from execution.position_ledger import build_position_ledger, build_positions_ledger_state
+
+        ledger = build_position_ledger(POSITIONS_STATE_PATH.parent)
+        ledger_snapshot = build_positions_ledger_state(
+            ledger,
+            updated_at=positions_state_ts,
+            state_dir=POSITIONS_STATE_PATH.parent,
+        )
+        write_positions_ledger_state(ledger_snapshot)
+        positions_ledger_written = True
+    except Exception as exc:
+        LOG.error("[telemetry] positions_ledger_write_failed: %s", exc)
+    risk_payload = _LAST_RISK_SNAPSHOT or {"updated_ts": now_iso, "symbols": []}
     try:
         write_risk_snapshot_state(risk_payload)
         risk_written = True
@@ -3875,7 +3900,7 @@ def _pub_tick() -> None:
     scores_payload = (
         dict(_LAST_SYMBOL_SCORES_STATE)
         if isinstance(_LAST_SYMBOL_SCORES_STATE, Mapping)
-        else {"symbols": [], "updated_ts": now, "intel_enabled": bool(INTEL_V6_ENABLED)}
+        else {"symbols": [], "updated_ts": now_iso, "intel_enabled": bool(INTEL_V6_ENABLED)}
     )
     try:
         write_symbol_scores_state(scores_payload)
@@ -3887,6 +3912,21 @@ def _pub_tick() -> None:
         diagnostics_written = True
     except Exception as exc:
         LOG.debug("[telemetry] diagnostics_state_write_failed: %s", exc)
+    engine_meta_written = False
+    try:
+        write_engine_metadata_state(
+            {
+                "engine_version": _ENGINE_VERSION,
+                "git_commit": _git_commit(),
+                "run_id": RUN_ID,
+                "hostname": HOSTNAME,
+                "env": ENV,
+                "status": "running",
+            }
+        )
+        engine_meta_written = True
+    except Exception as exc:
+        LOG.debug("[telemetry] engine_metadata_write_failed: %s", exc)
     flag_snapshot = get_v6_flag_snapshot()
     try:
         synced_payload = build_synced_state_payload(
@@ -3913,13 +3953,15 @@ def _pub_tick() -> None:
     except Exception as exc:
         LOG.error("[telemetry] synced_state_write_failed: %s", exc)
     LOG.info(
-        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s synced=%s",
+        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s",
         nav_written,
         positions_state_written,
+        positions_ledger_written,
         positions_snapshot_written,
         risk_written,
         scores_written,
         diagnostics_written,
+        engine_meta_written,
         synced_written,
     )
     _LAST_NAV_STATE = nav_payload
@@ -3958,10 +4000,15 @@ def _loop_once(i: int) -> None:
         from execution.exit_scanner import scan_tp_sl_exits, build_exit_intent
         
         # Build price map from positions (markPrice) or fetch live
+        # V7.6: Only build prices for positions with non-zero qty (active positions)
         price_map: Dict[str, float] = {}
         for pos in baseline_positions:
             sym = pos.get("symbol")
             if not sym:
+                continue
+            # Skip zero-qty positions (Binance returns all symbols from positionRisk)
+            qty = float(pos.get("qty") or pos.get("positionAmt") or 0)
+            if qty == 0:
                 continue
             mark = pos.get("markPrice") or pos.get("mark_price")
             if mark:
@@ -4087,7 +4134,10 @@ def _loop_once(i: int) -> None:
             submitted,
         )
 
-    _pub_tick()
+    try:
+        _pub_tick()
+    except Exception as exc:
+        LOG.exception("[loop] publish_tick_failed: %s", exc)
     _maybe_run_pipeline_v6_shadow_heartbeat()
     _maybe_emit_router_health_snapshot()
     _maybe_emit_risk_snapshot()

@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import deque
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
@@ -29,7 +31,7 @@ from execution.intel.router_autotune_apply_v6 import (
     get_current_risk_mode,
     apply_router_suggestion,
 )
-from execution.diagnostics_metrics import record_order_placed
+from execution.diagnostics_metrics import record_order_placed, record_router_event
 from execution.runtime_config import load_runtime_config, get_twap_config, TWAPConfig
 from execution.utils.execution_health import record_execution_error
 
@@ -66,6 +68,8 @@ __all__ = [
     "split_twap_slices",
     "ChildOrderResult",
     "TWAPResult",
+    "RouterStats",
+    "get_router_stats_snapshot",
 ]
 
 _RUNTIME_CFG = load_runtime_config()
@@ -246,6 +250,169 @@ class PlaceOrderResult:
     placed_ts: float = field(default_factory=time.time)
     filled_qty: float = 0.0
     raw: Dict[str, Any] | None = None
+
+
+class RouterStats:
+    """
+    Lightweight accumulator for router microstructure stats.
+
+    Tracks slippage, latency, and TWAP usage in a rolling window.
+    """
+
+    def __init__(
+        self,
+        window_seconds: float = 900.0,
+        min_events: int = 5,
+        ema_alpha: float = 0.3,
+    ) -> None:
+        self.window_seconds = max(float(window_seconds), 0.0)
+        self.min_events = max(int(min_events or 0), 0)
+        self.ema_alpha = float(ema_alpha)
+        self._events: Dict[str, deque[Dict[str, float]]] = {}
+        self._slip_ema: Dict[str, float] = {}
+
+    def _trim(self, symbol: str, now: float) -> None:
+        events = self._events.get(symbol)
+        if not events:
+            return
+        if self.window_seconds <= 0:
+            return
+        cutoff = now - self.window_seconds
+        while len(events) > max(self.min_events, 0) and events and events[0].get("ts_fill", 0.0) < cutoff:
+            events.popleft()
+
+    def _update_ema(self, symbol: str, value: float) -> float:
+        prev = self._slip_ema.get(symbol)
+        if prev is None:
+            self._slip_ema[symbol] = value
+        else:
+            self._slip_ema[symbol] = (self.ema_alpha * value) + ((1.0 - self.ema_alpha) * prev)
+        return self._slip_ema[symbol]
+
+    def update_on_fill(
+        self,
+        symbol: str,
+        intended_price: float | None,
+        fill_price: float | None,
+        ts_sent: float | None,
+        ts_fill: float | None,
+        is_twap_child: bool,
+        notional: float | None,
+        *,
+        intended_notional: float | None = None,
+    ) -> None:
+        """
+        Record a fill event for microstructure stats.
+
+        Args:
+            symbol: Trading symbol
+            intended_price: Target/quoted price for the order
+            fill_price: Executed fill price
+            ts_sent: Timestamp when the order was sent (epoch seconds)
+            ts_fill: Timestamp when the fill/ack was received (epoch seconds)
+            is_twap_child: Whether this fill came from a TWAP child slice
+            notional: Filled notional (quote currency)
+            intended_notional: Intended notional for the order (optional)
+        """
+        sym = str(symbol or "").upper()
+        if not sym:
+            return
+
+        now = time.time()
+        ts_sent_val = float(ts_sent) if ts_sent is not None else now
+        ts_fill_val = float(ts_fill) if ts_fill is not None else now
+        latency_ms = max(0.0, (ts_fill_val - ts_sent_val) * 1000.0)
+        filled_notional = abs(float(notional or 0.0))
+        target_notional = abs(float(intended_notional if intended_notional is not None else filled_notional))
+
+        slip_bps = 0.0
+        if intended_price and fill_price:
+            slip_bps = abs(_bps(float(fill_price), float(intended_price)))
+
+        events = self._events.setdefault(sym, deque())
+        events.append(
+            {
+                "ts_sent": ts_sent_val,
+                "ts_fill": ts_fill_val,
+                "slippage_bps": slip_bps,
+                "latency_ms": latency_ms,
+                "is_twap_child": 1.0 if is_twap_child else 0.0,
+                "notional": filled_notional,
+                "filled_notional": filled_notional,
+                "intended_notional": target_notional,
+            }
+        )
+        self._trim(sym, ts_fill_val)
+        self._update_ema(sym, slip_bps)
+
+    def snapshot(self, now: float | None = None) -> Dict[str, Any]:
+        """Return a per-symbol snapshot for state publishing."""
+        ts_now = float(now if now is not None else time.time())
+        per_symbol: Dict[str, Any] = {}
+        for sym, events in self._events.items():
+            if not events:
+                continue
+            filtered = list(events)
+            total_notional = sum(e.get("notional", 0.0) for e in filtered)
+            weight = total_notional if total_notional > 0 else float(len(filtered))
+            if weight <= 0:
+                continue
+
+            weighted = lambda key: sum((e.get(key) or 0.0) * (e.get("notional", 0.0) if total_notional > 0 else 1.0) for e in filtered) / weight  # noqa: E731
+            avg_slip = weighted("slippage_bps")
+            avg_latency = weighted("latency_ms")
+            twap_notional = sum(e.get("notional", 0.0) for e in filtered if e.get("is_twap_child"))
+            twap_usage = twap_notional / total_notional if total_notional > 0 else 0.0
+            child_events = [e for e in filtered if e.get("is_twap_child")]
+            child_count = len(child_events)
+            child_intended = sum(e.get("intended_notional", 0.0) for e in child_events)
+            child_filled = sum(e.get("filled_notional", 0.0) for e in child_events)
+            child_fill_ratio = (child_filled / child_intended) if child_intended > 0 else (1.0 if child_count else 0.0)
+
+            per_symbol[sym] = {
+                "symbol": sym,
+                "avg_slippage_bps": avg_slip,
+                "slippage_drift_bps": self._slip_ema.get(sym, avg_slip),
+                "avg_latency_ms": avg_latency,
+                "twap_usage_ratio": twap_usage,
+                "last_order_ts": max(e.get("ts_sent", 0.0) for e in filtered),
+                "last_fill_ts": max(e.get("ts_fill", 0.0) for e in filtered),
+                "total_notional": total_notional,
+                "twap_notional": twap_notional,
+                "event_count": len(filtered),
+                "child_orders": {
+                    "count": child_count,
+                    "fill_ratio": child_fill_ratio,
+                },
+            }
+
+        return {
+            "updated_ts": datetime.fromtimestamp(ts_now, tz=timezone.utc).isoformat(),
+            "per_symbol": per_symbol,
+            "window_seconds": self.window_seconds,
+            "min_events": self.min_events,
+        }
+
+
+def _init_router_stats() -> RouterStats:
+    try:
+        from execution.router_metrics import load_router_quality_config
+
+        cfg = load_router_quality_config()
+        return RouterStats(
+            window_seconds=cfg.stats_window_seconds,
+            min_events=cfg.stats_window_min_events,
+        )
+    except Exception:
+        return RouterStats()
+
+
+_ROUTER_STATS = _init_router_stats()
+
+
+def get_router_stats_snapshot(now: float | None = None) -> Dict[str, Any]:
+    """Expose router stats snapshot for state publishing."""
+    return _ROUTER_STATS.snapshot(now)
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +713,10 @@ def monitor_and_refresh(
 
     if age > LOW_FILL_WINDOW_S and fill_ratio < MIN_FILL_RATIO:
         cancel(order.order_id)
+        try:
+            record_router_event()
+        except Exception:
+            pass
         reprice_wider(order)
         return
 
@@ -979,6 +1150,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             "raw": None,
         }
 
+    is_twap_child = bool(intent.get("_twap_slice"))
     symbol = str(intent.get("symbol") or intent.get("pair") or "").upper()
     if not symbol:
         return {
@@ -994,6 +1166,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     if qty is None:
         payload = risk_ctx.get("payload") or {}
         qty = payload.get("quantity")
+    qty_float_intent = _to_float(qty)
     try:
         qty_str = _as_str_quantity(qty)
     except ValueError as exc:
@@ -1199,12 +1372,20 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         spread_clamped = True
         router_decision["offset_bps"] = adjusted_offset_bps
 
+    try:
+        record_router_event()
+    except Exception:
+        pass
+
     latency_ms: float | None = None
     resp: Dict[str, Any] | None = None
     maker_used = False
+    ts_sent_wall: float | None = None
+    ts_fill_wall: float | None = None
     router_decision["maker_started"] = maker_enabled
     if maker_enabled:
         try:
+            ts_sent_wall = time.time()
             t0 = time.perf_counter()
             adaptive_bps = adjusted_offset_bps
             adjusted_price = _apply_offset(maker_price, adaptive_bps, side)
@@ -1213,6 +1394,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             maker_px = normalize_price(symbol, maker_px)
             maker_result = submit_limit(symbol, maker_px, maker_qty, side)
             latency_ms = (time.perf_counter() - t0) * 1000.0
+            ts_fill_wall = time.time()
             router_decision["maker_offset_bps"] = adaptive_bps
         except Exception as exc:
             maker_result = None
@@ -1240,9 +1422,11 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
 
     if resp is None:
         try:
+            ts_sent_wall = time.time()
             t0 = time.perf_counter()
             resp = ex.send_order(**payload)
             latency_ms = (time.perf_counter() - t0) * 1000.0
+            ts_fill_wall = time.time()
             router_decision["route"] = "taker"
         except Exception as exc:
             router_decision["reasons"].append("taker_submit_failed")
@@ -1372,6 +1556,35 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     if accepted:
         try:
             record_order_placed()
+        except Exception:
+            pass
+
+    if accepted and executed_qty_float and executed_qty_float > 0 and avg_price_float:
+        intended_price_for_stats = maker_price if maker_used and maker_price else _to_float(payload.get("price"))
+        if intended_price_for_stats is None:
+            intended_price_for_stats = _to_float(risk_ctx.get("mid_price") or risk_ctx.get("price"))
+        intended_notional = None
+        try:
+            if qty_float_intent and intended_price_for_stats:
+                intended_notional = abs(qty_float_intent * intended_price_for_stats)
+        except Exception:
+            intended_notional = None
+        filled_notional = executed_qty_float * avg_price_float
+        try:
+            _ROUTER_STATS.update_on_fill(
+                symbol=symbol,
+                intended_price=intended_price_for_stats or avg_price_float,
+                fill_price=avg_price_float,
+                ts_sent=ts_sent_wall,
+                ts_fill=ts_fill_wall or time.time(),
+                is_twap_child=is_twap_child,
+                notional=filled_notional,
+                intended_notional=intended_notional,
+            )
+        except Exception:
+            pass
+        try:
+            record_router_event()
         except Exception:
             pass
     result: Dict[str, Any] = {

@@ -3,6 +3,12 @@
   "use_futures": true,
   "poll_seconds": 300,
   "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
+  "dry_run": {
+    "simulated_nav_usdt": 10000.0,
+    "simulated_balances": {
+      "USDT": 10000.0
+    }
+  },
   "nav": {
     "trading_source": "exchange",
     "reporting_source": "exchange",
@@ -422,9 +428,17 @@
     "base_score": 0.8,
     "min_score": 0.2,
     "max_score": 1.0,
+    "stats_window": {
+      "seconds": 900,
+      "min_events": 5
+    },
     "slippage_drift_bps_thresholds": {
       "green": 2.0,
       "yellow": 6.0
+    },
+    "latency_ms_thresholds": {
+      "fast": 150.0,
+      "normal": 400.0
     },
     "bucket_penalties": {
       "A_HIGH": 0.0,

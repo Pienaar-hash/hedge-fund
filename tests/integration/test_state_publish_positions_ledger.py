@@ -19,6 +19,8 @@ from execution.position_ledger import (
     ledger_to_dict,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def temp_state_dir(tmp_path):
@@ -104,11 +106,11 @@ class TestPublishPositionsWithLedger:
                     "ETHUSDT:SHORT": {"symbol": "ETHUSDT", "tp": 2800.0, "sl": 3200.0},
                 }):
                     with patch("execution.state_publish._append_local_jsonl") as mock_jsonl:
-                        with patch("execution.state_publish.write_positions_state") as mock_write:
+                        with patch("execution.state_publish.write_positions_snapshot_state") as mock_write:
                             with patch("execution.state_publish._compute_exec_stats", return_value={}):
                                 publish_positions(rows)
 
-                                # Check that write_positions_state was called with ledger data
+                                # Check that write_positions_snapshot_state was called with ledger data
                                 assert mock_write.called
                                 call_args = mock_write.call_args[0][0]
                                 assert "positions_ledger" in call_args

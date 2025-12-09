@@ -1,10 +1,78 @@
 {
+  "docs_version": "v7.6",
   "state_files": {
-    "nav_state": "logs/state/nav_state.json",
-    "positions_state": "logs/state/positions_state.json",
-    "risk_snapshot": "logs/state/risk_snapshot.json",
-    "factor_diagnostics": "logs/state/factor_diagnostics.json",
-    "runtime_diagnostics": "logs/state/diagnostics.json"
+    "nav": {
+      "path": "logs/state/nav.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "NAV totals + exec stats with anomaly guard"
+    },
+    "nav_state": {
+      "path": "logs/state/nav_state.json",
+      "owner": "sync_state",
+      "update_frequency": "per_sync",
+      "description": "Dashboard-friendly NAV/AUM/drawdown snapshot with fallback"
+    },
+    "positions_state": {
+      "path": "logs/state/positions_state.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Live positions normalized with entry/mark/PnL"
+    },
+    "positions_ledger": {
+      "path": "logs/state/positions_ledger.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Unified ledger (positions + TP/SL registry)"
+    },
+    "kpis_v7": {
+      "path": "logs/state/kpis_v7.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Portfolio + per-symbol KPIs"
+    },
+    "runtime_diagnostics": {
+      "path": "logs/state/diagnostics.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Veto counters, exit pipeline, liveness (updated_ts required)"
+    },
+    "engine_metadata": {
+      "path": "logs/state/engine_metadata.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Engine version/build metadata for dashboards and preflight checks"
+    },
+    "risk_snapshot": {
+      "path": "logs/state/risk_snapshot.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Risk KPIs (dd_state, risk_mode, VaR/CVaR, anomalies)"
+    },
+    "router_health": {
+      "path": "logs/state/router_health.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Router slippage/latency/TWAP stats with global & per-symbol quality scores"
+    },
+    "symbol_scores": {
+      "path": "logs/state/symbol_scores_v6.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "description": "Hybrid scores with router/vol modifiers and factor diagnostics metadata"
+    },
+    "rv_momentum": {
+      "path": "logs/state/rv_momentum.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "description": "Relative value momentum snapshots"
+    },
+    "factor_diagnostics": {
+      "path": "logs/state/factor_diagnostics.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "description": "Normalized factor surface with covariance/IR, orthogonalization, weights, attribution"
+    }
   },
   "diagnostics": {
     "veto_metrics": true,

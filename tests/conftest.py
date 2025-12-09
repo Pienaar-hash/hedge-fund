@@ -3,9 +3,14 @@ Pytest configuration and shared fixtures for test suite.
 """
 from __future__ import annotations
 
+import os
 import pytest
 from typing import Any, Dict
 from unittest import mock
+
+# Force safe defaults even if .env sets production values.
+os.environ["ENV"] = "test"
+os.environ.setdefault("ALLOW_PROD_WRITE", "1")
 
 
 @pytest.fixture
@@ -92,12 +97,19 @@ def _reset_global_state():
     Auto-reset certain global state that bleeds between tests.
     Runs BEFORE and AFTER each test.
     """
+    # Enforce test environment even if .env overrides to prod.
+    os.environ["ENV"] = "test"
     # Clean up telegram rate limiting state BEFORE test
     try:
         from execution import telegram_utils as tu
         tu._send_timestamps.clear()
         tu._recent_msgs.clear()
     except (ImportError, AttributeError):
+        pass
+    try:
+        from execution import diagnostics_metrics
+        diagnostics_metrics.reset_diagnostics()
+    except Exception:
         pass
     yield
     # Clean up telegram rate limiting state AFTER test
@@ -106,4 +118,9 @@ def _reset_global_state():
         tu._send_timestamps.clear()
         tu._recent_msgs.clear()
     except (ImportError, AttributeError):
+        pass
+    try:
+        from execution import diagnostics_metrics
+        diagnostics_metrics.reset_diagnostics()
+    except Exception:
         pass

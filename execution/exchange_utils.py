@@ -914,9 +914,32 @@ def build_order_payload(
 
 
 # --- account ---
+def _load_dry_run_config() -> Dict[str, Any]:
+    """Load dry_run simulation config from strategy_config.json."""
+    try:
+        cfg = load_json("config/strategy_config.json") or {}
+        return cfg.get("dry_run") or {}
+    except Exception:
+        return {}
+
+
 def get_balances() -> List[Dict[str, Any]]:
     # Avoid signed USD-M calls in DRY_RUN to prevent -2015 while keys/env are being fixed
     if is_dry_run():
+        dry_cfg = _load_dry_run_config()
+        sim_balances = dry_cfg.get("simulated_balances") or {}
+        if sim_balances:
+            result = []
+            for asset, amount in sim_balances.items():
+                result.append({
+                    "asset": asset,
+                    "walletBalance": str(amount),
+                    "balance": str(amount),
+                    "crossWalletBalance": str(amount),
+                    "availableBalance": str(amount),
+                })
+            _LOG.info("[dry-run] stubbed get_balances with simulated_balances: %s", sim_balances)
+            return result
         return _dry_run_stub("get_balances", [])
     try:
         return _req("GET", "/fapi/v2/balance", signed=True).json()
@@ -932,23 +955,36 @@ def get_balances() -> List[Dict[str, Any]]:
 
 def get_account() -> Dict[str, Any]:
     if is_dry_run():
-        return _dry_run_stub(
-            "get_account",
-            {
-                "assets": [],
-                "positions": [],
-                "totalMarginBalance": "0.0",
-                "totalWalletBalance": "0.0",
-                "totalUnrealizedProfit": "0.0",
-                "dryRun": True,
-            },
-    )
+        dry_cfg = _load_dry_run_config()
+        sim_nav = dry_cfg.get("simulated_nav_usdt", 0.0)
+        sim_balances = dry_cfg.get("simulated_balances") or {}
+        sim_usdt = sim_balances.get("USDT", sim_nav)
+        assets = [
+            {"asset": asset, "walletBalance": str(amount), "marginBalance": str(amount)}
+            for asset, amount in sim_balances.items()
+        ] if sim_balances else []
+        stub = {
+            "assets": assets,
+            "positions": [],
+            "totalMarginBalance": str(sim_nav),
+            "totalWalletBalance": str(sim_usdt),
+            "totalUnrealizedProfit": "0.0",
+            "dryRun": True,
+        }
+        _LOG.info("[dry-run] stubbed get_account with simulated_nav_usdt: %s", sim_nav)
+        return stub
     return _req("GET", "/fapi/v2/account", signed=True).json()
 
 
 def get_futures_balances() -> Dict[str, float]:
     """Return futures wallet balances keyed by asset."""
     if is_dry_run():
+        dry_cfg = _load_dry_run_config()
+        sim_balances = dry_cfg.get("simulated_balances") or {}
+        if sim_balances:
+            result = {k: float(v) for k, v in sim_balances.items()}
+            _LOG.info("[dry-run] stubbed get_futures_balances with simulated_balances: %s", result)
+            return result
         return _dry_run_stub("get_futures_balances", {"USDT": 0.0})
     try:
         balances = get_balances()

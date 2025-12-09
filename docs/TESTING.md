@@ -1,21 +1,30 @@
-# Testing Topology (v7.5)
+# Testing Topology (v7.6)
 
-We split tests into three lanes:
+We split tests into clear lanes:
 
-- `tests/unit/` — fast, side-effect-free tests (pure functions/classes).
-- `tests/integration/` — runtime/state/dashboard integration tests.
-- `tests/legacy/` — v5/v6-era tests kept for reference; not part of v7.5 green runs.
+- `tests/unit/` — fast, deterministic, no external I/O.
+- `tests/integration/` — multi-module/stateful tests (use tmp_path when possible).
+- `tests/legacy/` — v5/v6-era tests kept for reference; not part of the green bar.
+
+Markers (see `pytest.ini`):
+- `@pytest.mark.unit`
+- `@pytest.mark.integration`
+- `@pytest.mark.runtime` (longer/stateful; excluded from fast lane)
+- `@pytest.mark.legacy`
 
 Canonical commands:
 
 ```bash
-# Daily green bar
-PYTHONPATH=. pytest tests/unit tests/integration -q
+# Day-to-day fast lane
+make test-fast
 
-# Run legacy set explicitly
-PYTHONPATH=. pytest tests/legacy -m legacy -q
+# Runtime slice
+make test-runtime
+
+# Full sweep (includes legacy)
+make test-all
 ```
 
-Notes:
-- `pytest.ini` points default discovery to unit + integration only.
-- Legacy tests may be unstable or skipped; they are informational only.
+Agent guidance:
+- Keep `test-fast` green for typical patches.
+- If you change runtime/state surfaces, also run `test-runtime`.

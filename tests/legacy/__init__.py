@@ -1,0 +1,1 @@
+"""Legacy test package marker."""

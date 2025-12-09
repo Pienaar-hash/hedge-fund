@@ -500,6 +500,10 @@ class RouterQualityConfig:
     base_score: float = 0.8
     min_score: float = 0.2
     max_score: float = 1.0
+    stats_window_seconds: float = 900.0
+    stats_window_min_events: int = 5
+    latency_fast_ms: float = 150.0
+    latency_normal_ms: float = 400.0
     slippage_drift_green_bps: float = 2.0
     slippage_drift_yellow_bps: float = 6.0
     bucket_penalty_a_high: float = 0.0
@@ -535,15 +539,21 @@ def load_router_quality_config(
     rq_cfg = strategy_config.get("router_quality", {})
     if not rq_cfg:
         return RouterQualityConfig()
-    
+
     drift_thresholds = rq_cfg.get("slippage_drift_bps_thresholds", {})
     bucket_penalties = rq_cfg.get("bucket_penalties", {})
-    
+    stats_window = rq_cfg.get("stats_window", {})
+    latency_thresholds = rq_cfg.get("latency_ms_thresholds", {})
+
     return RouterQualityConfig(
         enabled=bool(rq_cfg.get("enabled", True)),
         base_score=float(rq_cfg.get("base_score", 0.8)),
         min_score=float(rq_cfg.get("min_score", 0.2)),
         max_score=float(rq_cfg.get("max_score", 1.0)),
+        stats_window_seconds=float(stats_window.get("seconds", 900.0)),
+        stats_window_min_events=int(stats_window.get("min_events", 5) or 0),
+        latency_fast_ms=float(latency_thresholds.get("fast", 150.0)),
+        latency_normal_ms=float(latency_thresholds.get("normal", 400.0)),
         slippage_drift_green_bps=float(drift_thresholds.get("green", 2.0)),
         slippage_drift_yellow_bps=float(drift_thresholds.get("yellow", 6.0)),
         bucket_penalty_a_high=float(bucket_penalties.get("A_HIGH", 0.0)),

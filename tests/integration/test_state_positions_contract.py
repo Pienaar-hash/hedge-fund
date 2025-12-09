@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from execution import executor_live
+
+pytestmark = pytest.mark.integration
 
 
 def _temp_positions_path(tmp_path):
@@ -22,6 +26,7 @@ def test_write_positions_state_writes_positions(monkeypatch, tmp_path):
     data = json.loads(target.read_text())
     assert "positions" in data
     assert len(data["positions"]) == 2
+    assert data["updated_at"] == "2024-01-01T00:00:00Z"
 
 
 def test_non_zero_positions_require_prices(monkeypatch, tmp_path):

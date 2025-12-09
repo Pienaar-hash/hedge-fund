@@ -504,8 +504,35 @@ def compute_nav_summary(cfg: JSONDict | None = None) -> JSONDict:
     }
 
 
+def _get_dry_run_simulated_nav(cfg: JSONDict) -> Optional[float]:
+    """Return simulated NAV from dry_run config if DRY_RUN=1."""
+    if os.environ.get("DRY_RUN", "0").lower() not in ("1", "true", "yes"):
+        return None
+    # Check strategy_config.json dry_run block
+    dry_run_cfg = cfg.get("dry_run") or {}
+    sim_nav = dry_run_cfg.get("simulated_nav_usdt")
+    if sim_nav is not None:
+        return float(sim_nav)
+    # Fallback: check simulated_balances.USDT
+    sim_balances = dry_run_cfg.get("simulated_balances") or {}
+    if "USDT" in sim_balances:
+        return float(sim_balances["USDT"])
+    return None
+
+
 def _fallback_capital(cfg: JSONDict) -> Tuple[float, JSONDict]:
     """Fallback NAV when no positions or manual override exist."""
+    # Check for dry-run simulated NAV first
+    sim_nav = _get_dry_run_simulated_nav(cfg)
+    if sim_nav is not None and sim_nav > 0:
+        LOGGER.info("[nav] using dry_run simulated_nav_usdt: %s", sim_nav)
+        detail = {"source": "dry_run_simulated", "nav": sim_nav, "nav_usd": sim_nav, "total_nav": sim_nav}
+        try:
+            _attach_aum(sim_nav, detail)
+        except Exception:
+            LOGGER.debug("[nav] attach_aum_dry_run_failed", exc_info=True)
+        return sim_nav, detail
+    # Legacy fallback to capital_base_usdt
     base = float(cfg.get("capital_base_usdt", 0.0))
     detail = {"source": "fallback_capital", "nav": base, "nav_usd": base, "total_nav": base}
     try:

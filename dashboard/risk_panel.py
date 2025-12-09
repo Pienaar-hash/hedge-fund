@@ -738,15 +738,28 @@ def render_exit_pipeline_status(diag: Dict[str, Any]) -> None:
     if not exit_block:
         st.caption("No exit diagnostics recorded yet.")
         return
-    cols = st.columns(4)
+    coverage_pct = exit_block.get("tp_sl_coverage_pct")
+    cols = st.columns(5)
     cols[0].metric("Open Positions", exit_block.get("open_positions_count", 0))
     cols[1].metric("TP/SL Registered", exit_block.get("tp_sl_registered_count", 0))
     cols[2].metric("TP/SL Missing", exit_block.get("tp_sl_missing_count", 0))
     cols[3].metric("Underwater w/o TP/SL", exit_block.get("underwater_without_tp_sl_count", 0))
+    if coverage_pct is not None:
+        cols[4].metric("TP/SL Coverage", f"{float(coverage_pct)*100:.0f}%")
+    else:
+        cols[4].metric("TP/SL Coverage", "n/a")
     last_scan = exit_block.get("last_exit_scan_ts")
     last_trigger = exit_block.get("last_exit_trigger_ts")
-    if last_scan or last_trigger:
-        st.caption(f"Last scan: {last_scan or 'n/a'} | Last trigger: {last_trigger or 'n/a'}")
+    last_router_event = exit_block.get("last_router_event_ts")
+    mismatch = exit_block.get("ledger_registry_mismatch")
+    if mismatch:
+        st.error("Ledger/registry mismatch detected.")
+    if last_scan or last_trigger or last_router_event:
+        st.caption(
+            f"Last scan: {last_scan or 'n/a'} | "
+            f"Last trigger: {last_trigger or 'n/a'} | "
+            f"Last router event: {last_router_event or 'n/a'}"
+        )
 
 
 def render_liveness_status(diag: Dict[str, Any]) -> None:
@@ -770,6 +783,7 @@ def render_liveness_status(diag: Dict[str, Any]) -> None:
         return f"{seconds:.0f}s"
 
     details = live.get("details") or {}
+    missing = live.get("missing") or {}
     cols = st.columns(4)
     cols[0].metric("Signals idle", _fmt_val("signals_idle_seconds"), None, "inverse")
     cols[1].metric("Orders idle", _fmt_val("orders_idle_seconds"), None, "inverse")
@@ -789,3 +803,6 @@ def render_liveness_status(diag: Dict[str, Any]) -> None:
         st.warning(f"Idle watchers tripped: {', '.join(flags)}")
     else:
         st.success("All watchers active recently.")
+    missing_keys = [k for k, v in missing.items() if v]
+    if missing_keys:
+        st.info(f"Missing timestamps: {', '.join(sorted(missing_keys))}")

@@ -21,22 +21,47 @@ ROUTER_STATE_PATH = Path(os.getenv("ROUTER_STATE_PATH") or (STATE_DIR / "router.
 ROUTER_HEALTH_STATE_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))
 DIAGNOSTICS_STATE_PATH = Path(os.getenv("DIAGNOSTICS_STATE_PATH") or (STATE_DIR / "diagnostics.json"))
 RISK_STATE_PATH = Path(os.getenv("RISK_STATE_PATH") or (STATE_DIR / "risk_snapshot.json"))
+ENGINE_METADATA_PATH = Path(os.getenv("ENGINE_METADATA_PATH") or (STATE_DIR / "engine_metadata.json"))
 STATE_FILE_SPECS: Dict[str, Dict[str, Any]] = {
     "nav_state": {
         "path": str(NAV_STATE_PATH),
-        "required_keys": ["total_equity", "drawdown"],
+        "required_keys": [],
+        "any_of_keys": [["series", "total_equity", "nav", "nav_usd"]],
     },
     "positions_state": {
         "path": str(POSITIONS_STATE_PATH),
-        "required_keys": ["updated_at"],
+        "required_keys": [],
+        "any_of_keys": [["positions", "rows", "items", "updated_at"]],
+    },
+    "positions_ledger": {
+        "path": str(POSITIONS_LEDGER_PATH),
+        "required_keys": [],
+        "any_of_keys": [["entries", "updated_at"]],
+    },
+    "kpis_v7": {
+        "path": str(KPI_V7_STATE_PATH),
+        "required_keys": [],
+        "any_of_keys": [["updated_at", "ts"], ["atr_regime", "dd_state", "drawdown"]],
     },
     "risk_snapshot": {
         "path": str(RISK_STATE_PATH),
-        "required_keys": ["updated_ts", "risk_mode", "dd_state"],
+        "required_keys": [],
+        "any_of_keys": [["updated_ts", "risk_mode", "dd_state"]],
     },
     "runtime_diagnostics": {
         "path": str(DIAGNOSTICS_STATE_PATH),
-        "required_keys": ["runtime_diagnostics"],
+        "required_keys": [],
+        "any_of_keys": [["runtime_diagnostics"]],
+    },
+    "router_health": {
+        "path": str(ROUTER_HEALTH_STATE_PATH),
+        "required_keys": [],
+        "any_of_keys": [["updated_ts"], ["global", "summary", "symbols", "per_symbol", "router_health"]],
+    },
+    "engine_metadata": {
+        "path": str(ENGINE_METADATA_PATH),
+        "required_keys": [],
+        "any_of_keys": [["engine_version", "updated_ts"]],
     },
 }
 FUNDING_SNAPSHOT_PATH = Path(os.getenv("FUNDING_SNAPSHOT_PATH") or (STATE_DIR / "funding_snapshot.json"))
@@ -48,9 +73,14 @@ RV_MOMENTUM_PATH = Path(os.getenv("RV_MOMENTUM_PATH") or (STATE_DIR / "rv_moment
 FACTOR_DIAGNOSTICS_PATH = Path(os.getenv("FACTOR_DIAGNOSTICS_PATH") or (STATE_DIR / "factor_diagnostics.json"))
 FACTOR_PNL_PATH = Path(os.getenv("FACTOR_PNL_PATH") or (STATE_DIR / "factor_pnl.json"))
 
+# Offchain/Treasury state paths (v7.6)
+OFFCHAIN_ASSETS_PATH = Path(os.getenv("OFFCHAIN_ASSETS_PATH") or (STATE_DIR / "offchain_assets.json"))
+OFFCHAIN_YIELD_PATH = Path(os.getenv("OFFCHAIN_YIELD_PATH") or (STATE_DIR / "offchain_yield.json"))
+
 # Config paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OFFEXCHANGE_HOLDINGS_PATH = Path(os.getenv("OFFEXCHANGE_HOLDINGS_PATH") or (PROJECT_ROOT / "config" / "offexchange_holdings.json"))
+COINTRACKER_CSV_PATH = Path(os.getenv("COINTRACKER_CSV_PATH") or (PROJECT_ROOT / "treasury" / "cointracker" / "cointracker_holdings.csv"))
 ORDERS_EXECUTED_PATH = Path(os.getenv("ORDERS_EXECUTED_PATH") or (PROJECT_ROOT / "logs" / "execution" / "orders_executed.jsonl"))
 
 
@@ -64,6 +94,16 @@ def _load_state_json(path: Path, default: Any | None = None) -> Any:
     return default_obj
 
 
+def load_risk_snapshot(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Load risk_snapshot.json with safe fallback."""
+    return _load_state_json(RISK_STATE_PATH, default or {}) or (default or {})
+
+
+def load_engine_metadata(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Load engine_metadata.json if present."""
+    return _load_state_json(ENGINE_METADATA_PATH, default or {}) or (default or {})
+
+
 def _safe_load_json(path: Path, default: Any) -> Any:
     try:
         if path.exists() and path.stat().st_size > 0:
@@ -71,6 +111,16 @@ def _safe_load_json(path: Path, default: Any) -> Any:
     except Exception:
         pass
     return default
+
+
+def _load_strategy_config() -> Dict[str, Any]:
+    try:
+        cfg_path = PROJECT_ROOT / "config" / "strategy_config.json"
+        if cfg_path.exists():
+            return json.loads(cfg_path.read_text())
+    except Exception:
+        return {}
+    return {}
 
 
 def _safe_float(val: Any) -> Optional[float]:
@@ -87,6 +137,51 @@ def _safe_float(val: Any) -> Optional[float]:
         return None
     except Exception:
         return None
+
+
+def _get_live_prices_for_aum(nav_state: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """
+    Get live prices for AUM calculation from multiple sources.
+    
+    Priority:
+    1. NAV state conversions (from Binance via executor)
+    2. Coingecko cache
+    3. Hardcoded stablecoin prices
+    
+    Returns:
+        Dict mapping symbol (uppercase) to USD price
+    """
+    prices: Dict[str, float] = {}
+    
+    # Stablecoins
+    for stable in ("USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD"):
+        prices[stable] = 1.0
+    
+    # Try to get prices from NAV state conversions (Binance prices)
+    if nav_state and isinstance(nav_state, dict):
+        conversions = nav_state.get("conversions", {})
+        if isinstance(conversions, dict):
+            for symbol, conv_data in conversions.items():
+                if isinstance(conv_data, dict):
+                    price = _safe_float(conv_data.get("price"))
+                    if price and price > 0:
+                        prices[symbol.upper()] = price
+    
+    # Try coingecko cache for additional assets (XAUT, etc.)
+    try:
+        coingecko_cache_path = Path("logs/cache/coingecko_cache.json")
+        if coingecko_cache_path.exists():
+            cg_data = json.loads(coingecko_cache_path.read_text())
+            cg_prices = cg_data.get("prices", {})
+            for symbol, price in cg_prices.items():
+                if symbol.upper() not in prices:
+                    p = _safe_float(price)
+                    if p and p > 0:
+                        prices[symbol.upper()] = p
+    except Exception:
+        pass
+    
+    return prices
 
 
 def _fmt_usd(val: Any, nd: int = 2) -> str:
@@ -259,6 +354,91 @@ def get_symbol_router_quality_score(
         return float(symbol_data.get("score", default))
     
     return default
+
+
+def _normalize_router_health_per_symbol(per_symbol: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize per-symbol router health into a dict keyed by symbol."""
+    if isinstance(per_symbol, dict):
+        return {str(k).upper(): v for k, v in per_symbol.items() if isinstance(v, dict)}
+    if isinstance(per_symbol, list):
+        result: Dict[str, Dict[str, Any]] = {}
+        for entry in per_symbol:
+            if not isinstance(entry, dict):
+                continue
+            sym = entry.get("symbol")
+            if sym:
+                result[str(sym).upper()] = entry
+        return result
+    return {}
+
+
+def load_router_health_state(
+    default: Optional[Dict[str, Any]] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Load router_health.json with tolerance for legacy layouts."""
+    base_default = default or {}
+    try:
+        if snapshot is not None:
+            raw = snapshot
+        else:
+            raw = _safe_load_json(ROUTER_HEALTH_STATE_PATH, base_default) or base_default
+    except Exception:
+        return base_default
+    if not isinstance(raw, dict):
+        return base_default
+    block = raw.get("router_health") if isinstance(raw.get("router_health"), dict) else raw
+    if not isinstance(block, dict):
+        return base_default
+    global_block = block.get("global") if isinstance(block.get("global"), dict) else {}
+    per_symbol_block = (
+        block.get("per_symbol")
+        or raw.get("per_symbol")
+        or raw.get("symbols")
+        or {}
+    )
+    per_symbol_norm = _normalize_router_health_per_symbol(per_symbol_block)
+    updated_ts = raw.get("updated_ts") or global_block.get("updated_ts")
+    return {
+        "updated_ts": updated_ts,
+        "router_health": {
+            "global": global_block or {},
+            "per_symbol": per_symbol_norm,
+        },
+    }
+
+
+def get_router_global_quality(router_health_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Extract global router quality metrics with safe defaults."""
+    state = router_health_state or load_router_health_state({})
+    rh_block = state.get("router_health") if isinstance(state, dict) else {}
+    global_block = rh_block.get("global") if isinstance(rh_block, dict) else {}
+    return {
+        "quality_score": _safe_float(global_block.get("quality_score")),
+        "slippage_drift_bucket": (global_block.get("slippage_drift_bucket") or "").upper() if global_block else "",
+        "latency_bucket": (global_block.get("latency_bucket") or "").upper() if global_block else "",
+        "router_bucket": (global_block.get("router_bucket") or "").upper() if global_block else "",
+    }
+
+
+def get_router_symbol_quality(
+    symbol: str,
+    router_health_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Get per-symbol router quality stats from router_health_state."""
+    state = router_health_state or load_router_health_state({})
+    rh_block = state.get("router_health") if isinstance(state, dict) else {}
+    per_symbol = rh_block.get("per_symbol") if isinstance(rh_block, dict) else {}
+    per_symbol_map = _normalize_router_health_per_symbol(per_symbol)
+    entry = per_symbol_map.get(symbol.upper()) if symbol else None
+    return {
+        "quality_score": _safe_float(entry.get("quality_score")) if isinstance(entry, dict) else None,
+        "avg_slippage_bps": _safe_float(entry.get("avg_slippage_bps")) if isinstance(entry, dict) else None,
+        "avg_latency_ms": _safe_float(entry.get("avg_latency_ms")) if isinstance(entry, dict) else None,
+        "slippage_drift_bucket": (entry.get("slippage_drift_bucket") or "").upper() if isinstance(entry, dict) else "",
+        "latency_bucket": (entry.get("latency_bucket") or "").upper() if isinstance(entry, dict) else "",
+        "twap_usage_ratio": _safe_float(entry.get("twap_usage_ratio")) if isinstance(entry, dict) else None,
+    }
 
 
 def load_rv_momentum(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -471,7 +651,7 @@ def get_factor_weights(
     factor_diagnostics_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """
-    Get auto-computed factor weights from diagnostics state (v7.5_C3).
+    Get auto-computed factor weights from diagnostics state (v7.6).
     
     Args:
         factor_diagnostics_state: Pre-loaded state or None to load
@@ -482,17 +662,19 @@ def get_factor_weights(
     if factor_diagnostics_state is None:
         factor_diagnostics_state = load_factor_diagnostics_state()
     
-    factor_weights = factor_diagnostics_state.get("factor_weights", {})
-    if isinstance(factor_weights, dict):
-        return factor_weights.get("weights", {})
-    return {}
+    # Prefer flat weights surface, fall back to legacy block
+    weights = factor_diagnostics_state.get("weights", {})
+    if not isinstance(weights, dict) or not weights:
+        factor_weights_block = factor_diagnostics_state.get("factor_weights", {}) or {}
+        weights = factor_weights_block.get("weights", {}) if isinstance(factor_weights_block, dict) else {}
+    return weights if isinstance(weights, dict) else {}
 
 
 def get_factor_ir(
     factor_diagnostics_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """
-    Get per-factor information ratios from diagnostics state (v7.5_C3).
+    Get per-factor information ratios from diagnostics state (v7.6).
     
     Args:
         factor_diagnostics_state: Pre-loaded state or None to load
@@ -503,10 +685,12 @@ def get_factor_ir(
     if factor_diagnostics_state is None:
         factor_diagnostics_state = load_factor_diagnostics_state()
     
-    factor_weights = factor_diagnostics_state.get("factor_weights", {})
-    if isinstance(factor_weights, dict):
-        return factor_weights.get("factor_ir", {})
-    return {}
+    ir = factor_diagnostics_state.get("factor_ir", {})
+    if not isinstance(ir, dict) or not ir:
+        factor_weights = factor_diagnostics_state.get("factor_weights", {}) or {}
+        if isinstance(factor_weights, dict):
+            ir = factor_weights.get("factor_ir", {})
+    return ir if isinstance(ir, dict) else {}
 
 
 def get_orthogonalization_status(
@@ -554,6 +738,38 @@ def get_orthogonalized_factors(
     return {}
 
 
+def get_covariance_matrix(
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[str], List[List[float]]]:
+    """
+    Get covariance matrix from diagnostics state (v7.6 surface).
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    covariance = factor_diagnostics_state.get("covariance", {}) or {}
+    factors = covariance.get("factors", []) if isinstance(covariance, dict) else []
+    cov = covariance.get("covariance_matrix", []) if isinstance(covariance, dict) else []
+    return factors, cov
+
+
+def get_orthogonalization_summary(
+    factor_diagnostics_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Retrieve norms, degenerate flags, and dot products for orthogonalized factors.
+    """
+    if factor_diagnostics_state is None:
+        factor_diagnostics_state = load_factor_diagnostics_state()
+    ortho = factor_diagnostics_state.get("orthogonalized", {}) or {}
+    if not isinstance(ortho, dict):
+        return {}
+    return {
+        "norms": ortho.get("norms", {}),
+        "degenerate": ortho.get("degenerate", []),
+        "dot_products": ortho.get("dot_products", {}),
+    }
+
+
 def _symbol_meta(symbol: str, kpis_symbols: Dict[str, Any]) -> Dict[str, Any]:
     if not symbol:
         return {}
@@ -565,7 +781,9 @@ def _normalize_positions(raw_positions: Any, kpis: Dict[str, Any]) -> Tuple[List
     positions_raw = []
     age_s: Optional[float] = None
     if isinstance(raw_positions, dict):
-        if isinstance(raw_positions.get("items"), list):
+        if isinstance(raw_positions.get("positions"), list):
+            positions_raw = raw_positions.get("positions") or []
+        elif isinstance(raw_positions.get("items"), list):
             positions_raw = raw_positions.get("items") or []
         elif isinstance(raw_positions.get("rows"), list):
             positions_raw = raw_positions.get("rows") or []
@@ -597,8 +815,11 @@ def _normalize_positions(raw_positions: Any, kpis: Dict[str, Any]) -> Tuple[List
             "symbol": symbol,
             "side": side,
             "qty": float(qty) if qty is not None else 0.0,
+            "entryPrice": float(entry_price) if entry_price is not None else 0.0,
+            "markPrice": float(mark_price) if mark_price is not None else 0.0,
             "notional": float(notional) if notional is not None else 0.0,
             "pnl": float(pnl_val) if pnl_val is not None else 0.0,
+            "unrealized": float(pnl_val) if pnl_val is not None else 0.0,
             "notional_fmt": _fmt_usd(notional),
             "pnl_fmt": _fmt_usd(pnl_val),
             "dd_state": meta.get("dd_state"),
@@ -681,6 +902,272 @@ def load_funding_snapshot() -> Dict[str, Any]:
     return _safe_load_json(FUNDING_SNAPSHOT_PATH, {})
 
 
+# ---------------------------------------------------------------------------
+# v7.6: Offchain Treasury & AUM Loaders
+# ---------------------------------------------------------------------------
+
+
+def load_offchain_assets(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Load offchain_assets.json with safe fallback (v7.6).
+    
+    Returns:
+        Dict with:
+        - updated_ts: timestamp
+        - source: data source (cointracker, manual, etc.)
+        - assets: per-asset holdings with qty, avg_cost, current_price, usd_value
+        - totals: aggregated values
+        - metadata: import info
+    """
+    try:
+        return _load_state_json(OFFCHAIN_ASSETS_PATH, default or {}) or (default or {})
+    except Exception:
+        return default or {}
+
+
+def load_offchain_yield(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Load offchain_yield.json with safe fallback (v7.6).
+    
+    Returns:
+        Dict with:
+        - updated_ts: timestamp
+        - source: data source
+        - yields: per-asset yield info with apr_pct, strategy, platform
+        - totals: aggregated yield values
+    """
+    try:
+        return _load_state_json(OFFCHAIN_YIELD_PATH, default or {}) or (default or {})
+    except Exception:
+        return default or {}
+
+
+def compute_unified_aum(
+    nav_state: Optional[Dict[str, Any]] = None,
+    offchain_assets: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Compute unified AUM from trading NAV + offchain assets (v7.6).
+    
+    AUM = Futures NAV + Spot Treasury + External Account Assets
+    
+    Args:
+        nav_state: Pre-loaded nav state or None to load
+        offchain_assets: Pre-loaded offchain assets or None to load
+        
+    Returns:
+        Dict with:
+        - total_aum_usd: Total AUM
+        - futures_nav_usd: Trading NAV from executor
+        - offchain_usd: External account asset value
+        - slices: breakdown by category
+        - stale_flags: staleness indicators
+    """
+    if nav_state is None:
+        nav_state = load_nav_state({})
+    if offchain_assets is None:
+        offchain_assets = load_offchain_assets({})
+    
+    # Futures NAV from trading engine
+    futures_nav = _safe_float(
+        nav_state.get("total_equity") or
+        nav_state.get("nav") or
+        nav_state.get("nav_usd") or
+        0.0
+    ) or 0.0
+    
+    # Load live prices for external account assets
+    live_prices = _get_live_prices_for_aum(nav_state)
+    
+    # External account assets - compute with live prices
+    offchain_usd = 0.0
+    assets = offchain_assets.get("assets", {}) if isinstance(offchain_assets, dict) else {}
+    for symbol, asset_data in assets.items():
+        if isinstance(asset_data, dict):
+            qty = _safe_float(asset_data.get("qty")) or 0.0
+            if qty > 0:
+                # Use live price if available, else stored price, else avg_cost
+                price = live_prices.get(symbol.upper())
+                if not price:
+                    price = _safe_float(asset_data.get("current_price_usd"))
+                if not price:
+                    price = _safe_float(asset_data.get("avg_cost_usd"))
+                if price and price > 0:
+                    offchain_usd += qty * price
+    
+    # Spot treasury (from nav_state aum block if present)
+    nav_aum = nav_state.get("aum", {}) if isinstance(nav_state, dict) else {}
+    spot_treasury_usd = 0.0
+    if isinstance(nav_aum, dict):
+        offex = nav_aum.get("offexchange", {})
+        if isinstance(offex, dict):
+            for asset_data in offex.values():
+                if isinstance(asset_data, dict):
+                    spot_treasury_usd += _safe_float(asset_data.get("usd_value")) or 0.0
+    
+    total_aum = futures_nav + offchain_usd + spot_treasury_usd
+    
+    # Build slices
+    slices = {
+        "futures_nav": {
+            "value_usd": futures_nav,
+            "pct": (futures_nav / total_aum * 100) if total_aum > 0 else 0.0,
+            "label": "Futures NAV",
+        },
+        "offchain": {
+            "value_usd": offchain_usd,
+            "pct": (offchain_usd / total_aum * 100) if total_aum > 0 else 0.0,
+            "label": "External Accounts",
+        },
+        "spot_treasury": {
+            "value_usd": spot_treasury_usd,
+            "pct": (spot_treasury_usd / total_aum * 100) if total_aum > 0 else 0.0,
+            "label": "Spot Treasury",
+        },
+    }
+    
+    # Staleness checks
+    nav_age = _snapshot_age(nav_state)
+    offchain_age = _snapshot_age(offchain_assets)
+    stale_flags = {
+        "nav_stale": nav_age is not None and nav_age > 300,
+        "offchain_stale": offchain_age is not None and offchain_age > 86400,  # 24h
+    }
+    
+    return {
+        "total_aum_usd": total_aum,
+        "futures_nav_usd": futures_nav,
+        "offchain_usd": offchain_usd,
+        "spot_treasury_usd": spot_treasury_usd,
+        "slices": slices,
+        "stale_flags": stale_flags,
+        "nav_age_s": nav_age,
+        "offchain_age_s": offchain_age,
+    }
+
+
+def compute_treasury_yield_summary(
+    offchain_assets: Optional[Dict[str, Any]] = None,
+    offchain_yield: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Compute treasury yield summary from assets and yield rates (v7.6).
+    
+    Args:
+        offchain_assets: Pre-loaded offchain assets or None to load
+        offchain_yield: Pre-loaded offchain yield or None to load
+        
+    Returns:
+        Dict with:
+        - per_asset: yield info per asset
+        - daily_yield_usd: total daily yield
+        - monthly_yield_usd: total monthly yield
+        - annual_yield_usd: total annual yield
+        - weighted_avg_apr_pct: weighted average APR
+    """
+    if offchain_assets is None:
+        offchain_assets = load_offchain_assets({})
+    if offchain_yield is None:
+        offchain_yield = load_offchain_yield({})
+    
+    assets = offchain_assets.get("assets", {}) if isinstance(offchain_assets, dict) else {}
+    yields = offchain_yield.get("yields", {}) if isinstance(offchain_yield, dict) else {}
+    
+    per_asset = {}
+    total_value = 0.0
+    total_annual_yield = 0.0
+    
+    for asset_name, asset_data in assets.items():
+        if not isinstance(asset_data, dict):
+            continue
+        usd_value = _safe_float(asset_data.get("usd_value")) or 0.0
+        yield_data = yields.get(asset_name, {}) if isinstance(yields, dict) else {}
+        apr_pct = _safe_float(yield_data.get("apr_pct")) or 0.0
+        
+        annual_yield = usd_value * (apr_pct / 100.0)
+        daily_yield = annual_yield / 365.0
+        monthly_yield = annual_yield / 12.0
+        
+        per_asset[asset_name] = {
+            "usd_value": usd_value,
+            "apr_pct": apr_pct,
+            "annual_yield_usd": annual_yield,
+            "monthly_yield_usd": monthly_yield,
+            "daily_yield_usd": daily_yield,
+            "strategy": yield_data.get("strategy", "unknown"),
+        }
+        
+        total_value += usd_value
+        total_annual_yield += annual_yield
+    
+    weighted_avg_apr = (total_annual_yield / total_value * 100) if total_value > 0 else 0.0
+    
+    return {
+        "per_asset": per_asset,
+        "daily_yield_usd": total_annual_yield / 365.0,
+        "monthly_yield_usd": total_annual_yield / 12.0,
+        "annual_yield_usd": total_annual_yield,
+        "weighted_avg_apr_pct": weighted_avg_apr,
+        "total_treasury_value_usd": total_value,
+    }
+
+
+def get_treasury_health(
+    offchain_assets: Optional[Dict[str, Any]] = None,
+    offchain_yield: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Get treasury state health diagnostics (v7.6).
+    
+    Returns:
+        Dict with:
+        - assets_surface_age_s: age of assets surface
+        - yield_surface_age_s: age of yield surface
+        - missing_fields: list of missing required fields
+        - warnings: list of warning messages
+        - healthy: overall health status
+    """
+    if offchain_assets is None:
+        offchain_assets = load_offchain_assets({})
+    if offchain_yield is None:
+        offchain_yield = load_offchain_yield({})
+    
+    assets_age = _snapshot_age(offchain_assets)
+    yield_age = _snapshot_age(offchain_yield)
+    
+    warnings = []
+    missing_fields = []
+    
+    # Check assets surface
+    if not offchain_assets or not offchain_assets.get("assets"):
+        missing_fields.append("offchain_assets.assets")
+    if assets_age is not None and assets_age > 86400:
+        warnings.append(f"Assets surface stale ({assets_age/3600:.1f}h)")
+    
+    # Check yield surface
+    if not offchain_yield or not offchain_yield.get("yields"):
+        missing_fields.append("offchain_yield.yields")
+    if yield_age is not None and yield_age > 86400:
+        warnings.append(f"Yield surface stale ({yield_age/3600:.1f}h)")
+    
+    # Check for zero values
+    assets = offchain_assets.get("assets", {}) if isinstance(offchain_assets, dict) else {}
+    for asset_name, asset_data in assets.items():
+        if isinstance(asset_data, dict):
+            if asset_data.get("usd_value") is None:
+                warnings.append(f"{asset_name} missing usd_value")
+    
+    healthy = len(missing_fields) == 0 and len(warnings) == 0
+    
+    return {
+        "assets_surface_age_s": assets_age,
+        "yield_surface_age_s": yield_age,
+        "missing_fields": missing_fields,
+        "warnings": warnings,
+        "healthy": healthy,
+    }
+
+
 def load_basis_snapshot() -> Dict[str, Any]:
     """Load basis (spot-perp spread) snapshot for carry scoring."""
     return _safe_load_json(BASIS_SNAPSHOT_PATH, {})
@@ -742,6 +1229,40 @@ def load_runtime_diagnostics_state() -> Dict[str, Any]:
     return {}
 
 
+def get_exit_coverage_metrics(runtime_diag: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Extract exit pipeline coverage metrics with safe defaults.
+    """
+    diag = runtime_diag or load_runtime_diagnostics_state()
+    exit_block = diag.get("exit_pipeline", {}) if isinstance(diag, dict) else {}
+    return {
+        "open_positions_count": int(exit_block.get("open_positions_count", 0) or 0),
+        "tp_sl_registered_count": int(exit_block.get("tp_sl_registered_count", 0) or 0),
+        "tp_sl_missing_count": int(exit_block.get("tp_sl_missing_count", 0) or 0),
+        "underwater_without_tp_sl_count": int(exit_block.get("underwater_without_tp_sl_count", 0) or 0),
+        "tp_sl_coverage_pct": float(exit_block.get("tp_sl_coverage_pct", 0.0) or 0.0),
+        "ledger_registry_mismatch": bool(exit_block.get("ledger_registry_mismatch", False)),
+    }
+
+
+def get_exit_mismatch_breakdown(runtime_diag: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
+    """
+    Get mismatch breakdown counts for ledger/registry reconciliation.
+    """
+    diag = runtime_diag or load_runtime_diagnostics_state()
+    exit_block = diag.get("exit_pipeline", {}) if isinstance(diag, dict) else {}
+    breakdown = exit_block.get("mismatch_breakdown", {}) if isinstance(exit_block, dict) else {}
+    defaults = {
+        "missing_ledger_positions": 0,
+        "ghost_ledger_entries": 0,
+        "missing_tp_sl_entries": 0,
+        "stale_tp_sl_entries": 0,
+    }
+    if isinstance(breakdown, dict):
+        defaults.update({k: int(v) for k, v in breakdown.items() if v is not None})
+    return defaults
+
+
 def iter_state_file_specs():
     """Yield (name, spec) for known state files and required top-level keys."""
     return STATE_FILE_SPECS.items()
@@ -777,6 +1298,12 @@ def get_ledger_consistency_status() -> Dict[str, Any]:
             1 for e in ledger_entries.values()
             if isinstance(e, dict) and (e.get("tp") is not None or e.get("sl") is not None)
         )
+    elif isinstance(ledger_entries, list):
+        num_ledger = len(ledger_entries)
+        num_with_tp_sl = sum(
+            1 for e in ledger_entries
+            if isinstance(e, dict) and (e.get("tp") is not None or e.get("sl") is not None)
+        )
     else:
         num_ledger = 0
         num_with_tp_sl = 0
@@ -804,6 +1331,236 @@ def get_ledger_consistency_status() -> Dict[str, Any]:
         "num_ledger": num_ledger,
         "num_with_tp_sl": num_with_tp_sl,
         "message": message,
+    }
+
+
+def get_dd_state(risk_snapshot: Optional[Dict[str, Any]] = None) -> str:
+    snap = risk_snapshot or load_risk_snapshot()
+    if isinstance(snap, dict):
+        dd = snap.get("dd_state")
+        if isinstance(dd, dict):
+            return str(dd.get("state") or dd.get("dd_state") or "UNKNOWN").upper()
+        if dd:
+            return str(dd).upper()
+    return "UNKNOWN"
+
+
+def get_nav_anomaly(risk_snapshot: Optional[Dict[str, Any]] = None) -> bool:
+    snap = risk_snapshot or load_risk_snapshot()
+    if not isinstance(snap, dict):
+        return False
+    anomalies = snap.get("anomalies", {})
+    if not isinstance(anomalies, dict):
+        return False
+    return bool(anomalies.get("nav_jump"))
+
+
+def get_var_metrics(risk_snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    snap = risk_snapshot or load_risk_snapshot()
+    var_block = snap.get("var", {}) if isinstance(snap, dict) else {}
+    return {
+        "portfolio_var_nav_pct": var_block.get("portfolio_var_nav_pct"),
+        "max_portfolio_var_nav_pct": var_block.get("max_portfolio_var_nav_pct"),
+        "within_limit": var_block.get("within_limit", True),
+    }
+
+
+def get_cvar_metrics(risk_snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    snap = risk_snapshot or load_risk_snapshot()
+    cvar_block = snap.get("cvar", {}) if isinstance(snap, dict) else {}
+    return {
+        "max_position_cvar_nav_pct": cvar_block.get("max_position_cvar_nav_pct"),
+        "per_symbol": cvar_block.get("per_symbol", {}),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Regime badges
+# ---------------------------------------------------------------------------
+
+
+def compute_vol_regime_badge(vol_state: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Compute volatility regime badge from vol_regimes surface or defaults.
+    """
+    if not isinstance(vol_state, dict):
+        return "VOL_NORMAL"
+    bucket = (
+        vol_state.get("current_regime")
+        or vol_state.get("regime")
+        or vol_state.get("vol_regime")
+        or vol_state.get("bucket")
+        or "normal"
+    )
+    bucket = str(bucket).upper()
+    if bucket in {"LOW", "NORMAL", "HIGH", "CRISIS"}:
+        return f"VOL_{bucket}"
+    return "VOL_NORMAL"
+
+
+def compute_dd_regime_badge(risk_snapshot: Optional[Dict[str, Any]] = None) -> str:
+    snap = risk_snapshot or {}
+    dd_state = snap.get("dd_state") if isinstance(snap, dict) else None
+    state_val = ""
+    if isinstance(dd_state, dict):
+        state_val = dd_state.get("state") or dd_state.get("dd_state") or ""
+    elif isinstance(dd_state, str):
+        state_val = dd_state
+    state_val = str(state_val).upper()
+    mapping = {
+        "NORMAL": "DD_NORMAL",
+        "DRAWDOWN": "DD_DRAWDOWN",
+        "RECOVERY": "DD_RECOVERY",
+    }
+    return mapping.get(state_val, "DD_NORMAL")
+
+
+def compute_router_quality_badge(
+    router_health: Optional[Dict[str, Any]] = None,
+    *,
+    low_threshold: float = 0.5,
+    high_threshold: float = 0.9,
+) -> str:
+    if not isinstance(router_health, dict):
+        return "ROUTER_NEUTRAL"
+    rh_block = router_health.get("router_health") if isinstance(router_health, dict) else {}
+    global_block = router_health.get("global") or (rh_block.get("global") if isinstance(rh_block, dict) else {})
+    score = None
+    try:
+        score = float(global_block.get("quality_score"))
+    except Exception:
+        score = None
+    if score is None:
+        return "ROUTER_NEUTRAL"
+    if score >= high_threshold:
+        return "ROUTER_STRONG"
+    if score <= low_threshold:
+        return "ROUTER_WEAK"
+    return "ROUTER_NEUTRAL"
+
+
+def compute_risk_mode_badge(risk_snapshot: Optional[Dict[str, Any]] = None) -> str:
+    snap = risk_snapshot or {}
+    mode = str(snap.get("risk_mode", "NORMAL")).upper()
+    anomalies = snap.get("anomalies", {}) if isinstance(snap, dict) else {}
+    breach = False
+    if isinstance(anomalies, dict):
+        breach = bool(anomalies.get("var_limit_breach") or anomalies.get("cvar_limit_breach"))
+    if breach:
+        return "RISK_BREACH"
+    mapping = {
+        "OK": "RISK_NORMAL",
+        "NORMAL": "RISK_NORMAL",
+        "DEFENSIVE": "RISK_DEFENSIVE",
+        "CRISIS": "RISK_CRITICAL",
+        "HALTED": "RISK_CRITICAL",
+    }
+    return mapping.get(mode, "RISK_NORMAL")
+
+
+def get_regime_badges(
+    *,
+    vol_state: Optional[Dict[str, Any]] = None,
+    risk_snapshot: Optional[Dict[str, Any]] = None,
+    router_health: Optional[Dict[str, Any]] = None,
+    strategy_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    cfg = strategy_config or _load_strategy_config()
+    router_cfg = (cfg.get("router_quality") or {}) if isinstance(cfg, dict) else {}
+    low_th = float(router_cfg.get("low_quality_threshold", 0.5) or 0.5)
+    high_th = float(router_cfg.get("high_quality_threshold", 0.9) or 0.9)
+    return {
+        "vol": compute_vol_regime_badge(vol_state),
+        "dd": compute_dd_regime_badge(risk_snapshot),
+        "router": compute_router_quality_badge(router_health, low_threshold=low_th, high_threshold=high_th),
+        "risk": compute_risk_mode_badge(risk_snapshot),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Surface Health Validation
+# ---------------------------------------------------------------------------
+
+
+def _surface_updated_ts(payload: Any) -> Optional[float]:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("updated_ts", "updated_at", "ts"):
+        val = payload.get(key)
+        ts = _to_epoch_seconds(val)
+        if ts is not None:
+            return ts
+    return None
+
+
+def validate_surface_health(
+    *,
+    state_dir: Optional[Path] = None,
+    allowable_lag_seconds: float = 900.0,
+) -> Dict[str, List[str]]:
+    base = state_dir or STATE_DIR
+    missing: List[str] = []
+    stale: List[str] = []
+    schema_violations: List[str] = []
+    cross_surface: List[str] = []
+
+    now_ts = time.time()
+    # Validate required surfaces
+    for name, spec in STATE_FILE_SPECS.items():
+        path = Path(spec["path"])
+        if state_dir:
+            path = base / path.name
+        elif not path.is_absolute():
+            path = base / path
+        if not path.exists():
+            missing.append(name)
+            continue
+        try:
+            payload = json.loads(path.read_text()) if path.stat().st_size > 0 else {}
+        except Exception:
+            schema_violations.append(f"{name}:invalid_json")
+            continue
+        # Required keys
+        for req in spec.get("required_keys", []):
+            if req not in payload:
+                schema_violations.append(f"{name}:missing_{req}")
+        # Any-of key groups (at least one key from each group must be present)
+        for group in spec.get("any_of_keys", []):
+            if not any(k in payload for k in group):
+                schema_violations.append(f"{name}:missing_one_of_{','.join(group)}")
+        ts_val = _surface_updated_ts(payload)
+        if ts_val is None:
+            schema_violations.append(f"{name}:missing_updated_ts")
+        elif now_ts - ts_val > allowable_lag_seconds:
+            stale.append(name)
+
+    # Cross-surface: positions vs ledger
+    try:
+        # Load from provided state_dir to avoid global paths
+        pos_path = base / "positions_state.json"
+        ledger_path = base / "positions_ledger.json"
+        positions_payload = json.loads(pos_path.read_text()) if pos_path.exists() else {}
+        ledger_payload = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
+        positions = positions_payload.get("positions", []) if isinstance(positions_payload, dict) else []
+        ledger_entries = ledger_payload.get("entries", []) if isinstance(ledger_payload, dict) else []
+        keys = {f"{pos.get('symbol','').upper()}:{(pos.get('positionSide') or pos.get('side') or '').upper()}"
+                for pos in positions if float(pos.get('qty') or pos.get('positionAmt') or 0) != 0}
+        ledger_keys = set()
+        for entry in ledger_entries:
+            key = entry.get("position_key") or f"{entry.get('symbol','').upper()}:{entry.get('side','').upper()}"
+            if key:
+                ledger_keys.add(key)
+        missing_keys = [k for k in keys if k not in ledger_keys]
+        if missing_keys:
+            cross_surface.append(f"positions_without_ledger:{len(missing_keys)}")
+    except Exception:
+        pass
+
+    return {
+        "missing_files": missing,
+        "stale_files": stale,
+        "schema_violations": schema_violations,
+        "cross_surface_violations": cross_surface,
     }
 
 
@@ -912,11 +1669,16 @@ def load_all_state() -> Dict[str, Any]:
                     continue
                 
                 # Get price from conversions (Binance), coingecko, or avg_cost fallback
+                # Only use a price source if the value is actually > 0
                 current_price = None
                 if symbol in conversions and isinstance(conversions[symbol], dict):
-                    current_price = _safe_float(conversions[symbol].get("price"))
+                    conv_price = _safe_float(conversions[symbol].get("price"))
+                    if conv_price and conv_price > 0:
+                        current_price = conv_price
                 if current_price is None and symbol in coingecko_prices:
-                    current_price = _safe_float(coingecko_prices.get(symbol))
+                    cg_price = _safe_float(coingecko_prices.get(symbol))
+                    if cg_price and cg_price > 0:
+                        current_price = cg_price
                 if current_price is None:
                     current_price = avg_cost
                 
@@ -994,6 +1756,10 @@ def load_all_state() -> Dict[str, Any]:
         is_testnet = "test" in env_label or binance_testnet
         
         meta = {"data_age_s": data_age, "testnet": is_testnet}
+        engine_meta = load_engine_metadata({})
+        if engine_meta:
+            meta["engine_version"] = engine_meta.get("engine_version")
+            meta["engine_updated_ts"] = engine_meta.get("updated_ts") or engine_meta.get("ts")
 
         base.update({"nav": nav_block, "aum": aum_block_norm, "kpis": kpis_norm, "positions": positions, "router": router_block, "meta": meta})
     except Exception:
@@ -1001,4 +1767,10 @@ def load_all_state() -> Dict[str, Any]:
     return base
 
 
-__all__ = ["load_all_state"]
+__all__ = [
+    "load_all_state",
+    "iter_state_file_specs",
+    "load_router_health_state",
+    "get_router_global_quality",
+    "get_router_symbol_quality",
+]

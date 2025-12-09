@@ -18,7 +18,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -89,10 +89,18 @@ class OrthogonalizedFactorVectors:
     per_symbol: Dict[str, Dict[str, float]] = field(
         default_factory=dict
     )  # symbol -> factor_name -> ortho_value
+    norms: Dict[str, float] = field(default_factory=dict)
+    dot_products: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    degenerate: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serializable dict."""
-        return {"per_symbol": self.per_symbol}
+        return {
+            "per_symbol": self.per_symbol,
+            "norms": self.norms,
+            "dot_products": self.dot_products,
+            "degenerate": self.degenerate,
+        }
 
 
 @dataclass
@@ -243,6 +251,7 @@ class FactorCovarianceSnapshot:
     covariance: np.ndarray  # shape (F, F)
     correlation: np.ndarray  # shape (F, F)
     factor_vols: Dict[str, float] = field(default_factory=dict)
+    lookback_days: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -251,6 +260,7 @@ class FactorCovarianceSnapshot:
             "covariance_matrix": self.covariance.tolist(),
             "correlation_matrix": self.correlation.tolist(),
             "factor_vols": self.factor_vols,
+            "lookback_days": self.lookback_days,
         }
 
 
@@ -266,11 +276,17 @@ class FactorDiagnosticsSnapshot:
     auto_weighting_enabled: bool = False  # v7.5_C3
     updated_ts: float = 0.0
     config: Optional[FactorDiagnosticsConfig] = None
+    normalization_coeffs: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    raw_factors: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    factor_ir: Dict[str, float] = field(default_factory=dict)
+    weights: Dict[str, float] = field(default_factory=dict)
+    pnl_attribution: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serializable dict."""
         return {
             "updated_ts": self.updated_ts,
+            "raw_factors": self.raw_factors,
             "per_symbol": {
                 sym: {
                     "factors": vec.factors,
@@ -278,16 +294,24 @@ class FactorDiagnosticsSnapshot:
                 }
                 for sym, vec in self.per_symbol.items()
             },
+            "normalization_coeffs": self.normalization_coeffs,
             "covariance": self.covariance.to_dict() if self.covariance else None,
             "orthogonalized": self.orthogonalized.to_dict() if self.orthogonalized else None,
-            "factor_weights": self.factor_weights.to_dict() if self.factor_weights else None,
+            "factor_ir": self.factor_ir,
+            "weights": self.weights,
+            "factor_weights": self.factor_weights.to_dict()
+            if self.factor_weights
+            else {"weights": self.weights, "factor_ir": self.factor_ir},
             "orthogonalization_enabled": self.orthogonalization_enabled,
             "auto_weighting_enabled": self.auto_weighting_enabled,
+            "pnl_attribution": self.pnl_attribution,
             "config": {
                 "enabled": self.config.enabled,
                 "factors": self.config.factors,
                 "normalization_mode": self.config.normalization_mode,
                 "max_abs_zscore": self.config.max_abs_zscore,
+                "covariance_lookback_days": self.config.covariance_lookback_days,
+                "pnl_attribution_lookback_days": self.config.pnl_attribution_lookback_days,
             }
             if self.config
             else None,
@@ -304,7 +328,8 @@ def normalize_factor_vectors(
     factor_names: List[str],
     mode: str = "zscore",
     max_abs_zscore: float = 3.0,
-) -> List[NormalizedFactorVector]:
+    return_stats: bool = False,
+) -> List[NormalizedFactorVector] | Tuple[List[NormalizedFactorVector], Dict[str, Dict[str, float]]]:
     """
     Normalize factor values per factor across symbols.
 
@@ -315,10 +340,10 @@ def normalize_factor_vectors(
         max_abs_zscore: Clamp z-scores to ±this value
 
     Returns:
-        List of NormalizedFactorVector with normalized values
+        List of NormalizedFactorVector with normalized values, and optionally normalization coefficients
     """
     if not vectors:
-        return []
+        return ([], {}) if return_stats else []
 
     # Collect factor values across all symbols
     factor_values: Dict[str, List[float]] = {f: [] for f in factor_names}
@@ -381,6 +406,8 @@ def normalize_factor_vectors(
             )
         )
 
+    if return_stats:
+        return result, norm_stats
     return result
 
 
@@ -392,6 +419,7 @@ def normalize_factor_vectors(
 def compute_factor_covariance(
     vectors: List[FactorVector],
     factor_names: List[str],
+    lookback_days: int = 0,
 ) -> FactorCovarianceSnapshot:
     """
     Build factor covariance and correlation matrices across symbols.
@@ -413,6 +441,7 @@ def compute_factor_covariance(
             covariance=np.zeros((n_factors, n_factors)),
             correlation=np.eye(n_factors),
             factor_vols={f: 0.0 for f in factor_names},
+            lookback_days=lookback_days,
         )
 
     # Build matrix X of shape (N_symbols, F)
@@ -455,6 +484,7 @@ def compute_factor_covariance(
         covariance=cov_matrix,
         correlation=corr_matrix,
         factor_vols=factor_vols,
+        lookback_days=lookback_days,
     )
 
 
@@ -496,10 +526,15 @@ def orthogonalize_factors(
         for j, factor in enumerate(factor_names):
             X[i, j] = float(vec.factors.get(factor, 0.0) or 0.0)
 
-    # Apply Gram-Schmidt orthogonalization on columns
-    Q = np.zeros_like(X)
+    # Apply deterministic Gram-Schmidt orthogonalization on columns.
+    # We keep the original scale for the leading factor and only remove
+    # projections for later factors (no unit-norm normalization) so single
+    # factors remain unchanged.
+    Q = np.zeros_like(X, dtype=float)
+    norms: Dict[str, float] = {}
+    degenerate: List[str] = []
     for j in range(n_factors):
-        v = X[:, j].copy()
+        v = X[:, j].astype(float).copy()
         # Subtract projections onto previous orthogonal vectors
         for k in range(j):
             q_k = Q[:, k]
@@ -507,11 +542,14 @@ def orthogonalize_factors(
             if denom > 1e-12:
                 proj = (np.dot(v, q_k) / denom) * q_k
                 v = v - proj
-        # Handle degenerate factors (norm ~= 0) by leaving as zeros
         norm = np.linalg.norm(v)
-        if norm > 1e-12:
-            Q[:, j] = v  # Keep unnormalized to preserve scale
-        # else: Q[:, j] remains zeros
+        norms[factor_names[j]] = float(norm)
+        if norm > 1e-9:
+            Q[:, j] = v
+        else:
+            # Degenerate / collinear factor -> keep zeros for stability
+            degenerate.append(factor_names[j])
+            Q[:, j] = np.zeros_like(v)
 
     # Map back to per-symbol dict
     result: Dict[str, Dict[str, float]] = {}
@@ -520,7 +558,19 @@ def orthogonalize_factors(
         for j, factor_name in enumerate(factor_names):
             result[symbol][factor_name] = float(Q[i, j])
 
-    return OrthogonalizedFactorVectors(per_symbol=result)
+    # Pairwise dot products for diagnostics
+    dot_products: Dict[str, Dict[str, float]] = {}
+    for i, fi in enumerate(factor_names):
+        dot_products[fi] = {}
+        for j, fj in enumerate(factor_names):
+            dot_products[fi][fj] = float(np.dot(Q[:, i], Q[:, j]))
+
+    return OrthogonalizedFactorVectors(
+        per_symbol=result,
+        norms=norms,
+        dot_products=dot_products,
+        degenerate=degenerate,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +602,36 @@ def compute_factor_ir(
         vol = float(factor_vols.get(factor, 0.0))
         result[factor] = pnl / (vol + eps)
     return result
+
+
+def compute_factor_ir_from_vectors(
+    vectors: List[NormalizedFactorVector],
+    factor_names: List[str],
+    eps: float = 1e-9,
+) -> Dict[str, float]:
+    """
+    Compute per-factor IR using cross-sectional mean/std of normalized vectors.
+
+    Args:
+        vectors: Normalized factor vectors
+        factor_names: Factor names to include
+        eps: Small constant to avoid division by zero
+
+    Returns:
+        Dict mapping factor name to IR (mean / std)
+    """
+    ir: Dict[str, float] = {}
+    if not vectors:
+        return ir
+
+    for factor in factor_names:
+        values = [float(vec.factors.get(factor, 0.0) or 0.0) for vec in vectors]
+        arr = np.array(values, dtype=float)
+        mean = float(np.mean(arr))
+        std = float(np.std(arr))
+        ir[factor] = mean / (std + eps) if std > eps else 0.0
+
+    return ir
 
 
 def compute_raw_factor_weights(
@@ -736,6 +816,7 @@ def build_factor_weights_snapshot(
     factor_pnl: Dict[str, float],
     auto_weight_cfg: AutoWeightingConfig,
     prev_weights: Optional[FactorWeights] = None,
+    factor_ir_override: Optional[Dict[str, float]] = None,
 ) -> FactorWeightsSnapshot:
     """
     Compute final per-factor weights with IR/vol-based weighting.
@@ -753,7 +834,7 @@ def build_factor_weights_snapshot(
     factor_names = factor_cov.factors
 
     # Compute factor IR
-    factor_ir = compute_factor_ir(
+    factor_ir = factor_ir_override or compute_factor_ir(
         factor_pnl=factor_pnl,
         factor_vols=factor_vols,
     )
@@ -825,6 +906,7 @@ def build_factor_diagnostics_snapshot(
     auto_weight_cfg = load_auto_weighting_config(strategy_config)
 
     if not cfg.enabled or not factor_vectors:
+        ts = time.time()
         return FactorDiagnosticsSnapshot(
             per_symbol={},
             covariance=None,
@@ -832,16 +914,34 @@ def build_factor_diagnostics_snapshot(
             factor_weights=None,
             orthogonalization_enabled=ortho_cfg.enabled,
             auto_weighting_enabled=auto_weight_cfg.enabled,
-            updated_ts=time.time(),
+            updated_ts=ts,
             config=cfg,
+            normalization_coeffs={},
+            raw_factors={},
+            factor_ir={},
+            weights={},
+            pnl_attribution={"window_days": cfg.pnl_attribution_lookback_days, "by_factor": factor_pnl or {}},
         )
 
-    # Normalize factor vectors
-    normalized = normalize_factor_vectors(
+    ts = time.time()
+
+    # Capture raw factor surface keyed by symbol:direction for determinism
+    raw_factors: Dict[str, Dict[str, Any]] = {}
+    for vec in factor_vectors:
+        key = f"{vec.symbol}:{vec.direction}"
+        raw_factors[key] = {
+            "factors": {name: float(vec.factors.get(name, 0.0) or 0.0) for name in cfg.factors},
+            "direction": vec.direction,
+            "regime": getattr(vec, "regime", "normal"),
+        }
+
+    # Normalize factor vectors (returns both normalized vectors and stats)
+    normalized, norm_stats = normalize_factor_vectors(
         vectors=factor_vectors,
         factor_names=cfg.factors,
         mode=cfg.normalization_mode,
         max_abs_zscore=cfg.max_abs_zscore,
+        return_stats=True,
     )
 
     # Build per-symbol mapping
@@ -851,19 +951,31 @@ def build_factor_diagnostics_snapshot(
         key = f"{nvec.symbol}:{nvec.direction}"
         per_symbol[key] = nvec
 
-    # Compute covariance
+    # Compute covariance using normalized vectors
     covariance = compute_factor_covariance(
-        vectors=factor_vectors,
+        vectors=normalized,  # type: ignore[arg-type]
         factor_names=cfg.factors,
+        lookback_days=cfg.covariance_lookback_days,
     )
 
-    # v7.5_C3: Orthogonalization
+    # v7.5_C3: Orthogonalization (now orthonormalized)
     orthogonalized: Optional[OrthogonalizedFactorVectors] = None
     if ortho_cfg.enabled and ortho_cfg.method == "gram_schmidt":
         orthogonalized = orthogonalize_factors(
-            factor_vectors=factor_vectors,
+            factor_vectors=normalized,  # type: ignore[arg-type]
             factor_names=cfg.factors,
         )
+
+    # Compute IR both from pnl (if available) and observed factors
+    factor_ir_vectors = compute_factor_ir_from_vectors(
+        vectors=normalized,
+        factor_names=cfg.factors,
+    )
+    factor_ir_pnl = compute_factor_ir(
+        factor_pnl=factor_pnl or {},
+        factor_vols=covariance.factor_vols if covariance else {},
+    )
+    factor_ir = factor_ir_pnl or factor_ir_vectors
 
     # v7.5_C3: Auto-weighting
     factor_weights_snapshot: Optional[FactorWeightsSnapshot] = None
@@ -875,7 +987,23 @@ def build_factor_diagnostics_snapshot(
             factor_pnl=pnl,
             auto_weight_cfg=auto_weight_cfg,
             prev_weights=prev_weights,
+            factor_ir_override=factor_ir,
         )
+
+    # Best-effort weights surface (even if auto_weighting disabled)
+    weights = factor_weights_snapshot.weights if factor_weights_snapshot else {}
+
+    pnl_attribution = {
+        "window_days": cfg.pnl_attribution_lookback_days,
+        "by_factor": factor_pnl or {},
+        "factor_ir": factor_ir,
+        "weights": weights,
+    }
+    if orthogonalized:
+        pnl_attribution["orthogonalized_summary"] = {
+            "degenerate": orthogonalized.degenerate,
+            "norms": orthogonalized.norms,
+        }
 
     return FactorDiagnosticsSnapshot(
         per_symbol=per_symbol,
@@ -884,8 +1012,13 @@ def build_factor_diagnostics_snapshot(
         factor_weights=factor_weights_snapshot,
         orthogonalization_enabled=ortho_cfg.enabled,
         auto_weighting_enabled=auto_weight_cfg.enabled,
-        updated_ts=time.time(),
+        updated_ts=ts,
         config=cfg,
+        normalization_coeffs=norm_stats,
+        raw_factors=raw_factors,
+        factor_ir=factor_ir,
+        weights=weights,
+        pnl_attribution=pnl_attribution,
     )
 
 
@@ -962,16 +1095,19 @@ def load_factor_diagnostics_state(
 
 
 def write_factor_diagnostics_state(
-    snapshot: FactorDiagnosticsSnapshot,
+    snapshot: FactorDiagnosticsSnapshot | Dict[str, Any],
     path: Path | str = DEFAULT_FACTOR_DIAGNOSTICS_PATH,
 ) -> None:
     """Write factor diagnostics state to file."""
     path = Path(path)
+    if not path.name.endswith(".json"):
+        path = path / "factor_diagnostics.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         tmp = path.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as f:
-            json.dump(snapshot.to_dict(), f, indent=2)
+            payload = snapshot.to_dict() if hasattr(snapshot, "to_dict") else snapshot
+            json.dump(payload, f, indent=2)
         tmp.replace(path)
     except Exception:
         pass
@@ -999,6 +1135,7 @@ __all__ = [
     "orthogonalize_factors",
     # Auto-weighting (v7.5_C3)
     "compute_factor_ir",
+    "compute_factor_ir_from_vectors",
     "compute_raw_factor_weights",
     "normalize_factor_weights",
     "smooth_factor_weights",

@@ -218,37 +218,55 @@ def scan_tp_sl_exits(
 
     # Try ledger-based approach first (C3)
     try:
-        from execution.position_ledger import build_position_ledger
-        from execution.position_tp_sl_registry import get_all_tp_sl_positions
+        from execution.position_ledger import (
+            LedgerReconciliationReport,
+            build_position_ledger,
+            load_positions_state,
+            load_tp_sl_registry,
+            reconcile_ledger_and_registry,
+        )
 
+        positions_state = load_positions_state()
         ledger = build_position_ledger()
-        registry = get_all_tp_sl_positions()
-        open_positions = list(ledger.values())
-        open_positions_count = len(open_positions)
+        registry = load_tp_sl_registry()
+        recon: LedgerReconciliationReport = reconcile_ledger_and_registry(
+            positions_state=positions_state,
+            ledger=ledger,
+            tp_sl_registry=registry,
+        )
 
-        registered_keys = set(registry.keys()) if isinstance(registry, dict) else set()
-        tp_sl_registered_count = 0
-        tp_sl_missing_count = 0
+        open_positions = list(ledger.values())
+        open_positions_count = len(recon.position_keys)
+
+        tp_sl_registered_count = sum(
+            1 for entry in open_positions
+            if entry.tp_sl.tp is not None or entry.tp_sl.sl is not None
+        )
+        tp_sl_missing_count = len(recon.missing_tp_sl_entries) + len(recon.missing_ledger_positions)
         underwater_without_tp_sl_count = 0
 
-        for entry in open_positions:
-            key = f"{entry.symbol}:{entry.side}"
-            has_tp_sl = key in registered_keys
-            if has_tp_sl:
-                tp_sl_registered_count += 1
-            else:
-                tp_sl_missing_count += 1
-                last_price = _get_last_price(entry.symbol, price_map)
-                if last_price is not None:
-                    pnl_pct_val = _pnl_pct(float(entry.entry_price), float(last_price), entry.side)
-                    if pnl_pct_val is not None and pnl_pct_val <= underwater_threshold_pct:
-                        underwater_without_tp_sl_count += 1
+        # Count underwater positions that are missing TP/SL registrations
+        for key in recon.missing_tp_sl_entries:
+            entry = ledger.get(key)
+            if not entry:
+                continue
+            last_price = _get_last_price(entry.symbol, price_map)
+            if last_price is not None:
+                pnl_pct_val = _pnl_pct(float(entry.entry_price), float(last_price), entry.side)
+                if pnl_pct_val is not None and pnl_pct_val <= underwater_threshold_pct:
+                    underwater_without_tp_sl_count += 1
+
+        coverage_pct = (tp_sl_registered_count / open_positions_count) if open_positions_count > 0 else 0.0
+        ledger_registry_mismatch = recon.has_mismatch
 
         update_exit_pipeline_status(
             open_positions_count=open_positions_count,
             tp_sl_registered_count=tp_sl_registered_count,
             tp_sl_missing_count=tp_sl_missing_count,
             underwater_without_tp_sl_count=underwater_without_tp_sl_count,
+            tp_sl_coverage_pct=coverage_pct,
+            ledger_registry_mismatch=ledger_registry_mismatch,
+            mismatch_breakdown=recon.breakdown_counts(),
         )
 
         for key, entry in ledger.items():

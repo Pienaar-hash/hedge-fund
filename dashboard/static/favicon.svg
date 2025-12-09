@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Minimal quant bar chart glyph -->
+  <rect x="4" y="18" width="5" height="10" fill="#1a56db"/>
+  <rect x="11" y="12" width="5" height="16" fill="#1a56db"/>
+  <rect x="18" y="6" width="5" height="22" fill="#1a56db"/>
+  <rect x="25" y="14" width="5" height="14" fill="#1a56db" opacity="0.6"/>
+</svg>

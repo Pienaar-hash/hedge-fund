@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import pathlib
+import tempfile
 import time
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -22,8 +23,10 @@ from execution.diagnostics_metrics import (
     build_runtime_diagnostics_snapshot_with_liveness,
     _load_strategy_config,
 )
+from execution.router_metrics import RouterQualityConfig, load_router_quality_config
 from utils.firestore_client import get_db
 from execution.pnl_tracker import export_pnl_attribution_state
+from execution.versioning import read_version
 from execution.utils import get_usd_to_zar
 
 # ----- robust .env load -----
@@ -51,6 +54,9 @@ FS_ROOT = f"hedge/{ENV}/state"
 LOG_DIR = ROOT_DIR / "logs"
 EXEC_LOG_DIR = LOG_DIR / "execution"
 STATE_DIR = LOG_DIR / "state"
+POSITIONS_STATE_PATH = STATE_DIR / "positions_state.json"
+POSITIONS_LEDGER_PATH = STATE_DIR / "positions_ledger.json"
+KPIS_V7_PATH = STATE_DIR / "kpis_v7.json"
 _EXEC_STATS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
 LOG = logging.getLogger("state_publish")
 
@@ -82,6 +88,27 @@ def _json_default(value: Any) -> Any:
         return str(value)
 
 
+def utc_now_iso() -> str:
+    """Return the current UTC timestamp in ISO format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _atomic_write_state(path: str | pathlib.Path, payload: Any) -> None:
+    """Write JSON payload atomically by fsyncing a temp file then replacing."""
+    target = pathlib.Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, default=_json_default, separators=(",", ":"))
+        os.replace(tmp_path, target)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
 def _state_path(name: str, state_dir: pathlib.Path | None = None) -> pathlib.Path:
     target_dir = state_dir or STATE_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -91,16 +118,36 @@ def _state_path(name: str, state_dir: pathlib.Path | None = None) -> pathlib.Pat
 def _write_state_file(name: str, payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     try:
         path = _state_path(name, state_dir)
-        tmp = path.with_suffix(".tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, default=_json_default)
-        tmp.replace(path)
+        _atomic_write_state(path, payload)
     except Exception as exc:
         LOG.error("state_write_failed name=%s err=%s", name, exc)
 
 
-def write_positions_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+def write_positions_snapshot_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+    """Legacy positions snapshot writer (positions.json)."""
     _write_state_file("positions.json", payload, state_dir)
+
+
+def write_positions_state(
+    positions_rows: List[Dict[str, Any]],
+    state_dir: pathlib.Path | None = None,
+    *,
+    updated_at: Optional[str] = None,
+    path: pathlib.Path | None = None,
+) -> None:
+    """
+    Canonical atomic writer for logs/state/positions_state.json.
+
+    positions_rows: list of normalized position dicts with qty/entry_price/mark_price.
+    """
+    ts = updated_at or utc_now_iso()
+    payload = {
+        "updated_at": ts,
+        "updated_ts": ts,  # backwards-compatible alias for consumers expecting updated_ts
+        "positions": list(positions_rows or []),
+    }
+    target_path = path or (state_dir or STATE_DIR) / "positions_state.json"
+    _atomic_write_state(target_path, payload)
 
 
 def write_nav_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
@@ -108,6 +155,9 @@ def write_nav_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = No
         snapshot = dict(payload or {})
     except Exception:
         snapshot = payload or {}
+    # Ensure updated_ts present
+    if "updated_ts" not in snapshot:
+        snapshot["updated_ts"] = snapshot.get("updated_at") or utc_now_iso()
 
     # Ensure AUM block exists for dashboard consumers
     if "aum" not in snapshot:
@@ -157,38 +207,323 @@ def write_nav_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = No
             logger.warning("[nav-state] AUM warning: entries missing usd_value=%s", missing)
 
     _write_state_file("nav.json", snapshot, state_dir)
+    # Mirror to nav_state.json for dashboard fallback
+    try:
+        target = (state_dir or STATE_DIR) / "nav_state.json"
+        _atomic_write_state(target, snapshot)
+    except Exception:
+        logger.debug("nav_state_write_failed", exc_info=True)
     try:
         export_pnl_attribution_state()
     except Exception as exc:
         LOG.warning("pnl_attribution_export_failed: %s", exc)
 
 
-def write_router_health_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+def _safe_float_val(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _to_iso_ts(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        ts = float(value)
+        if ts > 1e12:
+            ts /= 1000.0
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except Exception:
+        if isinstance(value, str) and value:
+            return value
+        return None
+
+
+def _router_bucket_for_symbol(symbol: str) -> str:
+    try:
+        from execution.liquidity_model import get_bucket_for_symbol
+
+        bucket = get_bucket_for_symbol(symbol)
+        if bucket:
+            name = getattr(bucket, "name", None) or getattr(bucket, "bucket", None)
+            if name:
+                return str(name).upper()
+    except Exception:
+        pass
+    return "B_MEDIUM"
+
+
+def _slippage_bucket(value: float, cfg: RouterQualityConfig) -> str:
+    if value <= cfg.slippage_drift_green_bps:
+        return "GREEN"
+    if value <= cfg.slippage_drift_yellow_bps:
+        return "YELLOW"
+    return "RED"
+
+
+def _latency_bucket(value: float, cfg: RouterQualityConfig) -> str:
+    if value <= cfg.latency_fast_ms:
+        return "FAST"
+    if value <= cfg.latency_normal_ms:
+        return "NORMAL"
+    return "SLOW"
+
+
+def _bucket_penalty(bucket: str, cfg: RouterQualityConfig) -> float:
+    penalties = {
+        "A_HIGH": cfg.bucket_penalty_a_high,
+        "B_MEDIUM": cfg.bucket_penalty_b_medium,
+        "C_LOW": cfg.bucket_penalty_c_low,
+    }
+    return penalties.get(bucket.upper(), 0.0)
+
+
+def _compute_quality_score_from_components(
+    cfg: RouterQualityConfig,
+    bucket_penalty: float,
+    drift_bucket: str,
+    latency_bucket: str,
+    twap_usage_ratio: float,
+) -> float:
+    score = cfg.base_score + bucket_penalty
+
+    if drift_bucket == "YELLOW":
+        score -= 0.05
+    elif drift_bucket == "RED":
+        score -= 0.12
+
+    if latency_bucket == "NORMAL":
+        score -= 0.03
+    elif latency_bucket == "SLOW":
+        score -= 0.08
+
+    twap_penalty = cfg.twap_skip_penalty * max(0.0, min(1.0, 1.0 - twap_usage_ratio))
+    score -= twap_penalty
+    return max(cfg.min_score, min(cfg.max_score, score))
+
+
+def _build_router_health_from_stats(
+    stats_map: Mapping[str, Any],
+    cfg: RouterQualityConfig,
+    *,
+    meta: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    per_symbol: Dict[str, Any] = {}
+    weights: Dict[str, float] = {}
+    bucket_weights: Dict[str, float] = {}
+
+    for sym_raw, raw_stats in stats_map.items():
+        sym = str(sym_raw or "").upper()
+        if not sym or not isinstance(raw_stats, Mapping):
+            continue
+        avg_slip = _safe_float_val(raw_stats.get("avg_slippage_bps"))
+        drift_val = _safe_float_val(raw_stats.get("slippage_drift_bps"), avg_slip)
+        latency_val = _safe_float_val(raw_stats.get("avg_latency_ms"))
+        twap_usage = max(0.0, min(1.0, _safe_float_val(raw_stats.get("twap_usage_ratio"))))
+        notional = max(0.0, _safe_float_val(raw_stats.get("total_notional")))
+        twap_notional = max(0.0, _safe_float_val(raw_stats.get("twap_notional")))
+        last_order_iso = _to_iso_ts(raw_stats.get("last_order_ts"))
+        last_fill_iso = _to_iso_ts(raw_stats.get("last_fill_ts"))
+        child_orders = raw_stats.get("child_orders") or {}
+        child_count = int(child_orders.get("count") or 0)
+        child_fill_ratio = _safe_float_val(child_orders.get("fill_ratio"), 0.0)
+
+        router_bucket = str(raw_stats.get("router_bucket") or _router_bucket_for_symbol(sym)).upper()
+        drift_bucket = _slippage_bucket(drift_val, cfg)
+        latency_bucket = _latency_bucket(latency_val, cfg)
+        bucket_penalty = _bucket_penalty(router_bucket, cfg)
+
+        quality_score = _compute_quality_score_from_components(
+            cfg,
+            bucket_penalty,
+            drift_bucket,
+            latency_bucket,
+            twap_usage,
+        )
+
+        per_symbol[sym] = {
+            "symbol": sym,
+            "quality_score": quality_score,
+            "avg_slippage_bps": avg_slip,
+            "slippage_drift_bps": drift_val,
+            "slippage_drift_bucket": drift_bucket,
+            "avg_latency_ms": latency_val,
+            "latency_bucket": latency_bucket,
+            "last_order_ts": last_order_iso,
+            "last_fill_ts": last_fill_iso,
+            "twap_usage_ratio": twap_usage,
+            "twap_notional": twap_notional,
+            "child_orders": {
+                "count": child_count,
+                "fill_ratio": child_fill_ratio,
+            },
+            "router_bucket": router_bucket,
+            "total_notional": notional,
+            "event_count": int(raw_stats.get("event_count") or 0),
+        }
+        weight = notional if notional > 0 else 1.0
+        weights[sym] = weight
+        bucket_weights[router_bucket] = bucket_weights.get(router_bucket, 0.0) + weight
+
+    total_weight = sum(weights.values()) or 1.0
+    total_notional = sum(v.get("total_notional", 0.0) for v in per_symbol.values())
+    total_twap_notional = sum(v.get("twap_notional", 0.0) for v in per_symbol.values())
+
+    def _wavg(key: str) -> float:
+        return sum((per_symbol[sym].get(key, 0.0) or 0.0) * weights.get(sym, 1.0) for sym in per_symbol) / total_weight
+
+    avg_slip_global = _wavg("avg_slippage_bps")
+    drift_global = _wavg("slippage_drift_bps")
+    latency_global = _wavg("avg_latency_ms")
+    if total_notional > 0 and total_twap_notional > 0:
+        twap_usage_global = total_twap_notional / total_notional
+    else:
+        twap_usage_global = _wavg("twap_usage_ratio")
+    twap_usage_global = max(0.0, min(1.0, twap_usage_global))
+
+    global_bucket = max(bucket_weights.items(), key=lambda kv: kv[1])[0] if bucket_weights else "B_MEDIUM"
+    global_bucket_penalty = _bucket_penalty(global_bucket, cfg)
+    global_slip_bucket = _slippage_bucket(drift_global, cfg)
+    global_latency_bucket = _latency_bucket(latency_global, cfg)
+    global_score = _compute_quality_score_from_components(
+        cfg,
+        global_bucket_penalty,
+        global_slip_bucket,
+        global_latency_bucket,
+        twap_usage_global,
+    )
+
+    quality_counts = {"good": 0, "ok": 0, "degraded": 0, "broken": 0}
+    for entry in per_symbol.values():
+        score = entry["quality_score"]
+        if score >= cfg.high_quality_threshold:
+            quality_counts["good"] += 1
+        elif score >= cfg.low_quality_threshold:
+            quality_counts["ok"] += 1
+        elif score >= cfg.min_score:
+            quality_counts["degraded"] += 1
+        else:
+            quality_counts["broken"] += 1
+
+    updated_ts = utc_now_iso()
+    legacy_entries = [
+        {
+            "symbol": sym,
+            "avg_slippage_bps": entry["avg_slippage_bps"],
+            "slippage_drift_bps": entry["slippage_drift_bps"],
+            "latency_ms": entry["avg_latency_ms"],
+            "router_bucket": entry["router_bucket"],
+            "quality_score": entry["quality_score"],
+            "twap_usage_ratio": entry["twap_usage_ratio"],
+            "updated_ts": entry.get("last_fill_ts") or updated_ts,
+        }
+        for sym, entry in per_symbol.items()
+    ]
+
+    router_health_block: Dict[str, Any] = {
+        "global": {
+            "quality_score": global_score,
+            "avg_slippage_bps": avg_slip_global,
+            "slippage_drift_bps": drift_global,
+            "slippage_drift_bucket": global_slip_bucket,
+            "avg_latency_ms": latency_global,
+            "latency_bucket": global_latency_bucket,
+            "twap_usage_ratio": twap_usage_global,
+            "router_bucket": global_bucket,
+            "updated_ts": updated_ts,
+        },
+        "per_symbol": per_symbol,
+    }
+    if meta:
+        router_health_block["meta"] = dict(meta)
+
+    return {
+        "updated_ts": updated_ts,
+        "router_health_score": global_score,
+        "router_health": router_health_block,
+        "global": router_health_block["global"],
+        "summary": {
+            "updated_ts": updated_ts,
+            "count": len(per_symbol),
+            "quality_counts": quality_counts,
+        },
+        "symbols": legacy_entries,
+        "per_symbol": legacy_entries,
+        "symbol_stats": {
+            sym: {
+                "maker_reliability": entry["quality_score"],
+                "avg_slippage_bps": entry["avg_slippage_bps"],
+                "last_ts": entry.get("last_fill_ts") or entry.get("last_order_ts"),
+            }
+            for sym, entry in per_symbol.items()
+        },
+    }
+
+
+def write_router_health_state(
+    payload: Optional[Dict[str, Any]] = None,
+    state_dir: pathlib.Path | None = None,
+    *,
+    router_stats_snapshot: Optional[Mapping[str, Any]] = None,
+) -> None:
     """
-    Write router health state with computed health score.
-    
-    Adds router_health_score if not present in payload.
+    Write router health state with computed quality scores and buckets.
+
+    If router_stats_snapshot is provided, builds the new router_health structure.
+    Falls back to legacy payload scoring for compatibility.
     """
-    # Add health score if not present
-    if "router_health_score" not in payload:
+    stats_map: Dict[str, Any] = {}
+    meta: Dict[str, Any] = {}
+    if isinstance(router_stats_snapshot, Mapping):
+        maybe = router_stats_snapshot.get("per_symbol")
+        if isinstance(maybe, Mapping):
+            stats_map = {str(k).upper(): v for k, v in maybe.items() if isinstance(v, Mapping)}
+        for key in ("window_seconds", "min_events", "updated_ts"):
+            if key in router_stats_snapshot:
+                meta[key] = router_stats_snapshot.get(key)
+
+    if not stats_map and isinstance(payload, Mapping):
+        rh = payload.get("router_health")
+        if isinstance(rh, Mapping) and isinstance(rh.get("per_symbol"), Mapping):
+            stats_map = {str(k).upper(): v for k, v in rh.get("per_symbol", {}).items() if isinstance(v, Mapping)}
+        elif isinstance(payload.get("per_symbol"), Mapping):
+            stats_map = {str(k).upper(): v for k, v in payload.get("per_symbol", {}).items() if isinstance(v, Mapping)}
+
+    try:
+        cfg = load_router_quality_config()
+    except Exception:
+        cfg = RouterQualityConfig()
+
+    if stats_map:
+        try:
+            computed_payload = _build_router_health_from_stats(stats_map, cfg, meta=meta)
+        except Exception as exc:
+            LOG.warning("router_health_state_build_failed: %s", exc)
+            computed_payload = payload or {}
+        _write_state_file("router_health.json", computed_payload, state_dir)
+        return
+
+    legacy_payload = dict(payload or {})
+    if "router_health_score" not in legacy_payload:
         try:
             from execution.router_metrics import compute_router_health_score
-            
-            maker_ratio = payload.get("maker_ratio") or payload.get("maker_fill_rate") or 0.0
-            fallback_ratio = payload.get("fallback_ratio") or 0.0
-            avg_slippage = payload.get("avg_slippage_bps") or payload.get("slip_q50_bps") or 0.0
-            reject_ratio = payload.get("reject_ratio") or payload.get("reject_rate") or 0.0
-            
-            payload["router_health_score"] = compute_router_health_score(
+
+            maker_ratio = legacy_payload.get("maker_ratio") or legacy_payload.get("maker_fill_rate") or 0.0
+            fallback_ratio = legacy_payload.get("fallback_ratio") or 0.0
+            avg_slippage = legacy_payload.get("avg_slippage_bps") or legacy_payload.get("slip_q50_bps") or 0.0
+            reject_ratio = legacy_payload.get("reject_ratio") or legacy_payload.get("reject_rate") or 0.0
+
+            legacy_payload["router_health_score"] = compute_router_health_score(
                 maker_ratio=float(maker_ratio) if maker_ratio else 0.0,
                 fallback_ratio=float(fallback_ratio) if fallback_ratio else 0.0,
                 avg_slippage_bps=float(avg_slippage) if avg_slippage else 0.0,
                 reject_ratio=float(reject_ratio) if reject_ratio else 0.0,
             )
         except Exception:
-            payload["router_health_score"] = 0.0
-    
-    _write_state_file("router_health.json", payload, state_dir)
+            legacy_payload["router_health_score"] = 0.0
+
+    _write_state_file("router_health.json", legacy_payload, state_dir)
 
 
 def _to_frac(value: Any) -> Optional[float]:
@@ -217,13 +552,28 @@ def write_risk_snapshot_state(
 ) -> None:
     """Write risk_snapshot.json with added normalized fractional fields and risk mode."""
     from execution.risk_engine_v6 import compute_risk_mode_from_state
-    from execution.drawdown_tracker import get_portfolio_dd_state
+    from execution.drawdown_tracker import (
+        get_portfolio_dd_state,
+        load_nav_anomaly_config,
+    )
     from execution.risk_loader import load_risk_config
+
+    # Load previous snapshot for nav/dd continuity
+    prev_snapshot: Dict[str, Any] = {}
+    try:
+        rs_path = (state_dir or STATE_DIR) / "risk_snapshot.json"
+        if rs_path.exists():
+            with rs_path.open("r", encoding="utf-8") as handle:
+                prev_snapshot = json.load(handle) or {}
+    except Exception:
+        prev_snapshot = {}
 
     # Add normalized fractional fields for drawdown and daily loss
     enriched = dict(payload) if payload else {}
+    anomalies: Dict[str, Any] = dict(enriched.get("anomalies") or {})
     dd_state_block = enriched.get("dd_state") or {}
     drawdown_block = dd_state_block.get("drawdown") or {} if isinstance(dd_state_block, dict) else {}
+    has_input_dd_state = isinstance(dd_state_block, dict) and bool(dd_state_block)
     
     # Extract dd_pct from nested structure: dd_state.drawdown.dd_pct
     dd_pct_raw = drawdown_block.get("dd_pct")
@@ -238,6 +588,7 @@ def write_risk_snapshot_state(
     # Add fractional fields to payload (preserve originals)
     enriched["dd_frac"] = dd_frac
     enriched["daily_loss_frac"] = daily_loss_frac
+    enriched["updated_ts"] = enriched.get("updated_ts") or time.time()
 
     # Compute portfolio DD and circuit breaker status
     try:
@@ -269,12 +620,37 @@ def write_risk_snapshot_state(
 
         dd_state_obj = get_portfolio_dd_state(nav_history) if nav_history else None
         portfolio_dd_pct = dd_state_obj.current_dd_pct if dd_state_obj else None
-
+        prev_dd_state = str(enriched.get("dd_state", {}).get("state") if isinstance(enriched.get("dd_state"), dict) else enriched.get("dd_state") or "NORMAL").upper()
+        # Fallback: derive DD from nav delta if we don't have history-derived dd_state
+        nav_curr_val = enriched.get("nav_total") or enriched.get("nav") or enriched.get("nav_usd")
+        nav_prev_val = prev_snapshot.get("nav_total") or prev_snapshot.get("nav") or prev_snapshot.get("nav_usd")
+        nav_prev = None
+        try:
+            nav_prev = float(nav_prev_val) if nav_prev_val is not None else None
+        except Exception:
+            nav_prev = None
+        try:
+            nav_curr = float(nav_curr_val) if nav_curr_val is not None else None
+        except Exception:
+            nav_curr = None
+        dd_state = "NORMAL"
+        if nav_prev is not None and nav_curr is not None:
+            peak = max(nav_prev, nav_curr)
+            dd_frac_est = (peak - nav_curr) / peak if peak > 0 else 0.0
+            portfolio_dd_pct = max(portfolio_dd_pct or 0.0, dd_frac_est)
+        if portfolio_dd_pct and portfolio_dd_pct > 0:
+            threshold = max_portfolio_dd_nav_pct or 0.01
+            if portfolio_dd_pct >= threshold:
+                dd_state = "DRAWDOWN"
+            elif prev_dd_state in {"DRAWDOWN", "RECOVERY"}:
+                dd_state = "RECOVERY"
         circuit_breaker_active = False
         if max_portfolio_dd_nav_pct is not None and dd_state_obj is not None:
             circuit_breaker_active = dd_state_obj.current_dd_pct >= max_portfolio_dd_nav_pct
 
         enriched["portfolio_dd_pct"] = portfolio_dd_pct
+        if not has_input_dd_state:
+            enriched["dd_state"] = {"state": dd_state, "drawdown": {"dd_pct": portfolio_dd_pct}}
         enriched["circuit_breaker"] = {
             "max_portfolio_dd_nav_pct": max_portfolio_dd_nav_pct,
             "active": circuit_breaker_active,
@@ -282,6 +658,7 @@ def write_risk_snapshot_state(
     except Exception as exc:
         LOG.warning("circuit_breaker_computation_failed: %s", exc)
         enriched["portfolio_dd_pct"] = None
+        enriched.setdefault("dd_state", {"state": "UNKNOWN"})
         enriched["circuit_breaker"] = {
             "max_portfolio_dd_nav_pct": None,
             "active": False,
@@ -465,11 +842,55 @@ def write_risk_snapshot_state(
                     "max_position_cvar_nav_pct": cvar_cfg.max_position_cvar_nav_pct,
                     "confidence": cvar_cfg.confidence,
                 }
+                # Flag anomaly if any CVaR exceeds limits
+                breach = any(
+                    (isinstance(info, dict) and info.get("cvar_nav_pct") is not None and info.get("cvar_nav_pct") > cvar_cfg.max_position_cvar_nav_pct)
+                    for info in enriched["cvar"]["per_symbol"].values()
+                )
+                if breach:
+                    anomalies["cvar_limit_breach"] = True
     except ImportError:
         LOG.debug("vol_risk module not available for VaR/CVaR enrichment")
     except Exception as exc:
         LOG.debug("var_cvar_enrichment_failed: %s", exc)
-    
+
+    # Nav anomaly guard using previous snapshot
+    try:
+        prev_snapshot = {}
+        rs_path = (state_dir or STATE_DIR) / "risk_snapshot.json"
+        if rs_path.exists():
+            with rs_path.open("r", encoding="utf-8") as handle:
+                prev_snapshot = json.load(handle) or {}
+        nav_cfg = load_nav_anomaly_config()
+        nav_curr = enriched.get("nav_total") or enriched.get("nav") or enriched.get("nav_usd")
+        nav_prev = prev_snapshot.get("nav_total") or prev_snapshot.get("nav") or prev_snapshot.get("nav_usd")
+        nav_curr = float(nav_curr) if nav_curr is not None else None
+        nav_prev = float(nav_prev) if nav_prev is not None else None
+        if nav_cfg.enabled and nav_curr is not None and nav_prev is not None and nav_prev > 0:
+            pct_jump = abs(nav_curr - nav_prev) / max(nav_prev, 1e-9)
+            pct_threshold = max(nav_cfg.max_multiplier_intraday - 1.0, 0.0)
+            gap_ok = abs(nav_curr - nav_prev) <= nav_cfg.max_gap_abs_usd
+            if pct_jump > pct_threshold or not gap_ok:
+                anomalies["nav_jump"] = {
+                    "old": nav_prev,
+                    "new": nav_curr,
+                    "pct": pct_jump,
+                }
+    except Exception as exc:
+        LOG.debug("nav_anomaly_guard_failed: %s", exc)
+
+    # VaR breach anomaly
+    try:
+        var_block = enriched.get("var") or {}
+        var_pct = var_block.get("portfolio_var_nav_pct")
+        var_limit = var_block.get("max_portfolio_var_nav_pct")
+        if var_pct is not None and var_limit is not None and var_pct > var_limit:
+            anomalies["var_limit_breach"] = True
+    except Exception:
+        pass
+
+    enriched["anomalies"] = anomalies
+
     _write_state_file("risk_snapshot.json", enriched, state_dir)
 
 
@@ -486,7 +907,26 @@ def write_expectancy_state(payload: Dict[str, Any], state_dir: pathlib.Path | No
 
 
 def write_symbol_scores_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
-    _write_state_file("symbol_scores_v6.json", payload, state_dir)
+    snapshot = dict(payload or {})
+    snapshot.setdefault("updated_ts", utc_now_iso())
+    _write_state_file("symbol_scores_v6.json", snapshot, state_dir)
+
+
+def write_engine_metadata_state(
+    payload: Mapping[str, Any] | None = None,
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """Write engine metadata (version, git commit, run_id) for dashboards/preflight."""
+    snapshot = {
+        "engine_version": read_version(default="v7.6"),
+        "updated_ts": utc_now_iso(),
+    }
+    if isinstance(payload, Mapping):
+        snapshot.update(payload)
+    snapshot.setdefault("engine_version", read_version(default="v7.6"))
+    snapshot.setdefault("updated_ts", utc_now_iso())
+    _write_state_file("engine_metadata.json", snapshot, state_dir)
+    return snapshot
 
 
 def _load_liveness_cfg() -> Dict[str, Any]:
@@ -525,10 +965,14 @@ def write_runtime_diagnostics_state(
             "exit_pipeline": {
                 "last_exit_scan_ts": es.last_exit_scan_ts,
                 "last_exit_trigger_ts": es.last_exit_trigger_ts,
+                "last_router_event_ts": es.last_router_event_ts,
                 "open_positions_count": es.open_positions_count,
                 "tp_sl_registered_count": es.tp_sl_registered_count,
                 "tp_sl_missing_count": es.tp_sl_missing_count,
                 "underwater_without_tp_sl_count": es.underwater_without_tp_sl_count,
+                "tp_sl_coverage_pct": getattr(es, "tp_sl_coverage_pct", 0.0),
+                "ledger_registry_mismatch": getattr(es, "ledger_registry_mismatch", False),
+                "mismatch_breakdown": getattr(es, "mismatch_breakdown", {}) or {},
             },
             "liveness": {
                 "idle_signals": bool(la.idle_signals) if la else False,
@@ -536,9 +980,12 @@ def write_runtime_diagnostics_state(
                 "idle_exits": bool(la.idle_exits) if la else False,
                 "idle_router": bool(la.idle_router) if la else False,
                 "details": dict(la.details) if la and la.details is not None else {},
+                "missing": dict(la.missing) if la and la.missing is not None else {},
             },
         }
     }
+    payload["engine_version"] = read_version(default="v7.6")
+    payload["updated_ts"] = utc_now_iso()
     _write_state_file("diagnostics.json", payload, state_dir)
     return payload
 
@@ -584,13 +1031,19 @@ def write_v6_runtime_probe_state(payload: Dict[str, Any], state_dir: pathlib.Pat
     _write_state_file("v6_runtime_probe.json", payload, state_dir)
 
 
-def write_positions_ledger_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
+def write_positions_ledger_state(
+    payload: Dict[str, Any],
+    state_dir: pathlib.Path | None = None,
+    *,
+    path: pathlib.Path | None = None,
+) -> None:
     """
-    Write positions_ledger.json with unified ledger view (v7.4_C3).
+    Canonical atomic writer for logs/state/positions_ledger.json.
     
-    This file contains the merged positions + TP/SL state from the position ledger.
+    payload is the unified ledger snapshot (entries + tp_sl_levels + metadata).
     """
-    _write_state_file("positions_ledger.json", payload, state_dir)
+    target_path = path or (state_dir or STATE_DIR) / "positions_ledger.json"
+    _atomic_write_state(target_path, payload)
 
 
 def write_risk_advanced_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
@@ -993,8 +1446,13 @@ def compute_and_write_factor_diagnostics_state(
             from execution.factor_diagnostics import FactorWeights
             prev_state = load_factor_diagnostics_state(state_dir)
             prev_weights_dict = prev_state.get("factor_weights", {})
-            if isinstance(prev_weights_dict, dict) and prev_weights_dict.get("weights"):
-                prev_weights = FactorWeights(weights=prev_weights_dict.get("weights", {}))
+            prev_weights_raw = {}
+            if isinstance(prev_weights_dict, dict):
+                prev_weights_raw = prev_weights_dict.get("weights", {})
+            if not prev_weights_raw:
+                prev_weights_raw = prev_state.get("weights", {})
+            if isinstance(prev_weights_raw, dict) and prev_weights_raw:
+                prev_weights = FactorWeights(weights=prev_weights_raw)
         except Exception:
             pass
         
@@ -1014,8 +1472,10 @@ def compute_and_write_factor_diagnostics_state(
             prev_weights=prev_weights,
         )
         
-        write_factor_diagnostics_state(snapshot.to_dict(), state_dir)
-        return snapshot.to_dict()
+        snapshot_dict = snapshot.to_dict()
+        snapshot_dict.setdefault("updated_ts", utc_now_iso())
+        write_factor_diagnostics_state(snapshot_dict, state_dir)
+        return snapshot_dict
     except ImportError:
         LOG.debug("factor_diagnostics not available")
         return {}
@@ -1112,10 +1572,11 @@ def build_synced_state_payload(
     updated_at: float,
     nav_snapshot: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    version_value = engine_version or read_version(default="v7.6")
     snapshot = {
         "items": _coerce_synced_items(items or []),
         "nav": float(nav),
-        "engine_version": (engine_version or "v6.0-beta-preview"),
+        "engine_version": version_value,
         "v6_flags": dict(flags or {}),
         "updated_at": float(updated_at),
     }
@@ -1142,7 +1603,7 @@ def write_synced_state(payload: Dict[str, Any], state_dir: pathlib.Path | None =
         snapshot = {
             "items": _coerce_synced_items(payload.get("items") or []),
             "nav": float(payload.get("nav", 0.0) or 0.0),
-            "engine_version": str(payload.get("engine_version") or "v6.0-beta-preview"),
+            "engine_version": str(payload.get("engine_version") or read_version(default="v7.6")),
             "v6_flags": dict(payload.get("v6_flags") or {}),
             "updated_at": float(payload.get("updated_at", time.time())),
         }
@@ -1521,6 +1982,7 @@ def write_kpis_v7_state(
     risk_snapshot: Mapping[str, Any] | None = None,
     router_state: Mapping[str, Any] | None = None,
     expectancy_state: Mapping[str, Any] | None = None,
+    path: pathlib.Path | None = None,
 ) -> None:
     try:
         if payload is None or nav_snapshot is not None or risk_snapshot is not None or router_state is not None:
@@ -1534,7 +1996,10 @@ def write_kpis_v7_state(
     except Exception as exc:
         LOG.error("kpis_v7_build_failed: %s", exc)
         payload = payload or {}
-    _write_state_file("kpis_v7.json", payload or {}, state_dir)
+    payload = payload or {}
+    payload.setdefault("updated_at", utc_now_iso())
+    target_path = path or (state_dir or STATE_DIR) / "kpis_v7.json"
+    _atomic_write_state(target_path, payload)
 
 
 def _last_heartbeats() -> Dict[str, Optional[str]]:
@@ -1751,58 +2216,61 @@ def publish_positions(rows: List[Dict[str, Any]]) -> None:
     if not _firestore_enabled():
         _append_local_jsonl("positions", payload)
         try:
-            write_positions_state(payload)
+            write_positions_snapshot_state(payload)
         except Exception as exc:
-            LOG.debug("write_positions_state_failed: %s", exc)
+            LOG.debug("write_positions_snapshot_state_failed: %s", exc)
         return
     cli = _fs_client()
     cli.document(f"{FS_ROOT}/positions").set(payload, merge=True)
 
 
-def publish_hybrid_scores(scores: List[Dict[str, Any]]) -> None:
+def publish_hybrid_scores(
+    scores: List[Dict[str, Any]],
+    state_dir: pathlib.Path | None = None,
+) -> None:
     """
     Publish hybrid score rankings for dashboard display (v7.4 B1).
     
     Args:
         scores: List of hybrid score results from rank_intents_by_hybrid_score()
     """
-    payload = {"symbols": scores, "updated_ts": time.time()}
-    path = STATE_DIR / "hybrid_scores.json"
+    payload = {"symbols": scores, "updated_ts": utc_now_iso()}
     try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, default=str))
+        _write_state_file("hybrid_scores.json", payload, state_dir)
     except Exception as exc:
         LOG.warning("publish_hybrid_scores failed: %s", exc)
 
 
-def publish_funding_snapshot(funding_data: Dict[str, Any]) -> None:
+def publish_funding_snapshot(
+    funding_data: Dict[str, Any],
+    state_dir: pathlib.Path | None = None,
+) -> None:
     """
     Publish funding rate snapshot for carry scoring (v7.4 B1).
     
     Args:
         funding_data: Dict with 'symbols' key containing symbol->rate mappings
     """
-    payload = {"symbols": funding_data.get("symbols", funding_data), "updated_ts": time.time()}
-    path = STATE_DIR / "funding_snapshot.json"
+    payload = {"symbols": funding_data.get("symbols", funding_data), "updated_ts": utc_now_iso()}
     try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, default=str))
+        _write_state_file("funding_snapshot.json", payload, state_dir)
     except Exception as exc:
         LOG.warning("publish_funding_snapshot failed: %s", exc)
 
 
-def publish_basis_snapshot(basis_data: Dict[str, Any]) -> None:
+def publish_basis_snapshot(
+    basis_data: Dict[str, Any],
+    state_dir: pathlib.Path | None = None,
+) -> None:
     """
     Publish basis (spot-perp spread) snapshot for carry scoring (v7.4 B1).
     
     Args:
         basis_data: Dict with 'symbols' key containing symbol->basis_pct mappings
     """
-    payload = {"symbols": basis_data.get("symbols", basis_data), "updated_ts": time.time()}
-    path = STATE_DIR / "basis_snapshot.json"
+    payload = {"symbols": basis_data.get("symbols", basis_data), "updated_ts": utc_now_iso()}
     try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, default=str))
+        _write_state_file("basis_snapshot.json", payload, state_dir)
     except Exception as exc:
         LOG.warning("publish_basis_snapshot failed: %s", exc)
 

@@ -1,0 +1,19 @@
+{
+  "version": "v7.6",
+  "architecture_doc": "docs/v7.6_Architecture.md",
+  "state_contract": "docs/v7.6_State_Contract.md",
+  "runtime_diagnostics": "docs/v7.6_Runtime_Diagnostics.md",
+  "testing_guide": "docs/TESTING.md",
+  "developer_guide": "docs/v7.6_Developer_Guide.md",
+  "manifest": "v7_manifest.json",
+  "repo_invariants": {
+    "single_writer": true,
+    "atomic_state": true,
+    "lanes": [
+      "unit",
+      "integration",
+      "runtime",
+      "legacy"
+    ]
+  }
+}

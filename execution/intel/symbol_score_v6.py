@@ -8,13 +8,17 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
+import execution.router_metrics as router_metrics
+import execution.rv_momentum as rv_momentum
+from execution.utils.vol import get_hybrid_weight_modifiers
 
 DEFAULT_STATE_DIR = Path(os.getenv("HEDGE_STATE_DIR") or "logs/state")
 DEFAULT_EXPECTANCY_PATH = DEFAULT_STATE_DIR / "expectancy_v6.json"
 DEFAULT_ROUTER_HEALTH_PATH = DEFAULT_STATE_DIR / "router_health.json"
 DEFAULT_STRATEGY_CONFIG_PATH = Path("config/strategy_config.json")
+DEFAULT_FACTOR_DIAG_PATH = DEFAULT_STATE_DIR / "factor_diagnostics.json"
 
 # Default hybrid scoring weights (fallback if config missing)
 DEFAULT_W_TREND = 0.7
@@ -123,14 +127,98 @@ def load_router_health_snapshot(path: Path | str = DEFAULT_ROUTER_HEALTH_PATH) -
 
 
 def _get_symbol_stats(expectancy_snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
-    data = expectancy_snapshot.get("symbols") if isinstance(expectancy_snapshot, Mapping) else None
-    return data if isinstance(data, Mapping) else {}
+    if not isinstance(expectancy_snapshot, Mapping):
+        return {}
+    data = expectancy_snapshot.get("symbols")
+    if isinstance(data, Mapping):
+        return {str(k).upper(): v for k, v in data.items() if isinstance(v, Mapping)}
+    by_symbol = expectancy_snapshot.get("by_symbol")
+    if isinstance(by_symbol, Mapping):
+        return {str(k).upper(): v for k, v in by_symbol.items() if isinstance(v, Mapping)}
+    return {}
+
+
+def _extract_router_health_entry(router_health: Mapping[str, Any], symbol: str) -> Mapping[str, Any]:
+    sym = symbol.upper()
+    if not isinstance(router_health, Mapping):
+        return {}
+    by_symbol = router_health.get("by_symbol")
+    if isinstance(by_symbol, Mapping):
+        entry = by_symbol.get(sym) or by_symbol.get(symbol)
+        if isinstance(entry, Mapping):
+            return entry
+    rh_block = router_health.get("router_health")
+    if isinstance(rh_block, Mapping):
+        per_symbol = rh_block.get("per_symbol")
+        if isinstance(per_symbol, Mapping):
+            entry = per_symbol.get(sym) or per_symbol.get(symbol)
+            if isinstance(entry, Mapping):
+                return entry
+        elif isinstance(per_symbol, list):
+            for item in per_symbol:
+                if isinstance(item, Mapping) and str(item.get("symbol", "")).upper() == sym:
+                    return item
+    # legacy layouts
+    symbols = router_health.get("symbols") if isinstance(router_health, Mapping) else None
+    if isinstance(symbols, list):
+        for entry in symbols:
+            if not isinstance(entry, Mapping):
+                continue
+            if str(entry.get("symbol", "")).upper() == sym:
+                return entry
+    per_symbol_map = router_health.get("per_symbol") if isinstance(router_health, Mapping) else None
+    if isinstance(per_symbol_map, Mapping):
+        maybe = per_symbol_map.get(sym) or per_symbol_map.get(symbol)
+        if isinstance(maybe, Mapping):
+            return maybe
+    return {}
 
 
 def _unpack_router_health(router_health: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not isinstance(router_health, Mapping):
+        return {}
+    by_symbol = router_health.get("by_symbol")
+    if isinstance(by_symbol, Mapping):
+        return {str(k).upper(): v for k, v in by_symbol.items() if isinstance(v, Mapping)}
+    rh_block = router_health.get("router_health") if isinstance(router_health, Mapping) else None
+    if isinstance(rh_block, Mapping):
+        per_symbol = rh_block.get("per_symbol")
+        if isinstance(per_symbol, Mapping):
+            return {str(k).upper(): v for k, v in per_symbol.items() if isinstance(v, Mapping)}
+        if isinstance(per_symbol, list):
+            return {
+                str(entry.get("symbol")).upper(): entry
+                for entry in per_symbol
+                if isinstance(entry, Mapping) and entry.get("symbol")
+            }
     symbols = router_health.get("symbols") if isinstance(router_health, Mapping) else None
     if isinstance(symbols, list):
         return {str(entry.get("symbol")).upper(): entry for entry in symbols if entry.get("symbol")}
+    per_symbol_map = router_health.get("per_symbol") if isinstance(router_health, Mapping) else None
+    if isinstance(per_symbol_map, Mapping):
+        return {str(k).upper(): v for k, v in per_symbol_map.items() if isinstance(v, Mapping)}
+    return {}
+
+
+def _get_symbol_entry(snapshot: Mapping[str, Any], symbol: str) -> Any:
+    """
+    Fetch a per-symbol entry from either symbols/by_symbol mappings or lists.
+    Returns {} if not found.
+    """
+    if not isinstance(snapshot, Mapping):
+        return {}
+    sym = symbol.upper()
+    for key in ("symbols", "by_symbol"):
+        block = snapshot.get(key)
+        if isinstance(block, Mapping):
+            entry = block.get(sym) or block.get(symbol)
+            if entry is not None:
+                return entry
+    symbols_block = snapshot.get("symbols")
+    if isinstance(symbols_block, list):
+        for entry in symbols_block:
+            if isinstance(entry, Mapping) and str(entry.get("symbol", "")).upper() == sym:
+                return entry
     return {}
 
 
@@ -138,11 +226,28 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+def _normalize_weight_map(weights: Mapping[str, float]) -> Dict[str, float]:
+    """Normalize a weight map so it sums to 1.0 (or return zeros if empty)."""
+    cleaned = {k: max(0.0, float(v)) for k, v in weights.items()}
+    total = sum(cleaned.values())
+    if total <= 0:
+        return {k: 0.0 for k in cleaned}
+    return {k: v / total for k, v in cleaned.items()}
+
+
 def _scale_expectancy(value: float) -> float:
     return 0.5 + 0.5 * math.tanh(value / 10.0)
 
 
 def _scale_router_quality(router: Mapping[str, Any]) -> float:
+    if not isinstance(router, Mapping):
+        return 0.5
+    quality_score = router.get("quality_score") or router.get("router_health_score")
+    if quality_score is not None:
+        try:
+            return _clamp01(float(quality_score))
+        except Exception:
+            pass
     maker = float(router.get("maker_fill_rate") or 0.0)
     fallback = float(router.get("fallback_rate") or 0.0)
     raw = maker - fallback
@@ -177,6 +282,25 @@ def _volatility_penalty(router: Mapping[str, Any]) -> float:
     except Exception:
         delta = 0.0
     return min(0.5, delta)
+
+
+def _router_quality_score_from_health(
+    router_health_snapshot: Mapping[str, Any],
+    symbol: str,
+    default: float = 0.0,
+) -> float:
+    entry = _extract_router_health_entry(router_health_snapshot, symbol)
+    if entry:
+        for key in ("quality_score", "router_health_score", "score"):
+            if key in entry:
+                try:
+                    return float(entry.get(key))
+                except Exception:
+                    continue
+    try:
+        return _scale_router_quality(entry)
+    except Exception:
+        return default
 
 
 def score_symbol(symbol: str, metrics: Mapping[str, Any]) -> Dict[str, Any]:
@@ -214,6 +338,7 @@ def score_symbol(symbol: str, metrics: Mapping[str, Any]) -> Dict[str, Any]:
 def score_universe(expectancy_snapshot: Mapping[str, Any], router_health_snapshot: Mapping[str, Any]) -> Dict[str, Any]:
     exp_data = _get_symbol_stats(expectancy_snapshot)
     router_map = _unpack_router_health(router_health_snapshot)
+    rq_cfg = router_metrics.load_router_quality_config()
     symbols = sorted({sym for sym in exp_data.keys() | router_map.keys() if sym})
     rows = []
     for symbol in symbols:
@@ -224,6 +349,15 @@ def score_universe(expectancy_snapshot: Mapping[str, Any], router_health_snapsho
                 "router": router_map.get(symbol, {}),
             },
         )
+        rq_score = _router_quality_score_from_health(router_health_snapshot, symbol, default=entry["components"]["router"])
+        entry["router_quality_score"] = rq_score
+        entry["hybrid"] = {
+            "score": entry["score"],
+            "router_quality_score": rq_score,
+            "passes_emission": entry["score"] >= rq_cfg.min_for_emission,
+            "min_for_emission": rq_cfg.min_for_emission,
+        }
+        entry["hybrid_score"] = entry["hybrid"]["score"]
         rows.append(entry)
     rows.sort(key=lambda item: item["score"], reverse=True)
     return {"updated_ts": time.time(), "symbols": rows}
@@ -335,18 +469,27 @@ def carry_score(
     direction = direction.upper()
     
     # Extract funding rate
-    funding_data = funding_snapshot.get("symbols", {}).get(symbol, {})
+    funding_data = _get_symbol_entry(funding_snapshot, symbol)
     if isinstance(funding_data, (int, float)):
         funding_rate = float(funding_data)
+    elif isinstance(funding_data, Mapping):
+        funding_rate = float(
+            funding_data.get("rate")
+            or funding_data.get("funding_rate")
+            or funding_data.get("fundingRate")
+            or 0.0
+        )
     else:
-        funding_rate = float(funding_data.get("rate", 0.0) if isinstance(funding_data, dict) else 0.0)
+        funding_rate = 0.0
     
     # Extract basis
-    basis_data = basis_snapshot.get("symbols", {}).get(symbol, {})
+    basis_data = _get_symbol_entry(basis_snapshot, symbol)
     if isinstance(basis_data, (int, float)):
         basis_pct = float(basis_data)
+    elif isinstance(basis_data, Mapping):
+        basis_pct = float(basis_data.get("basis_pct") or basis_data.get("basis") or 0.0)
     else:
-        basis_pct = float(basis_data.get("basis_pct", 0.0) if isinstance(basis_data, dict) else 0.0)
+        basis_pct = 0.0
     
     funding_score = _scale_funding_rate(funding_rate, direction)
     basis_score = _scale_basis(basis_pct, direction)
@@ -679,6 +822,23 @@ def _get_regime_multiplier(regime: str | None, config: Mapping[str, Any] | None 
     return float(modulation.get(regime_key, defaults.get(regime_key, 1.0)))
 
 
+_VOL_REGIME_FACTOR_MAP = {
+    "low": 0.25,
+    "normal": 0.0,
+    "high": -0.35,
+    "crisis": -0.75,
+}
+
+
+def _vol_regime_value(vol_regime_label: str | None) -> float:
+    """
+    Map volatility regime label to a signed factor value used in hybrid scoring.
+    Negative values dampen scores in stressed regimes; positive boosts in calm regimes.
+    """
+    key = str(vol_regime_label or "normal").lower()
+    return float(_VOL_REGIME_FACTOR_MAP.get(key, 0.0))
+
+
 def hybrid_score(
     symbol: str,
     direction: str,
@@ -693,267 +853,30 @@ def hybrid_score(
     factor_weights: Dict[str, float] | None = None,
     orthogonalized_factors: Dict[str, Dict[str, float]] | None = None,
 ) -> Dict[str, Any]:
-    """
-    Compute hybrid score blending trend, carry, expectancy, and router quality.
-    
-    v7.5_C3: Optionally uses factor_weights from auto-weighting and 
-    orthogonalized_factors from orthogonalization.
-    
-    Args:
-        symbol: Trading pair
-        direction: 'LONG' or 'SHORT'
-        trend_score: Trend/momentum score (0.0-1.0) from strategy
-        expectancy_snapshot: Symbol expectancy data
-        router_health_snapshot: Router health data
-        funding_snapshot: Funding rate data
-        basis_snapshot: Basis data
-        regime: Volatility regime for modulation
-        config: Hybrid scoring weights config
-        strategy_config: Full strategy config for regime modulation
-        factor_weights: Optional factor weights from auto-weighting (v7.5_C3)
-        orthogonalized_factors: Optional per-symbol orthogonalized factor values (v7.5_C3)
-    
-    Returns:
-        Dict with hybrid score, all components, and weights used
-    """
-    symbol = symbol.upper()
-    direction = direction.upper()
-    
-    if config is None:
-        config = load_hybrid_config(strategy_config)
-    
-    # Get component scores
-    sym_score = score_symbol(
-        symbol,
-        {
-            "expectancy": _get_symbol_stats(expectancy_snapshot).get(symbol, {}),
-            "router": _unpack_router_health(router_health_snapshot).get(symbol, {}),
-        },
-    )
-    
-    carry_result = carry_score(
-        symbol,
-        direction,
-        funding_snapshot,
-        basis_snapshot,
-    )
-    
-    expectancy_score = sym_score["components"]["expectancy"]
-    router_score = sym_score["components"]["router"]
-    carry_sc = carry_result["score"]
-    trend_sc = _clamp01(trend_score)
-    
-    # Apply regime modulation to component weights (v7.4 B2)
-    # Import here to avoid circular imports
-    from execution.utils.vol import get_hybrid_weight_modifiers, VolRegimeLabel
-    
-    regime_label: VolRegimeLabel = (regime or "normal").lower()  # type: ignore
-    if regime_label not in ("low", "normal", "high", "crisis"):
-        regime_label = "normal"
-    
-    weight_mods = get_hybrid_weight_modifiers(regime_label, strategy_config)
-    
-    # Apply modifiers to component weights
-    effective_carry_weight = config.carry_weight * weight_mods.carry
-    effective_expectancy_weight = config.expectancy_weight * weight_mods.expectancy
-    effective_router_weight = config.router_weight * weight_mods.router
-    
-    # Normalize weights
-    total_weight = (
-        config.trend_weight +
-        effective_carry_weight +
-        effective_expectancy_weight +
-        effective_router_weight
-    )
-    
-    if total_weight <= 0:
-        return {
-            "symbol": symbol,
-            "direction": direction,
-            "hybrid_score": 0.5,
-            "components": {},
-            "weights": {},
-            "regime": regime,
-            "error": "zero_total_weight",
-        }
-    
-    # v7.5_C3: Use factor weights if provided, otherwise legacy calculation
-    using_factor_weights = False
-    factor_weights_used: Dict[str, float] = {}
-    
-    if factor_weights and len(factor_weights) > 0:
-        # Use auto-weighted factor combination
-        # Get factor values - use orthogonalized if available, else raw
-        factor_values: Dict[str, float] = {}
-        if orthogonalized_factors and symbol in orthogonalized_factors:
-            # Use orthogonalized values
-            ortho = orthogonalized_factors[symbol]
-            factor_values = {
-                "trend": ortho.get("trend", trend_sc),
-                "carry": ortho.get("carry", carry_sc),
-                "expectancy": ortho.get("expectancy", expectancy_score),
-                "router": ortho.get("router", router_score),
+    results = hybrid_score_universe(
+        intents=[
+            {
+                "symbol": symbol,
+                "direction": direction,
+                "trend_score": trend_score,
             }
-        else:
-            # Use raw component values
-            factor_values = {
-                "trend": trend_sc,
-                "carry": carry_sc,
-                "expectancy": expectancy_score,
-                "router": router_score,
-            }
-        
-        # Compute weighted sum using factor weights
-        weighted_sum = 0.0
-        weight_total = 0.0
-        for factor_name, factor_val in factor_values.items():
-            w = factor_weights.get(factor_name, 0.0)
-            weighted_sum += w * factor_val
-            weight_total += w
-            factor_weights_used[factor_name] = w
-        
-        if weight_total > 1e-9:
-            raw_hybrid = weighted_sum / weight_total
-        else:
-            raw_hybrid = 0.5
-        
-        using_factor_weights = True
-    else:
-        # Compute weighted hybrid score (legacy)
-        raw_hybrid = (
-            trend_sc * config.trend_weight +
-            carry_sc * effective_carry_weight +
-            expectancy_score * effective_expectancy_weight +
-            router_score * effective_router_weight
-        ) / total_weight
-    
-    hybrid = _clamp01(raw_hybrid)
-    
-    # v7.5_A1: Apply alpha decay if enabled
-    decay_config = load_alpha_decay_config(strategy_config)
-    decay_result = apply_alpha_decay(
-        hybrid_score=hybrid,
-        symbol=symbol,
-        direction=direction,
-        config=decay_config,
+        ],
+        expectancy_snapshot=expectancy_snapshot,
+        router_health_snapshot=router_health_snapshot,
+        funding_snapshot=funding_snapshot,
+        basis_snapshot=basis_snapshot,
+        regime=regime,
+        config=config,
+        strategy_config=strategy_config,
+        factor_weights=factor_weights,
+        orthogonalized_factors=orthogonalized_factors,
     )
-    
-    # Use decayed score for threshold comparison
-    final_hybrid = decay_result["decayed_score"]
-    
-    # v7.5_B2: Apply router quality modulation
-    rq_multiplier = 1.0
-    rq_score = None
-    rq_enabled = False
-    try:
-        from execution.router_metrics import (
-            load_router_quality_config,
-            get_router_quality_score,
-        )
-        rq_config = load_router_quality_config(strategy_config)
-        rq_enabled = rq_config.enabled
-        
-        if rq_enabled:
-            rq_score = get_router_quality_score(symbol, rq_config)
-            
-            if rq_score <= rq_config.low_quality_threshold:
-                rq_multiplier = rq_config.low_quality_hybrid_multiplier
-            elif rq_score >= rq_config.high_quality_threshold:
-                rq_multiplier = rq_config.high_quality_hybrid_multiplier
-            # else: leave at 1.0
-            
-            final_hybrid = final_hybrid * rq_multiplier
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    
-    # v7.5_C1: Apply RV momentum factor
-    rv_score_val = 0.0
-    rv_enabled = False
-    rv_weight = 0.0
-    try:
-        from execution.rv_momentum import load_rv_config, get_rv_score
-        rv_config = load_rv_config(strategy_config)
-        rv_enabled = rv_config.enabled
-        
-        if rv_enabled:
-            rv_score_val = get_rv_score(symbol)
-            rv_weight = rv_config.hybrid_weight
-            # RV momentum adds to the hybrid score (not multiplicative)
-            final_hybrid = final_hybrid + rv_weight * rv_score_val
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    
-    # Clamp final hybrid to [-1, 1] (or 0, 1 for positive scores)
-    final_hybrid = max(-1.0, min(1.0, final_hybrid))
-    
-    # Determine minimum threshold based on direction
-    min_threshold = (
-        config.min_hybrid_score_long if direction == "LONG"
-        else config.min_hybrid_score_short
-    )
-    
-    return {
-        "symbol": symbol,
-        "direction": direction,
-        "hybrid_score": final_hybrid,
-        "hybrid_score_raw": hybrid,  # Pre-decay score for reference
-        "passes_threshold": final_hybrid >= min_threshold,
-        "min_threshold": min_threshold,
-        "components": {
-            "trend": trend_sc,
-            "carry": carry_sc,
-            "expectancy": expectancy_score,
-            "router": router_score,
-        },
-        "weights": {
-            "trend": config.trend_weight / total_weight,
-            "carry": effective_carry_weight / total_weight,
-            "expectancy": effective_expectancy_weight / total_weight,
-            "router": effective_router_weight / total_weight,
-        },
-        "regime": regime,
-        "weight_modifiers": {
-            "carry": weight_mods.carry,
-            "expectancy": weight_mods.expectancy,
-            "router": weight_mods.router,
-        },
-        "alpha_decay": {
-            "decay_multiplier": decay_result["decay_multiplier"],
-            "age_minutes": decay_result["age_minutes"],
-            "decay_enabled": decay_result["decay_enabled"],
-            "at_minimum": decay_result.get("at_minimum", False),
-        },
-        "router_quality": {
-            "score": rq_score,
-            "multiplier": rq_multiplier,
-            "enabled": rq_enabled,
-        },
-        "rv_momentum": {
-            "score": rv_score_val,
-            "weight": rv_weight,
-            "enabled": rv_enabled,
-        },
-        "carry_details": carry_result,
-        # v7.5_C2: Full factor vector for diagnostics
-        "factor_vector": {
-            "trend": trend_sc,
-            "carry": carry_sc,
-            "expectancy": expectancy_score,
-            "router": router_score,
-            "rv_momentum": rv_score_val,
-            "router_quality": rq_score if rq_score is not None else 0.0,
-            "vol_regime": 1.0 if regime == "normal" else (0.5 if regime in ("high", "crisis") else 1.2),
-        },
-        # v7.5_C3: Factor auto-weighting info
-        "factor_weighting": {
-            "using_factor_weights": using_factor_weights,
-            "factor_weights_used": factor_weights_used,
-            "using_orthogonalized": orthogonalized_factors is not None and symbol in (orthogonalized_factors or {}),
-        },
+    return results[0] if results else {
+        "symbol": symbol.upper(),
+        "direction": direction.upper(),
+        "hybrid_score": 0.0,
+        "passes_threshold": False,
+        "min_threshold": router_metrics.load_router_quality_config(strategy_config).min_for_emission,
     }
 
 
@@ -966,51 +889,198 @@ def hybrid_score_universe(
     regime: str | None = None,
     config: HybridScoreConfig | None = None,
     strategy_config: Mapping[str, Any] | None = None,
+    factor_weights: Mapping[str, float] | None = None,
+    orthogonalized_factors: Dict[str, Dict[str, float]] | None = None,
 ) -> list[Dict[str, Any]]:
     """
     Compute hybrid scores for all intents and return sorted by score.
-    
-    Args:
-        intents: List of intent dicts with 'symbol', 'direction', 'trend_score'
-        *_snapshot: Various data snapshots
-        regime: Current volatility regime
-        config: Hybrid scoring weights
-        strategy_config: Full strategy config
-    
-    Returns:
-        List of hybrid score results, sorted descending by hybrid_score
     """
-    if config is None:
-        config = load_hybrid_config(strategy_config)
-    
-    results = []
+    rq_cfg = router_metrics.load_router_quality_config(strategy_config)
+    rv_cfg = rv_momentum.load_rv_config(strategy_config)
+    alpha_cfg = load_alpha_decay_config(strategy_config)
+    cfg = config or load_hybrid_config(strategy_config)
+
+    router_map = _unpack_router_health(router_health_snapshot)
+    expect_map = _get_symbol_stats(expectancy_snapshot)
+
+    regime_label = (regime or "normal") if regime else "normal"
+    weight_mods = get_hybrid_weight_modifiers(regime_label, strategy_config)
+
+    results: list[Dict[str, Any]] = []
+    side_mode = str(((strategy_config or {}).get("vol_target") or {}).get("side_mode", "trend")).lower()
+
     for intent in intents:
         symbol = str(intent.get("symbol", "")).upper()
-        direction = str(intent.get("direction", intent.get("side", "LONG"))).upper()
-        trend_score = float(intent.get("trend_score", intent.get("signal_strength", 0.5)))
-        
         if not symbol:
             continue
-        
-        result = hybrid_score(
-            symbol=symbol,
-            direction=direction,
-            trend_score=trend_score,
-            expectancy_snapshot=expectancy_snapshot,
-            router_health_snapshot=router_health_snapshot,
-            funding_snapshot=funding_snapshot,
-            basis_snapshot=basis_snapshot,
-            regime=regime,
-            config=config,
-            strategy_config=strategy_config,
+        direction = str(intent.get("direction", intent.get("side", "LONG"))).upper()
+        trend_input = float(intent.get("trend_score", intent.get("signal_strength", 0.5)))
+        trend_sc = _clamp01(trend_input)
+
+        sym_score = score_symbol(
+            symbol,
+            {
+                "expectancy": expect_map.get(symbol, {}),
+                "router": router_map.get(symbol, {}),
+            },
         )
-        
-        # Attach original intent for reference
-        result["intent"] = dict(intent)
+        carry_result = carry_score(symbol, direction, funding_snapshot, basis_snapshot)
+        expectancy_score = sym_score["components"]["expectancy"]
+        router_score = sym_score["components"]["router"]
+
+        rq_score = _router_quality_score_from_health(router_health_snapshot, symbol, default=router_score)
+        if rq_cfg.enabled:
+            try:
+                rq_score = router_metrics.get_router_quality_score(symbol, cfg=rq_cfg)
+            except Exception:
+                rq_score = _router_quality_score_from_health(router_health_snapshot, symbol, default=router_score)
+
+        rv_score_val = 0.0
+        rv_enabled = bool(rv_cfg and rv_cfg.enabled)
+        if rv_enabled:
+            try:
+                rv_score_val = float(rv_momentum.get_rv_score(symbol, cfg=rv_cfg))
+            except Exception:
+                rv_score_val = 0.0
+        rv_weight = float(getattr(rv_cfg, "hybrid_weight", 0.0) if rv_enabled else 0.0)
+        rv_weight = max(0.0, min(1.0, rv_weight))
+
+        vol_regime_value = _vol_regime_value(regime_label)
+        raw_factor_vector: Dict[str, float] = {
+            "trend": trend_sc,
+            "carry": carry_result["score"],
+            "expectancy": expectancy_score,
+            "router": router_score,
+            "router_quality": rq_score,
+            "rv_momentum": rv_score_val,
+            "vol_regime": vol_regime_value,
+        }
+
+        factors_for_score = dict(raw_factor_vector)
+        using_orthogonalized = False
+        if orthogonalized_factors and symbol in orthogonalized_factors:
+            for key, value in orthogonalized_factors[symbol].items():
+                factors_for_score[key] = float(value)
+            using_orthogonalized = True
+
+        using_factor_weights = bool(factor_weights)
+        base_weights: Dict[str, float] = {}
+        if factor_weights:
+            base_weights = {str(k): float(v) for k, v in factor_weights.items()}
+        else:
+            base_weights = {
+                "trend": cfg.trend_weight,
+                "carry": cfg.carry_weight,
+                "expectancy": cfg.expectancy_weight,
+                "router": cfg.router_weight,
+            }
+
+        # Apply vol regime weight modifiers and normalize
+        base_weights["carry"] = base_weights.get("carry", 0.0) * weight_mods.carry
+        base_weights["expectancy"] = base_weights.get("expectancy", 0.0) * weight_mods.expectancy
+        base_weights["router"] = base_weights.get("router", 0.0) * weight_mods.router
+        weights_used = _normalize_weight_map(base_weights)
+
+        base_score = sum(
+            weights_used.get(name, 0.0) * factors_for_score.get(name, 0.0)
+            for name in weights_used
+        )
+
+        if rv_weight > 0:
+            base_score *= max(0.0, 1.0 - rv_weight)
+        hybrid_raw = base_score + rv_weight * rv_score_val
+
+        rq_multiplier = 1.0
+        if rq_cfg.enabled:
+            if rq_score <= rq_cfg.low_quality_threshold:
+                rq_multiplier = rq_cfg.low_quality_hybrid_multiplier
+            elif rq_score >= rq_cfg.high_quality_threshold:
+                rq_multiplier = rq_cfg.high_quality_hybrid_multiplier
+        hybrid_after_rq = hybrid_raw * rq_multiplier
+
+        alpha_decay_meta = {
+            "decayed_score": hybrid_after_rq,
+            "decay_multiplier": 1.0,
+            "age_minutes": 0.0,
+            "decay_enabled": False,
+        }
+        if alpha_cfg.enabled:
+            try:
+                alpha_decay_meta = apply_alpha_decay(
+                    hybrid_after_rq,
+                    symbol,
+                    direction,
+                    config=alpha_cfg,
+                )
+            except Exception:
+                alpha_decay_meta = {
+                    "decayed_score": hybrid_after_rq,
+                    "decay_multiplier": 1.0,
+                    "age_minutes": 0.0,
+                    "decay_enabled": False,
+                }
+
+        hybrid_final = alpha_decay_meta.get("decayed_score", hybrid_after_rq)
+        hybrid_final = max(-1.0, min(1.0, hybrid_final))
+
+        min_threshold = rq_cfg.min_for_emission
+        passes_threshold = hybrid_final >= min_threshold
+
+        classification = "NEUTRAL"
+        if passes_threshold and side_mode != "neutral":
+            classification = direction
+
+        reported_weights = {str(k): float(v) for k, v in factor_weights.items()} if using_factor_weights and factor_weights else {}
+
+        factor_weighting_block = {
+            "factor_weights_used": reported_weights,
+            "using_factor_weights": using_factor_weights,
+            "using_orthogonalized": using_orthogonalized,
+        }
+
+        result = {
+            "symbol": symbol,
+            "direction": direction,
+            "regime": regime_label,
+            "hybrid_score": hybrid_final,
+            "components": {
+                "trend": trend_sc,
+                "carry": carry_result["score"],
+                "expectancy": expectancy_score,
+                "router": router_score,
+            },
+            "carry_details": carry_result,
+            "rv_momentum": {
+                "score": rv_score_val,
+                "enabled": rv_enabled,
+                "weight": rv_weight,
+            },
+            "router_quality": {
+                "enabled": rq_cfg.enabled,
+                "score": rq_score,
+                "multiplier": rq_multiplier,
+            },
+            "factor_vector": {
+                **raw_factor_vector,
+                **({} if not using_orthogonalized else {k: factors_for_score.get(k, raw_factor_vector.get(k, 0.0)) for k in factors_for_score}),
+            },
+            "factor_weighting": factor_weighting_block,
+            "weight_modifiers": {
+                "carry": weight_mods.carry,
+                "expectancy": weight_mods.expectancy,
+                "router": weight_mods.router,
+            },
+            "alpha_decay": alpha_decay_meta,
+            "passes_threshold": passes_threshold,
+            "min_threshold": min_threshold,
+            "intent": dict(intent),
+            "classification": classification,
+            "vol_regime_modifier": weight_mods.router,  # keep compatibility field
+        }
+
         results.append(result)
-    
-    # Sort by hybrid_score descending
-    results.sort(key=lambda x: x["hybrid_score"], reverse=True)
+
+    results.sort(key=lambda x: x.get("hybrid_score", 0.0), reverse=True)
     return results
 
 
@@ -1049,8 +1119,6 @@ def rank_intents_by_hybrid_score(
     if basis_snapshot is None:
         basis_snapshot = load_basis_snapshot()
     
-    config = load_hybrid_config(strategy_config)
-    
     results = hybrid_score_universe(
         intents=intents,
         expectancy_snapshot=expectancy_snapshot,
@@ -1058,7 +1126,6 @@ def rank_intents_by_hybrid_score(
         funding_snapshot=funding_snapshot,
         basis_snapshot=basis_snapshot,
         regime=regime,
-        config=config,
         strategy_config=strategy_config,
     )
     
