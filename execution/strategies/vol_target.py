@@ -1,8 +1,10 @@
 """
-Volatility Target Strategy (v7.3-alpha)
+Volatility Target Strategy (v7.3-alpha, v7.7 conviction sizing, v7.8 alpha router)
 
 A volatility-targeting strategy that scales position sizes based on ATR
 to maintain consistent risk per trade across different volatility regimes.
+Optionally applies conviction-weighted sizing (v7.7) and alpha router
+allocation scaling (v7.8).
 """
 
 from __future__ import annotations
@@ -15,6 +17,37 @@ try:
     from execution.exchange_utils import get_klines
 except Exception:  # pragma: no cover - fallback for tests without exchange client
     get_klines = None
+
+# v7.7: Conviction sizing integration
+try:
+    from execution.conviction_engine import (
+        ConvictionConfig,
+        ConvictionContext,
+        ConvictionResult,
+        load_conviction_config,
+        compute_conviction,
+        apply_conviction_to_nav_pct,
+        load_risk_snapshot as load_conviction_risk_snapshot,
+        load_router_health as load_conviction_router_health,
+        get_global_router_quality,
+        get_dd_state,
+        get_risk_mode,
+    )
+    _CONVICTION_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _CONVICTION_AVAILABLE = False
+
+# v7.8_P2: Alpha Router integration
+try:
+    from execution.alpha_router import (
+        load_alpha_router_config,
+        load_allocation_for_sizing,
+        NEUTRAL_ALLOCATION,
+    )
+    _ALPHA_ROUTER_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _ALPHA_ROUTER_AVAILABLE = False
+    NEUTRAL_ALLOCATION = 1.0
 
 
 def _utc_now_iso() -> str:
@@ -82,6 +115,150 @@ def _risk_mode_allowed(current: str, max_mode: str) -> bool:
     except ValueError:
         # Unknown risk mode: be conservative
         return False
+
+
+# ---------------------------------------------------------------------------
+# Conviction Sizing (v7.7)
+# ---------------------------------------------------------------------------
+
+def apply_conviction_sizing(
+    base_nav_pct: float,
+    hybrid_score: float,
+    trend_strength: float,
+    vol_regime: str,
+    strategy_config: Dict[str, Any],
+    min_nav_pct: float,
+    max_nav_pct: float,
+) -> Tuple[float, Optional[Dict[str, Any]]]:
+    """
+    Apply conviction-weighted sizing if enabled.
+    
+    Args:
+        base_nav_pct: Base NAV pct from vol-target calculation
+        hybrid_score: Hybrid score from trend/carry analysis
+        trend_strength: HTF trend strength [0, 1]
+        vol_regime: Volatility regime label
+        strategy_config: Strategy configuration dict
+        min_nav_pct: Minimum allowed NAV pct
+        max_nav_pct: Maximum allowed NAV pct
+    
+    Returns:
+        Tuple of (final_nav_pct, conviction_metadata or None)
+    """
+    if not _CONVICTION_AVAILABLE:
+        return base_nav_pct, None
+    
+    # Load conviction config
+    conviction_cfg = load_conviction_config(strategy_config)
+    if not conviction_cfg.enabled:
+        return base_nav_pct, None
+    
+    # Load state surfaces (read-only)
+    risk_snapshot = load_conviction_risk_snapshot()
+    router_health = load_conviction_router_health()
+    
+    # Build conviction context
+    ctx = ConvictionContext(
+        hybrid_score=hybrid_score,
+        expectancy_alpha=0.5,  # Default when not available; can be enhanced later
+        router_quality=get_global_router_quality(router_health),
+        trend_strength=trend_strength,
+        vol_regime=vol_regime if vol_regime in ("low", "normal", "high", "crisis") else "normal",  # type: ignore[arg-type]
+        dd_state=get_dd_state(risk_snapshot),
+        risk_mode=get_risk_mode(risk_snapshot),
+    )
+    
+    # Compute conviction
+    result = compute_conviction(ctx, conviction_cfg)
+    
+    # Apply to NAV pct
+    final_nav_pct = apply_conviction_to_nav_pct(
+        base_nav_pct=base_nav_pct,
+        conviction_result=result,
+        min_nav_pct=min_nav_pct,
+        max_nav_pct=max_nav_pct,
+    )
+    
+    # Build metadata for intent
+    metadata = {
+        "conviction_score": result.conviction_score,
+        "conviction_band": result.conviction_band,
+        "size_multiplier": result.size_multiplier,
+        "vetoed": result.vetoed,
+        "veto_reason": result.veto_reason,
+        "components": result.components,
+        "base_nav_pct": base_nav_pct,
+        "final_nav_pct": final_nav_pct,
+    }
+    
+    return final_nav_pct, metadata
+
+
+# ---------------------------------------------------------------------------
+# Alpha Router Integration (v7.8_P2)
+# ---------------------------------------------------------------------------
+
+def get_alpha_router_allocation(
+    strategy_config: Dict[str, Any],
+) -> Tuple[float, Optional[Dict[str, Any]]]:
+    """
+    Get alpha router allocation multiplier for sizing.
+    
+    Returns NEUTRAL_ALLOCATION (1.0) if alpha router is disabled or unavailable.
+    
+    Args:
+        strategy_config: Strategy configuration dict
+        
+    Returns:
+        Tuple of (allocation, metadata or None)
+    """
+    if not _ALPHA_ROUTER_AVAILABLE:
+        return NEUTRAL_ALLOCATION, None
+    
+    try:
+        cfg = load_alpha_router_config(strategy_config)
+        if not cfg.enabled:
+            return NEUTRAL_ALLOCATION, None
+        
+        allocation = load_allocation_for_sizing(cfg=cfg)
+        metadata = {
+            "alpha_router_enabled": True,
+            "target_allocation": allocation,
+        }
+        return allocation, metadata
+    except Exception:
+        return NEUTRAL_ALLOCATION, None
+
+
+def apply_alpha_router_to_nav_pct(
+    nav_pct: float,
+    allocation: float,
+    min_nav_pct: float,
+    max_nav_pct: float,
+) -> float:
+    """
+    Apply alpha router allocation to NAV percentage.
+    
+    CRITICAL: Allocation only scales DOWN from configured ceilings.
+    It never increases limits above their configured values.
+    
+    Args:
+        nav_pct: Current NAV percentage
+        allocation: Alpha router allocation ∈ [0, 1]
+        min_nav_pct: Minimum allowed NAV pct
+        max_nav_pct: Maximum allowed NAV pct (ceiling)
+        
+    Returns:
+        Adjusted NAV percentage
+    """
+    # Apply allocation as a ceiling multiplier
+    adjusted_max = max_nav_pct * allocation
+    
+    # Scale the nav_pct proportionally but clamp to adjusted ceiling
+    scaled = nav_pct * allocation
+    
+    # Ensure we don't go below minimum
+    return max(min_nav_pct, min(scaled, adjusted_max))
 
 
 def compute_vol_factor(atr_value: float, price: float, cfg: VolTargetConfig) -> Optional[float]:
@@ -496,7 +673,37 @@ def generate_vol_target_intent(
     if vol_factor is None:
         return None
 
-    per_trade_nav_pct = compute_per_trade_nav_pct(cfg.base_per_trade_nav_pct, vol_factor, cfg)
+    base_per_trade_nav_pct = compute_per_trade_nav_pct(cfg.base_per_trade_nav_pct, vol_factor, cfg)
+
+    # v7.7: Apply conviction-weighted sizing if enabled
+    conviction_metadata: Optional[Dict[str, Any]] = None
+    hybrid_score = float(hybrid.get("hybrid_score", 0.0) or 0.0)
+    trend_strength = float(trend_info.get("strength", 0.0) or 0.0)
+    vol_regime_label = str(regimes_snapshot.get("vol_regime", "normal") or "normal").lower()
+    
+    per_trade_nav_pct, conviction_metadata = apply_conviction_sizing(
+        base_nav_pct=base_per_trade_nav_pct,
+        hybrid_score=hybrid_score,
+        trend_strength=trend_strength,
+        vol_regime=vol_regime_label,
+        strategy_config=strategy_cfg,
+        min_nav_pct=cfg.min_per_trade_nav_pct,
+        max_nav_pct=cfg.max_per_trade_nav_pct,
+    )
+    
+    # Check if conviction vetoed the trade
+    if conviction_metadata and conviction_metadata.get("vetoed"):
+        return None
+
+    # v7.8_P2: Apply alpha router allocation scaling
+    alpha_allocation, alpha_metadata = get_alpha_router_allocation(strategy_cfg)
+    if alpha_allocation < NEUTRAL_ALLOCATION:
+        per_trade_nav_pct = apply_alpha_router_to_nav_pct(
+            nav_pct=per_trade_nav_pct,
+            allocation=alpha_allocation,
+            min_nav_pct=cfg.min_per_trade_nav_pct,
+            max_nav_pct=cfg.max_per_trade_nav_pct,
+        )
 
     gross_usd = nav * per_trade_nav_pct
     if gross_usd <= 0:
@@ -548,6 +755,10 @@ def generate_vol_target_intent(
                     "take_profit_price": tp_price,
                     "stop_loss_price": sl_price,
                 },
+                # v7.7: Conviction sizing metadata
+                "conviction": conviction_metadata,
+                # v7.8_P2: Alpha Router metadata
+                "alpha_router": alpha_metadata,
             },
         },
     }

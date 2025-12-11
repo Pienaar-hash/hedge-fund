@@ -28,6 +28,7 @@ def _payload(
     expectancy: float = 0.5,
     router_quality: float = 0.8,
     rv_momentum: float = 0.0,
+    category_momentum: float = 0.0,
     vol_regime_label: str = "normal",
 ) -> HybridFactorPayload:
     return HybridFactorPayload(
@@ -43,12 +44,13 @@ def _payload(
             "router_quality": router_quality,
             "rv_momentum": rv_momentum,
             "vol_regime": _VOL_REGIME_FACTOR.get(vol_regime_label, 0.0),
+            "category_momentum": category_momentum,
         },
     )
 
 
 def test_weights_smoothed_and_clamped():
-    raw_weights = {f: 0.9 for f in ["trend", "carry", "expectancy", "router_quality", "rv_momentum", "vol_regime"]}
+    raw_weights = {f: 0.9 for f in ["trend", "carry", "expectancy", "router_quality", "rv_momentum", "vol_regime", "category_momentum"]}
     prev_weights = {f: 0.0 for f in raw_weights}
 
     result = compute_hybrid_scores(

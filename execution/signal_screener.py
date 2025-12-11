@@ -590,6 +590,20 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         allowed_set = set()
         tier_by = {}
 
+    # v7.8_P3: Apply universe optimizer filter if enabled
+    try:
+        from execution.universe_optimizer import get_allowed_symbols
+        optimized_universe = get_allowed_symbols()
+        if optimized_universe is not None:
+            # Intersection: only symbols in both allowed_set AND optimized universe
+            optimized_set = {s.upper() for s in optimized_universe}
+            if optimized_set:
+                allowed_set = allowed_set & optimized_set if allowed_set else optimized_set
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
     # Risk cfg + portfolio snapshot (best effort)
     rlc = _load_risk_cfg()
     kill_switch = os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on")

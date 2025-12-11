@@ -1518,6 +1518,52 @@ def compute_and_write_factor_pnl_state(
         return {}
 
 
+# ---------------------------------------------------------------------------
+# v7.7_P4: Edge Insights Surface (Research-Only)
+# ---------------------------------------------------------------------------
+
+
+def compute_and_write_edge_insights(
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """
+    Compute edge insights snapshot and write to state file (v7.7_P4).
+    
+    This is a RESEARCH-ONLY surface that aggregates:
+    - Factor edges (IR, PnL contribution, weights)
+    - Symbol edges (hybrid scores, conviction, recent PnL)
+    - Category edges (momentum, IR, aggregate PnL)
+    - Regime context (vol regime, DD state, risk mode)
+    
+    This function does NOT influence execution or trading decisions.
+    
+    Returns:
+        The computed edge insights snapshot as dict
+    """
+    try:
+        from execution.edge_scanner import (
+            build_edge_insights_snapshot,
+            write_edge_insights,
+            EdgeScannerConfig,
+        )
+        
+        sd = state_dir or STATE_DIR
+        
+        # Build snapshot from existing state surfaces
+        snapshot = build_edge_insights_snapshot()
+        
+        # Write to state file
+        write_edge_insights(snapshot, sd / "edge_insights.json")
+        
+        return snapshot.to_dict()
+    except ImportError:
+        LOG.debug("edge_scanner not available")
+        return {}
+    except Exception as exc:
+        LOG.warning("edge_insights_computation_failed: %s", exc)
+        return {}
+
+
 def write_regimes_state(
     payload: Dict[str, Any] | None = None,
     state_dir: pathlib.Path | None = None,

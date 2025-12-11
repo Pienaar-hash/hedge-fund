@@ -111,6 +111,12 @@ def _reset_global_state():
         diagnostics_metrics.reset_diagnostics()
     except Exception:
         pass
+    # v7.7_P6: Clear conviction EMA smoothing cache BEFORE test
+    try:
+        from execution import conviction_engine
+        conviction_engine.clear_conviction_cache()
+    except (ImportError, AttributeError):
+        pass
     yield
     # Clean up telegram rate limiting state AFTER test
     try:
@@ -123,4 +129,10 @@ def _reset_global_state():
         from execution import diagnostics_metrics
         diagnostics_metrics.reset_diagnostics()
     except Exception:
+        pass
+    # v7.7_P6: Clear conviction EMA smoothing cache AFTER test
+    try:
+        from execution import conviction_engine
+        conviction_engine.clear_conviction_cache()
+    except (ImportError, AttributeError):
         pass

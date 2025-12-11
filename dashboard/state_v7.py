@@ -72,6 +72,7 @@ ROUTER_QUALITY_PATH = Path(os.getenv("ROUTER_QUALITY_PATH") or (STATE_DIR / "rou
 RV_MOMENTUM_PATH = Path(os.getenv("RV_MOMENTUM_PATH") or (STATE_DIR / "rv_momentum.json"))
 FACTOR_DIAGNOSTICS_PATH = Path(os.getenv("FACTOR_DIAGNOSTICS_PATH") or (STATE_DIR / "factor_diagnostics.json"))
 FACTOR_PNL_PATH = Path(os.getenv("FACTOR_PNL_PATH") or (STATE_DIR / "factor_pnl.json"))
+EDGE_INSIGHTS_PATH = Path(os.getenv("EDGE_INSIGHTS_PATH") or (STATE_DIR / "edge_insights.json"))
 
 # Offchain/Treasury state paths (v7.6)
 OFFCHAIN_ASSETS_PATH = Path(os.getenv("OFFCHAIN_ASSETS_PATH") or (STATE_DIR / "offchain_assets.json"))
@@ -544,6 +545,31 @@ def load_factor_pnl_state(default: Optional[Dict[str, Any]] = None) -> Dict[str,
     """
     try:
         return _load_state_json(FACTOR_PNL_PATH, default or {}) or (default or {})
+    except Exception:
+        return default or {}
+
+
+def load_edge_insights_state(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Load edge insights from EdgeScanner state file (v7.7_P5).
+    
+    Returns:
+        Dict with:
+        - updated_ts: timestamp
+        - vol_regime: current volatility regime
+        - dd_state: drawdown state from NAV
+        - risk_mode: current risk mode (normal/cautious/defensive)
+        - router_quality: router execution quality bucket
+        - top_factors: list of highest-scoring factors
+        - weak_factors: list of lowest-scoring factors
+        - top_symbols: list of highest-scoring symbols
+        - weak_symbols: list of lowest-scoring symbols
+        - top_categories: list of highest-scoring categories
+        - weak_categories: list of lowest-scoring categories
+        - edge_by_factor: dict mapping factor -> edge magnitude
+    """
+    try:
+        return _load_state_json(EDGE_INSIGHTS_PATH, default or {}) or (default or {})
     except Exception:
         return default or {}
 

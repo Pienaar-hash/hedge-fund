@@ -598,6 +598,7 @@ def _maybe_publish_execution_intel() -> None:
             write_risk_allocation_suggestions_state,
             compute_and_write_rv_momentum_state,
             compute_and_write_factor_diagnostics_state,
+            compute_and_write_edge_insights,
         )
 
         trades = expectancy_v6.load_trade_records(lookback_hours=48.0)
@@ -613,6 +614,8 @@ def _maybe_publish_execution_intel() -> None:
         compute_and_write_rv_momentum_state()
         # Factor diagnostics state (v7.5_C2)
         compute_and_write_factor_diagnostics_state(scores_snapshot)
+        # Edge insights surface (v7.7_P4) — research-only, no execution impact
+        compute_and_write_edge_insights()
         _LAST_SYMBOL_SCORES_STATE = dict(scores_snapshot)
         router_suggestions_payload = None
         if ROUTER_AUTOTUNE_V6_ENABLED:

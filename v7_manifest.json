@@ -72,6 +72,165 @@
       "owner": "executor",
       "update_frequency": "per_intel",
       "description": "Normalized factor surface with covariance/IR, orthogonalization, weights, attribution"
+    },
+    "edge_insights": {
+      "path": "logs/state/edge_insights.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "Research-only snapshot aggregating factor, symbol, category edge metrics",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "edge_summary": "Top/bottom factor/symbol/category edges",
+        "factor_edges": "Dict of per-factor metrics",
+        "symbol_edges": "Dict of per-symbol metrics",
+        "category_edges": "Dict of per-category metrics",
+        "config_echo": "Lookback parameters for reproducibility"
+      }
+    },
+    "meta_scheduler": {
+      "path": "logs/state/meta_scheduler.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "Slow-timescale meta-learning overlays for factors, conviction, and categories",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "factor_state": "meta_weights and EMAs per factor",
+        "conviction_state": "global_strength and EMA health metrics",
+        "category_state": "per-category overlays and EMAs",
+        "stats": "sample_count, last_health_score, learning_active"
+      }
+    },
+    "alpha_router_state": {
+      "path": "logs/state/alpha_router_state.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "Dynamic capital allocation based on health, regime, and meta signals",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "target_allocation": "float ∈ [0, 1] - portfolio allocation multiplier",
+        "raw_components": "health_base, vol_penalty, dd_penalty, router_penalty, meta_adjustment",
+        "smoothed": "bool - whether EMA smoothing was applied",
+        "prev_allocation": "float - previous allocation for smoothing"
+      }
+    },
+    "universe_optimizer": {
+      "path": "logs/state/universe_optimizer.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "Dynamic symbol whitelist curator based on edge, category, meta, health signals",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "allowed_symbols": "List[str] - symbols allowed in active universe",
+        "symbol_scores": "Dict[str, float] - composite scores per symbol",
+        "category_scores": "Dict[str, float] - aggregated scores per category",
+        "total_universe_size": "int - size of candidate universe",
+        "effective_max_size": "int - max size after regime adjustments",
+        "notes": "List[str] - diagnostic notes for this update cycle"
+      }
+    },
+    "alpha_miner": {
+      "path": "logs/state/alpha_miner.json",
+      "owner": "executor",
+      "update_frequency": "per_intel_throttled",
+      "optional": true,
+      "description": "Autonomous alpha miner (Prospector) scanning all exchange symbols for universe expansion candidates",
+      "fields": {
+        "updated_ts": "Unix timestamp",
+        "cycle_count": "int - number of miner cycles run",
+        "symbols_scanned": "int - total symbols scanned",
+        "symbols_passed_filter": "int - symbols passing liquidity/spread filters",
+        "candidates": "List[Candidate] - top scored candidates for universe expansion",
+        "ema_scores": "Dict[str, float] - EMA-smoothed scores per symbol",
+        "notes": "str - diagnostic notes",
+        "errors": "List[str] - recent errors (max 10)"
+      }
+    },
+    "cross_pair_edges": {
+      "path": "logs/state/cross_pair_edges.json",
+      "owner": "executor",
+      "update_frequency": "per_intel_throttled",
+      "optional": true,
+      "description": "Cross-pair statistical arbitrage engine (Crossfire) producing pair-level edge scores",
+      "fields": {
+        "updated_ts": "Unix timestamp",
+        "cycle_count": "int - number of crossfire cycles run",
+        "pairs_analyzed": "int - total pairs analyzed",
+        "pairs_eligible": "int - pairs passing eligibility criteria",
+        "pair_edges": "Dict[str, PairEdge] - edge scores and stats per pair key (e.g. BTCUSDT-ETHUSDT)",
+        "ema_scores": "Dict[str, float] - EMA-smoothed edge scores per pair",
+        "meta": "Dict - config echoes and counts",
+        "notes": "str - diagnostic notes",
+        "errors": "List[str] - recent errors (max 10)"
+      }
+    },
+    "sentinel_x": {
+      "path": "logs/state/sentinel_x.json",
+      "owner": "executor",
+      "update_frequency": "per_intel_throttled",
+      "optional": true,
+      "description": "Sentinel-X hybrid ML market regime classifier producing regime probabilities and hard labels",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "cycle_count": "int - number of Sentinel-X cycles run",
+        "primary_regime": "str - main regime label (TREND_UP, TREND_DOWN, MEAN_REVERT, BREAKOUT, CHOPPY, CRISIS)",
+        "secondary_regime": "str|null - secondary regime if probability > threshold",
+        "regime_probs": "Dict[str, float] - raw regime probabilities",
+        "smoothed_probs": "Dict[str, float] - EMA-smoothed regime probabilities",
+        "features": "Dict[str, float] - extracted market features (returns_mean, trend_slope, etc.)",
+        "crisis_flag": "bool - true if crisis override is active",
+        "crisis_reason": "str - reason for crisis override if active",
+        "history_meta": "Dict - label stickiness tracking",
+        "meta": "Dict - model config echo",
+        "notes": "str - diagnostic notes",
+        "errors": "List[str] - recent errors (max 10)"
+      }
+    },
+    "alpha_decay": {
+      "path": "logs/state/alpha_decay.json",
+      "owner": "executor",
+      "update_frequency": "per_intel_throttled",
+      "optional": true,
+      "description": "Alpha Decay & Survival Curves (Thanatos) - mortality model for alpha half-life and survival probabilities",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "cycle_count": "int - number of alpha decay cycles run",
+        "symbols": "Dict[str, SymbolDecayStats] - per-symbol decay rate, half-life, survival/deterioration probs",
+        "categories": "Dict[str, CategoryDecayStats] - per-category aggregated decay stats",
+        "factors": "Dict[str, FactorDecayStats] - per-factor decay and weight multipliers",
+        "avg_symbol_survival": "float - average survival probability across symbols",
+        "avg_category_survival": "float - average survival probability across categories",
+        "avg_factor_survival": "float - average survival probability across factors",
+        "overall_alpha_health": "float - composite alpha health score",
+        "weakest_symbols": "List[str] - symbols with lowest survival probability",
+        "strongest_symbols": "List[str] - symbols with highest survival probability",
+        "weakest_categories": "List[str] - categories with lowest survival probability",
+        "weakest_factors": "List[str] - factors with lowest survival probability",
+        "meta": "Dict - sentinel regime, universe size, config echoes"
+      }
+    },
+    "cerberus_state": {
+      "path": "logs/state/cerberus_state.json",
+      "owner": "executor",
+      "update_frequency": "per_intel_throttled",
+      "optional": true,
+      "description": "Cerberus Multi-Strategy Portfolio Router - dynamic head multipliers for strategy families",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "cycle_count": "int - number of Cerberus cycles run",
+        "head_state": "Dict[str, HeadMetrics] - per-head multipliers, EMA scores, signal components",
+        "regime": "str - current Sentinel-X regime label",
+        "regime_probs": "Dict[str, float] - regime probabilities",
+        "overall_health": "float - strategy health score",
+        "avg_decay_survival": "float - average alpha decay survival probability",
+        "meta_scheduler_active": "bool - whether meta-scheduler is active",
+        "notes": "List[str] - diagnostic notes (max 10)",
+        "errors": "List[str] - recent errors (max 10)",
+        "meta": "Dict - config version, bounds, learning_rate"
+      }
     }
   },
   "diagnostics": {

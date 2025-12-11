@@ -474,7 +474,8 @@
       "rv_momentum",
       "router_quality",
       "expectancy",
-      "vol_regime"
+      "vol_regime",
+      "category_momentum"
     ],
     "normalization_mode": "zscore",
     "covariance_lookback_days": 30,
@@ -490,8 +491,267 @@
       "min_weight": 0.05,
       "max_weight": 0.40,
       "normalize_to_one": true,
-      "smoothing_alpha": 0.2
+      "smoothing_alpha": 0.2,
+      "adaptive": {
+        "enabled": false,
+        "ir_boost_threshold": 0.25,
+        "ir_cut_threshold": 0.0,
+        "pnl_min_for_boost": 0.0,
+        "max_shift": 0.10
+      }
     }
+  },
+  "conviction": {
+    "enabled": true,
+    "size_multipliers": {
+      "very_low": 0.3,
+      "low": 0.5,
+      "medium": 1.0,
+      "high": 1.6,
+      "very_high": 2.2
+    },
+    "thresholds": {
+      "very_low": 0.20,
+      "low": 0.40,
+      "medium": 0.60,
+      "high": 0.80,
+      "very_high": 0.92
+    },
+    "dd_overrides": {
+      "DRAWDOWN": 0.5,
+      "RECOVERY": 0.8
+    },
+    "risk_mode_overrides": {
+      "DEFENSIVE": 0.5,
+      "EXTREME": 0.0
+    },
+    "router_quality_thresholds": {
+      "min_for_any_trade": 0.50,
+      "min_for_full_size": 0.80
+    },
+    "category_weight": 0.0
+  },
+  "category_momentum": {
+    "enabled": true,
+    "lookback_bars": 48,
+    "half_life_bars": 24,
+    "ir_scale": 2.0,
+    "max_abs_score": 1.0,
+    "base_factor_weight": 0.08
+  },
+  "meta_scheduler": {
+    "enabled": false,
+    "learning_rate": 0.05,
+    "min_samples": 50,
+    "max_factor_shift": 0.10,
+    "max_conviction_shift": 0.15,
+    "max_category_shift": 0.15,
+    "decay": 0.90,
+    "ir_threshold": 0.3,
+    "pnl_threshold": 0.0
+  },
+  "alpha_router": {
+    "enabled": false,
+    "allocation_floor": 0.20,
+    "allocation_ceiling": 1.00,
+    "health_thresholds": {
+      "strong": 0.75,
+      "weak": 0.45
+    },
+    "regime_penalties": {
+      "LOW": 1.0,
+      "NORMAL": 1.0,
+      "HIGH": 0.80,
+      "CRISIS": 0.50
+    },
+    "dd_penalties": {
+      "NORMAL": 1.0,
+      "RECOVERY": 0.85,
+      "DRAWDOWN": 0.65
+    },
+    "router_quality_thresholds": {
+      "good": 0.65,
+      "moderate": 0.45
+    },
+    "meta_influence": 0.10,
+    "smoothing_alpha": 0.25
+  },
+  "universe_optimizer": {
+    "enabled": false,
+    "min_universe_size": 4,
+    "max_universe_size": 20,
+    "base_edge_weight": 0.35,
+    "category_weight": 0.20,
+    "meta_weight": 0.15,
+    "health_weight": 0.15,
+    "allocation_weight": 0.15,
+    "volatility_regime_shrink": 0.25,
+    "drawdown_shrink": 0.35,
+    "category_diversification_min": 2,
+    "smoothing_alpha": 0.15,
+    "scoring_floor": 0.25
+  },
+  "alpha_miner": {
+    "_comment": "Autonomous Alpha Miner (Prospector) — v7.8_P4",
+    "enabled": false,
+    "min_liquidity_usd": 500000.0,
+    "max_spread_pct": 0.30,
+    "min_age_days": 30,
+    "score_threshold": 0.50,
+    "top_k": 20,
+    "smoothing_alpha": 0.15,
+    "lookback_bars": 100,
+    "interval": "4h",
+    "run_interval_cycles": 50,
+    "weights": {
+      "short_momo": 0.15,
+      "long_momo": 0.20,
+      "inv_vol": 0.15,
+      "trend_consistency": 0.20,
+      "router_score": 0.10,
+      "liq_quality": 0.20
+    },
+    "exclude_patterns": ["BUSD", "TUSD", "USDC", "DAI", "USDP"]
+  },
+  "cross_pair_engine": {
+    "_comment": "Cross-Pair Statistical Arbitrage Engine (Crossfire) — v7.8_P5",
+    "enabled": false,
+    "pairs": [
+      ["BTCUSDT", "ETHUSDT"],
+      ["SOLUSDT", "SUIUSDT"],
+      ["ARBUSDT", "OPUSDT"]
+    ],
+    "lookback_bars": 240,
+    "half_life_bars": 60,
+    "min_corr": 0.75,
+    "max_spread_z": 3.0,
+    "entry_z": 2.0,
+    "exit_z": 0.5,
+    "min_liquidity_usd": 50000,
+    "smoothing_alpha": 0.20,
+    "run_interval_cycles": 10,
+    "use_universe_bias": false,
+    "universe_bias_threshold": 0.50,
+    "universe_bias_max": 0.10
+  },
+  "sentinel_x": {
+    "_comment": "Sentinel-X: Hybrid ML Market Regime Classifier — v7.8_P6",
+    "enabled": false,
+    "lookback_bars": 240,
+    "feature_agg_bars": 48,
+    "min_history_days": 30,
+    "regimes": ["TREND_UP", "TREND_DOWN", "MEAN_REVERT", "BREAKOUT", "CHOPPY", "CRISIS"],
+    "prob_thresholds": {
+      "primary": 0.55,
+      "secondary": 0.25
+    },
+    "crisis_hard_rules": {
+      "dd_threshold": 0.12,
+      "vol_spike_multiple": 3.0
+    },
+    "model": {
+      "type": "gradient_boosting",
+      "max_depth": 4,
+      "n_estimators": 100
+    },
+    "smoothing": {
+      "prob_alpha": 0.30,
+      "label_stickiness": 3
+    },
+    "run_interval_cycles": 5,
+    "conviction_weights": {
+      "TREND_UP": 1.10,
+      "TREND_DOWN": 0.90,
+      "MEAN_REVERT": 0.95,
+      "BREAKOUT": 1.05,
+      "CHOPPY": 0.85,
+      "CRISIS": 0.50
+    },
+    "factor_weights": {
+      "TREND_UP": {"trend": 1.15, "mean_revert": 0.90, "momentum": 1.10, "value": 0.95},
+      "TREND_DOWN": {"trend": 1.10, "mean_revert": 0.85, "momentum": 0.90, "value": 1.05},
+      "MEAN_REVERT": {"trend": 0.90, "mean_revert": 1.15, "momentum": 0.95, "value": 1.05},
+      "BREAKOUT": {"trend": 1.10, "mean_revert": 0.85, "momentum": 1.15, "value": 0.90},
+      "CHOPPY": {"trend": 0.85, "mean_revert": 1.00, "momentum": 0.85, "value": 1.00},
+      "CRISIS": {"trend": 0.70, "mean_revert": 0.80, "momentum": 0.70, "value": 1.10}
+    },
+    "allocation_factors": {
+      "TREND_UP": 1.05,
+      "TREND_DOWN": 0.90,
+      "MEAN_REVERT": 0.95,
+      "BREAKOUT": 1.00,
+      "CHOPPY": 0.85,
+      "CRISIS": 0.60
+    },
+    "universe_shrink_factors": {
+      "TREND_UP": 0.0,
+      "TREND_DOWN": 0.15,
+      "MEAN_REVERT": 0.10,
+      "BREAKOUT": 0.05,
+      "CHOPPY": 0.25,
+      "CRISIS": 0.40
+    }
+  },
+  "alpha_decay": {
+    "_comment": "Alpha Decay & Survival Curves (Thanatos) — v7.8_P7",
+    "enabled": false,
+    "lookback_days": 120,
+    "min_samples": 30,
+    "smoothing_alpha": 0.15,
+    "symbol_half_life_floor": 5,
+    "symbol_half_life_ceiling": 90,
+    "category_half_life_floor": 10,
+    "factor_decay_floor": 0.95,
+    "decay_penalty_strength": 0.20,
+    "sentinel_x_integration": true,
+    "crisis_half_life_reduction": 0.30,
+    "choppy_half_life_reduction": 0.15,
+    "universe_optimizer_enabled": true,
+    "alpha_router_enabled": true,
+    "factor_diagnostics_enabled": true,
+    "conviction_enabled": true,
+    "high_deterioration_threshold": 0.60,
+    "low_survival_threshold": 0.40,
+    "run_interval_cycles": 10
+  },
+  "cerberus_router": {
+    "_comment": "Multi-Strategy Portfolio Router (Cerberus) — v7.8_P8",
+    "enabled": false,
+    "strategy_heads": {
+      "TREND": 1.0,
+      "MEAN_REVERT": 1.0,
+      "RELATIVE_VALUE": 1.0,
+      "CATEGORY": 1.0,
+      "VOL_HARVEST": 1.0,
+      "EMERGENT_ALPHA": 1.0
+    },
+    "learning_rate": 0.05,
+    "bounds": {
+      "min": 0.25,
+      "max": 2.0
+    },
+    "regime_weights": {
+      "TREND_UP": {"TREND": 1.3, "MEAN_REVERT": 0.7, "RELATIVE_VALUE": 1.0, "CATEGORY": 1.2, "VOL_HARVEST": 1.0, "EMERGENT_ALPHA": 1.0},
+      "TREND_DOWN": {"TREND": 1.2, "MEAN_REVERT": 0.8, "RELATIVE_VALUE": 1.1, "CATEGORY": 1.0, "VOL_HARVEST": 0.9, "EMERGENT_ALPHA": 0.8},
+      "MEAN_REVERT": {"TREND": 0.7, "MEAN_REVERT": 1.3, "RELATIVE_VALUE": 1.1, "CATEGORY": 1.0, "VOL_HARVEST": 1.0, "EMERGENT_ALPHA": 0.9},
+      "BREAKOUT": {"TREND": 1.4, "MEAN_REVERT": 0.8, "RELATIVE_VALUE": 1.0, "CATEGORY": 1.1, "VOL_HARVEST": 1.1, "EMERGENT_ALPHA": 1.1},
+      "CHOPPY": {"TREND": 0.8, "MEAN_REVERT": 1.1, "RELATIVE_VALUE": 1.2, "CATEGORY": 0.9, "VOL_HARVEST": 0.8, "EMERGENT_ALPHA": 0.7},
+      "CRISIS": {"TREND": 0.6, "MEAN_REVERT": 0.8, "RELATIVE_VALUE": 1.4, "CATEGORY": 1.0, "VOL_HARVEST": 0.5, "EMERGENT_ALPHA": 0.4}
+    },
+    "sentinel_x_integration": true,
+    "decay_integration": true,
+    "meta_scheduler_integration": true,
+    "signal_weights": {
+      "regime": 0.25,
+      "decay": 0.15,
+      "meta": 0.15,
+      "edge": 0.20,
+      "health": 0.15,
+      "universe": 0.05,
+      "rv": 0.05
+    },
+    "smoothing_alpha": 0.20,
+    "run_interval_cycles": 5
   },
   "strategy_adaptation": {},
   "strategy_weighting": {}

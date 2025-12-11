@@ -1,0 +1,35 @@
+{
+  "_comment": "Symbol to category mapping for sector rotation (v7.7_P3)",
+  "categories": {
+    "BTCUSDT": "L1_MAJOR",
+    "ETHUSDT": "L1_MAJOR",
+    "SOLUSDT": "L1_ALT",
+    "LTCUSDT": "L1_ALT",
+    "DOGEUSDT": "MEME",
+    "WIFUSDT": "MEME",
+    "LINKUSDT": "DEFI",
+    "SUIUSDT": "L1_ALT"
+  },
+  "category_metadata": {
+    "L1_MAJOR": {
+      "description": "Major L1 chains (BTC, ETH)",
+      "base_weight": 1.0
+    },
+    "L1_ALT": {
+      "description": "Alternative L1 chains",
+      "base_weight": 0.8
+    },
+    "MEME": {
+      "description": "Meme tokens",
+      "base_weight": 0.6
+    },
+    "DEFI": {
+      "description": "DeFi protocols",
+      "base_weight": 0.7
+    },
+    "OTHER": {
+      "description": "Uncategorized symbols",
+      "base_weight": 0.5
+    }
+  }
+}

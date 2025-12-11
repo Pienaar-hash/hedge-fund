@@ -1,4 +1,4 @@
-# Copilot Instructions — GPT Hedge v7
+# Copilot Instructions — GPT Hedge v7.6
 
 ## Architecture Overview
 
@@ -16,22 +16,28 @@ Signal Screener → Risk Engine → Order Router → State Publisher
 | Executor | `execution/executor_live.py` | Main loop (~3900 lines), orchestrates all components |
 | Screener | `execution/signal_screener.py` | Generates intents, computes unlevered sizing |
 | Risk | `execution/risk_limits.py` | `check_order()` is the **only** veto authority |
-| Router | `execution/order_router.py` | Maker-first POST_ONLY with taker fallback, TWAP support |
+| Router | `execution/order_router.py` | Maker-first POST_ONLY with taker fallback, TWAP/slippage model |
 | State | `execution/state_publish.py` | Writes canonical state to `logs/state/*.json` |
 | NAV | `execution/nav.py` | `nav_health_snapshot()` — sole source of risk truth |
+| Intel | `execution/intel/*.py` | Scoring: `expectancy_v6.py`, `symbol_score_v6.py`, `hybrid_score_engine.py` |
+| Conviction | `execution/conviction_engine.py` | Conviction-weighted sizing (v7.7), uses factors + risk state |
+| Conviction | `execution/conviction_engine.py` | Conviction-weighted sizing (v7.7), uses factors + risk state |
 
 ## Project Layout
 
 ```
 execution/           # Core trading logic — DO NOT import from dashboard/
-  intel/             # ACTIVE: expectancy_v6.py, symbol_score_v6.py, router_policy.py
-  ml/                # DORMANT — not wired into v7 pipeline
+  intel/             # Scoring: expectancy_v6.py, symbol_score_v6.py, hybrid_score_engine.py
   utils/             # Metrics helpers, execution health, vol regime
   strategies/        # Strategy implementations (vol_target.py)
 config/              # Runtime configs — all values in fractional form (0.05 = 5%)
 logs/state/          # Canonical state files consumed by dashboard (read-only for dash)
 dashboard/           # Streamlit app — reads from logs/state/, never writes
-tests/               # 100+ pytest files — run with PYTHONPATH=.
+tests/               # ~160 pytest files — run with PYTHONPATH=.
+  unit/              # Fast, pure in-process tests
+  integration/       # Multi-module tests, may touch filesystem
+  legacy/            # Legacy tests from v5/v6 kept for reference
+v7_manifest.json     # Canonical list of state files, owners, update frequencies
 ```
 
 ## Critical Invariants
@@ -85,6 +91,7 @@ if flags.intel_v6_enabled:
 | `risk_engine_v6_enabled` | `RISK_ENGINE_V6_ENABLED` | Use typed RiskDecision returns |
 | `pipeline_v6_shadow_enabled` | `PIPELINE_V6_SHADOW_ENABLED` | Enable shadow pipeline validation |
 | `router_autotune_v6_enabled` | `ROUTER_AUTOTUNE_V6_ENABLED` | Enable router auto-tuning |
+| `feedback_allocator_v6_enabled` | `FEEDBACK_ALLOCATOR_V6_ENABLED` | Enable feedback-based position allocation |
 | `router_autotune_v6_apply_enabled` | `ROUTER_AUTOTUNE_V6_APPLY_ENABLED` | Actually apply router suggestions (0=safe) |
 
 ## Developer Workflow
@@ -98,18 +105,38 @@ export EXECUTOR_ONCE=1      # single iteration mode (optional)
 
 ### Run Tests
 ```bash
-PYTHONPATH=. pytest -q      # ALWAYS run full suite — patches are only complete when entire suite is green
-make smoke                   # Firestore + doctor health check
+PYTHONPATH=. pytest -q           # ALWAYS run full suite — patches are only complete when entire suite is green
+make test                         # runs tests/unit + tests/integration
+make test-fast                    # skip runtime and legacy markers
+make smoke                        # Firestore + doctor health check
 ```
 **Never run individual test files unless actively debugging.** The suite includes ~160 tests; partial runs miss regressions.
 
+Test markers (from `pytest.ini`):
+- `@pytest.mark.unit` — fast, pure in-process tests
+- `@pytest.mark.integration` — multi-module tests, may touch filesystem
+- `@pytest.mark.runtime` — require state files
+- `@pytest.mark.legacy` — kept for reference
+
+### Test Map (examples, not exhaustive)
+
+Agents should look up tests near the file they're editing; this list gives a fast starting point:
+
+| Test File | Coverage |
+|-----------|----------|
+| `tests/integration/test_risk_limits.py` | Risk veto gates, caps, DD/risk_mode behaviour |
+| `tests/integration/test_state_publish_diagnostics.py` | `diagnostics.json` schema & liveness/exit metrics |
+| `tests/integration/test_state_positions_ledger_contract.py` | Positions/ledger authority & TP/SL coverage |
+| `tests/integration/test_state_files_schema.py` | Core state surfaces schema checks |
+| `tests/integration/test_manifest_state_contract.py` | `v7_manifest.json` alignment with state files |
+
 ### Lint & Type Check
 ```bash
-ruff check .                  # lint (excludes dashboard/, scripts/, ops/)
-mypy .                        # type check (excludes dashboard/, tests/, scripts/)
+ruff check .                      # lint (excludes dashboard/, scripts/, ops/, strategies/)
+mypy .                            # type check (gradual typing — see mypy.ini ignore_errors sections)
 ```
 
-**Note:** `ruff.toml` excludes `dashboard/`, `scripts/`, `strategies/`, `telegram/`, `research/`, `ops/`, `infrastructure/`, `deploy/`. `mypy.ini` also ignores errors in many `execution/*.py` files for gradual typing adoption.
+**Note:** `ruff.toml` excludes `dashboard/`, `scripts/`, `strategies/`, `telegram/`, `research/`, `ops/`, `infrastructure/`, `deploy/`. `mypy.ini` has `ignore_errors = True` for many `execution/*.py` files — gradual typing adoption.
 
 ### Process Control (prod)
 ```bash
@@ -133,23 +160,57 @@ tail -f /var/log/supervisor/sync_state.out      # sync_state stdout
 | `config/pairs_universe.json` | Allowed symbols with tier metadata |
 | `config/symbol_tiers.json` | Symbol → tier (CORE/SATELLITE/TACTICAL/ALT-EXT) mapping |
 | `config/correlation_groups.json` | Correlated symbol groups for exposure caps |
+| `config/liquidity_buckets.json` | Per-symbol liquidity bucket assignments for TWAP/slippage |
+
+## Router & Microstructure
+
+- Core router: `execution/order_router.py`
+- Slippage / liquidity models: `execution/slippage_model.py`, `execution/liquidity_model.py`
+- Writes per-symbol quality stats to `logs/state/router_health.json` (slippage, latency, TWAP use)
+- Agents must **never** write to `logs/state/*.json` directly; only via executor/state_publish (see State Contract + v7_manifest)
+
+**Example:** When adjusting router behaviour, update `slippage_model`/`liquidity_model` and verify `router_health.json` quality scores and buckets via tests and dashboard.
+
+## Runtime Config (`config/runtime.yaml`)
+
+Controls environment flags (prod vs. testnet, DRY_RUN), trading windows, and global signal/risk gates.
+
+**Use for:**
+- Enabling DRY_RUN / testnet runs
+- Restricting trading to specific hours/windows (`trading_window.*`)
+- High-level routing of which strategies are active
+- TWAP/slippage tunables under `router.*`
+
+**Do not** add strategy-specific logic here; put it in `strategy_config.json` / `risk_limits.json`, then read via the runtime loader.
+
+**Commonly adjusted tunables (examples):**
+- `runtime.dry_run` — skip order placement
+- `trading_window.start_utc` / `end_utc` — active trading hours
+- `router.twap.min_notional_usd` — threshold for TWAP execution
+- `signal_gate.expectancy_min` — minimum rolling expectancy to allow trade
 
 ## State Files Contract (`logs/state/`)
 
-Dashboard reads these JSON files (never writes). **Changes must be strictly additive.**
+Dashboard reads these JSON files (never writes). **Changes must be strictly additive.** See `v7_manifest.json` for canonical list with owners and update frequencies.
+
+**Single source of truth** for state surfaces is `v7_manifest.json` + `docs/v7.6_State_Contract.md`. If an agent adds/changes a state surface, they **must**:
+1. Update `v7_manifest.json`
+2. Update the State Contract doc
+3. Extend the schema tests in `tests/integration`
 
 | File | Purpose |
 |------|--------|
 | `nav_state.json` | NAV, nav_age_s, freshness |
 | `positions_state.json` | Current open positions |
 | `positions_ledger.json` | **Unified ledger: positions + TP/SL (v7.4_C3)** |
-| `risk_snapshot.json` | Portfolio DD, gross exposure |
+| `risk_snapshot.json` | Portfolio DD, gross exposure, VaR/CVaR |
 | `kpis_v7.json` | Aggregated KPIs for dashboard/investor views |
 | `router_health.json` | Fill rates, latency metrics |
 | `symbol_scores_v6.json` | Intel scoring state |
 | `hybrid_scores.json` | Hybrid alpha scores per symbol |
 | `funding_snapshot.json` | Funding rate data |
 | `basis_snapshot.json` | Basis/carry data |
+| `diagnostics.json` | Veto counters, exit pipeline, liveness |
 
 ### Position Ledger (v7.4_C3)
 
@@ -239,6 +300,22 @@ Agents must understand these integration boundaries:
 - `router_autotune_v6_apply_enabled` is a *safe mode* flag (0=safe)
 - TWAP config lives under `router.twap.*`
 - No hardcoded parameters — always pull from config
+
+## Dashboard (Streamlit)
+
+- **Entrypoint:** `dashboard/app.py`
+- **State loader:** `dashboard/state_v7.py` (reads `logs/state/*.json`, no writes)
+- **Panels:**
+  - `equity_panel.py` — NAV / equity curve / drawdown
+  - `execution_panel.py` — orders, fills, vetoes
+  - `risk_panel.py` — DD state, VaR/CVaR, risk_mode (from `risk_snapshot.json`)
+  - `router_health_panel.py` — execution quality (from `router_health.json`)
+  - `factor_panel.py` — factor diagnostics & weights (from `factor_diagnostics.json`)
+    - Factor weights support an **optional adaptive overlay** (v7.7_P2) driven by IR/PnL, controlled via `factor_diagnostics.auto_weighting.adaptive`
+
+**Agents modifying the dashboard:**
+- **Only read** from state surfaces; never write
+- When adding new state fields, update `state_v7.py` loader + schema tests under `tests/integration`
 
 ## Code Conventions
 

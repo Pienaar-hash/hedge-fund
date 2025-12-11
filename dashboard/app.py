@@ -55,8 +55,10 @@ from dashboard.state_v7 import (
     get_regime_badges,
     validate_surface_health,
     load_engine_metadata,
+    load_edge_insights_state,
 )
 from dashboard.research_panel import render_research_panel
+from dashboard.edge_discovery_panel import render_edge_discovery_panel
 from dashboard.risk_panel import (
     render_risk_health_card,
     load_risk_snapshot,
@@ -1250,6 +1252,11 @@ def main() -> None:
 
     with tabs[1]:
         render_research_panel()
+        
+        # Edge Discovery Panel (v7.7_P5)
+        st.markdown("---")
+        edge_insights = load_edge_insights_state()
+        _safe_panel("Edge Discovery", render_edge_discovery_panel, edge_insights)
 
     with tabs[2]:
         st.subheader("Advanced (v6)")

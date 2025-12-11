@@ -36,6 +36,7 @@ DEFAULT_FACTORS = [
     "router_quality",
     "expectancy",
     "vol_regime",
+    "category_momentum",
 ]
 
 
@@ -69,6 +70,46 @@ class AutoWeightingConfig:
     max_weight: float = 0.40
     normalize_to_one: bool = True
     smoothing_alpha: float = 0.2  # EWMA smoothing for weights
+
+
+@dataclass
+class AdaptiveConfig:
+    """Configuration for adaptive IR/PnL-based weight biasing (v7.7_P2)."""
+
+    enabled: bool = False  # Default disabled for backward compatibility
+    ir_boost_threshold: float = 0.25  # IR above this gets positive bias
+    ir_cut_threshold: float = 0.0  # IR below this gets negative bias
+    pnl_min_for_boost: float = 0.0  # PnL must be >= this for boost
+    max_shift: float = 0.10  # Maximum bias per factor
+
+
+@dataclass
+class FactorRegimeCurvesConfig:
+    """Configuration for regime-specific factor weight curves (v7.7_P6)."""
+
+    # Volatility regime multipliers for factor weights
+    volatility: Dict[str, float] = field(default_factory=lambda: {
+        "LOW": 1.05,
+        "NORMAL": 1.00,
+        "HIGH": 0.90,
+        "CRISIS": 0.70,
+    })
+
+    # Drawdown state multipliers for factor weights
+    drawdown: Dict[str, float] = field(default_factory=lambda: {
+        "NORMAL": 1.00,
+        "RECOVERY": 0.90,
+        "DRAWDOWN": 0.65,
+    })
+
+
+@dataclass
+class FactorPerformance:
+    """Per-factor performance metrics for adaptive weighting (v7.7_P2)."""
+
+    name: str
+    ir: float = 0.0  # Information ratio for the factor
+    pnl_contrib: float = 0.0  # Contribution to PnL (normalized or absolute)
 
 
 @dataclass
@@ -112,6 +153,24 @@ class FactorWeightsSnapshot:
     factor_ir: Dict[str, float] = field(default_factory=dict)
     mode: str = "vol_inverse_ir"
     updated_ts: float = 0.0
+    # v7.7_P2: Adaptive weighting metadata
+    adaptive_enabled: bool = False
+    adaptive_bias: Dict[str, float] = field(default_factory=dict)
+    # v7.7_P6: Regime modifiers metadata
+    regime_modifiers: Dict[str, Any] = field(default_factory=dict)
+    # v7.8_P1: Meta-scheduler overlay metadata
+    meta_overlay_enabled: bool = False
+    meta_overlay: Dict[str, float] = field(default_factory=dict)
+    # v7.8_P6: Sentinel-X overlay metadata
+    sentinel_x_overlay_enabled: bool = False
+    sentinel_x_overlay: Dict[str, float] = field(default_factory=dict)
+    sentinel_x_regime: str = ""
+    # v7.8_P7: Alpha decay overlay metadata
+    alpha_decay_overlay_enabled: bool = False
+    alpha_decay_multipliers: Dict[str, float] = field(default_factory=dict)
+    # v7.8_P8: Cerberus multi-strategy overlay metadata
+    cerberus_overlay_enabled: bool = False
+    cerberus_overlay: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -121,6 +180,18 @@ class FactorWeightsSnapshot:
             "factor_ir": self.factor_ir,
             "mode": self.mode,
             "updated_ts": self.updated_ts,
+            "adaptive_enabled": self.adaptive_enabled,
+            "adaptive_bias": self.adaptive_bias,
+            "regime_modifiers": self.regime_modifiers,  # v7.7_P6
+            "meta_overlay_enabled": self.meta_overlay_enabled,  # v7.8_P1
+            "meta_overlay": self.meta_overlay,  # v7.8_P1
+            "sentinel_x_overlay_enabled": self.sentinel_x_overlay_enabled,  # v7.8_P6
+            "sentinel_x_overlay": self.sentinel_x_overlay,  # v7.8_P6
+            "sentinel_x_regime": self.sentinel_x_regime,  # v7.8_P6
+            "alpha_decay_overlay_enabled": self.alpha_decay_overlay_enabled,  # v7.8_P7
+            "alpha_decay_multipliers": self.alpha_decay_multipliers,  # v7.8_P7
+            "cerberus_overlay_enabled": self.cerberus_overlay_enabled,  # v7.8_P8
+            "cerberus_overlay": self.cerberus_overlay,  # v7.8_P8
         }
 
 
@@ -226,6 +297,85 @@ def load_auto_weighting_config(
         max_weight=float(aw_cfg.get("max_weight", 0.40)),
         normalize_to_one=bool(aw_cfg.get("normalize_to_one", True)),
         smoothing_alpha=float(aw_cfg.get("smoothing_alpha", 0.2)),
+    )
+
+
+def load_adaptive_config(
+    strategy_config: Mapping[str, Any] | None = None,
+) -> AdaptiveConfig:
+    """
+    Load adaptive IR/PnL-based weight biasing config from strategy_config (v7.7_P2).
+
+    Args:
+        strategy_config: Strategy config dict, or None to load from file.
+
+    Returns:
+        AdaptiveConfig instance
+    """
+    if strategy_config is None:
+        try:
+            with open("config/strategy_config.json") as f:
+                strategy_config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return AdaptiveConfig(enabled=False)
+
+    fd_cfg = strategy_config.get("factor_diagnostics", {})
+    if not isinstance(fd_cfg, dict):
+        return AdaptiveConfig(enabled=False)
+
+    aw_cfg = fd_cfg.get("auto_weighting", {})
+    if not isinstance(aw_cfg, dict):
+        return AdaptiveConfig(enabled=False)
+
+    adaptive_cfg = aw_cfg.get("adaptive", {})
+    if not isinstance(adaptive_cfg, dict) or not adaptive_cfg:
+        # No adaptive config = disabled
+        return AdaptiveConfig(enabled=False)
+
+    return AdaptiveConfig(
+        enabled=bool(adaptive_cfg.get("enabled", False)),  # Default disabled for safety
+        ir_boost_threshold=float(adaptive_cfg.get("ir_boost_threshold", 0.25)),
+        ir_cut_threshold=float(adaptive_cfg.get("ir_cut_threshold", 0.0)),
+        pnl_min_for_boost=float(adaptive_cfg.get("pnl_min_for_boost", 0.0)),
+        max_shift=float(adaptive_cfg.get("max_shift", 0.10)),
+    )
+
+
+def load_factor_regime_curves_config(
+    strategy_config: Mapping[str, Any] | None = None,
+) -> FactorRegimeCurvesConfig:
+    """
+    Load regime-specific factor weight curves config (v7.7_P6).
+
+    Args:
+        strategy_config: Strategy config dict, or None to load from file.
+
+    Returns:
+        FactorRegimeCurvesConfig instance
+    """
+    if strategy_config is None:
+        try:
+            with open("config/strategy_config.json") as f:
+                strategy_config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return FactorRegimeCurvesConfig()
+
+    fd_cfg = strategy_config.get("factor_diagnostics", {})
+    if not isinstance(fd_cfg, dict):
+        return FactorRegimeCurvesConfig()
+
+    aw_cfg = fd_cfg.get("auto_weighting", {})
+    if not isinstance(aw_cfg, dict):
+        return FactorRegimeCurvesConfig()
+
+    regime_curves_cfg = aw_cfg.get("regime_curves", {})
+    if not isinstance(regime_curves_cfg, dict) or not regime_curves_cfg:
+        # No regime curves config = use defaults
+        return FactorRegimeCurvesConfig()
+
+    return FactorRegimeCurvesConfig(
+        volatility=dict(regime_curves_cfg.get("volatility", FactorRegimeCurvesConfig().volatility)),
+        drawdown=dict(regime_curves_cfg.get("drawdown", FactorRegimeCurvesConfig().drawdown)),
     )
 
 
@@ -634,6 +784,267 @@ def compute_factor_ir_from_vectors(
     return ir
 
 
+# ---------------------------------------------------------------------------
+# Adaptive Factor Outcome Weighting (v7.7_P2)
+# ---------------------------------------------------------------------------
+
+
+def compute_factor_performance(
+    factor_ir: Dict[str, float],
+    factor_pnl: Dict[str, float],
+) -> Dict[str, FactorPerformance]:
+    """
+    Derive per-factor performance metrics from IR and PnL attribution.
+
+    Args:
+        factor_ir: Per-factor IR values (information ratio)
+        factor_pnl: Per-factor PnL contribution (by_factor from pnl_attribution)
+
+    Returns:
+        Dict mapping factor name to FactorPerformance
+    """
+    result: Dict[str, FactorPerformance] = {}
+
+    # Combine keys from both dicts
+    all_factors = set(factor_ir.keys()) | set(factor_pnl.keys())
+
+    for factor in all_factors:
+        ir = float(factor_ir.get(factor, 0.0))
+        pnl = float(factor_pnl.get(factor, 0.0))
+        result[factor] = FactorPerformance(name=factor, ir=ir, pnl_contrib=pnl)
+
+    return result
+
+
+def compute_adaptive_weight_bias(
+    base_weights: Dict[str, float],
+    factor_perf: Dict[str, FactorPerformance],
+    cfg: AdaptiveConfig,
+) -> Dict[str, float]:
+    """
+    Compute per-factor bias based on IR/PnL outcomes (v7.7_P2).
+
+    Returns bias in [-max_shift, +max_shift] to be added to base_weights
+    before re-normalization.
+
+    Rules:
+    - If factor.ir >= ir_boost_threshold AND factor.pnl_contrib >= pnl_min_for_boost:
+      positive bias (up to +max_shift)
+    - If factor.ir < ir_cut_threshold OR factor.pnl_contrib < 0:
+      negative bias (down to -max_shift)
+    - Otherwise: zero bias
+
+    The magnitude is proportional to how far the IR is from the threshold.
+
+    Args:
+        base_weights: Current factor weights (before adaptive adjustment)
+        factor_perf: Per-factor performance metrics
+        cfg: Adaptive weighting configuration
+
+    Returns:
+        Dict mapping factor name to bias value in [-max_shift, +max_shift]
+    """
+    bias: Dict[str, float] = {}
+
+    for factor in base_weights:
+        if factor not in factor_perf:
+            # Missing performance data = no bias
+            bias[factor] = 0.0
+            continue
+
+        perf = factor_perf[factor]
+        ir = perf.ir
+        pnl = perf.pnl_contrib
+
+        # Compute bias direction and magnitude
+        factor_bias = 0.0
+
+        # Case 1: Boost - high IR AND positive PnL
+        if ir >= cfg.ir_boost_threshold and pnl >= cfg.pnl_min_for_boost:
+            # Scale bias by how much IR exceeds threshold (up to 2x threshold = full boost)
+            ir_excess = ir - cfg.ir_boost_threshold
+            # Normalize: if IR is 2x the boost threshold, get full max_shift
+            scale = min(1.0, ir_excess / max(cfg.ir_boost_threshold, 0.01))
+            factor_bias = cfg.max_shift * scale
+
+        # Case 2: Cut - low IR OR negative PnL
+        elif ir < cfg.ir_cut_threshold or pnl < 0:
+            # For negative PnL, apply proportional cut (more negative = bigger cut)
+            if pnl < 0:
+                # Scale by magnitude of loss relative to a "significant" loss threshold
+                # Use -1.0 as a reference for "full cut"
+                pnl_scale = min(1.0, abs(pnl))
+                factor_bias = -cfg.max_shift * max(0.3, pnl_scale)
+            else:
+                # Low IR but non-negative PnL: modest cut
+                ir_deficit = cfg.ir_cut_threshold - ir
+                scale = min(1.0, ir_deficit / max(abs(cfg.ir_cut_threshold) + 0.1, 0.1))
+                factor_bias = -cfg.max_shift * scale * 0.5
+
+        # Clamp to bounds
+        bias[factor] = max(-cfg.max_shift, min(cfg.max_shift, factor_bias))
+
+    return bias
+
+
+def apply_adaptive_bias_to_weights(
+    base_weights: Dict[str, float],
+    bias: Dict[str, float],
+    min_weight: float,
+    max_weight: float,
+    normalize_to_one: bool,
+) -> Dict[str, float]:
+    """
+    Apply adaptive bias to base weights with clamping and optional normalization.
+
+    Args:
+        base_weights: Base factor weights
+        bias: Per-factor bias values
+        min_weight: Minimum allowed weight per factor
+        max_weight: Maximum allowed weight per factor
+        normalize_to_one: Whether to normalize sum to 1.0
+
+    Returns:
+        Adjusted weights
+    """
+    # Add bias to base weights
+    adjusted = {}
+    for factor, base_w in base_weights.items():
+        factor_bias = bias.get(factor, 0.0)
+        adjusted[factor] = base_w + factor_bias
+
+    # Clamp to bounds
+    for factor in adjusted:
+        adjusted[factor] = max(min_weight, min(max_weight, adjusted[factor]))
+
+    # Normalize if requested
+    if normalize_to_one:
+        total = sum(adjusted.values())
+        if total > 1e-12:
+            adjusted = {f: w / total for f, w in adjusted.items()}
+
+            # After normalization, may need to re-clamp iteratively
+            # (same logic as normalize_factor_weights)
+            for _ in range(10):
+                clamped_at_bound = False
+                fixed_weight = 0.0
+                free_factors = []
+
+                for f in adjusted:
+                    if adjusted[f] <= min_weight:
+                        adjusted[f] = min_weight
+                        fixed_weight += min_weight
+                        clamped_at_bound = True
+                    elif adjusted[f] >= max_weight:
+                        adjusted[f] = max_weight
+                        fixed_weight += max_weight
+                        clamped_at_bound = True
+                    else:
+                        free_factors.append(f)
+
+                if not clamped_at_bound or not free_factors:
+                    break
+
+                remaining = 1.0 - fixed_weight
+                free_total = sum(adjusted[f] for f in free_factors)
+                if free_total > 1e-12 and remaining > 0:
+                    scale = remaining / free_total
+                    for f in free_factors:
+                        adjusted[f] *= scale
+
+    return adjusted
+
+
+def get_vol_regime_from_snapshot(risk_snapshot: Mapping[str, Any] | None) -> str:
+    """
+    Extract volatility regime from risk_snapshot (v7.7_P6).
+
+    Args:
+        risk_snapshot: Risk snapshot dict or None
+
+    Returns:
+        Vol regime string (LOW/NORMAL/HIGH/CRISIS), defaults to NORMAL
+    """
+    if not risk_snapshot:
+        return "NORMAL"
+    vol_regime = risk_snapshot.get("vol_regime", "normal")
+    if isinstance(vol_regime, str):
+        return vol_regime.upper()
+    return "NORMAL"
+
+
+def get_dd_state_from_snapshot(risk_snapshot: Mapping[str, Any] | None) -> str:
+    """
+    Extract drawdown state from risk_snapshot (v7.7_P6).
+
+    Args:
+        risk_snapshot: Risk snapshot dict or None
+
+    Returns:
+        DD state string (NORMAL/RECOVERY/DRAWDOWN), defaults to NORMAL
+    """
+    if not risk_snapshot:
+        return "NORMAL"
+    dd_state = risk_snapshot.get("dd_state", "NORMAL")
+    if isinstance(dd_state, str):
+        return dd_state.upper()
+    return "NORMAL"
+
+
+def apply_regime_curves_to_weights(
+    weights: Dict[str, float],
+    vol_regime: str,
+    dd_state: str,
+    regime_curves: FactorRegimeCurvesConfig,
+    min_weight: float,
+    max_weight: float,
+    normalize_to_one: bool,
+) -> tuple[Dict[str, float], Dict[str, Any]]:
+    """
+    Apply regime-specific multipliers to factor weights (v7.7_P6).
+
+    Args:
+        weights: Base factor weights
+        vol_regime: Current volatility regime (LOW/NORMAL/HIGH/CRISIS)
+        dd_state: Current drawdown state (NORMAL/RECOVERY/DRAWDOWN)
+        regime_curves: Regime curves configuration
+        min_weight: Minimum allowed weight per factor
+        max_weight: Maximum allowed weight per factor
+        normalize_to_one: Whether to normalize sum to 1.0
+
+    Returns:
+        Tuple of (adjusted_weights, regime_modifiers metadata)
+    """
+    # Get multipliers
+    vol_mult = regime_curves.volatility.get(vol_regime.upper(), 1.0)
+    dd_mult = regime_curves.drawdown.get(dd_state.upper(), 1.0)
+    combined_mult = vol_mult * dd_mult
+
+    # Apply multiplier to all weights
+    adjusted = {f: w * combined_mult for f, w in weights.items()}
+
+    # Clamp to bounds
+    for factor in adjusted:
+        adjusted[factor] = max(min_weight, min(max_weight, adjusted[factor]))
+
+    # Normalize if requested
+    if normalize_to_one:
+        total = sum(adjusted.values())
+        if total > 1e-12:
+            adjusted = {f: w / total for f, w in adjusted.items()}
+
+    # Build regime modifiers metadata
+    regime_modifiers = {
+        "vol_regime": vol_regime,
+        "vol_multiplier": vol_mult,
+        "dd_state": dd_state,
+        "dd_multiplier": dd_mult,
+        "combined_multiplier": combined_mult,
+    }
+
+    return adjusted, regime_modifiers
+
+
 def compute_raw_factor_weights(
     mode: str,
     factor_names: List[str],
@@ -817,15 +1228,28 @@ def build_factor_weights_snapshot(
     auto_weight_cfg: AutoWeightingConfig,
     prev_weights: Optional[FactorWeights] = None,
     factor_ir_override: Optional[Dict[str, float]] = None,
+    adaptive_cfg: Optional[AdaptiveConfig] = None,
+    regime_curves_cfg: Optional[FactorRegimeCurvesConfig] = None,
+    risk_snapshot: Optional[Mapping[str, Any]] = None,
 ) -> FactorWeightsSnapshot:
     """
     Compute final per-factor weights with IR/vol-based weighting.
+
+    v7.7_P2: Now supports adaptive IR/PnL-based weight biasing when adaptive_cfg is
+    provided and enabled.
+    
+    v7.7_P6: Now supports regime-specific weight curves when regime_curves_cfg is
+    provided and risk_snapshot contains vol_regime/dd_state.
 
     Args:
         factor_cov: Covariance snapshot with factor_vols
         factor_pnl: Per-factor PnL attribution
         auto_weight_cfg: Auto-weighting configuration
         prev_weights: Previous weights for EWMA smoothing
+        factor_ir_override: Optional IR values to use instead of computing
+        adaptive_cfg: Optional adaptive weighting config (v7.7_P2)
+        regime_curves_cfg: Optional regime curves config (v7.7_P6)
+        risk_snapshot: Optional risk snapshot for regime context (v7.7_P6)
 
     Returns:
         FactorWeightsSnapshot with computed weights
@@ -855,6 +1279,169 @@ def build_factor_weights_snapshot(
         normalize_to_one=auto_weight_cfg.normalize_to_one,
     )
 
+    # v7.7_P2: Apply adaptive bias if enabled
+    adaptive_bias: Dict[str, float] = {}
+    adaptive_enabled = adaptive_cfg is not None and adaptive_cfg.enabled
+
+    if adaptive_enabled and adaptive_cfg is not None:
+        # Compute factor performance from IR and PnL
+        factor_perf = compute_factor_performance(
+            factor_ir=factor_ir,
+            factor_pnl=factor_pnl,
+        )
+
+        # Compute adaptive bias
+        adaptive_bias = compute_adaptive_weight_bias(
+            base_weights=normalized.weights,
+            factor_perf=factor_perf,
+            cfg=adaptive_cfg,
+        )
+
+        # Apply bias with clamping and normalization
+        adjusted_weights = apply_adaptive_bias_to_weights(
+            base_weights=normalized.weights,
+            bias=adaptive_bias,
+            min_weight=auto_weight_cfg.min_weight,
+            max_weight=auto_weight_cfg.max_weight,
+            normalize_to_one=auto_weight_cfg.normalize_to_one,
+        )
+        normalized = FactorWeights(weights=adjusted_weights)
+
+    # v7.7_P6: Apply regime curves if enabled
+    regime_modifiers: Dict[str, Any] = {}
+    if regime_curves_cfg is not None:
+        vol_regime = get_vol_regime_from_snapshot(risk_snapshot)
+        dd_state = get_dd_state_from_snapshot(risk_snapshot)
+        
+        adjusted_weights, regime_modifiers = apply_regime_curves_to_weights(
+            weights=normalized.weights,
+            vol_regime=vol_regime,
+            dd_state=dd_state,
+            regime_curves=regime_curves_cfg,
+            min_weight=auto_weight_cfg.min_weight,
+            max_weight=auto_weight_cfg.max_weight,
+            normalize_to_one=auto_weight_cfg.normalize_to_one,
+        )
+        normalized = FactorWeights(weights=adjusted_weights)
+
+    # v7.8_P1: Apply meta-scheduler overlay if enabled
+    meta_overlay: Dict[str, float] = {}
+    meta_overlay_enabled = False
+    try:
+        from execution.meta_scheduler import (
+            load_meta_scheduler_config,
+            load_meta_scheduler_state,
+            get_factor_meta_weights,
+            is_meta_scheduler_active,
+        )
+        # Load meta-scheduler config from strategy_config if available
+        # Note: strategy_config is passed to build_factor_diagnostics_snapshot,
+        # but not directly here. We load it fresh for safety.
+        meta_cfg = load_meta_scheduler_config(None)  # Will use defaults
+        meta_state = load_meta_scheduler_state()
+        
+        if meta_cfg.enabled and is_meta_scheduler_active(meta_cfg, meta_state):
+            meta_overlay = get_factor_meta_weights(meta_state)
+            if meta_overlay:
+                meta_overlay_enabled = True
+                # Apply meta overlays as multipliers
+                meta_adjusted = {}
+                for factor_name, w in normalized.weights.items():
+                    overlay = meta_overlay.get(factor_name, 1.0)
+                    meta_adjusted[factor_name] = w * overlay
+                
+                # Re-normalize after applying meta overlays
+                normalized = normalize_factor_weights(
+                    raw_weights=meta_adjusted,
+                    min_weight=auto_weight_cfg.min_weight,
+                    max_weight=auto_weight_cfg.max_weight,
+                    normalize_to_one=auto_weight_cfg.normalize_to_one,
+                )
+    except ImportError:
+        # meta_scheduler not available - skip
+        pass
+    except Exception:
+        # Don't let meta-scheduler errors break factor diagnostics
+        pass
+
+    # v7.8_P6: Apply Sentinel-X regime overlay if enabled
+    sentinel_x_overlay: Dict[str, float] = {}
+    sentinel_x_overlay_enabled = False
+    sentinel_x_regime = ""
+    try:
+        from execution.sentinel_x import (
+            load_sentinel_x_config,
+            load_sentinel_x_state,
+            get_factor_regime_weights,
+        )
+        
+        sentinel_cfg = load_sentinel_x_config(None)
+        
+        if sentinel_cfg.enabled:
+            sentinel_state = load_sentinel_x_state()
+            sentinel_x_regime = sentinel_state.primary_regime
+            
+            if sentinel_x_regime:
+                sentinel_x_overlay = get_factor_regime_weights(sentinel_x_regime)
+                if sentinel_x_overlay:
+                    sentinel_x_overlay_enabled = True
+                    # Apply sentinel overlays as multipliers
+                    sentinel_adjusted = {}
+                    for factor_name, w in normalized.weights.items():
+                        overlay = sentinel_x_overlay.get(factor_name, 1.0)
+                        sentinel_adjusted[factor_name] = w * overlay
+                    
+                    # Re-normalize after applying Sentinel-X overlays
+                    normalized = normalize_factor_weights(
+                        raw_weights=sentinel_adjusted,
+                        min_weight=auto_weight_cfg.min_weight,
+                        max_weight=auto_weight_cfg.max_weight,
+                        normalize_to_one=auto_weight_cfg.normalize_to_one,
+                    )
+    except ImportError:
+        # sentinel_x not available - skip
+        pass
+    except Exception:
+        # Don't let sentinel_x errors break factor diagnostics
+        pass
+
+    # v7.8_P8: Apply Cerberus multi-strategy overlay if enabled
+    cerberus_overlay: Dict[str, float] = {}
+    cerberus_overlay_enabled = False
+    try:
+        from execution.cerberus_router import (
+            load_cerberus_config,
+            load_cerberus_state,
+            get_cerberus_factor_weight_overlay,
+        )
+        
+        cerberus_cfg = load_cerberus_config(strategy_config=None)
+        
+        if cerberus_cfg.enabled:
+            cerberus_state = load_cerberus_state()
+            if cerberus_state:
+                cerberus_overlay_enabled = True
+                # Get per-factor overlays from Cerberus head multipliers
+                cerberus_adjusted = {}
+                for factor_name, w in normalized.weights.items():
+                    overlay = get_cerberus_factor_weight_overlay(factor_name, cerberus_state, cerberus_cfg)
+                    cerberus_overlay[factor_name] = overlay
+                    cerberus_adjusted[factor_name] = w * overlay
+                
+                # Re-normalize after applying Cerberus overlays
+                normalized = normalize_factor_weights(
+                    raw_weights=cerberus_adjusted,
+                    min_weight=auto_weight_cfg.min_weight,
+                    max_weight=auto_weight_cfg.max_weight,
+                    normalize_to_one=auto_weight_cfg.normalize_to_one,
+                )
+    except ImportError:
+        # cerberus_router not available - skip
+        pass
+    except Exception:
+        # Don't let cerberus errors break factor diagnostics
+        pass
+
     # Apply EWMA smoothing
     smoothed = smooth_factor_weights(
         prev=prev_weights,
@@ -868,6 +1455,16 @@ def build_factor_weights_snapshot(
         factor_ir=factor_ir,
         mode=auto_weight_cfg.mode,
         updated_ts=time.time(),
+        adaptive_enabled=adaptive_enabled,
+        adaptive_bias=adaptive_bias,
+        regime_modifiers=regime_modifiers,  # v7.7_P6
+        meta_overlay_enabled=meta_overlay_enabled,  # v7.8_P1
+        meta_overlay=meta_overlay,  # v7.8_P1
+        sentinel_x_overlay_enabled=sentinel_x_overlay_enabled,  # v7.8_P6
+        sentinel_x_overlay=sentinel_x_overlay,  # v7.8_P6
+        sentinel_x_regime=sentinel_x_regime,  # v7.8_P6
+        cerberus_overlay_enabled=cerberus_overlay_enabled,  # v7.8_P8
+        cerberus_overlay=cerberus_overlay,  # v7.8_P8
     )
 
 
@@ -904,6 +1501,8 @@ def build_factor_diagnostics_snapshot(
     # Load C3 configs
     ortho_cfg = load_orthogonalization_config(strategy_config)
     auto_weight_cfg = load_auto_weighting_config(strategy_config)
+    # v7.7_P2: Load adaptive config
+    adaptive_cfg = load_adaptive_config(strategy_config)
 
     if not cfg.enabled or not factor_vectors:
         ts = time.time()
@@ -988,6 +1587,7 @@ def build_factor_diagnostics_snapshot(
             auto_weight_cfg=auto_weight_cfg,
             prev_weights=prev_weights,
             factor_ir_override=factor_ir,
+            adaptive_cfg=adaptive_cfg,  # v7.7_P2
         )
 
     # Best-effort weights surface (even if auto_weighting disabled)
@@ -1059,6 +1659,8 @@ def extract_factor_vectors_from_hybrid_results(
                     router_quality.get("score", 0.0) if router_quality else 0.0
                 ),
                 "vol_regime": 1.0 if regime == "normal" else 0.5,
+                # v7.7_P3: Category momentum (default to 0 if not provided)
+                "category_momentum": float(components.get("category_momentum", 0.0)),
             }
 
         vectors.append(
@@ -1118,9 +1720,11 @@ __all__ = [
     "FactorDiagnosticsConfig",
     "OrthogonalizationConfig",
     "AutoWeightingConfig",
+    "AdaptiveConfig",  # v7.7_P2
     "load_factor_diagnostics_config",
     "load_orthogonalization_config",
     "load_auto_weighting_config",
+    "load_adaptive_config",  # v7.7_P2
     # Data structures
     "NormalizedFactorVector",
     "FactorCovarianceSnapshot",
@@ -1128,6 +1732,7 @@ __all__ = [
     "FactorWeights",
     "FactorWeightsSnapshot",
     "OrthogonalizedFactorVectors",
+    "FactorPerformance",  # v7.7_P2
     # Normalization & Covariance
     "normalize_factor_vectors",
     "compute_factor_covariance",
@@ -1140,6 +1745,10 @@ __all__ = [
     "normalize_factor_weights",
     "smooth_factor_weights",
     "build_factor_weights_snapshot",
+    # Adaptive weighting (v7.7_P2)
+    "compute_factor_performance",
+    "compute_adaptive_weight_bias",
+    "apply_adaptive_bias_to_weights",
     # Snapshot builders
     "build_factor_diagnostics_snapshot",
     "extract_factor_vectors_from_hybrid_results",
