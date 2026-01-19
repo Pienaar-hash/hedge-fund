@@ -69,32 +69,61 @@ def register_position_tp_sl(
     take_profit_price: Optional[float],
     stop_loss_price: Optional[float],
     metadata: Optional[Dict[str, Any]] = None,
+    head_contributions: Optional[Dict[str, float]] = None,
+    strategy_heads: Optional[list] = None,
+    entry_price: Optional[float] = None,
+    entry_regime: Optional[str] = None,
+    entry_regime_confidence: Optional[float] = None,
+    entry_head: Optional[str] = None,
 ) -> None:
     """
-    Register TP/SL levels for a position.
+    Register TP/SL levels and entry metadata for a position.
+    
+    v7.X_DOCTRINE: Entry metadata is REQUIRED for thesis-based exits.
+    Positions without entry_regime cannot be properly evaluated for
+    REGIME_FLIP exits. Positions without entry_time cannot be evaluated
+    for TIME_STOP exits.
     
     Args:
         symbol: Trading symbol (e.g., "BTCUSDT")
         position_side: "LONG" or "SHORT"
-        take_profit_price: TP price level
-        stop_loss_price: SL price level
+        take_profit_price: TP price level (seatbelt only in doctrine mode)
+        stop_loss_price: SL price level (seatbelt only in doctrine mode)
         metadata: Additional metadata (sl_atr_mult, tp_atr_mult, etc.)
+        head_contributions: Hydra head contribution weights
+        strategy_heads: List of contributing strategy heads
+        entry_price: Price at which position was entered
+        entry_regime: Regime at entry time (e.g., "TREND_UP", "TREND_DOWN")
+        entry_regime_confidence: Regime confidence at entry time (0.0-1.0)
+        entry_head: Primary decision head at entry (e.g., "TREND", "MOMO")
     """
     _load_registry()
     
-    if take_profit_price is None and stop_loss_price is None:
-        LOG.debug("[tp_sl_registry] skipping registration for %s:%s (no TP/SL)", symbol, position_side)
+    # v7.X_DOCTRINE: Allow registration even without TP/SL if we have entry metadata
+    # Entry metadata is critical for thesis-based exits
+    has_tp_sl = take_profit_price is not None or stop_loss_price is not None
+    has_entry_meta = entry_regime is not None or entry_price is not None
+    
+    if not has_tp_sl and not has_entry_meta:
+        LOG.debug("[tp_sl_registry] skipping registration for %s:%s (no TP/SL or entry metadata)", symbol, position_side)
         return
     
     key = _make_key(symbol, position_side)
+    entry_time = __import__("time").time()
     entry = {
         "symbol": symbol.upper(),
         "position_side": position_side.upper(),
         "take_profit_price": take_profit_price,
         "stop_loss_price": stop_loss_price,
         "strategy": "vol_target",
-        "enable_tp_sl": True,
-        "registered_at": __import__("time").time(),
+        "enable_tp_sl": has_tp_sl,
+        "registered_at": entry_time,
+        # v7.X_DOCTRINE: Entry metadata for thesis-based exits
+        "entry_time": entry_time,
+        "entry_price": entry_price,
+        "entry_regime": entry_regime,
+        "entry_regime_confidence": entry_regime_confidence,
+        "entry_head": entry_head,
     }
     
     if metadata:
@@ -103,13 +132,26 @@ def register_position_tp_sl(
             "tp_atr_mult": metadata.get("tp_atr_mult"),
             "min_rr": metadata.get("min_rr"),
             "reward_risk": metadata.get("reward_risk"),
+            # v7.X_DOCTRINE: Allow metadata to override entry fields
+            "entry_price": metadata.get("entry_price") or entry_price,
+            "entry_regime": metadata.get("entry_regime") or entry_regime,
+            "entry_regime_confidence": metadata.get("entry_regime_confidence") or entry_regime_confidence,
+            "entry_head": metadata.get("entry_head") or entry_head,
         })
+    
+    # v7.9_P2: Store Hydra head contributions for PnL attribution
+    if head_contributions:
+        entry["head_contributions"] = head_contributions
+    if strategy_heads:
+        entry["strategy_heads"] = strategy_heads
     
     _TP_SL_REGISTRY[key] = entry
     _save_registry()
     LOG.info(
-        "[tp_sl_registry] registered %s:%s tp=%s sl=%s",
-        symbol, position_side, take_profit_price, stop_loss_price
+        "[tp_sl_registry] registered %s:%s tp=%s sl=%s regime=%s heads=%s",
+        symbol, position_side, take_profit_price, stop_loss_price,
+        entry_regime,
+        list(head_contributions.keys()) if head_contributions else [],
     )
 
 
@@ -140,6 +182,40 @@ def get_position_tp_sl(symbol: str, position_side: str) -> Optional[Dict[str, An
     _load_registry()
     key = _make_key(symbol, position_side)
     return _TP_SL_REGISTRY.get(key)
+
+
+def get_head_contributions(symbol: str, position_side: str) -> Dict[str, float]:
+    """
+    Get Hydra head contributions for a position (v7.9_P2).
+    
+    Args:
+        symbol: Trading symbol
+        position_side: "LONG" or "SHORT"
+        
+    Returns:
+        Dict of head -> weight (e.g., {"TREND": 0.7, "CATEGORY": 0.3})
+        Empty dict if not a Hydra position or not registered.
+    """
+    entry = get_position_tp_sl(symbol, position_side)
+    if entry:
+        return entry.get("head_contributions", {})
+    return {}
+
+
+def get_all_head_contributions() -> Dict[str, Dict[str, float]]:
+    """
+    Get head contributions for all registered positions (v7.9_P2).
+    
+    Returns:
+        Dict of "SYMBOL:SIDE" -> head_contributions
+    """
+    _load_registry()
+    result = {}
+    for key, entry in _TP_SL_REGISTRY.items():
+        contributions = entry.get("head_contributions")
+        if contributions:
+            result[key] = contributions
+    return result
 
 
 def get_all_tp_sl_positions() -> Dict[str, Dict[str, Any]]:

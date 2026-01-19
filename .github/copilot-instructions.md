@@ -2,45 +2,71 @@
 
 ## Architecture Overview
 
-**Binance futures trading system** with unified execution loop:
+**Binance futures trading system** with regime-governed execution:
 
 ```
-Signal Screener → Risk Engine → Order Router → State Publisher
-     ↓                ↓              ↓              ↓
-  intents         check_order()   POST_ONLY     logs/state/*.json
-                  (veto gate)     + fallback    (dashboard reads)
+                     DOCTRINE KERNEL (v7.X)
+                            │
+Signal Screener ───────────►├──► Entry Gate ──► Order Router ──► Exchange
+     │                      │         │
+ direction                  │      (ALLOW/VETO)
+                            │
+Position State ────────────►├──► Exit Gate ──► Close Orders
+     │                      │
+ thesis check               │
+                           ▼
+               logs/doctrine_events.jsonl
+               (refusal is first-class)
 ```
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| Executor | `execution/executor_live.py` | Main loop (~3900 lines), orchestrates all components |
-| Screener | `execution/signal_screener.py` | Generates intents, computes unlevered sizing |
-| Risk | `execution/risk_limits.py` | `check_order()` is the **only** veto authority |
-| Router | `execution/order_router.py` | Maker-first POST_ONLY with taker fallback, TWAP/slippage model |
+| **Doctrine** | `execution/doctrine_kernel.py` | **SUPREME AUTHORITY** - entry/exit permission |
+| Executor | `execution/executor_live.py` | Main loop (~4000 lines), orchestrates all components |
+| Screener | `execution/signal_screener.py` | Generates direction-only intents |
+| Risk | `execution/risk_limits.py` | `check_order()` secondary veto (caps, DD) |
+| Router | `execution/order_router.py` | Maker-first POST_ONLY with taker fallback |
 | State | `execution/state_publish.py` | Writes canonical state to `logs/state/*.json` |
-| NAV | `execution/nav.py` | `nav_health_snapshot()` — sole source of risk truth |
-| Intel | `execution/intel/*.py` | Scoring: `expectancy_v6.py`, `symbol_score_v6.py`, `hybrid_score_engine.py` |
-| Conviction | `execution/conviction_engine.py` | Conviction-weighted sizing (v7.7), uses factors + risk state |
-| Conviction | `execution/conviction_engine.py` | Conviction-weighted sizing (v7.7), uses factors + risk state |
+| NAV | `execution/nav.py` | `nav_health_snapshot()` — sole source of NAV truth |
+| Sentinel-X | `execution/sentinel_x.py` | Regime detection (TREND_UP/DOWN/CHOPPY/CRISIS) |
+| Conviction | `execution/conviction_engine.py` | Multiplicative sizing based on factors |
+
+### v7.X Doctrine (Constitutional Law)
+
+The doctrine kernel encodes hard trading laws that **cannot be bypassed**:
+
+1. **Regime governs permission** - Signals determine direction, regimes determine permission
+2. **No regime = no trade** - Sentinel-X must have a stable regime before entry
+3. **Direction match required** - TREND_UP→Long only, TREND_DOWN→Short only
+4. **Exit is thesis-based** - Positions die when thesis dies, not on arbitrary TP
+5. **SL is seatbelt only** - Stop-loss is catastrophe protection, not primary exit
+6. **Refusal is first-class** - Every veto is logged to `logs/doctrine_events.jsonl`
 
 ## Project Layout
 
 ```
 execution/           # Core trading logic — DO NOT import from dashboard/
-  intel/             # Scoring: expectancy_v6.py, symbol_score_v6.py, hybrid_score_engine.py
+  doctrine_kernel.py # v7.X SUPREME AUTHORITY - entry/exit gates
+  sentinel_x.py      # Regime detection
+  intel/             # Scoring: expectancy_v6.py, symbol_score_v6.py
   utils/             # Metrics helpers, execution health, vol regime
   strategies/        # Strategy implementations (vol_target.py)
 config/              # Runtime configs — all values in fractional form (0.05 = 5%)
 logs/state/          # Canonical state files consumed by dashboard (read-only for dash)
+logs/doctrine_events.jsonl  # Doctrine decisions (entry vetoes, exits)
 dashboard/           # Streamlit app — reads from logs/state/, never writes
-tests/               # ~160 pytest files — run with PYTHONPATH=.
+tests/               # ~170 pytest files — run with PYTHONPATH=.
   unit/              # Fast, pure in-process tests
   integration/       # Multi-module tests, may touch filesystem
-  legacy/            # Legacy tests from v5/v6 kept for reference
 v7_manifest.json     # Canonical list of state files, owners, update frequencies
 ```
 
 ## Critical Invariants
+
+### Doctrine Supremacy (v7.X)
+- **Doctrine gate is first check** - All entries go through `_doctrine_gate()` in executor
+- **No enabled flag** - Doctrine kernel has NO config; it IS the law
+- **Veto = no trade** - If doctrine returns VETO, order is dropped (no fallback)
 
 ### NAV Source of Truth
 - **NAV = futures wallet only** — never includes spot/treasury unless explicitly configured
@@ -48,8 +74,8 @@ v7_manifest.json     # Canonical list of state files, owners, update frequencies
 - Stale NAV (>90s default, configurable via `nav_freshness_seconds`) triggers automatic veto
 
 ### Veto Authority
-- **Only `risk_limits.check_order()` can veto orders** — no exceptions
-- `risk_engine_v6.py` is orchestration only, NOT enforcement
+- **Doctrine gate is first** - Regime/direction check before anything else
+- **Risk limits are secondary** - `check_order()` enforces caps, DD limits
 - Executor and router must never perform risk math
 
 ### Position State

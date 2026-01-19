@@ -1246,6 +1246,44 @@ def get_cerberus_prospector_multiplier(
     return get_cerberus_head_multiplier("EMERGENT_ALPHA", state, config)
 
 
+def get_cerberus_throttled_multipliers(
+    state: Optional[CerberusState] = None,
+    config: Optional[CerberusConfig] = None,
+    pnl_state: Optional[Any] = None,
+) -> Dict[str, float]:
+    """
+    Get all head multipliers with Hydra PnL throttle applied.
+
+    If Hydra PnL is enabled, multiplies each head's Cerberus multiplier
+    by the corresponding PnL throttle scale (0-1).
+
+    Args:
+        state: CerberusState (optional)
+        config: CerberusConfig (optional)
+        pnl_state: HydraPnlState from hydra_pnl module (optional)
+
+    Returns:
+        Dict of head -> throttled multiplier
+    """
+    # Get base multipliers
+    base = get_cerberus_all_multipliers(state, config)
+
+    # If no PnL state, return base multipliers
+    if pnl_state is None:
+        try:
+            from execution.hydra_pnl import apply_pnl_throttle_to_cerberus
+            return apply_pnl_throttle_to_cerberus(base, None)
+        except ImportError:
+            return base
+
+    # Apply PnL throttle
+    try:
+        from execution.hydra_pnl import apply_pnl_throttle_to_cerberus
+        return apply_pnl_throttle_to_cerberus(base, pnl_state)
+    except ImportError:
+        return base
+
+
 # ---------------------------------------------------------------------------
 # Exports
 # ---------------------------------------------------------------------------
@@ -1282,6 +1320,7 @@ __all__ = [
     # Integration helpers
     "get_cerberus_head_multiplier",
     "get_cerberus_all_multipliers",
+    "get_cerberus_throttled_multipliers",
     "get_cerberus_factor_weight_overlay",
     "get_cerberus_conviction_multiplier",
     "get_cerberus_universe_category_multiplier",

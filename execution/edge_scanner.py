@@ -304,6 +304,18 @@ def load_category_momentum_snapshot(
 # ---------------------------------------------------------------------------
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Safely coerce a value to float, returning default if not possible."""
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
 def _zscore(values: List[float]) -> List[float]:
     """Compute z-scores for a list of values."""
     if not values or len(values) < 2:
@@ -335,7 +347,12 @@ def compute_factor_edges(
         weights = weights.get("smoothed", weights.get("raw", weights))
 
     factor_ir = factor_diagnostics.get("factor_ir", {})
-    pnl_attribution = factor_diagnostics.get("pnl_attribution", {})
+    # pnl_attribution may be nested under "by_factor"
+    pnl_attribution_raw = factor_diagnostics.get("pnl_attribution", {})
+    if isinstance(pnl_attribution_raw, dict) and "by_factor" in pnl_attribution_raw:
+        pnl_attribution = pnl_attribution_raw.get("by_factor", {})
+    else:
+        pnl_attribution = pnl_attribution_raw
     factor_vols = factor_diagnostics.get("factor_volatilities", {})
 
     # Collect all factors
@@ -350,10 +367,10 @@ def compute_factor_edges(
     # Build per-factor metrics
     factor_list: List[Dict[str, Any]] = []
     for f in all_factors:
-        ir = float(factor_ir.get(f, 0.0)) if isinstance(factor_ir, dict) else 0.0
-        weight = float(weights.get(f, 0.0)) if isinstance(weights, dict) else 0.0
-        pnl = float(pnl_attribution.get(f, 0.0)) if isinstance(pnl_attribution, dict) else 0.0
-        vol = float(factor_vols.get(f, 0.0)) if isinstance(factor_vols, dict) else 0.0
+        ir = _safe_float(factor_ir.get(f, 0.0) if isinstance(factor_ir, dict) else 0.0)
+        weight = _safe_float(weights.get(f, 0.0) if isinstance(weights, dict) else 0.0)
+        pnl = _safe_float(pnl_attribution.get(f, 0.0) if isinstance(pnl_attribution, dict) else 0.0)
+        vol = _safe_float(factor_vols.get(f, 0.0) if isinstance(factor_vols, dict) else 0.0)
 
         factor_list.append({
             "factor": f,
@@ -414,9 +431,9 @@ def compute_symbol_edges(
         if not isinstance(data, dict):
             continue
 
-        hybrid_score = float(data.get("hybrid_score", 0.0))
-        conviction = float(data.get("conviction", data.get("conviction_score", 0.5)))
-        recent_pnl = float(data.get("recent_pnl", data.get("pnl", 0.0)))
+        hybrid_score = _safe_float(data.get("hybrid_score", 0.0))
+        conviction = _safe_float(data.get("conviction", data.get("conviction_score", 0.5)), 0.5)
+        recent_pnl = _safe_float(data.get("recent_pnl", data.get("pnl", 0.0)))
         category = data.get("category", "OTHER")
         direction = data.get("direction", data.get("side", "NEUTRAL"))
 
@@ -478,11 +495,11 @@ def compute_category_edges(
         if not isinstance(stats, dict):
             continue
 
-        ir = float(stats.get("ir", 0.0))
-        momentum = float(stats.get("momentum_score", stats.get("avg_momentum", 0.0)))
-        total_pnl = float(stats.get("total_pnl", 0.0))
-        mean_return = float(stats.get("mean_return", 0.0))
-        volatility = float(stats.get("volatility", 0.0))
+        ir = _safe_float(stats.get("ir", 0.0))
+        momentum = _safe_float(stats.get("momentum_score", stats.get("avg_momentum", 0.0)))
+        total_pnl = _safe_float(stats.get("total_pnl", 0.0))
+        mean_return = _safe_float(stats.get("mean_return", 0.0))
+        volatility = _safe_float(stats.get("volatility", 0.0))
         symbols = stats.get("symbols", [])
 
         # Sharpe proxy = mean_return / volatility (if volatility > 0)
@@ -539,9 +556,9 @@ def extract_regime_context(
     # From risk snapshot
     regime["dd_state"] = risk_snapshot.get("dd_state", "normal")
     regime["risk_mode"] = risk_snapshot.get("risk_mode", "normal")
-    regime["current_dd_pct"] = round(float(risk_snapshot.get("current_dd_pct", 0.0)), 4)
-    regime["portfolio_var"] = round(float(risk_snapshot.get("portfolio_var", 0.0)), 4)
-    regime["portfolio_cvar"] = round(float(risk_snapshot.get("portfolio_cvar", 0.0)), 4)
+    regime["current_dd_pct"] = round(_safe_float(risk_snapshot.get("current_dd_pct", 0.0)), 4)
+    regime["portfolio_var"] = round(_safe_float(risk_snapshot.get("portfolio_var", 0.0)), 4)
+    regime["portfolio_cvar"] = round(_safe_float(risk_snapshot.get("portfolio_cvar", 0.0)), 4)
 
     # Vol regime from symbol_scores global or individual symbols
     global_data = symbol_scores.get("global", {})
@@ -550,12 +567,11 @@ def extract_regime_context(
 
     # Router quality from router_health
     global_router = router_health.get("global", router_health)
-    regime["router_quality"] = round(float(global_router.get("quality_score", 0.8)), 4)
-    regime["avg_slippage_bps"] = round(float(global_router.get("avg_slippage_bps", 0.0)), 2)
-    regime["maker_rate"] = round(float(global_router.get("maker_rate", 0.0)), 4)
+    regime["router_quality"] = round(_safe_float(global_router.get("quality_score", 0.8), 0.8), 4)
+    regime["avg_slippage_bps"] = round(_safe_float(global_router.get("avg_slippage_bps", 0.0)), 2)
+    regime["maker_rate"] = round(_safe_float(global_router.get("maker_rate", 0.0)), 4)
 
     return regime
-
 
 def _extract_regime_adjustments(
     factor_diagnostics: Dict[str, Any],

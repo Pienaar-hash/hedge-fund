@@ -8,6 +8,18 @@ from execution.intel.router_policy import RouterPolicy
 
 
 def test_route_order_reduce_only(monkeypatch) -> None:
+    """
+    Test that reduce-only orders are correctly handled based on position mode.
+    
+    In HEDGE mode (dualSidePosition=true):
+      - positionSide is required
+      - reduceOnly is stripped (implicit from side+positionSide combo)
+      - SELL + positionSide=LONG = closing a long (reduce-only)
+      
+    In ONE-WAY mode (dualSidePosition=false):
+      - positionSide is stripped
+      - reduceOnly is preserved
+    """
     recorded: Dict[str, Any] = {}
 
     def fake_set_dry_run(flag: bool) -> None:
@@ -38,9 +50,18 @@ def test_route_order_reduce_only(monkeypatch) -> None:
     assert result["order_id"] == 321
     assert recorded["dry_run"] is False
     payload = recorded["payload"]
-    assert payload["reduceOnly"] == "true"
     assert payload["side"] == "SELL"
     assert payload["quantity"] == "0.50"
+    
+    # Check position mode handling
+    # In HEDGE mode: positionSide=LONG (for closing long), reduceOnly stripped
+    # In ONE-WAY mode: reduceOnly present, positionSide stripped
+    if payload.get("positionSide") == "LONG":
+        # HEDGE mode: reduceOnly is implicit from side+positionSide combo
+        assert "reduceOnly" not in payload, "In HEDGE mode, reduceOnly should be stripped"
+    else:
+        # ONE-WAY mode: reduceOnly should be preserved
+        assert payload.get("reduceOnly") == "true"
 
 
 def test_route_order_dry_run(monkeypatch) -> None:

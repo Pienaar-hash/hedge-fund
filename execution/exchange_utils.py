@@ -24,7 +24,6 @@ except Exception:  # pragma: no cover - optional dependency
 
 from execution.utils import get_coingecko_prices, load_json
 from execution.risk_loader import load_risk_config
-from execution.universe_resolver import symbol_min_gross
 from execution.exchange_precision import (
     normalize_price,
     normalize_qty,
@@ -59,6 +58,118 @@ getcontext().prec = 28
 
 _UM_CLIENT: Optional[Any] = None
 _UM_CLIENT_ERROR: Optional[str] = None
+
+# ---------------------------------------------------------------------------
+# Position Mode Cache (Hedge vs One-Way)
+# ---------------------------------------------------------------------------
+# Binance error -4061: "Order's positionSide does not match user's position mode"
+# If account is in ONE-WAY mode, we must NEVER send positionSide.
+# This cache is populated at startup and used to strip positionSide from orders.
+_DUAL_SIDE_CACHED: Optional[bool] = None
+
+
+def get_cached_dual_side() -> Optional[bool]:
+    """Return cached dual-side (hedge mode) status. None if not yet checked."""
+    return _DUAL_SIDE_CACHED
+
+
+def refresh_dual_side_cache() -> bool:
+    """
+    Refresh the dual-side cache from the exchange.
+    
+    Returns True if hedge mode, False if one-way mode.
+    """
+    global _DUAL_SIDE_CACHED
+    try:
+        if is_dry_run():
+            _DUAL_SIDE_CACHED = True  # Assume hedge mode in dry run
+            return True
+        result = _req("GET", "/fapi/v1/positionSide/dual", signed=True).json()
+        _DUAL_SIDE_CACHED = bool(result.get("dualSidePosition"))
+        _LOG.info("[exutil] position mode cached: %s", "HEDGE" if _DUAL_SIDE_CACHED else "ONE-WAY")
+        return _DUAL_SIDE_CACHED
+    except Exception as e:
+        _LOG.warning("[exutil] failed to check position mode: %s", e)
+        _DUAL_SIDE_CACHED = None
+        return False
+
+
+def is_hedge_mode() -> bool:
+    """
+    Check if account is in hedge (dual-side) mode.
+    
+    Uses cached value if available, otherwise queries the exchange.
+    """
+    global _DUAL_SIDE_CACHED
+    if _DUAL_SIDE_CACHED is not None:
+        return _DUAL_SIDE_CACHED
+    return refresh_dual_side_cache()
+
+
+def strip_position_side_if_one_way(params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Strip positionSide from order params if account is in one-way mode.
+    
+    This prevents Binance error -4061.
+    Modifies params in-place and returns it for chaining.
+    """
+    if not is_hedge_mode():
+        params.pop("positionSide", None)
+    return params
+
+
+def ensure_position_side(params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Ensure positionSide is correctly set based on position mode.
+    
+    - ONE-WAY mode: Remove positionSide (it's not allowed)
+    - HEDGE mode: Add positionSide based on side if missing
+                  Also remove reduceOnly (not needed with positionSide)
+    
+    This prevents Binance error -4061 in both modes.
+    Modifies params in-place and returns it for chaining.
+    """
+    hedge = is_hedge_mode()
+    
+    if not hedge:
+        # ONE-WAY mode: positionSide must NOT be present
+        params.pop("positionSide", None)
+    else:
+        # HEDGE mode: positionSide MUST be present
+        if "positionSide" not in params or not params.get("positionSide"):
+            side = str(params.get("side", "")).upper()
+            reduce_only = params.get("reduceOnly") or params.get("reduce_only")
+            if reduce_only:
+                # For closing positions in hedge mode, infer from side:
+                # - SELL to close a LONG position
+                # - BUY to close a SHORT position
+                if side == "SELL":
+                    params["positionSide"] = "LONG"
+                elif side == "BUY":
+                    params["positionSide"] = "SHORT"
+                else:
+                    params["positionSide"] = "BOTH"  # Fallback
+            else:
+                # For opening positions:
+                # - BUY opens LONG
+                # - SELL opens SHORT
+                if side == "BUY":
+                    params["positionSide"] = "LONG"
+                elif side == "SELL":
+                    params["positionSide"] = "SHORT"
+                else:
+                    params["positionSide"] = "BOTH"  # Fallback
+        
+        # HEDGE mode: reduceOnly is implicit from side+positionSide combo
+        # e.g., SELL with positionSide=LONG means closing LONG (reduce-only)
+        # Binance error -1106 occurs if both are set on some endpoints
+        if params.get("positionSide") and params.get("positionSide") != "BOTH":
+            params.pop("reduceOnly", None)
+            params.pop("reduce_only", None)
+    
+    return params
+
+
 class _NullUMClient:
     """Stub client used when UMFutures cannot be initialised."""
 
@@ -199,9 +310,10 @@ def classify_binance_error(
 
 def reset_um_client() -> None:
     """Reset the cached UMFutures client (mainly for tests)."""
-    global _UM_CLIENT, _UM_CLIENT_ERROR
+    global _UM_CLIENT, _UM_CLIENT_ERROR, _DUAL_SIDE_CACHED
     _UM_CLIENT = None
     _UM_CLIENT_ERROR = None
+    _DUAL_SIDE_CACHED = None  # Also reset position mode cache on client reset
 
 
 def um_client_error() -> Optional[str]:
@@ -901,6 +1013,9 @@ def build_order_payload(
     if reduce_only:
         payload["reduceOnly"] = "true"
 
+    # POSITION MODE FIX (v7.9_P4): Ensure positionSide is correct for account mode
+    ensure_position_side(payload)
+
     meta.update(
         {
             "normalized_price": f"{norm_price:f}",
@@ -1508,6 +1623,14 @@ def send_order(
             )
             params.pop("reduceOnly", None)
 
+    # ─────────────────────────────────────────────────────────────────────
+    # POSITION MODE FIX (v7.9_P4)
+    # Ensure positionSide is correctly set based on account position mode:
+    # - ONE-WAY mode: Remove positionSide (not allowed)
+    # - HEDGE mode: Add positionSide if missing (required)
+    # ─────────────────────────────────────────────────────────────────────
+    ensure_position_side(params)
+
     clean_params = {
         k: v for k, v in params.items() if k in _ORDER_PARAM_WHITELIST and v not in (None, "")
     }
@@ -1680,6 +1803,8 @@ def place_market_order_sized(  # noqa: F811
 
     floor_gross = 0.0
     try:
+        # Lazy import to avoid circular dependency with universe_resolver
+        from execution.universe_resolver import symbol_min_gross
         risk_cfg = load_risk_config()
         risk_global = (risk_cfg.get("global") or {}) if isinstance(risk_cfg, Mapping) else {}
         floor_gross = max(

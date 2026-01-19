@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import requests
 
 from execution import exchange_utils as ex
+from execution.exchange_utils import strip_position_side_if_one_way, ensure_position_side
 from execution.exchange_precision import normalize_price, normalize_qty
 from execution.log_utils import get_logger, log_event, safe_dump
 from execution.intel.maker_offset import suggest_maker_offset_bps
@@ -1376,6 +1377,12 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         record_router_event()
     except Exception:
         pass
+
+    # POSITION MODE FIX (v7.9_P4): Ensure positionSide is correct for account mode
+    # - ONE-WAY mode: Strip positionSide (not allowed)
+    # - HEDGE mode: Add positionSide if missing (required)
+    # Must be applied before any order path (maker or taker)
+    ensure_position_side(payload)
 
     latency_ms: float | None = None
     resp: Dict[str, Any] | None = None

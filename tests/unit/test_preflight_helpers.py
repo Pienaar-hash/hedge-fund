@@ -12,7 +12,7 @@ def test_state_health_report_detects_missing(tmp_path: Path) -> None:
 
 
 def test_version_report_alignment() -> None:
-    report = version_report("v7.6")
-    assert report["engine_version"] == "v7.6"
-    assert report["docs_version"] == "v7.6"
+    report = version_report("v7.8")
+    assert report["engine_version"] == "v7.8"
+    assert report["docs_version"] == "v7.8"
     assert report["aligned"]

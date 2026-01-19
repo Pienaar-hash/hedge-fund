@@ -289,6 +289,12 @@ def compute_vol_factor(atr_value: float, price: float, cfg: VolTargetConfig) -> 
 def compute_per_trade_nav_pct(nav_pct_base: float, vol_factor: float, cfg: VolTargetConfig) -> float:
     """
     Scale base NAV percentage by vol_factor and clamp to config min/max.
+    
+    v7.X_DOCTRINE: Sizing is MULTIPLICATIVE only. The final position size is:
+      base_pct * vol_factor * conviction_mult * regime_mult * alpha_mult
+    
+    Never use a fixed percentage directly - all sizing must flow through
+    multiplicative factors that reflect regime, conviction, and execution quality.
     """
     # Scale base percentage by vol_factor and clamp to config min/max
     raw = nav_pct_base * vol_factor
@@ -303,6 +309,15 @@ def compute_tp_sl_prices(
 ) -> Optional[Tuple[float, float, float]]:
     """
     Compute take-profit and stop-loss prices using ATR multiples.
+    
+    v7.X_DOCTRINE: TP/SL is now SEATBELT only (catastrophe protection).
+    Primary exits come from doctrine_exit_verdict() which checks:
+      CRISIS → REGIME_FLIP → STRUCTURAL_FAILURE → TIME_STOP → SEATBELT
+    
+    TP is kept for legacy compatibility but should NOT be the primary exit.
+    Positions should die when the THESIS dies, not when arbitrary TP levels hit.
+    
+    SL is kept as catastrophe protection (seatbelt) - last line of defense.
     
     Args:
         price: Current entry price

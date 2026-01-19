@@ -689,6 +689,52 @@ from execution.risk_loader import load_risk_config
 from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
 from execution.nav import compute_nav_pair, PortfolioSnapshot, nav_health_snapshot
 from execution import pipeline_v6_shadow
+# v7.X Doctrine Kernel — Supreme Trading Authority
+try:
+    from execution.doctrine_kernel import (
+        doctrine_entry_verdict,
+        doctrine_exit_verdict,
+        build_regime_snapshot_from_state,
+        build_execution_snapshot_from_state,
+        DoctrineVerdict,
+        ExitReason,
+        RegimeSnapshot,
+        IntentSnapshot,
+        ExecutionSnapshot,
+        PortfolioSnapshot as DoctrinePortfolioSnapshot,
+        AlphaHealthSnapshot,
+        log_doctrine_event,
+    )
+    _DOCTRINE_AVAILABLE = True
+except ImportError:
+    _DOCTRINE_AVAILABLE = False
+
+# Cycle statistics (non-invasive, observational only)
+try:
+    from execution.cycle_statistics import (
+        record_entry_event as _record_entry_stat,
+        record_regime_change as _record_regime_stat,
+        record_flag as _record_flag_stat,
+    )
+    _CYCLE_STATS_AVAILABLE = True
+except ImportError:
+    _CYCLE_STATS_AVAILABLE = False
+    def _record_entry_stat(*args, **kwargs): pass
+    def _record_regime_stat(*args, **kwargs): pass
+    def _record_flag_stat(*args, **kwargs): pass
+
+# Regime pressure (observational only — never affects decisions)
+try:
+    from execution.regime_pressure import (
+        compute_regime_pressure as _compute_pressure,
+        save_regime_pressure_state as _save_pressure,
+    )
+    _REGIME_PRESSURE_AVAILABLE = True
+except ImportError:
+    _REGIME_PRESSURE_AVAILABLE = False
+    def _compute_pressure(*args, **kwargs): return None
+    def _save_pressure(*args, **kwargs): return False
+
 from execution.utils import (
     load_json,
     write_nav_snapshots_pair,
@@ -721,6 +767,29 @@ from execution.state_publish import (
     compute_and_write_alpha_decay_state,
     write_runtime_diagnostics_state,
 )
+# v7.9_P4: Execution Alpha observability hooks
+try:
+    from execution.minotaur_integration import (
+        process_fill_for_alpha,
+        process_fill_for_quality,
+        save_alpha_state,
+        save_quality_state,
+    )
+    from execution.minotaur_engine import load_minotaur_config
+    _ALPHA_HOOKS_AVAILABLE = True
+except ImportError:
+    _ALPHA_HOOKS_AVAILABLE = False
+    def process_fill_for_alpha(*args, **kwargs):
+        return None
+    def process_fill_for_quality(*args, **kwargs):
+        return None
+    def save_alpha_state(*args, **kwargs):
+        pass
+    def save_quality_state(*args, **kwargs):
+        pass
+    def load_minotaur_config():
+        return None
+
 try:
     from execution.signal_screener import run_once as run_screener_once
 except ImportError:  # pragma: no cover - optional dependency
@@ -1146,6 +1215,7 @@ class FillSummary:
     ts_fill_first: Optional[str]
     ts_fill_last: Optional[str]
     latency_ms: Optional[float] = None
+    is_maker: bool = False
 
 
 def _normalize_status(status: Any) -> str:
@@ -2247,8 +2317,350 @@ def _maybe_run_pipeline_v6_compare(force: bool = False) -> None:
             pass
 
 
+# ---------------------------------------------------------------------------
+# SENTINEL-X REGIME COMPUTATION — Must run before doctrine gate (v7.X)
+# ---------------------------------------------------------------------------
+
+_SENTINEL_X_LAST_RUN = 0.0
+_SENTINEL_X_INTERVAL = 60.0  # Run at least every 60 seconds
+
+def _maybe_compute_sentinel_x() -> None:
+    """
+    Compute and publish Sentinel-X regime state.
+    
+    v7.X_DOCTRINE: This is a MANDATORY step. Doctrine requires regime authority.
+    If Sentinel-X fails, we write an error state (not empty) so doctrine can
+    log a specific refusal reason.
+    
+    This function:
+    - Fetches BTC price data (the market reference)
+    - Runs Sentinel-X classification
+    - Writes atomic JSON to logs/state/sentinel_x.json
+    """
+    global _SENTINEL_X_LAST_RUN
+    
+    now = time.time()
+    if now - _SENTINEL_X_LAST_RUN < _SENTINEL_X_INTERVAL:
+        return  # Throttle: don't recompute every loop iteration
+    
+    _SENTINEL_X_LAST_RUN = now
+    
+    try:
+        from execution.sentinel_x import (
+            run_sentinel_x_step,
+            load_sentinel_x_config,
+            SentinelXState,
+            save_sentinel_x_state,
+        )
+        from execution.exchange_utils import get_klines
+        from pathlib import Path
+        
+        # Load PREVIOUS state BEFORE computing new one (for regime change detection)
+        prev_state_data = _load_sentinel_x_state()
+        prev_regime = prev_state_data.get("primary_regime") if prev_state_data else None
+        
+        # Load config (but override enabled=True since doctrine requires it)
+        cfg = load_sentinel_x_config()
+        # DOCTRINE OVERRIDE: Sentinel-X is ALWAYS enabled when doctrine is active
+        cfg.enabled = True
+        
+        # Get BTC as the market reference
+        try:
+            klines = get_klines("BTCUSDT", "15m", limit=300)
+            closes = [float(row[4]) for row in klines]
+            volumes = [float(row[5]) for row in klines]
+            highs = [float(row[2]) for row in klines]
+            lows = [float(row[3]) for row in klines]
+        except Exception as e:
+            LOG.warning("[sentinel_x] Failed to fetch BTC klines: %s", e)
+            _write_sentinel_error_state(f"kline_fetch_failed: {e}")
+            return
+        
+        if len(closes) < 50:
+            LOG.warning("[sentinel_x] Insufficient price data: %d bars", len(closes))
+            _write_sentinel_error_state(f"insufficient_data: {len(closes)} bars")
+            return
+        
+        # Get current drawdown for crisis detection
+        try:
+            risk_snap = json.loads(Path("logs/state/risk_snapshot.json").read_text())
+            current_dd = abs(float(risk_snap.get("current_dd", 0.0)))
+        except Exception:
+            current_dd = 0.0
+        
+        # Run Sentinel-X step
+        state = run_sentinel_x_step(
+            prices=closes,
+            cfg=cfg,
+            volumes=volumes,
+            highs=highs,
+            lows=lows,
+            current_dd=current_dd,
+            dry_run=False,  # MUST write state
+        )
+        
+        if state is None:
+            LOG.warning("[sentinel_x] run_sentinel_x_step returned None")
+            _write_sentinel_error_state("sentinel_returned_none")
+            return
+        
+        # Get confidence from smoothed_probs or regime_probs
+        probs = state.smoothed_probs or state.regime_probs or {}
+        confidence = probs.get(state.primary_regime, 0.5)
+        
+        LOG.info(
+            "[sentinel_x] regime=%s confidence=%.2f crisis=%s",
+            state.primary_regime,
+            confidence,
+            state.crisis_flag,
+        )
+        
+        # Record regime change to cycle statistics (non-invasive)
+        # prev_regime was loaded BEFORE run_sentinel_x_step to detect actual changes
+        try:
+            if prev_regime is not None and prev_regime != state.primary_regime:
+                LOG.info(
+                    "[sentinel_x] REGIME CHANGE: %s -> %s",
+                    prev_regime,
+                    state.primary_regime,
+                )
+                _record_regime_stat(
+                    old_regime=prev_regime,
+                    new_regime=state.primary_regime,
+                    confidence=confidence,
+                    cycles_stable=getattr(state, "cycles_stable", 0),
+                )
+        except Exception as e:
+            LOG.debug("[sentinel_x] Failed to record regime change: %s", e)
+        
+        # Compute regime pressure metrics (observational only — never affects decisions)
+        # WARNING: These metrics must NEVER be used to gate entries, size trades,
+        # alter exits, or modify regime logic.
+        try:
+            if _REGIME_PRESSURE_AVAILABLE:
+                cycles_stable = getattr(state, "cycles_stable", 0)
+                # Get history_meta for stability tracking
+                history_meta = state.history_meta or {}
+                consecutive = history_meta.get("consecutive_count", cycles_stable)
+                
+                pressure_state = _compute_pressure(
+                    current_regime=state.primary_regime,
+                    current_confidence=confidence,
+                    cycles_stable=consecutive,
+                    stability_threshold=2,  # Doctrine requires 2 stable cycles
+                )
+                if pressure_state:
+                    _save_pressure(pressure_state)
+        except Exception as e:
+            LOG.debug("[sentinel_x] Failed to compute regime pressure: %s", e)
+        
+    except ImportError as e:
+        LOG.error("[sentinel_x] Import failed: %s", e)
+        _write_sentinel_error_state(f"import_error: {e}")
+    except Exception as e:
+        LOG.error("[sentinel_x] Compute failed: %s", e)
+        _write_sentinel_error_state(f"compute_error: {e}")
+
+
+def _write_sentinel_error_state(error: str) -> None:
+    """Write an error state so doctrine can log specific refusal reason."""
+    try:
+        from pathlib import Path
+        from datetime import datetime, timezone
+        
+        path = Path("logs/state/sentinel_x.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        error_state = {
+            "primary_regime": None,
+            "confidence": 0.0,
+            "crisis_flag": False,
+            "status": "ERROR",
+            "error": error,
+            "updated_ts": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(error_state, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        
+    except Exception as e:
+        LOG.error("[sentinel_x] Failed to write error state: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# DOCTRINE GATE — Supreme Trading Authority (v7.X)
+# ---------------------------------------------------------------------------
+
+def _load_sentinel_x_state() -> Dict[str, Any]:
+    """Load Sentinel-X regime state from disk."""
+    try:
+        path = Path("logs/state/sentinel_x.json")
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _load_execution_quality_state() -> Dict[str, Any]:
+    """Load execution quality state from disk."""
+    try:
+        path = Path("logs/state/execution_quality.json")
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
+    """
+    DOCTRINE GATE — The first and supreme check before any trade.
+    
+    Returns:
+        (allowed: bool, reason: str, decision_details: dict)
+    
+    If doctrine is not available or Sentinel-X is missing, this gate
+    REFUSES all new entries. No fallback. No "graceful degradation".
+    """
+    if not _DOCTRINE_AVAILABLE:
+        return False, "DOCTRINE_UNAVAILABLE", {"error": "doctrine_kernel not imported"}
+    
+    reduce_only = bool(intent.get("reduceOnly", False))
+    if reduce_only:
+        # Exits are handled by doctrine_exit_verdict, not this gate
+        return True, "REDUCE_ONLY_BYPASS", {}
+    
+    symbol = intent.get("symbol", "")
+    sig = str(intent.get("signal", "")).upper()
+    direction = sig if sig in ("BUY", "SELL") else "BUY"
+    head = intent.get("strategy") or intent.get("strategy_id") or "UNKNOWN"
+    
+    # Load Sentinel-X regime state
+    sentinel_state = _load_sentinel_x_state()
+    
+    # Check for error state (Sentinel-X failed but wrote error)
+    if sentinel_state.get("status") == "ERROR":
+        error_msg = sentinel_state.get("error", "unknown_error")
+        log_doctrine_event("ENTRY_VETO", symbol, DoctrineVerdict.VETO_NO_REGIME, {
+            "intent": intent,
+            "sentinel_error": error_msg,
+        })
+        LOG.warning("[doctrine] VETO symbol=%s reason=SENTINEL_ERROR details=%s", symbol, error_msg)
+        return False, "SENTINEL_ERROR", {"error": f"Sentinel-X error: {error_msg}"}
+    
+    if not sentinel_state or not sentinel_state.get("primary_regime"):
+        log_doctrine_event("ENTRY_VETO", symbol, DoctrineVerdict.VETO_NO_REGIME, {"intent": intent})
+        return False, "NO_REGIME_AUTHORITY", {"error": "Sentinel-X state missing or empty"}
+    
+    # v7.X_DOCTRINE: Check state freshness (stale regime = no authority)
+    SENTINEL_MAX_AGE_SECONDS = 300.0  # 5 minutes max staleness
+    try:
+        from datetime import datetime, timezone
+        updated_ts_str = sentinel_state.get("updated_ts", "")
+        if updated_ts_str:
+            updated_dt = datetime.fromisoformat(updated_ts_str.replace("Z", "+00:00"))
+            age_seconds = (datetime.now(timezone.utc) - updated_dt).total_seconds()
+            if age_seconds > SENTINEL_MAX_AGE_SECONDS:
+                log_doctrine_event("ENTRY_VETO", symbol, DoctrineVerdict.VETO_REGIME_STALE, {
+                    "intent": intent,
+                    "age_seconds": age_seconds,
+                    "max_age": SENTINEL_MAX_AGE_SECONDS,
+                })
+                LOG.warning(
+                    "[doctrine] VETO symbol=%s reason=SENTINEL_STALE age=%.1fs max=%.1fs",
+                    symbol, age_seconds, SENTINEL_MAX_AGE_SECONDS,
+                )
+                return False, "SENTINEL_STALE", {"error": f"Sentinel-X state too old: {age_seconds:.0f}s"}
+    except Exception as e:
+        LOG.debug("[doctrine] Could not check sentinel freshness: %s", e)
+    
+    # Build regime snapshot
+    regime = build_regime_snapshot_from_state(sentinel_state)
+    
+    # Build intent snapshot
+    intent_snap = IntentSnapshot(
+        symbol=symbol,
+        direction=direction,
+        head=head,
+        raw_size_usd=float(intent.get("gross_usd", 0) or 0),
+        alpha_router_allocation=float(intent.get("alpha_router_allocation", 1.0) or 1.0),
+        conviction=float(intent.get("conviction", 0.5) or 0.5),
+    )
+    
+    # Build execution snapshot
+    exec_state = _load_execution_quality_state()
+    execution = build_execution_snapshot_from_state(exec_state)
+    
+    # Build portfolio snapshot (minimal — head budgets would come from Hydra)
+    portfolio = DoctrinePortfolioSnapshot(
+        head_budget_remaining={head: 1.0},  # TODO: Wire to Hydra head budgets
+        total_exposure_pct=getattr(_RISK_STATE, "gross_exposure_pct", 0.0),
+        drawdown_pct=getattr(_RISK_STATE, "current_dd_pct", 0.0),
+        risk_mode=getattr(_RISK_STATE, "risk_mode", "OK"),
+    )
+    
+    # Call doctrine
+    decision = doctrine_entry_verdict(
+        regime=regime,
+        intent=intent_snap,
+        execution=execution,
+        portfolio=portfolio,
+        alpha_health=None,  # TODO: Wire to Alpha Decay
+    )
+    
+    # Log the decision
+    log_doctrine_event(
+        "ENTRY_VERDICT",
+        symbol,
+        decision.verdict,
+        {
+            "allowed": decision.allowed,
+            "reason": decision.reason,
+            "regime": regime.primary_regime,
+            "confidence": regime.confidence,
+            "direction": direction,
+            "multiplier": decision.composite_multiplier,
+        },
+    )
+    
+    # Record to cycle statistics (non-invasive)
+    try:
+        _record_entry_stat(
+            symbol=symbol,
+            allowed=decision.allowed,
+            regime=regime.primary_regime,
+            veto_reason=decision.reason if not decision.allowed else None,
+        )
+    except Exception:
+        pass
+    
+    if not decision.allowed:
+        return False, decision.verdict.value, decision.to_dict()
+    
+    # Apply multiplier to intent
+    if decision.composite_multiplier < 1.0:
+        original_gross = float(intent.get("gross_usd", 0) or 0)
+        intent["gross_usd"] = original_gross * decision.composite_multiplier
+        intent["doctrine_multiplier"] = decision.composite_multiplier
+    
+    return True, "DOCTRINE_ALLOW", decision.to_dict()
+
+
 # NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
+    # DOCTRINE GATE — Supreme Authority Check
+    doctrine_allowed, doctrine_reason, doctrine_details = _doctrine_gate(intent)
+    if not doctrine_allowed:
+        LOG.warning(
+            "[doctrine] VETO symbol=%s reason=%s details=%s",
+            intent.get("symbol"),
+            doctrine_reason,
+            doctrine_details,
+        )
+        return  # Hard stop — no further processing
+    
     symbol = intent["symbol"]
     symbol_upper = str(symbol).upper()
     sig = str(intent.get("signal", "")).upper()
@@ -3347,6 +3759,31 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         except Exception:
             pass
         _emit_position_snapshots(symbol)
+        
+        # v7.9_P4: Record fill for Execution Alpha tracking
+        try:
+            fill_record = {
+                "symbol": symbol,
+                "side": side,
+                "qty": executed_qty_float,
+                "price": avg_fill_price,
+                "fill_price": avg_fill_price,
+                "ts": time.time(),
+                "is_maker": bool(getattr(fill_summary, 'is_maker', False) if fill_summary else False),
+                "fee": getattr(fill_summary, 'fee_total', 0.0) if fill_summary else 0.0,
+            }
+            # Track execution quality
+            process_fill_for_quality(fill_record, intent if "intent" in dir() else {})
+            # Track execution alpha
+            alpha_result = process_fill_for_alpha(fill_record, quotes={}, regime=None, head_contributions=None)
+            if alpha_result:
+                LOG.info("[alpha] sample recorded: symbol=%s side=%s qty=%s alpha_bps=%.2f",
+                         symbol, side, executed_qty_float, getattr(alpha_result, 'alpha_bps', 0) or 0)
+            else:
+                LOG.info("[alpha] fill processed but no sample returned: symbol=%s", symbol)
+        except Exception as exc:
+            LOG.warning("[alpha] fill observation failed: %s", exc)
+        
         is_position_close = (
             reduce_only
             or (side == "SELL" and pos_side == "LONG")
@@ -3389,19 +3826,47 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             except Exception:
                 pass
         elif not is_position_close:
-            # V7.3: Register TP/SL for new positions from vol_target strategy
+            # V7.X_DOCTRINE: Register TP/SL and entry metadata for thesis-based exits
             try:
                 tp_price = intent.get("take_profit_price")
                 sl_price = intent.get("stop_loss_price")
-                if tp_price is not None or sl_price is not None:
-                    metadata = intent.get("metadata", {}).get("vol_target", {}).get("tp_sl")
+                entry_price = intent.get("entry_price") or intent.get("price")
+                
+                # Get entry metadata from intent or load from current state
+                intent_meta = intent.get("metadata", {})
+                vol_target_meta = intent_meta.get("vol_target", {})
+                tp_sl_meta = vol_target_meta.get("tp_sl")
+                
+                # v7.X_DOCTRINE: Capture regime at entry for thesis-based exits
+                entry_regime = intent_meta.get("entry_regime")
+                entry_regime_confidence = intent_meta.get("entry_regime_confidence")
+                entry_head = intent_meta.get("entry_head") or intent_meta.get("primary_head")
+                
+                # If not in intent, try to load from current regime state
+                if entry_regime is None:
+                    try:
+                        from execution.doctrine_kernel import build_regime_snapshot_from_state
+                        sentinel_state = _load_sentinel_x_state()
+                        if sentinel_state:
+                            regime_snap = build_regime_snapshot_from_state(sentinel_state)
+                            if regime_snap:
+                                entry_regime = regime_snap.primary_regime
+                                entry_regime_confidence = regime_snap.confidence
+                    except Exception:
+                        pass
+                
+                if tp_price is not None or sl_price is not None or entry_regime is not None:
                     from execution.position_tp_sl_registry import register_position_tp_sl
                     register_position_tp_sl(
                         symbol=symbol,
                         position_side=pos_side,
                         take_profit_price=tp_price,
                         stop_loss_price=sl_price,
-                        metadata=metadata,
+                        metadata=tp_sl_meta,
+                        entry_price=entry_price,
+                        entry_regime=entry_regime,
+                        entry_regime_confidence=entry_regime_confidence,
+                        entry_head=entry_head,
                     )
             except Exception:
                 pass
@@ -3900,6 +4365,21 @@ def _pub_tick() -> None:
         compute_and_write_alpha_decay_state(symbols_list)
     except Exception as exc:
         LOG.debug("[telemetry] alpha_decay_write_failed: %s", exc)
+    
+    # v7.9_P4: Save Execution Alpha and Quality state
+    try:
+        save_alpha_state()
+    except Exception as exc:
+        LOG.debug("[telemetry] execution_alpha_save_failed: %s", exc)
+    try:
+        # load_minotaur_config requires strategy_cfg argument
+        _strategy_cfg = load_json("config/strategy_config.json") or {}
+        minotaur_cfg = load_minotaur_config(_strategy_cfg) if _ALPHA_HOOKS_AVAILABLE else None
+        if minotaur_cfg:
+            save_quality_state(minotaur_cfg)
+    except Exception as exc:
+        LOG.debug("[telemetry] execution_quality_save_failed: %s", exc)
+    
     scores_payload = (
         dict(_LAST_SYMBOL_SCORES_STATE)
         if isinstance(_LAST_SYMBOL_SCORES_STATE, Mapping)
@@ -3998,9 +4478,16 @@ def _loop_once(i: int) -> None:
         _maybe_emit_execution_alerts(symbol)
     _maybe_publish_execution_intel()
 
-    # V7.3: Scan for TP/SL exits before generating new intents
+    # V7.X_DOCTRINE: Scan for doctrine-based exits FIRST, then TP/SL seatbelt
+    # Doctrine exit precedence: CRISIS → REGIME_FLIP → STRUCTURAL_FAILURE → TIME_STOP → SEATBELT
     try:
-        from execution.exit_scanner import scan_tp_sl_exits, build_exit_intent
+        from execution.exit_scanner import (
+            scan_all_exits,
+            build_doctrine_exit_intent,
+            build_exit_intent,
+            DoctrineExitCandidate,
+            ExitCandidate,
+        )
         
         # Build price map from positions (markPrice) or fetch live
         # V7.6: Only build prices for positions with non-zero qty (active positions)
@@ -4022,11 +4509,29 @@ def _loop_once(i: int) -> None:
                 except Exception:
                     pass
         
-        exit_candidates = scan_tp_sl_exits(baseline_positions, price_map)
-        for candidate in exit_candidates:
+        # Scan for ALL exits: doctrine-based first, then seatbelt (TP/SL)
+        doctrine_exits, seatbelt_exits = scan_all_exits(baseline_positions, price_map)
+        
+        # Process doctrine exits FIRST (higher priority, thesis-based)
+        for candidate in doctrine_exits:
+            exit_intent = build_doctrine_exit_intent(candidate)
+            LOG.info(
+                "[exit_scanner] DOCTRINE EXIT %s %s reason=%s urgency=%s",
+                candidate.symbol,
+                candidate.position_side,
+                candidate.exit_reason,
+                candidate.urgency,
+            )
+            try:
+                _send_order(exit_intent)
+            except Exception as exc:
+                LOG.error("[exit_scanner] failed to send doctrine exit %s: %s", candidate.symbol, exc)
+        
+        # Process seatbelt exits (lower priority, catastrophe protection only)
+        for candidate in seatbelt_exits:
             exit_intent = build_exit_intent(candidate)
             LOG.info(
-                "[exit_scanner] %s %s %s exit trigger at %.4f",
+                "[exit_scanner] SEATBELT EXIT %s %s %s trigger at %.4f",
                 candidate.symbol,
                 candidate.position_side,
                 candidate.exit_reason.value.upper(),
@@ -4035,11 +4540,11 @@ def _loop_once(i: int) -> None:
             try:
                 _send_order(exit_intent)
             except Exception as exc:
-                LOG.error("[exit_scanner] failed to send exit intent %s: %s", candidate.symbol, exc)
+                LOG.error("[exit_scanner] failed to send seatbelt exit %s: %s", candidate.symbol, exc)
     except ImportError:
         pass
     except Exception as exc:
-        LOG.warning("[exit_scanner] error during TP/SL scan: %s", exc)
+        LOG.warning("[exit_scanner] error during exit scan: %s", exc)
 
     if INTENT_TEST:
         intent = {
@@ -4168,11 +4673,23 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
     LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
     log_v6_flag_snapshot(LOG)
     _maybe_write_v6_runtime_probe(force=True)
+    
+    # v7.9_P4: Cache position mode at startup for order sanitization
     try:
-        if not _is_dual_side():
-            LOG.warning("[executor] WARNING — account not in hedge (dualSide) mode")
+        from execution.exchange_utils import refresh_dual_side_cache, is_hedge_mode
+        is_hedge = refresh_dual_side_cache()
+        if is_hedge:
+            LOG.info("[executor] Account is in HEDGE (dual-side) mode — positionSide required")
+        else:
+            LOG.warning("[executor] Account is in ONE-WAY mode — positionSide will be stripped from orders")
     except Exception as e:
-        LOG.error("[executor] dualSide check failed: %s", e)
+        LOG.error("[executor] dual-side cache refresh failed: %s", e)
+        # Fallback: try local _is_dual_side check
+        try:
+            if not _is_dual_side():
+                LOG.warning("[executor] WARNING — account not in hedge (dualSide) mode")
+        except Exception as e2:
+            LOG.error("[executor] dualSide check failed: %s", e2)
 
     client = get_um_client()
     if getattr(client, "is_stub", False):
@@ -4184,6 +4701,10 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
 
     i = 0
     while True:
+        # v7.X_DOCTRINE: Compute Sentinel-X regime FIRST, before any trading logic
+        # Doctrine requires regime authority; without it, all trades are vetoed.
+        _maybe_compute_sentinel_x()
+        
         _loop_once(i)
         _maybe_emit_heartbeat()
         _maybe_run_internal_screener()

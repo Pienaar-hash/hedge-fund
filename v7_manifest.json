@@ -1,5 +1,5 @@
 {
-  "docs_version": "v7.6",
+  "docs_version": "v7.8",
   "state_files": {
     "nav": {
       "path": "logs/state/nav.json",
@@ -86,6 +86,19 @@
         "symbol_edges": "Dict of per-symbol metrics",
         "category_edges": "Dict of per-category metrics",
         "config_echo": "Lookback parameters for reproducibility"
+      }
+    },
+    "episode_ledger": {
+      "path": "logs/state/episode_ledger.json",
+      "owner": "episode_ledger",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Completed trade cycles derived from execution logs — read-only observability",
+      "fields": {
+        "episodes": "Array of completed Episode objects with entry/exit/pnl/fees/duration",
+        "last_rebuild_ts": "ISO timestamp of last ledger rebuild",
+        "stats": "Aggregate stats: total_net_pnl, win_rate, avg_duration, exit_reasons",
+        "episode_count": "Number of completed episodes"
       }
     },
     "meta_scheduler": {
@@ -189,6 +202,30 @@
         "errors": "List[str] - recent errors (max 10)"
       }
     },
+    "regime_pressure": {
+      "path": "logs/state/regime_pressure.json",
+      "owner": "executor",
+      "update_frequency": "per_intel_throttled",
+      "optional": true,
+      "description": "Regime Pressure Dashboard - OBSERVATIONAL ONLY metrics showing market pressure without affecting decisions",
+      "warning": "These metrics must NEVER be used to gate entries, size trades, alter exits, or modify regime logic",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "current.regime": "str - current regime label",
+        "current.confidence": "float - confidence in current regime [0,1]",
+        "current.dwell_time_hours": "float - hours since last regime change",
+        "current.stability_distance": "int - cycles until stability threshold",
+        "pressure.confidence_velocity": "float - EMA-smoothed Δ confidence per cycle",
+        "pressure.near_flip_count_24h": "int - times confidence was in [0.45, 0.55] band",
+        "pressure.near_flip_count_7d": "int - near-flip events over 7 days",
+        "churn.regime_changes_24h": "int - regime changes in last 24 hours",
+        "churn.regime_changes_7d": "int - regime changes in last 7 days",
+        "churn.avg_dwell_time_hours_7d": "float - average regime dwell time over 7 days",
+        "bands.near_flip_band": "List[float] - [0.45, 0.55] confidence uncertainty band",
+        "meta.cycles_observed": "int - confidence readings in history buffer",
+        "meta.calculation_window_hours": "int - lookback window for metrics"
+      }
+    },
     "alpha_decay": {
       "path": "logs/state/alpha_decay.json",
       "owner": "executor",
@@ -230,6 +267,61 @@
         "notes": "List[str] - diagnostic notes (max 10)",
         "errors": "List[str] - recent errors (max 10)",
         "meta": "Dict - config version, bounds, learning_rate"
+      }
+    },
+    "hydra_state": {
+      "path": "logs/state/hydra_state.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Hydra Multi-Strategy Execution Engine - per-head budgets, usage, and merged intents",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "head_budgets": "Dict[str, float] - effective NAV budget per head",
+        "head_usage": "Dict[str, float] - NAV actually used per head",
+        "head_positions": "Dict[str, int] - position count per head",
+        "merged_intents": "List[Dict] - merged symbol intents with head contributions",
+        "cycle_count": "int - current execution cycle",
+        "notes": "List[str] - diagnostic notes",
+        "errors": "List[str] - recent errors",
+        "meta": "Dict - total_raw_intents, enabled_heads"
+      }
+    },
+    "hydra_pnl": {
+      "path": "logs/state/hydra_pnl.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Hydra PnL Attribution - per-head equity, drawdown, kill-switches, throttle scales",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "heads": "Dict[str, HeadPnlStats] - per-head equity, drawdown, win_rate, throttle_scale",
+        "meta": "Dict - lookback_days, total_realized_pnl, total_unrealized_pnl, heads_killed"
+      }
+    },
+    "execution_quality": {
+      "path": "logs/state/execution_quality.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Minotaur Execution Engine - per-symbol slippage, fill quality, regime stats",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "symbols": "Dict[str, QualityStats] - per-symbol avg/p95/max slippage, fill_ratio, twap_usage",
+        "meta": "Dict - enabled, thin_symbols, crunch_symbols, throttling_active"
+      }
+    },
+    "execution_alpha": {
+      "path": "logs/state/execution_alpha.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Execution Alpha Engine - per-fill, per-symbol, per-head execution drag and alpha attribution",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "symbols": "Dict[str, AlphaStats] - per-symbol cum_alpha_usd, avg_alpha_bps, p95/p99, regime breakdown",
+        "heads": "Dict[str, HeadAlphaStats] - per-head alpha attribution and suggested multipliers",
+        "meta": "Dict - total_cum_alpha_usd, avg_alpha_bps, last_alerts, config_echo"
       }
     }
   },

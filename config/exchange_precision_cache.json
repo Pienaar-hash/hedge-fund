@@ -4570,5 +4570,104 @@
     "minQty": "1",
     "maxQty": "6000000",
     "minNotional": "5"
+  },
+  "WETUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "4000000",
+    "minNotional": "5"
+  },
+  "NIGHTUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "20000000",
+    "minNotional": "5"
+  },
+  "USUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "50000000",
+    "minNotional": "5"
+  },
+  "CYSUSDT": {
+    "tickSize": "0.0001000",
+    "minPrice": "0.0001000",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "4000000",
+    "minNotional": "5"
+  },
+  "RAVEUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "3000000",
+    "minNotional": "5"
+  },
+  "ZKPUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "10000000",
+    "minNotional": "5"
+  },
+  "GUAUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "8000000",
+    "minNotional": "5"
+  },
+  "IRUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "4000000",
+    "minNotional": "5"
+  },
+  "BREVUSDT": {
+    "tickSize": "0.0001000",
+    "minPrice": "0.0001000",
+    "maxPrice": "0.7500000",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "3000000",
+    "minNotional": "5"
+  },
+  "COLLECTUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "20000000",
+    "minNotional": "5"
+  },
+  "MAGMAUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "8000000",
+    "minNotional": "5"
   }
 }

@@ -7,7 +7,7 @@
     "max_gross_exposure_pct": 1.5,
     "max_symbol_exposure_pct": 0.4,
     "max_nav_drawdown_pct": 0.30,
-    "max_concurrent_positions": 6,
+    "max_concurrent_positions": 15,
     "max_leverage": 4,
     "min_notional_usdt": 25,
     "max_trade_nav_pct": 0.06,
@@ -43,19 +43,19 @@
       "min_notional": 25,
       "max_order_notional": 80000,
       "max_leverage": 4,
-      "max_nav_pct": 0.15
+      "max_nav_pct": 0.30
     },
     "ETHUSDT": {
       "min_notional": 25,
       "max_order_notional": 50000,
       "max_leverage": 3,
-      "max_nav_pct": 0.08
+      "max_nav_pct": 0.20
     },
     "SOLUSDT": {
       "min_notional": 25,
       "max_order_notional": 25000,
       "max_leverage": 3,
-      "max_nav_pct": 0.10
+      "max_nav_pct": 0.20
     },
     "DOGEUSDT": {
       "min_notional": 25,

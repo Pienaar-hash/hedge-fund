@@ -418,11 +418,6 @@
       "max_position_cvar_nav_pct": 0.04
     }
   },
-  "alpha_decay": {
-    "enabled": true,
-    "half_life_minutes": 45,
-    "min_decay_multiplier": 0.35
-  },
   "router_quality": {
     "enabled": true,
     "base_score": 0.8,
@@ -752,6 +747,140 @@
     },
     "smoothing_alpha": 0.20,
     "run_interval_cycles": 5
+  },
+  "hydra_pnl": {
+    "_comment": "Hydra PnL Attribution & Drawdown Engine — v7.9_P2",
+    "enabled": false,
+    "lookback_days": 90,
+    "min_trades_for_stats": 30,
+    "kill_switch": {
+      "max_drawdown": 0.25,
+      "min_win_rate": 0.40,
+      "min_R_multiple": -0.5,
+      "cooldown_cycles": 720
+    },
+    "throttling": {
+      "dd_soft_threshold": 0.10,
+      "dd_hard_threshold": 0.20,
+      "soft_scale": 0.5,
+      "hard_scale": 0.0
+    }
+  },
+  "hydra_execution": {
+    "_comment": "Hydra Multi-Strategy Execution Engine — v7.9_P1",
+    "enabled": false,
+    "heads": {
+      "TREND": {
+        "enabled": true,
+        "max_nav_pct": 0.50,
+        "max_gross_nav_pct": 0.75,
+        "max_positions": 12,
+        "priority": 100,
+        "direction": "both"
+      },
+      "MEAN_REVERT": {
+        "enabled": true,
+        "max_nav_pct": 0.25,
+        "max_gross_nav_pct": 0.35,
+        "max_positions": 8,
+        "priority": 80,
+        "direction": "both"
+      },
+      "RELATIVE_VALUE": {
+        "enabled": true,
+        "max_nav_pct": 0.30,
+        "max_gross_nav_pct": 0.40,
+        "max_positions": 10,
+        "priority": 90,
+        "direction": "both"
+      },
+      "CATEGORY": {
+        "enabled": true,
+        "max_nav_pct": 0.20,
+        "max_gross_nav_pct": 0.30,
+        "max_positions": 8,
+        "priority": 60,
+        "direction": "both"
+      },
+      "VOL_HARVEST": {
+        "enabled": true,
+        "max_nav_pct": 0.20,
+        "max_gross_nav_pct": 0.30,
+        "max_positions": 8,
+        "priority": 70,
+        "direction": "both"
+      },
+      "EMERGENT_ALPHA": {
+        "enabled": true,
+        "max_nav_pct": 0.15,
+        "max_gross_nav_pct": 0.25,
+        "max_positions": 6,
+        "priority": 50,
+        "direction": "both"
+      }
+    },
+    "intent_limits": {
+      "max_intents_per_cycle": 64,
+      "max_symbol_heads": 3
+    },
+    "conflict_resolution": {
+      "allow_netting": true,
+      "prefer_higher_priority": true,
+      "prefer_higher_score": true,
+      "max_head_disagreement": 3
+    }
+  },
+  "execution_minotaur": {
+    "enabled": true,
+    "min_notional_for_twap_usd": 500.0,
+    "max_child_order_notional_usd": 150.0,
+    "min_slice_count": 2,
+    "max_slice_count": 12,
+    "twap_min_seconds": 60,
+    "twap_max_seconds": 900,
+    "aggressiveness": {
+      "base": 0.6,
+      "trend_bonus": 0.1,
+      "crisis_cap": 0.3
+    },
+    "microstructure_thresholds": {
+      "wide_spread_bps": 10,
+      "thin_depth_usd": 2000.0,
+      "vol_spike_mult": 2.5
+    },
+    "throttling": {
+      "max_symbols_in_thin_liquidity": 3,
+      "max_new_orders_per_cycle": 25,
+      "halt_on_liquidity_crunch": true
+    },
+    "quality_targets": {
+      "max_slippage_bps": 10,
+      "max_tail_slippage_bps": 30,
+      "lookback_trades": 200
+    }
+  },
+  "execution_alpha": {
+    "enabled": true,
+    "model_price_source": "router_model",
+    "use_expected_fill_price_field": true,
+    "lookback_trades": 500,
+    "min_samples_for_penalty": 50,
+    "apply_symbol_penalty_to_universe": false,
+    "apply_head_penalty_to_cerberus": false,
+    "apply_head_penalty_to_hydra_pnl": false,
+    "penalty": {
+      "symbol_drag_bps_soft": 8,
+      "symbol_drag_bps_hard": 20,
+      "symbol_min_multiplier": 0.60,
+      "head_drag_bps_soft": 6,
+      "head_drag_bps_hard": 15,
+      "head_min_multiplier": 0.70
+    },
+    "alerts": {
+      "enabled": true,
+      "tail_slippage_bps": 30,
+      "drag_bps_over_rolling": 12
+    }
   },
   "strategy_adaptation": {},
   "strategy_weighting": {}

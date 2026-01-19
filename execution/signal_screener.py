@@ -82,12 +82,51 @@ LOGGER = logging.getLogger("signal_screener")
 LOGGER.setLevel(logging.INFO)
 _DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
 _DEDUP_MAX_SIZE = 2048
+
+
+def _log_screener_veto(
+    reason: str,
+    symbol: str,
+    *,
+    tf: str = "",
+    signal: str = "",
+    trend: str = "",
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Log screener veto in format parallel to doctrine logs.
+    
+    Example output:
+      [screener] veto=COUNTER_TREND symbol=BTCUSDT tf=15m signal=BUY trend=BEAR
+    """
+    parts = [f"[screener] veto={reason.upper()} symbol={symbol}"]
+    if tf:
+        parts.append(f"tf={tf}")
+    if signal:
+        parts.append(f"signal={signal}")
+    if trend:
+        parts.append(f"trend={trend}")
+    if details:
+        for k, v in details.items():
+            if isinstance(v, float):
+                parts.append(f"{k}={v:.4f}")
+            else:
+                parts.append(f"{k}={v}")
+    print(" ".join(parts))
 _ENTRY_GATE_NAME = "orderbook"
 ORDERBOOK_ALIGNMENT_THRESHOLD = 0.20
 DEFAULT_Z_MIN = 0.8
 DEFAULT_RSI_BAND = (30.0, 70.0)
 RISK_ENGINE_V6_ENABLED = get_flags().risk_engine_v6_enabled
 _RISK_ENGINE_V6 = None
+
+
+def _load_sentinel_x_state() -> Dict[str, Any]:
+    """Load Sentinel-X state from logs/state/sentinel_x.json."""
+    try:
+        with open("logs/state/sentinel_x.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 def _tf_seconds(tf: str | None) -> float:
@@ -704,12 +743,10 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             per_symbol_cfg = {}
         entry_forced = (params.get("entry", {}) or {}).get("type") == "always_on"
         if kill_switch:
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["kill_switch_on"]}}'
-            )
+            _log_screener_veto("KILL_SWITCH", sym, tf=tf)
             continue
         if allowed_set and sym_key not in allowed_set:
-            print(f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["not_listed"]}}')
+            _log_screener_veto("NOT_LISTED", sym, tf=tf)
             continue
         try:
             kl = get_klines(sym, tf, limit=750)  # Extended for vol regime computation
@@ -765,32 +802,24 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
 
         # Execution hardening gates
         if not allow_trade(sym_key):
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["signal_gate"]}}'
-            )
+            _log_screener_veto("SIGNAL_GATE", sym, tf=tf)
             continue
 
         entry_cfg = params.get("entry") or {}
         signal = _decide_signal(z, rsi, entry_cfg, entry_forced)
         if signal is None:
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","z":{round(z, 4)},"rsi":{round(rsi, 1)},"veto":["no_cross"]}}'
-            )
+            _log_screener_veto("NO_CROSS", sym, tf=tf, details={"z": z, "rsi": rsi})
             continue
 
         # Trend filter: block counter-trend entries
         is_counter_trend = False
         if signal == "SELL" and trend == "BULL":
             is_counter_trend = True
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","signal":"{signal}","trend":"{trend}","veto":["counter_trend"]}}'
-            )
+            _log_screener_veto("COUNTER_TREND", sym, tf=tf, signal=signal, trend=trend)
             continue
         if signal == "BUY" and trend == "BEAR":
             is_counter_trend = True
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","signal":"{signal}","trend":"{trend}","veto":["counter_trend"]}}'
-            )
+            _log_screener_veto("COUNTER_TREND", sym, tf=tf, signal=signal, trend=trend)
             continue
 
         # No-add-to-loser: block adding to underwater positions
@@ -806,8 +835,9 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                     unrealized_pct = (entry_px - price) / entry_px
                 # Block if position is more than 2% underwater
                 if unrealized_pct < -0.02:
-                    print(
-                        f'[decision] {{"symbol":"{sym}","tf":"{tf}","signal":"{signal}","unrealized_pct":{round(unrealized_pct*100, 2)},"veto":["no_add_to_loser"]}}'
+                    _log_screener_veto(
+                        "NO_ADD_TO_LOSER", sym, tf=tf, signal=signal,
+                        details={"unrealized_pct": unrealized_pct * 100}
                     )
                     continue
         # Optional orderbook entry gate (veto/boost)
@@ -817,9 +847,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         if veto:
             if dbg:
                 print(f"[sigdbg] {sym} tf={tf} ob_imbalance={float(info.get('metric',0.0)):.3f} veto")
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["ob_adverse"],"metric":{round(float(info.get("metric",0.0)),3)}}}'
-            )
+            _log_screener_veto("OB_ADVERSE", sym, tf=tf, details={"metric": float(info.get("metric", 0.0))})
             continue
         else:
             m = float(info.get("metric", 0.0) or 0.0)
@@ -839,9 +867,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 if ml_prob is not None:
                     ml_prob = float(ml_prob)
                     if ml_prob < ml_threshold:
-                        print(
-                            f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":["ml_prob"],"p":{round(ml_prob,4)}}}'
-                        )
+                        _log_screener_veto("ML_PROB", sym, tf=tf, details={"p": ml_prob})
                         continue
                 if ml_result.get("error") and dbg:
                     print(f"{LOG_TAG} ml error {sym}: {ml_result['error']}")
@@ -885,9 +911,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 veto_reasons.append("dd_regime_critical")
             if not veto_reasons:
                 veto_reasons.append("adaptive_disable")
-            print(
-                f'[decision] {{"symbol":"{sym}","tf":"{tf}","veto":{json.dumps(veto_reasons)}}}'
-            )
+            _log_screener_veto("STRATEGY_DISABLED", sym, tf=tf, details={"reasons": veto_reasons})
             continue
         final_weight = compute_adaptive_weight(
             strategy_id,
@@ -956,6 +980,21 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "atr_regime": atr_regime,
             "dd_regime": dd_regime,
         }
+        # v7.X_DOCTRINE: Attach regime info for doctrine gate entry validation
+        # Signals determine DIRECTION only, doctrine determines PERMISSION
+        try:
+            from execution.doctrine_kernel import build_regime_snapshot_from_state
+            sentinel_state = _load_sentinel_x_state()
+            if sentinel_state:
+                regime_snap = build_regime_snapshot_from_state(sentinel_state)
+                if regime_snap:
+                    metadata_block["entry_regime"] = regime_snap.primary_regime
+                    metadata_block["entry_regime_confidence"] = regime_snap.confidence
+                    metadata_block["regime_stability"] = regime_snap.stability_cycles
+        except ImportError:
+            pass
+        except Exception:
+            pass
         intent["metadata"] = metadata_block
         attach_adaptive_metadata(intent, atr_regime, dd_regime, risk_mode, final_factor)
         if ml_prob is not None:
@@ -1050,6 +1089,23 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                         vol_intent["nav_used"] = nav
                         vol_intent["nav_age_s"] = nav_age
                         vol_intent["nav_sources_ok"] = nav_sources_ok
+                        
+                        # v7.X_DOCTRINE: Attach regime info for doctrine gate entry validation
+                        vol_meta = vol_intent.get("metadata") if isinstance(vol_intent.get("metadata"), dict) else {}
+                        try:
+                            from execution.doctrine_kernel import build_regime_snapshot_from_state
+                            vol_sentinel_state = _load_sentinel_x_state()
+                            if vol_sentinel_state:
+                                regime_snap = build_regime_snapshot_from_state(vol_sentinel_state)
+                                if regime_snap:
+                                    vol_meta["entry_regime"] = regime_snap.primary_regime
+                                    vol_meta["entry_regime_confidence"] = regime_snap.confidence
+                                    vol_meta["regime_stability"] = regime_snap.stability_cycles
+                        except ImportError:
+                            pass
+                        except Exception:
+                            pass
+                        vol_intent["metadata"] = vol_meta
 
                         # Apply adaptive sizing
                         vol_gross = vol_intent.get("gross_usd", 0.0)
@@ -1256,12 +1312,16 @@ def run_once(now: float | None = None) -> dict:
         attempted_count = 0
 
     try:
-        intents = list(generate_signals_from_config())
+        intent_batch = generate_signals_from_config()
+        # Capture attributes before converting to list (IntentBatch has .attempted, .emitted)
+        attempted_attr = getattr(intent_batch, "attempted", None)
+        emitted_attr = getattr(intent_batch, "emitted", None)
+        intents = list(intent_batch)
     except Exception:
         intents = []
+        attempted_attr = None
+        emitted_attr = None
 
-    attempted_attr = getattr(intents, "attempted", None)
-    emitted_attr = getattr(intents, "emitted", None)
     normalized: List[Dict[str, Any]] = []
     for raw in intents:
         try:

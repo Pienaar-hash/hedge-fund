@@ -469,5 +469,6 @@ class TestExitReason:
         assert ExitReason.STOP_LOSS.value == "sl"
 
     def test_is_string_enum(self):
-        assert str(ExitReason.TAKE_PROFIT) == "ExitReason.TAKE_PROFIT"
+        # v7.X_DOCTRINE: ExitReason is now aliased to SeatbeltExitReason
+        assert "TAKE_PROFIT" in str(ExitReason.TAKE_PROFIT)
         assert ExitReason.TAKE_PROFIT == "tp"
