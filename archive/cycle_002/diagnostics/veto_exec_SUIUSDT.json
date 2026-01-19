@@ -1,0 +1,242 @@
+{
+  "symbol": "SUIUSDT",
+  "side": "BUY",
+  "positionSide": "LONG",
+  "reason": "max_concurrent",
+  "gross_usd": 306.4672347702,
+  "price": 1.6517,
+  "ts": 1765546616.2068512,
+  "reasons": [
+    "max_concurrent"
+  ],
+  "intent": {
+    "timestamp": "2025-12-12T13:36:40+00:00",
+    "symbol": "SUIUSDT",
+    "timeframe": "15m",
+    "signal": "BUY",
+    "reduceOnly": false,
+    "price": 1.6517,
+    "per_trade_nav_pct": 0.03,
+    "gross_usd": 306.4672347702,
+    "take_profit_price": 1.6695071428571426,
+    "stop_loss_price": 1.6398285714285714,
+    "metadata": {
+      "strategy": "vol_target",
+      "vol_target": {
+        "atr_value": 0.005935714285714251,
+        "atr_regime": 0,
+        "dd_regime": 0,
+        "risk_mode": "OK",
+        "target_vol": 0.015,
+        "vol_factor": 2.0,
+        "base_per_trade_nav_pct": 0.015,
+        "computed_per_trade_nav_pct": 0.03,
+        "trend": {
+          "direction": "LONG",
+          "strength": 0.1,
+          "ema_fast": 1.6238505251561952,
+          "ema_slow": 1.6076853024786926,
+          "rsi": 63.43873517786562
+        },
+        "carry": {
+          "score_long": 0.0,
+          "score_short": 0.0,
+          "funding_annualized": null,
+          "basis_pct": null
+        },
+        "hybrid": {
+          "side": "BUY",
+          "hybrid_score": 0.1,
+          "components": {
+            "trend_dir": "LONG",
+            "trend_strength": 0.1,
+            "carry_long": 0.0,
+            "carry_short": 0.0
+          }
+        },
+        "tp_sl": {
+          "enable_tp_sl": true,
+          "sl_atr_mult": 2.0,
+          "tp_atr_mult": 3.0,
+          "min_rr": 1.2,
+          "reward_risk": 1.4999999999999998,
+          "take_profit_price": 1.6695071428571426,
+          "stop_loss_price": 1.6398285714285714
+        }
+      },
+      "adaptive": {
+        "atr_regime": 0,
+        "dd_regime": 0,
+        "risk_mode": "OK",
+        "final_factor": 1.0
+      }
+    },
+    "trend": "BULL",
+    "trend_aligned": true,
+    "nav_used": 10215.57449234,
+    "nav_age_s": 68.46818542480469,
+    "nav_sources_ok": true,
+    "qty": 185.5,
+    "leverage": 2.0,
+    "tf": "15m",
+    "capital_per_trade": 0.0,
+    "positionSide": "LONG",
+    "veto": [],
+    "attempt_id": "sig_ac2093dbce",
+    "intent_id": "ord_196486763b"
+  },
+  "nav_snapshot": {
+    "nav_usd": 10215.57449234,
+    "nav_age_s": 0.2788352966308594,
+    "nav_sources_ok": true,
+    "portfolio_gross_usd": 1609.0898253705075,
+    "symbol_open_qty": 197.7
+  },
+  "thresholds": {
+    "nav_freshness_seconds": 150.0,
+    "testnet_overrides_active": true,
+    "drawdown_alert_pct": 0.03,
+    "max_nav_drawdown_pct": 0.95,
+    "trade_equity_nav_pct": 0.04,
+    "max_trade_nav_pct": 0.06,
+    "max_concurrent_positions": 6
+  },
+  "diagnostics": {
+    "gate": "risk_limits",
+    "limit": "max_concurrent",
+    "reasons": [
+      "max_concurrent"
+    ],
+    "thresholds": {
+      "nav_freshness_seconds": 150.0,
+      "testnet_overrides_active": true,
+      "drawdown_alert_pct": 0.03,
+      "max_nav_drawdown_pct": 0.95,
+      "trade_equity_nav_pct": 0.04,
+      "max_trade_nav_pct": 0.06,
+      "max_concurrent_positions": 6
+    },
+    "notional": 306.4672347702,
+    "nav_health_diag": {
+      "age_s": 0.0210418701171875,
+      "sources_ok": true,
+      "stale_flags": {
+        "balances_ok": false
+      },
+      "fresh": true,
+      "threshold_s": 90.0,
+      "cache_ts": 1765546615.547722,
+      "cache_path": "logs/cache/nav_confirmed.json",
+      "nav_total": 10215.57449234
+    },
+    "peak_state": {
+      "daily_peak": 10215.57449234,
+      "daily_ts": 1765546615.1570563,
+      "day": "2025-12-12",
+      "dd_abs": 0.0,
+      "dd_pct": 0.0,
+      "nav": 10215.57449234,
+      "nav_usd": 10215.57449234,
+      "peak": 10215.57449234,
+      "peak_equity": 10215.57449234,
+      "peak_nav": 10215.57449234,
+      "peak_ts": 1765546615.1570563,
+      "realized_pnl_today": 0.0,
+      "reset_timezone": "UTC",
+      "ts": 1765546615.1570563,
+      "updated_at": "2025-12-12T13:36:55.157019+00:00"
+    },
+    "drawdown": {
+      "pct": 0.0,
+      "abs": 0.0,
+      "peak_nav": 10215.57449234,
+      "nav": 10215.57449234
+    },
+    "daily_loss": {
+      "pct": 0.0,
+      "daily_peak": 10215.57449234,
+      "nav": 10215.57449234
+    },
+    "atr": {
+      "atr_now": 0.2818973499757088,
+      "atr_med": 0.2818973499757088,
+      "atr_ratio": 1.0,
+      "atr_regime": "normal"
+    },
+    "fee_pnl": {
+      "fee_pnl_ratio": 0.8132944533300689,
+      "fees": 1.4593836999999998,
+      "pnl": -1.794409999999989,
+      "window_days": 7
+    },
+    "assets": {
+      "BTC": 0.0,
+      "ETH": 0.0,
+      "FDUSD": 0.0,
+      "USDC": 5000.0,
+      "USDT": 5215.57449234
+    },
+    "nav_total": 10215.57449234,
+    "dd_state": "normal",
+    "atr_regime": "normal",
+    "fee_pnl_ratio": 0.8132944533300689,
+    "cap_cfg_raw": 0.08,
+    "cap_cfg_normalized": 0.08,
+    "asset_breakdown": {
+      "BTC": 0.0,
+      "ETH": 0.0,
+      "FDUSD": 0.0,
+      "USDC": 5000.0,
+      "USDT": 5215.57449234
+    },
+    "nav_fresh": true,
+    "observations": {
+      "notional": 306.4672347702,
+      "nav_age_s": 0,
+      "nav_sources_ok": true,
+      "circuit_breaker": {
+        "max_portfolio_dd_nav_pct": 0.1,
+        "active": false,
+        "current_dd_pct": 0.00022899389482987608
+      },
+      "correlation_groups": {
+        "L1_bluechips": {
+          "gross_nav_pct": 0.0,
+          "max_group_nav_pct": 0.35
+        },
+        "L2_alts": {
+          "gross_nav_pct": 0.0,
+          "max_group_nav_pct": 0.25
+        }
+      },
+      "position_cvar": {
+        "symbol": "SUIUSDT",
+        "cvar_nav_pct": 0.0,
+        "cvar_usd": 0.0,
+        "max_position_cvar_nav_pct": 0.04,
+        "within_limit": true
+      },
+      "drawdown_pct": 0.0,
+      "drawdown_peak": 10215.57449234,
+      "drawdown_nav": 10215.57449234,
+      "dd_state": "normal",
+      "daily_loss_pct": 0.0,
+      "atr_regime": "normal",
+      "atr_snapshot": {
+        "atr_now": 0.2818973499757088,
+        "atr_med": 0.2818973499757088,
+        "atr_ratio": 1.0,
+        "atr_regime": "normal"
+      },
+      "fee_pnl_ratio": 0.8132944533300689,
+      "fee_pnl": {
+        "fee_pnl_ratio": 0.8132944533300689,
+        "fees": 1.4593836999999998,
+        "pnl": -1.794409999999989,
+        "window_days": 7
+      },
+      "trade_equity_nav_obs": 0.03,
+      "max_trade_nav_obs": 0.03
+    }
+  }
+}

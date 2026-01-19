@@ -1,0 +1,62 @@
+{
+  "cycle_id": "CYCLE_002",
+  "archived_at": "2026-01-19T15:57:03.700533Z",
+  "period": {
+    "start": "2025-12-13T10:59:46+00:00",
+    "end": "2026-01-19T13:51:52+00:00",
+    "days": 38
+  },
+  "doctrine_version": "v7.8",
+  "summary": {
+    "total_doctrine_events": 49495,
+    "total_order_fills": 2624,
+    "completed_episodes": 443,
+    "net_pnl_usd": -217.05,
+    "fees_usd": 72.36,
+    "win_rate_pct": 6.3,
+    "veto_rate_pct": 96.9
+  },
+  "archived_files": [
+    "diagnostics/veto_exec_BTCUSDT.json",
+    "diagnostics/veto_exec_DOGEUSDT.json",
+    "diagnostics/veto_exec_ETHUSDT.json",
+    "diagnostics/veto_exec_LINKUSDT.json",
+    "diagnostics/veto_exec_LTCUSDT.json",
+    "diagnostics/veto_exec_SOLUSDT.json",
+    "diagnostics/veto_exec_SUIUSDT.json",
+    "diagnostics/veto_exec_WIFUSDT.json",
+    "logs/doctrine_events.jsonl",
+    "logs/orders_executed.jsonl",
+    "logs/risk_vetoes.1.jsonl",
+    "logs/risk_vetoes.2.jsonl",
+    "logs/risk_vetoes.3.jsonl",
+    "logs/risk_vetoes.4.jsonl",
+    "reports/CYCLE_002_Postmortem.md",
+    "state/episode_ledger.json"
+  ],
+  "notes": [
+    "CYCLE_002 concluded with postmortem locked",
+    "Episode ledger introduced during this cycle",
+    "System behaved correctly under false regime escape",
+    "No doctrine changes recommended"
+  ],
+  "file_sizes_bytes": {
+    "logs/risk_vetoes.2.jsonl": 9996971,
+    "logs/risk_vetoes.3.jsonl": 9996754,
+    "logs/orders_executed.jsonl": 4470667,
+    "logs/risk_vetoes.1.jsonl": 9997455,
+    "logs/doctrine_events.jsonl": 40708906,
+    "logs/risk_vetoes.4.jsonl": 9996107,
+    "diagnostics/veto_exec_SOLUSDT.json": 6597,
+    "diagnostics/veto_exec_BTCUSDT.json": 6605,
+    "diagnostics/veto_exec_ETHUSDT.json": 6643,
+    "diagnostics/veto_exec_LINKUSDT.json": 6379,
+    "diagnostics/veto_exec_DOGEUSDT.json": 6367,
+    "diagnostics/veto_exec_SUIUSDT.json": 6375,
+    "diagnostics/veto_exec_WIFUSDT.json": 6376,
+    "diagnostics/veto_exec_LTCUSDT.json": 6339,
+    "reports/CYCLE_002_Postmortem.md": 6043,
+    "state/episode_ledger.json": 283725
+  },
+  "total_archive_size_mb": 81.55
+}
