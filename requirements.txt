@@ -1,5 +1,5 @@
 # Core runtime
-python-binance==1.0.17
+binance-futures-connector==4.1.0
 cachetools==5.3.2
 pydantic==1.10.14
 pydantic-core==2.10.1
