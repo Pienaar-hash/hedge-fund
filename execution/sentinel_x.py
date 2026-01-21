@@ -231,12 +231,13 @@ class HistoryMeta:
     consecutive_count: int = 0
     pending_regime: Optional[str] = None
     last_primary: str = "CHOPPY"
+    cycles_in_current: int = 0  # How long we've been in last_primary
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
             "last_n_labels": self.last_n_labels[-10:],  # Keep last 10
-            "consecutive_count": self.consecutive_count,
+            "consecutive_count": self.cycles_in_current,  # Doctrine expects this to be stability
             "pending_regime": self.pending_regime,
             "last_primary": self.last_primary,
         }
@@ -249,6 +250,7 @@ class HistoryMeta:
             consecutive_count=d.get("consecutive_count", 0),
             pending_regime=d.get("pending_regime"),
             last_primary=d.get("last_primary", "CHOPPY"),
+            cycles_in_current=d.get("consecutive_count", 0),  # Bootstrap from existing
         )
 
 
@@ -955,8 +957,9 @@ def apply_label_stickiness(
     Returns:
         (final_label, updated_history)
     """
-    # If same as current, keep it
+    # If same as current, keep it and increment stability counter
     if new_primary == history.last_primary:
+        history.cycles_in_current += 1  # Track how long we've been in this regime
         history.consecutive_count = 0
         history.pending_regime = None
         return (new_primary, history)
@@ -976,6 +979,7 @@ def apply_label_stickiness(
             history.last_primary = new_primary
             history.consecutive_count = 0
             history.pending_regime = None
+            history.cycles_in_current = 1  # Reset stability counter on regime change
             return (new_primary, history)
     
     # Not enough consecutive hints, keep old label
