@@ -3689,15 +3689,6 @@
     "maxQty": "2000000",
     "minNotional": "5"
   },
-  "TANSSIUSDT": {
-    "tickSize": "0.0000100",
-    "minPrice": "0.0000100",
-    "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "10000000",
-    "minNotional": "5"
-  },
   "CROSSUSDT": {
     "tickSize": "0.0000100",
     "minPrice": "0.0000100",
@@ -4238,15 +4229,6 @@
     "maxQty": "1000000000",
     "minNotional": "5"
   },
-  "AIAUSDT": {
-    "tickSize": "0.0001000",
-    "minPrice": "0.0001000",
-    "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "80000000",
-    "minNotional": "5"
-  },
   "BARDUSDT": {
     "tickSize": "0.0001000",
     "minPrice": "0.0001000",
@@ -4668,6 +4650,51 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "minNotional": "5"
+  },
+  "ZAMAUSDT": {
+    "tickSize": "0.0001000",
+    "minPrice": "0.0001000",
+    "maxPrice": "0.4000000",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "5000000",
+    "minNotional": "5"
+  },
+  "FOGOUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "0.3000000",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "7000000",
+    "minNotional": "5"
+  },
+  "FRAXUSDT": {
+    "tickSize": "0.0001000",
+    "minPrice": "0.0001000",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "1000000",
+    "minNotional": "5"
+  },
+  "SPORTFUNUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "10000000",
+    "minNotional": "5"
+  },
+  "AIAUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "10000000",
     "minNotional": "5"
   }
 }
