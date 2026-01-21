@@ -1,82 +1,69 @@
-# Copilot Instructions — GPT Hedge v7.6
+# Copilot Instructions — GPT Hedge v7.9
 
 ## Architecture Overview
 
-**Binance futures trading system** with regime-governed execution:
+**Binance futures trading system** with regime-governed execution. Doctrine Kernel is **supreme authority** — all entries/exits flow through it.
 
 ```
-                     DOCTRINE KERNEL (v7.X)
-                            │
-Signal Screener ───────────►├──► Entry Gate ──► Order Router ──► Exchange
-     │                      │         │
- direction                  │      (ALLOW/VETO)
-                            │
-Position State ────────────►├──► Exit Gate ──► Close Orders
-     │                      │
- thesis check               │
-                           ▼
-               logs/doctrine_events.jsonl
-               (refusal is first-class)
+Signal → Hydra (multi-head) → Cerberus (multipliers) → Doctrine Gate → Risk Limits → Router → Exchange
+                                                              ↓
+                                                   logs/doctrine_events.jsonl
 ```
 
-| Component | File | Responsibility |
-|-----------|------|----------------|
-| **Doctrine** | `execution/doctrine_kernel.py` | **SUPREME AUTHORITY** - entry/exit permission |
-| Executor | `execution/executor_live.py` | Main loop (~4000 lines), orchestrates all components |
-| Screener | `execution/signal_screener.py` | Generates direction-only intents |
-| Risk | `execution/risk_limits.py` | `check_order()` secondary veto (caps, DD) |
-| Router | `execution/order_router.py` | Maker-first POST_ONLY with taker fallback |
-| State | `execution/state_publish.py` | Writes canonical state to `logs/state/*.json` |
-| NAV | `execution/nav.py` | `nav_health_snapshot()` — sole source of NAV truth |
-| Sentinel-X | `execution/sentinel_x.py` | Regime detection (TREND_UP/DOWN/CHOPPY/CRISIS) |
-| Conviction | `execution/conviction_engine.py` | Multiplicative sizing based on factors |
+> *Only Doctrine and Risk can prevent market participation.*
 
-### v7.X Doctrine (Constitutional Law)
+### Core Components
 
-The doctrine kernel encodes hard trading laws that **cannot be bypassed**:
+| Component | File | Role |
+|-----------|------|------|
+| **Doctrine** | `execution/doctrine_kernel.py` | Entry/exit gating — CANNOT be bypassed |
+| **Executor** | `execution/executor_live.py` | Main loop (~4000 lines), orchestrates all |
+| **Sentinel-X** | `execution/sentinel_x.py` | Regime detection: TREND_UP/DOWN, MEAN_REVERT, BREAKOUT, CHOPPY, CRISIS |
+| **Hydra** | `execution/hydra_engine.py` | 6 strategy heads: TREND, MEAN_REVERT, RELATIVE_VALUE, CATEGORY, VOL_HARVEST, EMERGENT_ALPHA |
+| **Cerberus** | `execution/cerberus_router.py` | Dynamic head multipliers (does NOT create signals or override doctrine) |
+| **Minotaur** | `execution/minotaur_engine.py` | Microstructure-aware execution, slippage tracking |
+| **Risk** | `execution/risk_limits.py` | `check_order()` secondary veto (caps, DD, correlation) |
+| **Router** | `execution/order_router.py` | Maker-first POST_ONLY with taker fallback, TWAP support |
+| **NAV** | `execution/nav.py` | `nav_health_snapshot()` — sole source of NAV truth |
 
-1. **Regime governs permission** - Signals determine direction, regimes determine permission
-2. **No regime = no trade** - Sentinel-X must have a stable regime before entry
-3. **Direction match required** - TREND_UP→Long only, TREND_DOWN→Short only
-4. **Exit is thesis-based** - Positions die when thesis dies, not on arbitrary TP
-5. **SL is seatbelt only** - Stop-loss is catastrophe protection, not primary exit
-6. **Refusal is first-class** - Every veto is logged to `logs/doctrine_events.jsonl`
+### Doctrine Laws (Hard-Coded, Not Configurable)
+
+1. **Regime governs permission** — Signals determine direction, regimes determine permission
+2. **No regime = no trade** — Sentinel-X must have stable regime before entry
+3. **Direction match required** — TREND_UP→Long only, TREND_DOWN→Short only
+4. **Refusal is first-class** — Every veto logged to `logs/doctrine_events.jsonl`
+5. **All exits are thesis-driven** — Positions die when thesis dies, not on signals
+6. **Stops are seatbelts, not strategy** — SL is catastrophe protection only
 
 ## Project Layout
 
 ```
 execution/           # Core trading logic — DO NOT import from dashboard/
-  doctrine_kernel.py # v7.X SUPREME AUTHORITY - entry/exit gates
-  sentinel_x.py      # Regime detection
+  doctrine_kernel.py # SUPREME AUTHORITY - entry/exit gates
+  executor_live.py   # Main loop (~4000 lines)
+  sentinel_x.py      # Regime detection (6 regimes)
+  hydra_engine.py    # Multi-strategy execution engine
+  cerberus_router.py # Dynamic head multipliers (observation only)
+  minotaur_engine.py # Microstructure/slippage tracking
   intel/             # Scoring: expectancy_v6.py, symbol_score_v6.py
-  utils/             # Metrics helpers, execution health, vol regime
-  strategies/        # Strategy implementations (vol_target.py)
-config/              # Runtime configs — all values in fractional form (0.05 = 5%)
-logs/state/          # Canonical state files consumed by dashboard (read-only for dash)
-logs/doctrine_events.jsonl  # Doctrine decisions (entry vetoes, exits)
-dashboard/           # Streamlit app — reads from logs/state/, never writes
-tests/               # ~170 pytest files — run with PYTHONPATH=.
-  unit/              # Fast, pure in-process tests
-  integration/       # Multi-module tests, may touch filesystem
-v7_manifest.json     # Canonical list of state files, owners, update frequencies
+config/              # All percentages in fractional form (0.05 = 5%)
+logs/state/          # State files — dashboard reads, executor writes
+dashboard/           # Streamlit app — READ-ONLY from logs/state/
+tests/               # ~170 pytest files (unit/, integration/, legacy/)
+v7_manifest.json     # Canonical state file registry
 ```
 
 ## Critical Invariants
 
-### Doctrine Supremacy (v7.X)
-- **Doctrine gate is first check** - All entries go through `_doctrine_gate()` in executor
-- **No enabled flag** - Doctrine kernel has NO config; it IS the law
-- **Veto = no trade** - If doctrine returns VETO, order is dropped (no fallback)
+### Doctrine Supremacy
+- **Doctrine gate is first check** — All entries go through `_doctrine_gate()` in executor
+- **No enabled flag** — Doctrine kernel has NO config; it IS the law
+- **Veto = no trade** — If doctrine returns VETO, order is dropped (no fallback)
 
 ### NAV Source of Truth
 - **NAV = futures wallet only** — never includes spot/treasury unless explicitly configured
 - Use `nav_health_snapshot()` from `execution/nav.py` — the only source of risk truth
-- Stale NAV (>90s default, configurable via `nav_freshness_seconds`) triggers automatic veto
-
-### Veto Authority
-- **Doctrine gate is first** - Regime/direction check before anything else
-- **Risk limits are secondary** - `check_order()` enforces caps, DD limits
-- Executor and router must never perform risk math
+- Stale NAV (>90s default) triggers automatic veto
 
 ### Position State
 - Live positions come from `exchange_utils.get_positions()` only
@@ -101,7 +88,6 @@ v7_manifest.json     # Canonical list of state files, owners, update frequencies
 - All logs are **append-only** — never rewrite JSONL files
 - Use `events.write_event()` or `log_utils.get_logger()` to extend logs
 - Never use raw `print()` in execution code
-- Log rotation handled by `log_utils.JsonlLogger` with size-based rotation
 
 ### V6 Feature Flags (`execution/v6_flags.py`)
 ```python
@@ -111,159 +97,81 @@ if flags.intel_v6_enabled:
     # use intel scoring
 ```
 
-| Flag | Env Var | Purpose |
-|------|---------|---------|
-| `intel_v6_enabled` | `INTEL_V6_ENABLED` | Enable expectancy/symbol scoring |
-| `risk_engine_v6_enabled` | `RISK_ENGINE_V6_ENABLED` | Use typed RiskDecision returns |
-| `pipeline_v6_shadow_enabled` | `PIPELINE_V6_SHADOW_ENABLED` | Enable shadow pipeline validation |
-| `router_autotune_v6_enabled` | `ROUTER_AUTOTUNE_V6_ENABLED` | Enable router auto-tuning |
-| `feedback_allocator_v6_enabled` | `FEEDBACK_ALLOCATOR_V6_ENABLED` | Enable feedback-based position allocation |
-| `router_autotune_v6_apply_enabled` | `ROUTER_AUTOTUNE_V6_APPLY_ENABLED` | Actually apply router suggestions (0=safe) |
+Key flags: `INTEL_V6_ENABLED`, `RISK_ENGINE_V6_ENABLED`, `PIPELINE_V6_SHADOW_ENABLED`, `ROUTER_AUTOTUNE_V6_ENABLED`, `ROUTER_AUTOTUNE_V6_APPLY_ENABLED` (0=safe mode).
 
 ## Developer Workflow
 
-### Required Env Flags for Local Dev
+### Local Development
 ```bash
-export BINANCE_TESTNET=1    # use testnet endpoints
-export DRY_RUN=1            # skip actual order placement
-export EXECUTOR_ONCE=1      # single iteration mode (optional)
+export BINANCE_TESTNET=1 DRY_RUN=1    # Required for safe local dev
+export EXECUTOR_ONCE=1                 # Single iteration mode (optional)
 ```
 
-### Run Tests
+### Testing
 ```bash
-PYTHONPATH=. pytest -q           # ALWAYS run full suite — patches are only complete when entire suite is green
-make test                         # runs tests/unit + tests/integration
-make test-fast                    # skip runtime and legacy markers
-make smoke                        # Firestore + doctor health check
+PYTHONPATH=. pytest -q    # ALWAYS run full suite before PR
+make test                  # tests/unit + tests/integration
+make test-fast             # skip runtime and legacy markers
+make smoke                 # Firestore + doctor health check
 ```
-**Never run individual test files unless actively debugging.** The suite includes ~160 tests; partial runs miss regressions.
 
-Test markers (from `pytest.ini`):
-- `@pytest.mark.unit` — fast, pure in-process tests
-- `@pytest.mark.integration` — multi-module tests, may touch filesystem
-- `@pytest.mark.runtime` — require state files
-- `@pytest.mark.legacy` — kept for reference
+**⚠️ Never run individual test files** unless actively debugging. The ~170 tests catch regressions across modules.
 
-### Test Map (examples, not exhaustive)
+Test markers: `@pytest.mark.unit` (fast), `@pytest.mark.integration` (filesystem), `@pytest.mark.runtime` (state files)
 
-Agents should look up tests near the file they're editing; this list gives a fast starting point:
-
-| Test File | Coverage |
-|-----------|----------|
-| `tests/integration/test_risk_limits.py` | Risk veto gates, caps, DD/risk_mode behaviour |
-| `tests/integration/test_state_publish_diagnostics.py` | `diagnostics.json` schema & liveness/exit metrics |
-| `tests/integration/test_state_positions_ledger_contract.py` | Positions/ledger authority & TP/SL coverage |
-| `tests/integration/test_state_files_schema.py` | Core state surfaces schema checks |
-| `tests/integration/test_manifest_state_contract.py` | `v7_manifest.json` alignment with state files |
+**Key test files:** `test_risk_limits.py`, `test_state_files_schema.py`, `test_manifest_state_contract.py`
 
 ### Lint & Type Check
 ```bash
-ruff check .                      # lint (excludes dashboard/, scripts/, ops/, strategies/)
-mypy .                            # type check (gradual typing — see mypy.ini ignore_errors sections)
+ruff check .    # excludes dashboard/, scripts/, ops/
+mypy .          # gradual typing (many ignore_errors)
 ```
 
-**Note:** `ruff.toml` excludes `dashboard/`, `scripts/`, `strategies/`, `telegram/`, `research/`, `ops/`, `infrastructure/`, `deploy/`. `mypy.ini` has `ignore_errors = True` for many `execution/*.py` files — gradual typing adoption.
-
-### Process Control (prod)
+### Production
 ```bash
-sudo supervisorctl restart hedge:               # all processes
-sudo supervisorctl restart hedge:hedge-executor # single process
-
-# follow logs (correct paths)
-tail -f /var/log/hedge-executor.out.log         # executor stdout
-tail -f /var/log/hedge-executor.err.log         # executor stderr
-tail -f /var/log/hedge-dashboard.err.log        # dashboard errors
-tail -f /var/log/supervisor/sync_state.out      # sync_state stdout
+sudo supervisorctl restart hedge:       # all processes
+tail -f /var/log/hedge-executor.out.log # executor logs
 ```
 
 ## Config Files
 
 | File | Purpose |
 |------|---------|
-| `config/risk_limits.json` | Per-symbol caps, global limits, tier definitions |
-| `config/runtime.yaml` | Trading window, signal gates, directional bias, TWAP/router tunables |
-| `config/strategy_config.json` | Universe, per_trade_nav_pct, signal params |
-| `config/pairs_universe.json` | Allowed symbols with tier metadata |
-| `config/symbol_tiers.json` | Symbol → tier (CORE/SATELLITE/TACTICAL/ALT-EXT) mapping |
-| `config/correlation_groups.json` | Correlated symbol groups for exposure caps |
-| `config/liquidity_buckets.json` | Per-symbol liquidity bucket assignments for TWAP/slippage |
+| `risk_limits.json` | Per-symbol caps, global limits, tier definitions |
+| `runtime.yaml` | Trading window, TWAP tunables, signal gates |
+| `strategy_config.json` | Universe, per_trade_nav_pct, signal params |
+| `symbol_tiers.json` | Symbol → tier (CORE/SATELLITE/TACTICAL/ALT-EXT) |
+| `correlation_groups.json` | Correlated symbol groups for exposure caps |
 
-## Router & Microstructure
+**Router:** `execution/order_router.py` with `slippage_model.py` and `liquidity_model.py`. Agents must **never** write to `logs/state/*.json` directly.
 
-- Core router: `execution/order_router.py`
-- Slippage / liquidity models: `execution/slippage_model.py`, `execution/liquidity_model.py`
-- Writes per-symbol quality stats to `logs/state/router_health.json` (slippage, latency, TWAP use)
-- Agents must **never** write to `logs/state/*.json` directly; only via executor/state_publish (see State Contract + v7_manifest)
+**Key runtime tunables:** `trading_window.start_utc/end_utc`, `router.twap.min_notional_usd`, `signal_gate.expectancy_min`
 
-**Example:** When adjusting router behaviour, update `slippage_model`/`liquidity_model` and verify `router_health.json` quality scores and buckets via tests and dashboard.
+## State Files (`logs/state/`)
 
-## Runtime Config (`config/runtime.yaml`)
+Dashboard reads these JSON files (never writes). **Changes must be strictly additive.**
 
-Controls environment flags (prod vs. testnet, DRY_RUN), trading windows, and global signal/risk gates.
+> *Never infer behavior from a single state file snapshot.*
 
-**Use for:**
-- Enabling DRY_RUN / testnet runs
-- Restricting trading to specific hours/windows (`trading_window.*`)
-- High-level routing of which strategies are active
-- TWAP/slippage tunables under `router.*`
-
-**Do not** add strategy-specific logic here; put it in `strategy_config.json` / `risk_limits.json`, then read via the runtime loader.
-
-**Commonly adjusted tunables (examples):**
-- `runtime.dry_run` — skip order placement
-- `trading_window.start_utc` / `end_utc` — active trading hours
-- `router.twap.min_notional_usd` — threshold for TWAP execution
-- `signal_gate.expectancy_min` — minimum rolling expectancy to allow trade
-
-## State Files Contract (`logs/state/`)
-
-Dashboard reads these JSON files (never writes). **Changes must be strictly additive.** See `v7_manifest.json` for canonical list with owners and update frequencies.
-
-**Single source of truth** for state surfaces is `v7_manifest.json` + `docs/v7.6_State_Contract.md`. If an agent adds/changes a state surface, they **must**:
+**When adding/changing state surfaces:**
 1. Update `v7_manifest.json`
-2. Update the State Contract doc
-3. Extend the schema tests in `tests/integration`
+2. Extend schema tests in `tests/integration/test_state_*.py`
 
-| File | Purpose |
-|------|--------|
-| `nav_state.json` | NAV, nav_age_s, freshness |
-| `positions_state.json` | Current open positions |
-| `positions_ledger.json` | **Unified ledger: positions + TP/SL (v7.4_C3)** |
-| `risk_snapshot.json` | Portfolio DD, gross exposure, VaR/CVaR |
-| `kpis_v7.json` | Aggregated KPIs for dashboard/investor views |
-| `router_health.json` | Fill rates, latency metrics |
-| `symbol_scores_v6.json` | Intel scoring state |
-| `hybrid_scores.json` | Hybrid alpha scores per symbol |
-| `funding_snapshot.json` | Funding rate data |
-| `basis_snapshot.json` | Basis/carry data |
-| `diagnostics.json` | Veto counters, exit pipeline, liveness |
+**Core state:** `nav_state.json`, `positions_state.json`, `positions_ledger.json` (unified with TP/SL), `risk_snapshot.json`, `diagnostics.json`
 
-### Position Ledger (v7.4_C3)
+**Engine state:** `sentinel_x.json` (regime), `hydra_state.json` (head budgets), `cerberus_state.json` (multipliers), `execution_quality.json`
 
-The **position ledger** (`execution/position_ledger.py`) provides a unified source of truth for positions and TP/SL levels:
+**Intel state:** `symbol_scores_v6.json`, `factor_diagnostics.json`, `router_health.json`
+
+### Position Ledger
 
 ```python
 from execution.position_ledger import build_position_ledger, get_ledger_entry
-
-ledger = build_position_ledger()  # Dict[str, LedgerEntry]
-entry = get_ledger_entry("BTCUSDT", "LONG")
-if entry:
-    print(f"TP: {entry.tp_sl.tp}, SL: {entry.tp_sl.sl}")
+ledger = build_position_ledger()
+entry = get_ledger_entry("BTCUSDT", "LONG")  # Returns LedgerEntry with tp_sl
 ```
 
-| Dataclass | Fields | Purpose |
-|-----------|--------|---------|
-| `LedgerEntry` | symbol, side, qty, entry_price, tp_sl, strategy, metadata | Single position with TP/SL |
-| `TpSlLevels` | tp, sl | Optional take-profit and stop-loss prices |
-| `PositionLedger` | entries, updated_ts, source | Container for all entries |
-
-**Key functions:**
-- `build_position_ledger()` — Load ledger from state file
-- `sync_ledger_with_positions()` — Merge exchange positions + registry into ledger
-- `get_ledger_entry(symbol, side)` — Lookup single entry
-- `check_consistency()` — Validate ledger vs exchange positions
-
-**Exit scanner** uses ledger-first approach with registry fallback for TP/SL lookups.
+Exit scanner uses ledger-first approach with registry fallback for TP/SL lookups.
 
 ## Strategy Tiering Model
 
@@ -276,90 +184,52 @@ if entry:
 
 ## Common Debugging
 
-### Order Vetoed?
 ```bash
-tail -100 logs/execution/risk_vetoes.jsonl | jq '{reason: .veto_reason, observed, limits}'
-```
-Check: stale NAV? per-symbol cap? portfolio DD? correlation cap? min_notional?
+# Order vetoed? Check risk vetoes
+tail -100 logs/execution/risk_vetoes.jsonl | jq '{reason: .veto_reason}'
 
-### NAV Staleness
-```bash
+# NAV stale? (>90s triggers veto)
 cat logs/state/nav_state.json | jq '.nav_age_s'
-```
-Stale NAV → `check_nav_freshness` veto → zero sizing.
 
-### Router Fallback
-```bash
-tail -50 logs/execution/orders_executed.jsonl | jq 'select(.fallback==true)'
+# Hydra/Cerberus state
+cat logs/state/hydra_state.json | jq '{head_budgets, head_usage}'
+cat logs/state/cerberus_state.json | jq '{overall_health, head_state}'
 ```
 
-### Dashboard Not Updating
-Check `logs/state/*.json` timestamps. Verify `state_publish` ran recently.
-
-### Ledger Consistency Issues
-```bash
-cat logs/state/positions_ledger.json | jq '.entries | to_entries | map(select(.value.tp_sl.tp == null and .value.tp_sl.sl == null))'
-```
-Positions without TP/SL may indicate registry sync failure. Check `_sync_position_ledger()` in executor logs.
+**Common veto causes:** stale NAV, per-symbol cap, portfolio DD, correlation cap, min_notional
 
 ## Integration Points
 
-Agents must understand these integration boundaries:
-
-### Firestore State Sync (`sync_state.py`)
-- **One-way publisher** — never reads from Firestore
-- Writes: `nav_state.json`, `positions_state.json`, `leaderboard_state.json`
-- Do not change contract without dashboard migration
-
-### Telegram Alerts (`telegram_utils.py`)
-- **Non-blocking** — must never raise exceptions that stop executor
-- Only send compact technical signals (4h & daily BTC model)
-- Do not extend without explicit user request
-
-### Exchange Client (`exchange_utils.py`)
-- Supports `DRY_RUN=1` for safe testing
-- Must never modify or bypass `risk_limits.check_order()`
-- All orders must go through router (maker-first logic, TWAP support)
-
-### Runtime Config (`runtime.yaml`)
-- **Authoritative** for execution flags and tunables
-- `router_autotune_v6_apply_enabled` is a *safe mode* flag (0=safe)
-- TWAP config lives under `router.twap.*`
-- No hardcoded parameters — always pull from config
+| Component | Boundary Rule |
+|-----------|---------------|
+| `sync_state.py` | One-way publish to Firestore (never reads back) |
+| `telegram_utils.py` | Non-blocking — exceptions must not stop executor |
+| `exchange_utils.py` | All orders through router; respects `DRY_RUN=1` |
+| `runtime.yaml` | Authoritative for execution flags — no hardcoded params |
 
 ## Dashboard (Streamlit)
 
-- **Entrypoint:** `dashboard/app.py`
-- **State loader:** `dashboard/state_v7.py` (reads `logs/state/*.json`, no writes)
-- **Panels:**
-  - `equity_panel.py` — NAV / equity curve / drawdown
-  - `execution_panel.py` — orders, fills, vetoes
-  - `risk_panel.py` — DD state, VaR/CVaR, risk_mode (from `risk_snapshot.json`)
-  - `router_health_panel.py` — execution quality (from `router_health.json`)
-  - `factor_panel.py` — factor diagnostics & weights (from `factor_diagnostics.json`)
-    - Factor weights support an **optional adaptive overlay** (v7.7_P2) driven by IR/PnL, controlled via `factor_diagnostics.auto_weighting.adaptive`
-
-**Agents modifying the dashboard:**
-- **Only read** from state surfaces; never write
-- When adding new state fields, update `state_v7.py` loader + schema tests under `tests/integration`
+- **Entrypoint:** `dashboard/app.py` → `state_v7.py` (read-only from `logs/state/`)
+- **Adding state fields:** Update `state_v7.py` loader + add schema tests
 
 ## Code Conventions
 
-- Monetary amounts in **USDT** unless suffixed (`_zar`, `_btc`)
-- Timestamps are **Unix seconds** (not milliseconds) except Binance responses
-- Use `typing` annotations throughout `execution/`
-- Prefer `Decimal` for price/qty precision in risk calculations
-- Telegram alerts are async-only, failures must not propagate to executor
+- Monetary amounts in **USDT** (suffix with `_zar`, `_btc` for others)
+- Timestamps: **Unix seconds** (not ms) except Binance API responses
+- Use `typing` annotations in `execution/`; prefer `Decimal` for price/qty
+- JSONL logs are **append-only** — use `events.write_event()`, never raw `print()`
 
-## PR Acceptance
+## Common Failure Modes (Read Before Coding)
 
-- ✅ `PYTHONPATH=. pytest -q` green (full suite, no exceptions)
+1. **Snapshot ≠ History** — `positions_state.json == []` does *not* mean "no trading occurred". Always cross-check execution logs or episode ledger.
+
+2. **Observability Is Read-Only** — New dashboards, metrics, or ledgers must never gate execution. If it influences a decision, it's no longer observability.
+
+3. **Doctrine Is Not Optimized** — Do not tune thresholds, confidences, or veto rates without a falsification trigger. Performance changes require a closed-cycle postmortem.
+
+## PR Checklist
+
+- ✅ `PYTHONPATH=. pytest -q` green (full suite)
 - ✅ `ruff check .` clean
 - ✅ `mypy .` clean (or documented suppressions)
 - ✅ No credentials in commits
-
----
-
-## Appendix: Legacy AGENTS.md Context
-
-`docs/AGENTS.md` provides historical background for older v5.x agent workflows (ACK/FILL separation, Backfill Agent patterns). **Modern patches must follow all rules and patterns defined in the main sections above.** AGENTS.md conventions must not be used for new development — the v7+ engine uses Risk Engine v6, Hybrid Alpha v2, Vol Regime Model, and TWAP router which supersede those patterns.
