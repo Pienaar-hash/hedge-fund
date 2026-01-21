@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 from collections import defaultdict
@@ -136,8 +136,11 @@ def _extract_exit_reason(fill: dict) -> str:
     exit_info = meta.get("exit", {})
     reason = exit_info.get("reason", "")
     
-    if reason in ("tp", "sl", "thesis", "regime_flip"):
-        return reason
+    # Normalize to lowercase for matching
+    reason_lower = reason.lower() if reason else ""
+    
+    if reason_lower in ("tp", "sl", "thesis", "regime_flip"):
+        return reason_lower
     
     # Check for strategy hints
     strategy = meta.get("strategy", "")
@@ -156,18 +159,84 @@ def _extract_strategy(fill: dict) -> str:
     return meta.get("strategy", "unknown")
 
 
+def _compute_metadata_pnl(
+    fills: list[dict],
+    since_date: Optional[str],
+    until_date: Optional[str],
+) -> dict:
+    """
+    Compute realized PnL from exit fill metadata.
+    
+    This is an independent estimator that uses entry_price stored in exit metadata.
+    More robust than episode matching for partial fills and scaling.
+    
+    Returns dict with: exits, gross_pnl, fees, net_pnl
+    """
+    realized_pnl = 0.0
+    total_fees = 0.0
+    exit_count = 0
+    exits_with_entry_price = 0
+    
+    for f in fills:
+        # Only process exits (reduceOnly fills)
+        if not f.get("reduceOnly"):
+            continue
+        
+        # Check if exit is in window
+        ts = _parse_ts(f.get("ts"))
+        if ts:
+            date_str = ts.strftime("%Y-%m-%d")
+            if since_date and date_str < since_date:
+                continue
+            if until_date and date_str > until_date:
+                continue
+        
+        exit_count += 1
+        total_fees += float(f.get("fee_total", 0) or 0)
+        
+        # Extract entry price from metadata
+        meta = f.get("metadata", {})
+        exit_info = meta.get("exit", {}) or meta.get("tp_sl", {}) or {}
+        entry_price = exit_info.get("entry_price") or meta.get("entry_price")
+        
+        if entry_price:
+            exits_with_entry_price += 1
+            exit_price = float(f.get("avgPrice", 0) or 0)
+            qty = float(f.get("executedQty", 0) or 0)
+            pos_side = f.get("positionSide", "")
+            
+            if pos_side == "LONG":
+                pnl = (exit_price - float(entry_price)) * qty
+            else:  # SHORT
+                pnl = (float(entry_price) - exit_price) * qty
+            realized_pnl += pnl
+    
+    return {
+        "exits": exit_count,
+        "exits_with_entry_price": exits_with_entry_price,
+        "gross_pnl": round(realized_pnl, 2),
+        "fees": round(total_fees, 2),
+        "net_pnl": round(realized_pnl - total_fees, 2),
+    }
+
+
 def build_episode_ledger(
     since_date: Optional[str] = None,
     until_date: Optional[str] = None,
+    lookback_days: int = 7,
 ) -> EpisodeLedger:
     """
     Rebuild episode ledger from execution logs.
     
     Algorithm:
-      1. Load all fills
+      1. Load fills (with lookback buffer to capture entries before window)
       2. Group by (symbol, positionSide)
       3. Match entries to exits by cumulative quantity
       4. Create episode for each completed cycle
+      5. Filter episodes by EXIT timestamp in [since_date, until_date]
+    
+    Window semantics: "episodes ending in window" — an episode is included
+    if its exit_ts falls within the window, regardless of when entry occurred.
     """
     fills = _load_execution_log()
     
@@ -177,15 +246,25 @@ def build_episode_ledger(
             stats={"total_fills": 0, "episodes_found": 0},
         )
     
-    # Filter by date if specified
-    if since_date or until_date:
+    # Compute lookback date for fill filtering (entry could be before window)
+    fill_since_date: Optional[str] = None
+    if since_date:
+        try:
+            since_dt = datetime.strptime(since_date, "%Y-%m-%d")
+            lookback_dt = since_dt - timedelta(days=lookback_days)
+            fill_since_date = lookback_dt.strftime("%Y-%m-%d")
+        except ValueError:
+            fill_since_date = since_date  # fallback to exact date
+    
+    # Pre-filter fills with lookback buffer (for performance, not semantics)
+    if fill_since_date or until_date:
         filtered = []
         for f in fills:
             ts = _parse_ts(f.get("ts"))
             if ts is None:
                 continue
             date_str = ts.strftime("%Y-%m-%d")
-            if since_date and date_str < since_date:
+            if fill_since_date and date_str < fill_since_date:
                 continue
             if until_date and date_str > until_date:
                 continue
@@ -304,6 +383,22 @@ def build_episode_ledger(
                     entry_fills = []
                     open_qty = 0.0
     
+    # Filter episodes by EXIT timestamp in window (the canonical semantics)
+    # "Episodes ending in window" — entry can be before, but exit must be in range
+    if since_date or until_date:
+        window_episodes = []
+        for ep in episodes:
+            exit_dt = _parse_ts(ep.exit_ts)
+            if exit_dt is None:
+                continue
+            exit_date_str = exit_dt.strftime("%Y-%m-%d")
+            if since_date and exit_date_str < since_date:
+                continue
+            if until_date and exit_date_str > until_date:
+                continue
+            window_episodes.append(ep)
+        episodes = window_episodes
+    
     # Calculate aggregate stats
     total_gross = sum(e.gross_pnl for e in episodes)
     total_fees = sum(e.fees for e in episodes)
@@ -311,6 +406,10 @@ def build_episode_ledger(
     
     winners = [e for e in episodes if e.net_pnl > 0]
     losers = [e for e in episodes if e.net_pnl < 0]
+    
+    # Metadata-based PnL estimator (independent cross-check)
+    # Uses entry_price from exit fill metadata — robust for partial fills
+    meta_pnl = _compute_metadata_pnl(fills, since_date, until_date)
     
     stats = {
         "total_fills": len(fills),
@@ -326,8 +425,11 @@ def build_episode_ledger(
             "tp": len([e for e in episodes if e.exit_reason == "tp"]),
             "sl": len([e for e in episodes if e.exit_reason == "sl"]),
             "thesis": len([e for e in episodes if e.exit_reason == "thesis"]),
+            "regime_flip": len([e for e in episodes if e.exit_reason == "regime_flip"]),
             "unknown": len([e for e in episodes if e.exit_reason == "unknown"]),
         },
+        # Cross-check from exit metadata (more robust for partial fills)
+        "metadata_pnl": meta_pnl,
     }
     
     return EpisodeLedger(
@@ -404,6 +506,17 @@ def print_ledger_summary(ledger: EpisodeLedger) -> None:
     for reason, count in reasons.items():
         print(f"  {reason:12}  {count}")
     print()
+    
+    # Metadata-based cross-check (more robust for partial fills)
+    meta_pnl = stats.get("metadata_pnl", {})
+    if meta_pnl:
+        print("METADATA PnL (exit-based cross-check)")
+        print("-" * 40)
+        print(f"  Exit fills:     {meta_pnl.get('exits', 0)} ({meta_pnl.get('exits_with_entry_price', 0)} with entry_price)")
+        print(f"  Gross PnL:      ${meta_pnl.get('gross_pnl', 0):+,.2f}")
+        print(f"  Total Fees:     ${meta_pnl.get('fees', 0):,.2f}")
+        print(f"  Net PnL:        ${meta_pnl.get('net_pnl', 0):+,.2f}")
+        print()
 
 
 # CLI entry point

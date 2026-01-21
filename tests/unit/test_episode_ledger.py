@@ -188,6 +188,80 @@ class TestBuildLedger:
                 assert ep.fees == 1.0  # 0.5 + 0.5
                 assert ep.net_pnl == 4.0
 
+    def test_cross_window_episode_counted(self):
+        """
+        Episode with entry BEFORE window and exit INSIDE window should be counted.
+        
+        This tests the "episodes ending in window" semantics:
+        - Entry on Jan 19 (before window)
+        - Exit on Jan 20 (inside window)
+        - Window is Jan 20 only
+        - Episode SHOULD be counted, fees SHOULD be counted, PnL SHOULD be counted
+        """
+        fills = [
+            # Entry fill on Jan 19 (BEFORE window)
+            json.dumps({
+                "event_type": "order_fill",
+                "ts": "2026-01-19T12:00:00+00:00",
+                "symbol": "BTCUSDT",
+                "positionSide": "LONG",
+                "side": "BUY",
+                "reduceOnly": False,
+                "executedQty": 0.01,
+                "avgPrice": 90000.0,
+                "fee_total": 0.36,
+                "metadata": {"strategy": "vol_target"},
+            }),
+            # Exit fill on Jan 20 (INSIDE window)
+            json.dumps({
+                "event_type": "order_fill",
+                "ts": "2026-01-20T14:00:00+00:00",
+                "symbol": "BTCUSDT",
+                "positionSide": "LONG",
+                "side": "SELL",
+                "reduceOnly": True,
+                "executedQty": 0.01,
+                "avgPrice": 89000.0,
+                "fee_total": 0.356,
+                "metadata": {
+                    "exit": {"reason": "regime_flip", "entry_price": 90000.0}
+                },
+            }),
+        ]
+        
+        mock_file_content = "\n".join(fills)
+        
+        with patch("execution.episode_ledger.EXECUTION_LOG_PATH") as mock_path:
+            mock_path.exists.return_value = True
+            with patch("builtins.open", mock_open(read_data=mock_file_content)):
+                # Query for Jan 20 only
+                ledger = build_episode_ledger(since_date="2026-01-20", until_date="2026-01-20")
+                
+                # Episode should be counted (entry before window, exit in window)
+                assert len(ledger.episodes) == 1, "Episode with exit in window should be counted"
+                
+                ep = ledger.episodes[0]
+                assert ep.symbol == "BTCUSDT"
+                assert ep.exit_reason == "regime_flip"
+                
+                # PnL should be calculated: (89000 - 90000) * 0.01 = -10.0
+                assert ep.gross_pnl == -10.0
+                
+                # Fees should include both entry and exit
+                assert abs(ep.fees - 0.716) < 0.01
+                
+                # Net PnL should be gross - fees
+                assert abs(ep.net_pnl - (-10.716)) < 0.01
+                
+                # Stats should reflect the episode
+                assert ledger.stats["episodes_found"] == 1
+                assert ledger.stats["total_gross_pnl"] == -10.0
+                
+                # Metadata PnL cross-check should also work
+                meta_pnl = ledger.stats.get("metadata_pnl", {})
+                assert meta_pnl.get("exits") == 1
+                assert meta_pnl.get("gross_pnl") == -10.0
+
 
 @pytest.mark.integration
 class TestLedgerIntegration:
