@@ -1,0 +1,316 @@
+{
+  "audit_date": "2026-01-24",
+  "audit_version": "1.0",
+  "doctrine_ref": "DATASET_ADMISSION_GATE.md v1.0",
+  "datasets": {
+    "binance_futures_klines": {
+      "name": "Binance Futures OHLCV Klines",
+      "source": "Binance FAPI",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": true,
+        "signals": true,
+        "sizing": false,
+        "exits": true
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Monotonic, exchange-timestamped"},
+        "latency": {"p50_ms": 150, "p90_ms": 300, "p99_ms": 800, "cadence": "1m/15m"},
+        "missingness": {"acceptable_pct": 0.1, "gap_behavior": "exchange_handles", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Candle close is final"},
+        "regime_neutrality": {"influences_regime": true, "notes": "Sentinel-X primary input"}
+      },
+      "justification": "Foundational price feed. Pre-doctrine. Deterministic, replayable."
+    },
+    "binance_futures_orderbook": {
+      "name": "Binance Futures Order Book (L2)",
+      "source": "Binance FAPI",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": false,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Snapshot-based, no history"},
+        "latency": {"p50_ms": 100, "p90_ms": 250, "p99_ms": 500, "cadence": "on-demand"},
+        "missingness": {"acceptable_pct": 1.0, "gap_behavior": "fetch_failed_logged", "explicit_null": true},
+        "replay_determinism": {"verified": false, "notes": "Point-in-time snapshots, not logged"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Execution quality only"}
+      },
+      "justification": "Used for spread/slippage estimation. Does not influence decisions. Non-replayable but non-authoritative."
+    },
+    "binance_futures_positions": {
+      "name": "Binance Futures Account Positions",
+      "source": "Binance FAPI",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": true,
+        "exits": true
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Exchange authoritative"},
+        "latency": {"p50_ms": 200, "p90_ms": 400, "p99_ms": 1000, "cadence": "per-cycle"},
+        "missingness": {"acceptable_pct": 0.0, "gap_behavior": "veto_on_stale", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Logged to fills.jsonl"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Risk/position management only"}
+      },
+      "justification": "Authoritative position state. Pre-doctrine. Stale triggers veto."
+    },
+    "binance_futures_fills": {
+      "name": "Binance Futures Trade Fills",
+      "source": "Binance FAPI",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Exchange-timestamped, immutable"},
+        "latency": {"p50_ms": 200, "p90_ms": 500, "p99_ms": 2000, "cadence": "post-order"},
+        "missingness": {"acceptable_pct": 0.0, "gap_behavior": "retry_fetch", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Logged to fills.jsonl"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Accounting only"}
+      },
+      "justification": "Trade execution records. Immutable after creation. Logged."
+    },
+    "binance_futures_balance": {
+      "name": "Binance Futures Wallet Balance",
+      "source": "Binance FAPI",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": true,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Exchange authoritative"},
+        "latency": {"p50_ms": 150, "p90_ms": 300, "p99_ms": 800, "cadence": "per-cycle"},
+        "missingness": {"acceptable_pct": 0.0, "gap_behavior": "veto_on_stale", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "NAV snapshots logged"},
+        "regime_neutrality": {"influences_regime": false, "notes": "NAV/sizing only"}
+      },
+      "justification": "NAV source of truth. Pre-doctrine. Stale triggers veto."
+    },
+    "coingecko_prices": {
+      "name": "CoinGecko Spot Prices",
+      "source": "CoinGecko API",
+      "state": "OBSERVE_ONLY",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": false,
+      "criteria": {
+        "temporal_integrity": {"verified": false, "notes": "No timestamps, API-returned"},
+        "latency": {"p50_ms": 500, "p90_ms": 2000, "p99_ms": 5000, "cadence": "on-demand"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "fallback_to_binance", "explicit_null": true},
+        "replay_determinism": {"verified": false, "notes": "Not logged, point-in-time only"},
+        "regime_neutrality": {"influences_regime": false, "notes": "XAUT pricing fallback only"}
+      },
+      "justification": "Fallback price source for non-Binance assets. Does not influence live decisions. Used for treasury valuation display only."
+    },
+    "polymarket_snapshot": {
+      "name": "Polymarket Positions Snapshot",
+      "source": "Polymarket API (via script)",
+      "state": "OBSERVE_ONLY",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": false,
+      "criteria": {
+        "temporal_integrity": {"verified": false, "notes": "No candle alignment, event-based"},
+        "latency": {"p50_ms": null, "p90_ms": null, "p99_ms": null, "cadence": "unknown"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "empty_array", "explicit_null": true},
+        "replay_determinism": {"verified": false, "notes": "Not logged historically"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Display only"}
+      },
+      "justification": "External market observation. Currently empty. Does not influence any decisions. Display/research only."
+    },
+    "sentinel_x_features": {
+      "name": "Sentinel-X Derived Features",
+      "source": "Derived from binance_futures_klines",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": true,
+        "signals": false,
+        "sizing": false,
+        "exits": true
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Derived from deterministic inputs"},
+        "latency": {"p50_ms": 50, "p90_ms": 100, "p99_ms": 200, "cadence": "per-cycle"},
+        "missingness": {"acceptable_pct": 0.0, "gap_behavior": "error_state", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Pure function of klines"},
+        "regime_neutrality": {"influences_regime": true, "notes": "IS the regime authority"}
+      },
+      "justification": "Derived features (returns, ATR, trend, etc.). Deterministic transformation of klines. Defines regime."
+    },
+    "regime_pressure": {
+      "name": "Regime Pressure Diagnostics",
+      "source": "Derived from sentinel_x history",
+      "state": "OBSERVE_ONLY",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Derived from logged regime history"},
+        "latency": {"p50_ms": 10, "p90_ms": 20, "p99_ms": 50, "cadence": "per-cycle"},
+        "missingness": {"acceptable_pct": 0.0, "gap_behavior": "stale_values", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Pure function of regime history"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Observes regime, does not define it"}
+      },
+      "justification": "Diagnostic metric only. near_flip_count, dwell_time, etc. Does NOT influence decisions. Read-only observation of regime behavior."
+    },
+    "symbol_scores_v6": {
+      "name": "Symbol Scoring (Intel V6)",
+      "source": "Derived from klines + router metrics",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": false,
+        "signals": true,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Derived from logged inputs"},
+        "latency": {"p50_ms": 100, "p90_ms": 200, "p99_ms": 500, "cadence": "per-cycle"},
+        "missingness": {"acceptable_pct": 0.0, "gap_behavior": "default_score", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Deterministic scoring function"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Signal quality filter only"}
+      },
+      "justification": "Symbol quality scoring. Influences signal emission threshold. Deterministic from logged router metrics."
+    },
+    "router_health": {
+      "name": "Router Execution Health Metrics",
+      "source": "Derived from fills + order metrics",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Derived from logged fills"},
+        "latency": {"p50_ms": 50, "p90_ms": 100, "p99_ms": 200, "cadence": "per-cycle"},
+        "missingness": {"acceptable_pct": 0.0, "gap_behavior": "stale_values", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Aggregation of logged fills"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Execution diagnostics only"}
+      },
+      "justification": "Maker fill rate, slippage percentiles, latency. Influences router policy tuning but not trade decisions."
+    },
+    "expectancy_v6": {
+      "name": "Historical Expectancy Scoring",
+      "source": "Derived from episode_ledger",
+      "state": "PRODUCTION_ELIGIBLE",
+      "grandfathered": true,
+      "influences": {
+        "regime": false,
+        "signals": true,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Derived from logged episodes"},
+        "latency": {"p50_ms": 20, "p90_ms": 50, "p99_ms": 100, "cadence": "per-cycle"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "default_expectancy", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Aggregation of logged PnL"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Signal gate input"}
+      },
+      "justification": "Per-symbol/regime expectancy from historical episodes. Currently empty (cold start). Influences signal_gate threshold."
+    },
+    "offchain_holdings": {
+      "name": "Off-Exchange Holdings (Treasury)",
+      "source": "Manual config file",
+      "state": "OBSERVE_ONLY",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Static config, manually updated"},
+        "latency": {"p50_ms": 0, "p90_ms": 0, "p99_ms": 0, "cadence": "manual"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "zero", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Static file"},
+        "regime_neutrality": {"influences_regime": false, "notes": "NAV display only"}
+      },
+      "justification": "Static treasury holdings (XAUT, stables). Display only. Does not influence trading decisions."
+    },
+    "factor_diagnostics": {
+      "name": "Factor Diagnostics (Alpha Attribution)",
+      "source": "Derived from fills + positions",
+      "state": "OBSERVE_ONLY",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Derived from logged data"},
+        "latency": {"p50_ms": 50, "p90_ms": 100, "p99_ms": 200, "cadence": "per-cycle"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "empty", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Pure function of positions/fills"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Post-hoc analysis only"}
+      },
+      "justification": "Factor exposure and PnL attribution. Research/diagnostic only. Does not influence live decisions."
+    }
+  },
+  "summary": {
+    "production_eligible": 10,
+    "observe_only": 4,
+    "research_only": 0,
+    "rejected": 0,
+    "grandfathered": 8,
+    "would_fail_admission_today": ["binance_futures_orderbook", "coingecko_prices", "polymarket_snapshot"]
+  },
+  "notes": [
+    "binance_futures_orderbook: Non-replayable but does not influence decisions. Tolerated.",
+    "coingecko_prices: Fallback only, never authoritative. Tolerated in OBSERVE_ONLY.",
+    "polymarket_snapshot: Currently empty. Would need full admission if ever used for signals.",
+    "All PRODUCTION_ELIGIBLE datasets are either grandfathered or derived from grandfathered sources."
+  ],
+  "updated_at": "2026-01-24T10:45:00+00:00"
+}
