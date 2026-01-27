@@ -4696,5 +4696,50 @@
     "minQty": "1",
     "maxQty": "10000000",
     "minNotional": "5"
+  },
+  "ACUUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "8000000",
+    "minNotional": "5"
+  },
+  "\u6211\u8e0f\u9a6c\u6765\u4e86USDT": {
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "70000000",
+    "minNotional": "5"
+  },
+  "SKRUSDT": {
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "50000",
+    "minNotional": "5"
+  },
+  "SPACEUSDT": {
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "40000000",
+    "minNotional": "5"
+  },
+  "FIGHTUSDT": {
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "40000000",
+    "minNotional": "5"
   }
 }

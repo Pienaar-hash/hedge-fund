@@ -58,6 +58,9 @@ _TIER_MAP: Dict[str, DatasetTier] = {
     # AUTHORITATIVE: Defines regime
     "sentinel_x_features": DatasetTier.AUTHORITATIVE,
     # ADVISORY: Influences signals/sizing
+    # NOTE: orderbook is non-replayable and non-authoritative. Classified ADVISORY
+    # because it informs execution quality diagnostics. Do NOT promote without
+    # solving replay determinism first. See DATASET_ADMISSION_GATE.md §IV.4.
     "binance_futures_orderbook": DatasetTier.ADVISORY,
     "symbol_scores_v6": DatasetTier.ADVISORY,
     "expectancy_v6": DatasetTier.ADVISORY,

@@ -42,6 +42,26 @@ from dashboard.live_helpers import (
     load_router_health_state,
 )
 
+# P0 Widgets — Regime Visibility
+from dashboard.components.regime_pressure import (
+    load_regime_pressure_state,
+    render_regime_pressure_widget,
+)
+from dashboard.components.sentinel_x import (
+    load_sentinel_x_state,
+    render_sentinel_x_compact,
+)
+
+# P1 Widgets — Strategy Transparency
+from dashboard.components.episode_ledger import (
+    load_episode_ledger_state,
+    render_episode_ledger_summary,
+)
+from dashboard.components.hydra_status import (
+    load_hydra_state,
+    render_hydra_status_strip,
+)
+
 # Layout engine
 from dashboard.layout_v7_6 import (
     render_header_block,
@@ -108,6 +128,14 @@ def _load_dashboard_state() -> Dict[str, Any]:
     offchain_yield = load_offchain_yield({})
     engine_meta = load_engine_metadata({})
     
+    # P0: Regime visibility surfaces
+    regime_pressure = load_regime_pressure_state()
+    sentinel_x = load_sentinel_x_state()
+    
+    # P1: Strategy transparency surfaces
+    episode_ledger = load_episode_ledger_state()
+    hydra_state = load_hydra_state()
+    
     # Compute derived values
     nav_usd = float(nav_state.get("nav_usd") or nav_state.get("nav") or nav_state.get("total_equity") or 0)
     gross_exposure = float(nav_state.get("gross_exposure") or 0)
@@ -126,6 +154,12 @@ def _load_dashboard_state() -> Dict[str, Any]:
         "engine_meta": engine_meta,
         "nav_usd": nav_usd,
         "gross_exposure": gross_exposure,
+        # P0: Regime visibility
+        "regime_pressure": regime_pressure,
+        "sentinel_x": sentinel_x,
+        # P1: Strategy transparency
+        "episode_ledger": episode_ledger,
+        "hydra_state": hydra_state,
     }
 
 
@@ -167,6 +201,15 @@ def main() -> None:
         risk_snapshot=state["risk_snapshot"],
     )
     
+    # =========================================================================
+    # P0: REGIME VISIBILITY (Why system is flat)
+    # =========================================================================
+    col1, col2 = st.columns(2)
+    with col1:
+        render_regime_pressure_widget(state["regime_pressure"])
+    with col2:
+        render_sentinel_x_compact(state["sentinel_x"])
+    
     st.divider()
     
     # =========================================================================
@@ -199,6 +242,15 @@ def main() -> None:
         positions=state["positions"],
         meta=state["meta"],
     )
+    
+    # =========================================================================
+    # P1: STRATEGY TRANSPARENCY (Capital is intentionally idle)
+    # =========================================================================
+    col1, col2 = st.columns(2)
+    with col1:
+        render_episode_ledger_summary(state["episode_ledger"])
+    with col2:
+        render_hydra_status_strip(state["hydra_state"])
     
     st.divider()
     
