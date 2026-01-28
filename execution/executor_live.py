@@ -2679,21 +2679,30 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         dle_writer = _get_dle_writer()
         if dle_writer:
             try:
+                flags = get_flags()
                 shadow_build_chain(
+                    enabled=flags.shadow_dle_enabled,
+                    write_logs=flags.shadow_dle_write_logs,
                     writer=dle_writer,
+                    attempt_id=str(intent.get("attempt_id", "")),
+                    requested_action="ENTRY",
                     symbol=str(intent.get("symbol", "")),
                     side=str(intent.get("signal", "")).upper(),
-                    position_side=str(intent.get("positionSide", "")),
-                    action_class="ENTRY",
-                    verdict="DENY",
-                    deny_reason=doctrine_reason,
-                    regime=str(doctrine_details.get("regime", "")) if doctrine_details else "",
-                    policy_version=_ENGINE_VERSION,
-                    phase_id="CYCLE_004",
+                    strategy=str(intent.get("strategy", "UNKNOWN")),
+                    qty_intent=float(intent.get("gross_usd", 0) or 0),
                     context={
                         "intent_symbol": intent.get("symbol"),
+                        "doctrine_reason": doctrine_reason,
                         "doctrine_details": doctrine_details,
+                        "position_side": str(intent.get("positionSide", "")),
                     },
+                    phase_id="CYCLE_004",
+                    action_class="ENTRY_DENY",
+                    policy_version=_ENGINE_VERSION,
+                    scope={"symbol": str(intent.get("symbol", ""))},
+                    constraints={"verdict": "DENY", "reason": doctrine_reason},
+                    risk=doctrine_details or {},
+                    authority_source="DOCTRINE",
                 )
             except Exception as exc:
                 LOG.debug("[dle_shadow] entry_deny hook failed: %s", exc)
@@ -2736,21 +2745,31 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         dle_writer = _get_dle_writer()
         if dle_writer:
             try:
+                flags = get_flags()
                 shadow_build_chain(
+                    enabled=flags.shadow_dle_enabled,
+                    write_logs=flags.shadow_dle_write_logs,
                     writer=dle_writer,
+                    attempt_id=attempt_id,
+                    requested_action="ENTRY",
                     symbol=symbol_upper,
                     side=side,
-                    position_side=str(pos_side or ""),
-                    action_class="ENTRY",
-                    verdict="ALLOW",
-                    regime=str(doctrine_details.get("regime", "")) if doctrine_details else "",
-                    policy_version=_ENGINE_VERSION,
-                    phase_id="CYCLE_004",
+                    strategy=str(intent.get("strategy", "UNKNOWN")),
+                    qty_intent=float(intent.get("gross_usd", 0) or 0),
                     context={
                         "attempt_id": attempt_id,
                         "intent_id": intent_id,
                         "doctrine_details": doctrine_details,
+                        "position_side": str(pos_side or ""),
+                        "regime": str(doctrine_details.get("regime", "")) if doctrine_details else "",
                     },
+                    phase_id="CYCLE_004",
+                    action_class="ENTRY_ALLOW",
+                    policy_version=_ENGINE_VERSION,
+                    scope={"symbol": symbol_upper},
+                    constraints={"verdict": "ALLOW"},
+                    risk=doctrine_details or {},
+                    authority_source="DOCTRINE",
                 )
             except Exception as exc:
                 LOG.debug("[dle_shadow] entry_allow hook failed: %s", exc)
@@ -4589,21 +4608,30 @@ def _loop_once(i: int) -> None:
             dle_writer = _get_dle_writer()
             if dle_writer:
                 try:
+                    flags = get_flags()
                     shadow_build_chain(
+                        enabled=flags.shadow_dle_enabled,
+                        write_logs=flags.shadow_dle_write_logs,
                         writer=dle_writer,
+                        attempt_id=str(exit_intent.get("attempt_id", "")),
+                        requested_action="EXIT",
                         symbol=candidate.symbol,
                         side="SELL" if candidate.position_side == "LONG" else "BUY",
-                        position_side=candidate.position_side,
-                        action_class="EXIT",
-                        verdict="ALLOW",
-                        exit_reason=str(candidate.exit_reason),
-                        regime="",  # Exit scanner doesn't have regime context
-                        policy_version=_ENGINE_VERSION,
-                        phase_id="CYCLE_004",
+                        strategy="EXIT_SCANNER",
+                        qty_intent=None,
                         context={
                             "urgency": candidate.urgency,
                             "exit_type": "DOCTRINE",
+                            "exit_reason": str(candidate.exit_reason),
+                            "position_side": candidate.position_side,
                         },
+                        phase_id="CYCLE_004",
+                        action_class="EXIT_ALLOW",
+                        policy_version=_ENGINE_VERSION,
+                        scope={"symbol": candidate.symbol},
+                        constraints={"verdict": "ALLOW", "reason": str(candidate.exit_reason)},
+                        risk={},
+                        authority_source="DOCTRINE",
                     )
                 except Exception as exc:
                     LOG.debug("[dle_shadow] exit hook failed: %s", exc)

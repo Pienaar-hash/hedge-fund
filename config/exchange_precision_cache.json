@@ -864,9 +864,9 @@
     "minNotional": "5"
   },
   "FLOWUSDT": {
-    "tickSize": "0.001",
-    "minPrice": "0.010",
-    "maxPrice": "100000",
+    "tickSize": "0.0001000",
+    "minPrice": "0.0001000",
+    "maxPrice": "1000",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
