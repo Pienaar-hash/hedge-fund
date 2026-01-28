@@ -162,10 +162,13 @@ def render_treasury_block(
     offchain_assets: Dict[str, Any],
     offchain_yield: Dict[str, Any],
 ) -> None:
-    """Render treasury / off-exchange holdings."""
+    """Render treasury / off-exchange holdings with staleness indicator."""
     # Convert offchain_assets dict to list
     # The state file has structure: {assets: {BTC: {...}, ...}, totals: {...}, metadata: {...}}
     holdings = []
+    
+    # Extract timestamp for staleness check
+    updated_ts = offchain_assets.get("updated_ts")
     
     # Extract the assets sub-dict (not top-level keys like 'totals', 'metadata')
     assets_dict = offchain_assets.get("assets", {})
@@ -201,7 +204,7 @@ def render_treasury_block(
     # Calculate total
     total_usd = sum(float(h.get("usd_value") or 0) for h in holdings)
     
-    _render_treasury_block(holdings, total_usd)
+    _render_treasury_block(holdings, total_usd, updated_ts)
 
 
 # =============================================================================
@@ -231,6 +234,7 @@ def render_diagnostics_block(
         ("regime_pressure.json", Path("logs/state/regime_pressure.json")),
         ("kpis_v7.json", Path("logs/state/kpis_v7.json")),
         ("engine_metadata.json", Path("logs/state/engine_metadata.json")),
+        ("episode_ledger.json", Path("logs/state/episode_ledger.json")),
     ]
     
     for name, path in state_files:
