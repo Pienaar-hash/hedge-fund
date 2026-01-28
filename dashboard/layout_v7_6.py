@@ -36,7 +36,7 @@ def render_header_block(
     # Extract values
     last_update = nav_state.get("updated_at") or nav_state.get("timestamp") or ""
     engine_status = engine_meta.get("status") or "unknown"
-    version = engine_meta.get("version") or "v7.6"
+    version = engine_meta.get("engine_version") or engine_meta.get("version") or "v7.9"
     
     # Status badge class
     if engine_status in ("running", "active", "ok"):
@@ -212,53 +212,61 @@ def render_diagnostics_block(
     state_summary: Dict[str, Any],
 ) -> None:
     """Render diagnostics panel with state file health."""
-    # Build state health list from summary
+    import time
+    import json
+    from pathlib import Path
+    
+    # Build state health list from actual state files
     state_health = []
     
-    # Define expected state files
+    # Core state files to monitor
     state_files = [
-        ("nav_state.json", state_summary.get("nav")),
-        ("aum_state.json", state_summary.get("aum")),
-        ("risk_snapshot.json", state_summary.get("risk")),
-        ("router_health.json", state_summary.get("router")),
-        ("engine_meta.json", state_summary.get("engine")),
+        ("nav.json", Path("logs/state/nav.json")),
+        ("nav_state.json", Path("logs/state/nav_state.json")),
+        ("risk_snapshot.json", Path("logs/state/risk_snapshot.json")),
+        ("router_health.json", Path("logs/state/router_health.json")),
+        ("positions_state.json", Path("logs/state/positions_state.json")),
+        ("diagnostics.json", Path("logs/state/diagnostics.json")),
+        ("sentinel_x.json", Path("logs/state/sentinel_x.json")),
+        ("regime_pressure.json", Path("logs/state/regime_pressure.json")),
+        ("kpis_v7.json", Path("logs/state/kpis_v7.json")),
+        ("engine_metadata.json", Path("logs/state/engine_metadata.json")),
     ]
     
-    for name, data in state_files:
-        if data is None:
-            status = "missing"
-            age_s = None
-            size = None
-        else:
-            # Check for staleness based on updated_at
-            import time
-            updated = data.get("updated_at") or data.get("timestamp")
-            if updated:
-                try:
-                    age_s = time.time() - float(updated)
-                    status = "stale" if age_s > 300 else "ok"  # 5 min threshold
-                except Exception:
-                    age_s = None
-                    status = "ok"
-            else:
-                age_s = None
-                status = "ok"
-            
-            # Estimate size
-            import json
-            try:
-                size = len(json.dumps(data))
-            except Exception:
-                size = None
+    for name, path in state_files:
+        if not path.exists():
+            state_health.append({
+                "name": name,
+                "status": "missing",
+                "age_s": None,
+                "size_bytes": None,
+            })
+            continue
         
-        state_health.append({
-            "name": name,
-            "status": status,
-            "age_s": age_s,
-            "size_bytes": size,
-        })
+        try:
+            stat = path.stat()
+            size = stat.st_size
+            mtime = stat.st_mtime
+            age_s = time.time() - mtime
+            
+            # Status based on age (5 min = stale for most files)
+            status = "stale" if age_s > 300 else "ok"
+            
+            state_health.append({
+                "name": name,
+                "status": status,
+                "age_s": age_s,
+                "size_bytes": size,
+            })
+        except Exception:
+            state_health.append({
+                "name": name,
+                "status": "error",
+                "age_s": None,
+                "size_bytes": None,
+            })
     
-    # Executor status (if available in engine meta)
+    # Executor status from engine meta
     engine = state_summary.get("engine") or {}
     executor_status = None
     if engine:

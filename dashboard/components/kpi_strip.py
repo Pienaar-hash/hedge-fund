@@ -80,11 +80,6 @@ def build_kpi_cards(
             "value_class": "",
         },
         {
-            "label": "AUM",
-            "value_html": _fmt_usd(total_aum),
-            "value_class": "",
-        },
-        {
             "label": "24h PnL",
             "value_html": ("+" if daily_pnl >= 0 else "") + _fmt_usd(daily_pnl),
             "value_class": _value_class(daily_pnl),
