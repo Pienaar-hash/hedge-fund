@@ -42,6 +42,8 @@ from execution.exchange_utils import get_price
 import requests
 from execution.intel.router_policy import router_policy
 from execution.v6_flags import get_flags, flags_to_dict, log_v6_flag_snapshot
+from execution.dle_shadow import shadow_build_chain, DLEShadowWriter
+
 # Optional .env so Supervisor doesn't need to export everything
 try:
     from dotenv import load_dotenv
@@ -149,6 +151,20 @@ _LAST_KPI_PUBLISH = 0.0
 _SYMBOL_ERROR_COOLDOWN: Dict[str, float] = {}
 
 _ENGINE_VERSION = read_version(default="v7.6")
+
+# DLE Shadow Writer singleton (Phase A: log-only observation)
+_DLE_WRITER: DLEShadowWriter | None = None
+
+
+def _get_dle_writer() -> DLEShadowWriter | None:
+    """Lazy-init DLE shadow writer only when flags enabled."""
+    global _DLE_WRITER
+    flags = get_flags()
+    if not flags.shadow_dle_enabled:
+        return None
+    if _DLE_WRITER is None:
+        _DLE_WRITER = DLEShadowWriter(write_logs=flags.shadow_dle_write_logs)
+    return _DLE_WRITER
 
 
 def get_v6_flag_snapshot() -> Dict[str, bool]:
@@ -2659,6 +2675,28 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             doctrine_reason,
             doctrine_details,
         )
+        # === DLE Shadow Hook: ENTRY DENY ===
+        dle_writer = _get_dle_writer()
+        if dle_writer:
+            try:
+                shadow_build_chain(
+                    writer=dle_writer,
+                    symbol=str(intent.get("symbol", "")),
+                    side=str(intent.get("signal", "")).upper(),
+                    position_side=str(intent.get("positionSide", "")),
+                    action_class="ENTRY",
+                    verdict="DENY",
+                    deny_reason=doctrine_reason,
+                    regime=str(doctrine_details.get("regime", "")) if doctrine_details else "",
+                    policy_version=_ENGINE_VERSION,
+                    phase_id="CYCLE_004",
+                    context={
+                        "intent_symbol": intent.get("symbol"),
+                        "doctrine_details": doctrine_details,
+                    },
+                )
+            except Exception as exc:
+                LOG.debug("[dle_shadow] entry_deny hook failed: %s", exc)
         return  # Hard stop — no further processing
     
     symbol = intent["symbol"]
@@ -2692,6 +2730,31 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     intent_id = str(intent.get("intent_id") or mk_id("ord"))
     intent["attempt_id"] = attempt_id
     intent["intent_id"] = intent_id
+
+    # === DLE Shadow Hook: ENTRY ALLOW ===
+    if not reduce_only:
+        dle_writer = _get_dle_writer()
+        if dle_writer:
+            try:
+                shadow_build_chain(
+                    writer=dle_writer,
+                    symbol=symbol_upper,
+                    side=side,
+                    position_side=str(pos_side or ""),
+                    action_class="ENTRY",
+                    verdict="ALLOW",
+                    regime=str(doctrine_details.get("regime", "")) if doctrine_details else "",
+                    policy_version=_ENGINE_VERSION,
+                    phase_id="CYCLE_004",
+                    context={
+                        "attempt_id": attempt_id,
+                        "intent_id": intent_id,
+                        "doctrine_details": doctrine_details,
+                    },
+                )
+            except Exception as exc:
+                LOG.debug("[dle_shadow] entry_allow hook failed: %s", exc)
+
     per_trade_nav_pct = _nav_pct_fraction(intent.get("per_trade_nav_pct"))
     try:
         screener_gross = float(intent.get("gross_usd") or 0.0)
@@ -4522,6 +4585,28 @@ def _loop_once(i: int) -> None:
                 candidate.exit_reason,
                 candidate.urgency,
             )
+            # === DLE Shadow Hook: EXIT ===
+            dle_writer = _get_dle_writer()
+            if dle_writer:
+                try:
+                    shadow_build_chain(
+                        writer=dle_writer,
+                        symbol=candidate.symbol,
+                        side="SELL" if candidate.position_side == "LONG" else "BUY",
+                        position_side=candidate.position_side,
+                        action_class="EXIT",
+                        verdict="ALLOW",
+                        exit_reason=str(candidate.exit_reason),
+                        regime="",  # Exit scanner doesn't have regime context
+                        policy_version=_ENGINE_VERSION,
+                        phase_id="CYCLE_004",
+                        context={
+                            "urgency": candidate.urgency,
+                            "exit_type": "DOCTRINE",
+                        },
+                    )
+                except Exception as exc:
+                    LOG.debug("[dle_shadow] exit hook failed: %s", exc)
             try:
                 _send_order(exit_intent)
             except Exception as exc:
