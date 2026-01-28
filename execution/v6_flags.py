@@ -23,6 +23,9 @@ class V6Flags:
     router_autotune_v6_enabled: bool
     feedback_allocator_v6_enabled: bool
     router_autotune_v6_apply_enabled: bool
+    # Phase A: Shadow DLE gate (log-only, no execution impact)
+    shadow_dle_enabled: bool
+    shadow_dle_write_logs: bool
 
 
 def _load_flags() -> V6Flags:
@@ -33,6 +36,10 @@ def _load_flags() -> V6Flags:
         router_autotune_v6_enabled=_env_bool("ROUTER_AUTOTUNE_V6_ENABLED"),
         feedback_allocator_v6_enabled=_env_bool("FEEDBACK_ALLOCATOR_V6_ENABLED"),
         router_autotune_v6_apply_enabled=_env_bool("ROUTER_AUTOTUNE_V6_APPLY_ENABLED"),
+        # Shadow DLE: master on/off (default OFF)
+        shadow_dle_enabled=_env_bool("SHADOW_DLE_ENABLED", "0"),
+        # Shadow DLE: write logs (default ON when enabled; allows dry-run in CI)
+        shadow_dle_write_logs=_env_bool("SHADOW_DLE_WRITE_LOGS", "1"),
     )
 
 
@@ -56,6 +63,8 @@ def flags_to_dict(flags: V6Flags | None = None) -> Dict[str, bool]:
         "ROUTER_AUTOTUNE_V6_ENABLED": snapshot["router_autotune_v6_enabled"],
         "FEEDBACK_ALLOCATOR_V6_ENABLED": snapshot["feedback_allocator_v6_enabled"],
         "ROUTER_AUTOTUNE_V6_APPLY_ENABLED": snapshot["router_autotune_v6_apply_enabled"],
+        "SHADOW_DLE_ENABLED": snapshot["shadow_dle_enabled"],
+        "SHADOW_DLE_WRITE_LOGS": snapshot["shadow_dle_write_logs"],
     }
 
 
