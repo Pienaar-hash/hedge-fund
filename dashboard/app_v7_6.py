@@ -62,6 +62,12 @@ from dashboard.components.hydra_status import (
     render_hydra_status_strip,
 )
 
+# NAV Composition — Investor Truth Surface
+from dashboard.components.nav_composition import (
+    load_nav_detail,
+    render_nav_composition_panel,
+)
+
 # Layout engine
 from dashboard.layout_v7_6 import (
     render_header_block,
@@ -136,6 +142,9 @@ def _load_dashboard_state() -> Dict[str, Any]:
     episode_ledger = load_episode_ledger_state()
     hydra_state = load_hydra_state()
     
+    # NAV Composition (investor truth surface)
+    nav_detail = load_nav_detail()
+    
     # Compute derived values
     nav_usd = float(nav_state.get("nav_usd") or nav_state.get("nav") or nav_state.get("total_equity") or 0)
     gross_exposure = float(nav_state.get("gross_exposure") or 0)
@@ -160,6 +169,8 @@ def _load_dashboard_state() -> Dict[str, Any]:
         # P1: Strategy transparency
         "episode_ledger": episode_ledger,
         "hydra_state": hydra_state,
+        # NAV Composition
+        "nav_detail": nav_detail,
     }
 
 
@@ -213,12 +224,12 @@ def main() -> None:
     st.divider()
     
     # =========================================================================
-    # AUM DOUGHNUT (primary visual anchor)
+    # NAV COMPOSITION (Investor Truth Surface — replaces AUM)
     # =========================================================================
-    render_aum_block(
+    render_nav_composition_panel(
+        nav_detail=state["nav_detail"],
         nav_state=state["nav_state"],
-        aum_data=state["aum_data"],
-        kpis=state["kpis"],
+        episode_ledger=state["episode_ledger"],
     )
     
     st.divider()
