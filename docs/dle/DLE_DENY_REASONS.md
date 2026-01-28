@@ -64,6 +64,15 @@ When the DLE Gate refuses to issue a permit, it must return a **specific, action
 | `DENY_INTERNAL_ERROR` | Gate encountered an error | Investigate logs; do not retry blindly |
 | `DENY_RATE_LIMITED` | Too many requests in window | Back off |
 
+### Permit Denials
+
+| Code | Meaning | Resolution |
+|------|---------|------------|
+| `DENY_PERMIT_CONSUMED` | Permit has already been used | Request new permit |
+| `DENY_PERMIT_EXPIRED` | Permit TTL exceeded before use | Request new permit |
+| `DENY_PERMIT_REVOKED` | Permit was revoked before use | Request new permit |
+| `DENY_NO_PERMIT` | Order attempted without permit | Must request permit first |
+
 ---
 
 ## Schema
@@ -111,7 +120,11 @@ When the DLE Gate refuses to issue a permit, it must return a **specific, action
         "DENY_STATE_DRIFT",
         "DENY_AMBIGUOUS",
         "DENY_INTERNAL_ERROR",
-        "DENY_RATE_LIMITED"
+        "DENY_RATE_LIMITED",
+        "DENY_PERMIT_CONSUMED",
+        "DENY_PERMIT_EXPIRED",
+        "DENY_PERMIT_REVOKED",
+        "DENY_NO_PERMIT"
       ]
     },
     "deny_details": {
@@ -214,5 +227,60 @@ This provides a complete audit trail of "what was refused and why."
 | `correlation_cap` | `DENY_CORRELATION_EXCEEDED` |
 | `portfolio_dd` | `DENY_DRAWDOWN_HALT` |
 | `min_notional` | `DENY_OUT_OF_SCOPE` |
+
+---
+
+## Canonical Examples
+
+### Valid: Minimal Denial
+
+```json
+{
+  "request_id": "req_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "denied_ts": "2026-01-28T14:35:00Z",
+  "deny_reason": "DENY_NO_DECISION",
+  "deny_details": "No active decision permits OPEN_SHORT for ETHUSDT"
+}
+```
+
+### Valid: Denial with Context
+
+```json
+{
+  "request_id": "req_b2c3d4e5-f6a7-8901-bcde-f23456789012",
+  "denied_ts": "2026-01-28T14:35:00Z",
+  "deny_reason": "DENY_REGIME_MISMATCH",
+  "deny_details": "Decision d7f3a2b1 requires TREND_UP but current regime is CHOPPY",
+  "deny_context": {
+    "decision_id": "d7f3a2b1-4c5e-6f7a-8b9c-0d1e2f3a4b5c",
+    "expected_value": "TREND_UP",
+    "actual_value": "CHOPPY"
+  },
+  "recoverable": true,
+  "retry_after_s": 300
+}
+```
+
+### Invalid: Missing Required Fields
+
+```json
+{
+  "denied_ts": "2026-01-28T14:35:00Z",
+  "deny_reason": "DENY_NO_DECISION"
+}
+```
+**Rejection reason:** Missing `request_id` and `deny_details`. Cannot trace denial to request.
+
+### Invalid: Unknown Deny Reason
+
+```json
+{
+  "request_id": "req_abc123",
+  "denied_ts": "2026-01-28T14:35:00Z",
+  "deny_reason": "DENY_UNKNOWN_ERROR",
+  "deny_details": "Something went wrong"
+}
+```
+**Rejection reason:** `deny_reason` must be from canonical enum. Use `DENY_INTERNAL_ERROR` for unexpected failures.
 
 This allows backward compatibility during migration.

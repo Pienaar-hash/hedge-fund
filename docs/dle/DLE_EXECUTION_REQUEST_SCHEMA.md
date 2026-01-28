@@ -255,3 +255,110 @@ Hydra/Exit Scanner/Risk Engine
     ▼         ▼
  Execute   Log + Stop
 ```
+
+---
+
+## Canonical Examples
+
+### Valid: Minimal Request
+
+```json
+{
+  "request_id": "req_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "requested_ts": "2026-01-28T14:35:00Z",
+  "requester": {
+    "type": "HYDRA_HEAD",
+    "id": "TREND"
+  },
+  "action": {
+    "type": "OPEN_LONG",
+    "symbol": "BTCUSDT"
+  },
+  "context": {
+    "regime": "TREND_UP",
+    "nav_usd": 10751.23,
+    "positions_hash": "sha256:abc123def456"
+  }
+}
+```
+
+### Valid: Full Request with Size Intent
+
+```json
+{
+  "request_id": "req_b2c3d4e5-f6a7-8901-bcde-f23456789012",
+  "requested_ts": "2026-01-28T14:35:00Z",
+  "requester": {
+    "type": "HYDRA_HEAD",
+    "id": "MEAN_REVERT"
+  },
+  "action": {
+    "type": "OPEN_SHORT",
+    "symbol": "ETHUSDT",
+    "direction": "SHORT",
+    "size_intent": {
+      "notional_usd": 1200,
+      "nav_pct": 0.11
+    },
+    "urgency": "NORMAL"
+  },
+  "context": {
+    "regime": "MEAN_REVERT",
+    "regime_confidence": 0.68,
+    "nav_usd": 10751.23,
+    "positions_hash": "sha256:abc123def456",
+    "risk_state": {
+      "portfolio_heat": 0.05,
+      "drawdown_pct": 0.01
+    },
+    "phase_id": "CYCLE_004"
+  },
+  "rationale": "Mean reversion signal: ETH overbought RSI 78, expecting pullback"
+}
+```
+
+### Invalid: Missing Required Fields
+
+```json
+{
+  "request_id": "req_abc123",
+  "action": {
+    "type": "OPEN_LONG",
+    "symbol": "BTCUSDT"
+  }
+}
+```
+**Rejection reason:** Missing `requested_ts`, `requester`, `context`. All are required.
+
+### Invalid: Unknown Requester Type
+
+```json
+{
+  "request_id": "req_abc123",
+  "requested_ts": "2026-01-28T14:35:00Z",
+  "requester": {
+    "type": "UNKNOWN_COMPONENT",
+    "id": "something"
+  },
+  "action": { "type": "OPEN_LONG", "symbol": "BTCUSDT" },
+  "context": { "regime": "TREND_UP", "nav_usd": 10000, "positions_hash": "sha256:abc" }
+}
+```
+**Rejection reason:** `requester.type` must be one of: `HYDRA_HEAD`, `EXIT_SCANNER`, `MANUAL`, `RISK_ENGINE`.
+
+### Invalid: Action Type Mismatch
+
+```json
+{
+  "request_id": "req_abc123",
+  "requested_ts": "2026-01-28T14:35:00Z",
+  "requester": { "type": "HYDRA_HEAD", "id": "TREND" },
+  "action": {
+    "type": "OPEN_LONG",
+    "symbol": "BTCUSDT",
+    "direction": "SHORT"
+  },
+  "context": { "regime": "TREND_UP", "nav_usd": 10000, "positions_hash": "sha256:abc" }
+}
+```
+**Rejection reason:** `action.type` is `OPEN_LONG` but `direction` is `SHORT`. Inconsistent.

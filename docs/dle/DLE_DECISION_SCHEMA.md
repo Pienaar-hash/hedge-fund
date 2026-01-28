@@ -260,3 +260,80 @@ Current `doctrine_events.jsonl` contains mixed authority + telemetry. To migrate
 1. Extract authority statements → `decision_ledger.jsonl`
 2. Keep observations/vetoes → `doctrine_events.jsonl` (now pure telemetry)
 3. Backfill `decision_id` into existing episode records where possible
+
+---
+
+## Canonical Examples
+
+### Valid: Minimal Decision
+
+```json
+{
+  "decision_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "created_ts": "2026-01-28T14:30:00Z",
+  "intent": "Permit TREND head to open longs in BTC",
+  "scope": {
+    "symbols": ["BTCUSDT"],
+    "directions": ["LONG"],
+    "max_notional_usd": 1500
+  },
+  "permitted_actions": ["OPEN_LONG"],
+  "forbidden_actions": [],
+  "constraints": {},
+  "expiration": {
+    "mode": "SINGLE_USE",
+    "max_uses": 1
+  },
+  "phase_id": "CYCLE_004",
+  "risk_acknowledgement": {
+    "max_loss_pct": 0.02,
+    "fail_closed": true
+  },
+  "authority_source": "DOCTRINE"
+}
+```
+
+### Invalid: Missing Required Fields
+
+```json
+{
+  "decision_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "created_ts": "2026-01-28T14:30:00Z",
+  "intent": "Permit trading"
+}
+```
+**Rejection reason:** Missing `scope`, `permitted_actions`, `forbidden_actions`, `constraints`, `expiration`, `phase_id`, `risk_acknowledgement`, `authority_source`.
+
+### Invalid: fail_closed = false
+
+```json
+{
+  "decision_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "created_ts": "2026-01-28T14:30:00Z",
+  "intent": "Permit trading",
+  "scope": { "symbols": ["*"], "directions": ["LONG", "SHORT"], "max_notional_usd": 10000 },
+  "permitted_actions": ["OPEN_LONG", "OPEN_SHORT"],
+  "forbidden_actions": [],
+  "constraints": {},
+  "expiration": { "mode": "TIME", "expires_at": "2026-02-01T00:00:00Z" },
+  "phase_id": "CYCLE_004",
+  "risk_acknowledgement": {
+    "max_loss_pct": 0.05,
+    "fail_closed": false
+  },
+  "authority_source": "DOCTRINE"
+}
+```
+**Rejection reason:** `fail_closed` MUST be `true`. This is a constitutional invariant.
+
+### Invalid: Timestamp Without Timezone
+
+```json
+{
+  "decision_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "created_ts": "2026-01-28T14:30:00",
+  "intent": "Permit trading",
+  ...
+}
+```
+**Rejection reason:** Timestamp missing timezone suffix. Must use ISO 8601 with `Z` or `+00:00`.

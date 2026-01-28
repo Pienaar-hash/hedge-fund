@@ -369,3 +369,89 @@ Migration path:
 1. Add DLE fields to episode writer
 2. Backfill `decision_id: "PRE_DLE"` for historical episodes
 3. Start logging denied episodes (currently not tracked)
+
+---
+
+## Canonical Examples
+
+### Valid: Minimal Open Episode
+
+```json
+{
+  "episode_id": "ep_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "symbol": "BTCUSDT",
+  "direction": "LONG",
+  "state": "OPEN",
+  "created_ts": "2026-01-28T14:00:00Z",
+  "phase_id": "CYCLE_004",
+  "authority": {
+    "decision_id": "d7f3a2b1-4c5e-6f7a-8b9c-0d1e2f3a4b5c",
+    "permit_id": "p1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6"
+  },
+  "entry": {
+    "filled_price_avg": 104250.50,
+    "filled_notional_usd": 1500
+  },
+  "position": {
+    "size": 0.0144,
+    "entry_price": 104250.50
+  }
+}
+```
+
+### Valid: Closed Episode with Full Outcome
+
+See "Example: Complete Episode" above for full closed episode with all fields.
+
+### Invalid: Missing Authority Block
+
+```json
+{
+  "episode_id": "ep_abc123",
+  "symbol": "BTCUSDT",
+  "direction": "LONG",
+  "state": "OPEN",
+  "created_ts": "2026-01-28T14:00:00Z",
+  "phase_id": "CYCLE_004",
+  "entry": { "filled_price_avg": 104250.50 },
+  "position": { "size": 0.0144, "entry_price": 104250.50 }
+}
+```
+**Rejection reason:** Missing required `authority` block. Cannot trace episode to decision.
+
+### Invalid: State/Fields Mismatch
+
+```json
+{
+  "episode_id": "ep_abc123",
+  "symbol": "BTCUSDT",
+  "direction": "LONG",
+  "state": "CLOSED",
+  "created_ts": "2026-01-28T14:00:00Z",
+  "phase_id": "CYCLE_004",
+  "authority": { "decision_id": "d_abc" },
+  "entry": { "filled_price_avg": 104250.50 },
+  "position": { "size": 0.0144, "entry_price": 104250.50 }
+}
+```
+**Rejection reason:** State is `CLOSED` but missing `exit`, `outcome`, and `closed_ts`. Inconsistent state.
+
+### Invalid: PRE_DLE Without Marker
+
+```json
+{
+  "episode_id": "EP_0021",
+  "symbol": "ETHUSDT",
+  "direction": "LONG",
+  "state": "CLOSED",
+  "created_ts": "2026-01-20T22:04:49Z",
+  "phase_id": "CYCLE_002",
+  "authority": {
+    "decision_id": null,
+    "permit_id": null
+  },
+  "entry": { ... },
+  "outcome": { ... }
+}
+```
+**Rejection reason:** For pre-DLE episodes, `decision_id` should be `"PRE_DLE"` (explicit marker), not `null`.

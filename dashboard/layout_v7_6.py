@@ -62,11 +62,19 @@ def render_header_block(
         except Exception:
             ts_display = str(last_update)
     
+    # Inline SVG logo (Streamlit can't serve static files via HTML img src)
+    logo_svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="24" height="24">
+        <rect x="4" y="18" width="5" height="10" fill="#1a56db"/>
+        <rect x="11" y="12" width="5" height="16" fill="#1a56db"/>
+        <rect x="18" y="6" width="5" height="22" fill="#1a56db"/>
+        <rect x="25" y="14" width="5" height="14" fill="#1a56db" opacity="0.6"/>
+    </svg>'''
+    
     header_html = f'''
     <div class="header">
         <div class="header-left">
             <div class="header-brand">
-                <img src="dashboard/static/favicon.svg" class="header-logo" alt="" onerror="this.style.display='none'"/>
+                {logo_svg}
                 <span class="header-title">GPT Hedge</span>
                 <span class="header-version">{version}</span>
             </div>

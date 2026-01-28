@@ -15,14 +15,23 @@ This specification defines the target state for GPT-Hedge governance. Implementa
 
 ## Documents
 
+### Core Schemas
+
 | Document | Purpose |
 |----------|---------|
 | [DLE_DECISION_SCHEMA.md](DLE_DECISION_SCHEMA.md) | Authority objects that permit/forbid actions |
 | [DLE_PERMIT_SCHEMA.md](DLE_PERMIT_SCHEMA.md) | Single-use execution tokens |
 | [DLE_EXECUTION_REQUEST_SCHEMA.md](DLE_EXECUTION_REQUEST_SCHEMA.md) | Input format for Gate requests |
-| [DLE_DENY_REASONS.md](DLE_DENY_REASONS.md) | Canonical denial codes and meanings |
+| [DLE_DENY_REASONS.md](DLE_DENY_REASONS.md) | Canonical denial codes (26 codes) |
 | [DLE_EPISODE_SCHEMA.md](DLE_EPISODE_SCHEMA.md) | Complete trade lifecycle binding |
 | [DLE_GATE_INVARIANTS.md](DLE_GATE_INVARIANTS.md) | Constitutional rules (fail-closed) |
+
+### Audit & Migration
+
+| Document | Purpose |
+|----------|---------|
+| [DLE_SPEC_CONSISTENCY_CHECK.md](DLE_SPEC_CONSISTENCY_CHECK.md) | Internal consistency audit (94% pass) |
+| [DLE_CROSSWALK_GPT_HEDGE.md](DLE_CROSSWALK_GPT_HEDGE.md) | Current logs → DLE migration mapping |
 
 ---
 

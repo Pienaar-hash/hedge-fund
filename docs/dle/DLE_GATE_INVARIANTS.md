@@ -317,3 +317,106 @@ def test_phase_boundary_enforcement():
 def test_conflict_halts_execution():
     """Multiple conflicting decisions = deny."""
 ```
+
+---
+
+## Canonical Examples
+
+### Valid: Gate Permit Response
+
+```python
+# Request
+request = ExecutionRequest(
+    request_id="req_a1b2c3d4-...",
+    requester={"type": "HYDRA_HEAD", "id": "TREND"},
+    action={"type": "OPEN_LONG", "symbol": "BTCUSDT"},
+    context={"regime": "TREND_UP", "nav_usd": 10751, "positions_hash": "sha256:abc"}
+)
+
+# Response (permit issued)
+{
+    "status": "PERMIT_ISSUED",
+    "permit_id": "p1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6",
+    "decision_id": "d7f3a2b1-4c5e-6f7a-8b9c-0d1e2f3a4b5c",
+    "request_id": "req_a1b2c3d4-...",
+    "expires_ts": "2026-01-28T14:36:00Z"
+}
+```
+
+### Valid: Gate Denial Response
+
+```python
+# Request (no matching decision)
+request = ExecutionRequest(
+    request_id="req_b2c3d4e5-...",
+    requester={"type": "HYDRA_HEAD", "id": "MEAN_REVERT"},
+    action={"type": "OPEN_SHORT", "symbol": "BTCUSDT"},
+    context={"regime": "CHOPPY", "nav_usd": 10751, "positions_hash": "sha256:abc"}
+)
+
+# Response (denied)
+{
+    "status": "DENIED",
+    "request_id": "req_b2c3d4e5-...",
+    "deny_reason": "DENY_NO_DECISION",
+    "deny_details": "No active decision permits OPEN_SHORT for BTCUSDT in regime CHOPPY"
+}
+```
+
+### Invalid: Gate Behavior — Implicit Allow
+
+```python
+# WRONG: Gate returns permit without matching decision
+def bad_gate(request):
+    decisions = find_matching_decisions(request)
+    if not decisions:
+        # WRONG: Falling back to "allow by default"
+        return Permit(...)  # VIOLATION of Invariant 1
+    
+# CORRECT: No decision = deny
+def correct_gate(request):
+    decisions = find_matching_decisions(request)
+    if not decisions:
+        return Denial(reason="DENY_NO_DECISION")  # Invariant 1 upheld
+```
+
+### Invalid: Gate Behavior — Conflict Resolution
+
+```python
+# WRONG: Gate picks "best" decision when multiple conflict
+def bad_gate(request):
+    decisions = find_matching_decisions(request)
+    if len(decisions) > 1:
+        # WRONG: Heuristic merge
+        best = pick_highest_priority(decisions)  # VIOLATION of Invariant 6
+        return issue_permit(best)
+    
+# CORRECT: Conflict = halt
+def correct_gate(request):
+    decisions = find_matching_decisions(request)
+    if len(decisions) > 1 and decisions_conflict(decisions):
+        return Denial(
+            reason="DENY_CONFLICT",
+            details=f"Conflicting decisions: {[d.id for d in decisions]}"
+        )  # Invariant 6 upheld
+```
+
+### Invalid: Permit Reuse
+
+```python
+# WRONG: Allowing consumed permit to be used again
+def bad_executor(permit, order):
+    # WRONG: Not checking permit state
+    place_order(order, permit_id=permit.permit_id)  # VIOLATION of Invariant 4
+
+# CORRECT: Verify and atomically consume
+def correct_executor(permit, order):
+    if permit.state != "ISSUED":
+        raise PermitError("DENY_PERMIT_CONSUMED")
+    
+    # Atomic state transition
+    if not atomic_transition(permit, "ISSUED", "CONSUMED"):
+        raise PermitError("DENY_PERMIT_CONSUMED")  # Race condition caught
+    
+    place_order(order, permit_id=permit.permit_id)  # Invariant 4 upheld
+```

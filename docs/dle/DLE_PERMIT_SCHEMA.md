@@ -22,6 +22,7 @@ Permits are the **bridge between authority (Decision) and execution (Order)**.
   "required": [
     "permit_id",
     "decision_id",
+    "request_id",
     "issued_ts",
     "action",
     "scope_snapshot",
@@ -37,6 +38,10 @@ Permits are the **bridge between authority (Decision) and execution (Order)**.
     "decision_id": {
       "type": "string",
       "description": "The decision that authorized this permit"
+    },
+    "request_id": {
+      "type": "string",
+      "description": "The execution request that triggered this permit"
     },
     "issued_ts": {
       "type": "string",
@@ -231,3 +236,68 @@ Before placing an order, executor must verify:
 5. Position state hash matches (no concurrent modifications)
 
 If any check fails → **reject execution, log denial**.
+
+---
+
+## Canonical Examples
+
+### Valid: Minimal Permit
+
+```json
+{
+  "permit_id": "p1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6",
+  "decision_id": "d7f3a2b1-4c5e-6f7a-8b9c-0d1e2f3a4b5c",
+  "request_id": "req_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "issued_ts": "2026-01-28T14:35:00Z",
+  "action": {
+    "type": "OPEN_LONG",
+    "symbol": "BTCUSDT",
+    "direction": "LONG"
+  },
+  "scope_snapshot": {
+    "regime": "TREND_UP",
+    "nav_usd": 10751.23,
+    "portfolio_hash": "sha256:abc123def456"
+  },
+  "expires_ts": "2026-01-28T14:36:00Z",
+  "state": "ISSUED"
+}
+```
+
+### Invalid: Missing request_id
+
+```json
+{
+  "permit_id": "p1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6",
+  "decision_id": "d7f3a2b1-4c5e-6f7a-8b9c-0d1e2f3a4b5c",
+  "issued_ts": "2026-01-28T14:35:00Z",
+  "action": { "type": "OPEN_LONG", "symbol": "BTCUSDT", "direction": "LONG" },
+  "scope_snapshot": { "regime": "TREND_UP", "nav_usd": 10751.23, "portfolio_hash": "sha256:abc" },
+  "expires_ts": "2026-01-28T14:36:00Z",
+  "state": "ISSUED"
+}
+```
+**Rejection reason:** Missing required field `request_id`. Cannot trace permit back to request.
+
+### Invalid: Consumed Permit Reuse Attempt
+
+```json
+{
+  "permit_id": "p1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6",
+  "state": "CONSUMED",
+  "consumed_ts": "2026-01-28T14:35:12Z",
+  "consumed_by_order_id": "ord_789xyz"
+}
+```
+**Rejection reason:** Permit already consumed. State is `CONSUMED`, not `ISSUED`. Request new permit.
+
+### Invalid: Expired Permit
+
+```json
+{
+  "permit_id": "p1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6",
+  "expires_ts": "2026-01-28T14:36:00Z",
+  "state": "ISSUED"
+}
+```
+**Rejection reason (at 14:37:00Z):** Permit expired. `now > expires_ts`. Deny with `DENY_PERMIT_EXPIRED`.
