@@ -163,7 +163,7 @@ def _get_dle_writer() -> DLEShadowWriter | None:
     if not flags.shadow_dle_enabled:
         return None
     if _DLE_WRITER is None:
-        _DLE_WRITER = DLEShadowWriter(write_logs=flags.shadow_dle_write_logs)
+        _DLE_WRITER = DLEShadowWriter()  # Uses default log path
     return _DLE_WRITER
 
 
