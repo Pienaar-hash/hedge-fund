@@ -131,7 +131,15 @@ def _load_doctrine_events() -> dict[str, str]:
 
 
 def _extract_exit_reason(fill: dict) -> str:
-    """Extract exit reason from fill metadata."""
+    """Extract exit reason from fill metadata.
+    
+    Priority order:
+    1. Explicit metadata.exit.reason (from exit_scanner)
+    2. Strategy name hints (tp_exit, sl_exit, etc.)
+    3. Intent source field (auto_reduce = position_flip)
+    4. Attempt ID suffix (_reduce = flip)
+    5. Unknown fallback
+    """
     meta = fill.get("metadata", {})
     exit_info = meta.get("exit", {})
     reason = exit_info.get("reason", "")
@@ -139,16 +147,32 @@ def _extract_exit_reason(fill: dict) -> str:
     # Normalize to lowercase for matching
     reason_lower = reason.lower() if reason else ""
     
+    # 1. Explicit exit reason from exit_scanner
     if reason_lower in ("tp", "sl", "thesis", "regime_flip"):
         return reason_lower
     
-    # Check for strategy hints
-    strategy = meta.get("strategy", "")
-    if "exit" in strategy.lower():
-        if "tp" in strategy.lower():
+    # 2. Check for strategy hints
+    strategy = str(meta.get("strategy", "") or "").lower()
+    if "exit" in strategy:
+        if "tp" in strategy:
             return "tp"
-        if "sl" in strategy.lower():
+        if "sl" in strategy:
             return "sl"
+    
+    # 3. Check intent source field (screener auto_reduce = position flip)
+    source = str(fill.get("source", "") or "").lower()
+    if source == "auto_reduce":
+        return "position_flip"
+    
+    # 4. Check attempt_id suffix (flip reduce operations)
+    attempt_id = str(fill.get("attempt_id", "") or "")
+    if attempt_id.endswith("_reduce"):
+        return "position_flip"
+    
+    # 5. Check if this is a reduceOnly close triggered by new signal (signal flip)
+    if fill.get("reduceOnly") or fill.get("reduce_only"):
+        # reduceOnly without explicit reason = signal-driven close
+        return "signal_close"
     
     return "unknown"
 
