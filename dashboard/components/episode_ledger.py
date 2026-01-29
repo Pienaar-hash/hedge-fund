@@ -9,10 +9,24 @@ Data source: logs/state/episode_ledger.json
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import streamlit as st
+
+
+def _parse_rebuild_ts(state: Dict[str, Any]) -> Tuple[Optional[datetime], float]:
+    """Parse last_rebuild_ts and compute age in seconds."""
+    ts_str = state.get("last_rebuild_ts", "")
+    if not ts_str:
+        return None, float('inf')
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        age_s = (datetime.now(timezone.utc) - dt).total_seconds()
+        return dt, age_s
+    except (ValueError, TypeError):
+        return None, float('inf')
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +57,7 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
     - Net PnL
     - Exit reason breakdown
     - Avg duration
+    - Staleness indicator (>30min warning)
     
     One compact card. No charts. No timelines.
     """
@@ -54,6 +69,26 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
     
     stats = state.get("stats", {})
     episode_count = state.get("episode_count", 0)
+    
+    # Parse rebuild timestamp and compute age
+    rebuild_dt, age_s = _parse_rebuild_ts(state)
+    STALE_THRESHOLD_S = 1800  # 30 minutes (cron runs every 15)
+    is_stale = age_s > STALE_THRESHOLD_S
+    
+    # Format age display
+    if rebuild_dt:
+        age_mins = int(age_s / 60)
+        if age_mins < 60:
+            age_display = f"{age_mins}m ago"
+        else:
+            age_hours = age_mins // 60
+            age_display = f"{age_hours}h ago"
+        if is_stale:
+            age_badge = f'<span style="color: #f2c037; font-size: 0.65em;">⚠️ {age_display}</span>'
+        else:
+            age_badge = f'<span style="color: #21c354; font-size: 0.65em;">✓ {age_display}</span>'
+    else:
+        age_badge = '<span style="color: #d94a4a; font-size: 0.65em;">⚠️ unknown</span>'
     
     # Core metrics
     total_net_pnl = stats.get("total_net_pnl", 0)
@@ -118,9 +153,12 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
             <span style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">
                 📋 Episode Ledger
             </span>
-            <span style="color: #666; font-size: 0.7em;">
-                {episode_count} closed
-            </span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                {age_badge}
+                <span style="color: #666; font-size: 0.7em;">
+                    {episode_count} closed
+                </span>
+            </div>
         </div>
         
         <div style="display: flex; gap: 20px; align-items: flex-end;">
