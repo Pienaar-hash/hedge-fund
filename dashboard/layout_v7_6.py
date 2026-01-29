@@ -149,15 +149,50 @@ def render_positions_block(
 def render_strategy_block(
     expectancy_data: Dict[str, Any],
     kpis: Dict[str, Any],
+    episode_ledger: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Render strategy performance with 4 KPI cards."""
-    # Merge expectancy into kpis for the performance component
+    """Render strategy performance with 4 KPI cards.
+    
+    Data priority:
+    1. episode_ledger.stats (authoritative historical)
+    2. expectancy_data (real-time estimates)
+    3. kpis (fallback)
+    """
+    # Start with base kpis
     merged_kpis = {**kpis}
+    
+    # Layer in expectancy data
     if expectancy_data:
-        # Map expectancy fields
-        merged_kpis.setdefault("win_rate", expectancy_data.get("win_rate"))
         merged_kpis.setdefault("sharpe", expectancy_data.get("sharpe"))
         merged_kpis.setdefault("total_trades", expectancy_data.get("n_trades"))
+    
+    # Episode ledger is authoritative for historical metrics
+    if episode_ledger:
+        stats = episode_ledger.get("stats", {})
+        episode_count = episode_ledger.get("episode_count", 0)
+        
+        # Win rate from episode ledger (already percentage, e.g. 6.2)
+        if stats.get("win_rate") is not None:
+            merged_kpis["win_rate"] = stats.get("win_rate")
+        
+        # PnL from episode ledger
+        if stats.get("total_net_pnl") is not None:
+            merged_kpis["total_pnl"] = stats.get("total_net_pnl")
+            merged_kpis["all_time_pnl"] = stats.get("total_net_pnl")
+        
+        # Max drawdown from episode ledger (already percentage)
+        if stats.get("max_drawdown_pct") is not None:
+            merged_kpis["max_drawdown"] = stats.get("max_drawdown_pct")
+            merged_kpis["max_dd"] = stats.get("max_drawdown_pct")
+        
+        # Trade count
+        if episode_count:
+            merged_kpis["total_trades"] = episode_count
+            merged_kpis["trades_count"] = episode_count
+        
+        # Winners/losers for display
+        merged_kpis["winners"] = stats.get("winners", 0)
+        merged_kpis["losers"] = stats.get("losers", 0)
     
     render_performance_block(merged_kpis, equity_curve=None)
 

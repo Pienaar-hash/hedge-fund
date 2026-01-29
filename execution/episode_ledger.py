@@ -407,6 +407,31 @@ def build_episode_ledger(
     winners = [e for e in episodes if e.net_pnl > 0]
     losers = [e for e in episodes if e.net_pnl < 0]
     
+    # Compute max drawdown from cumulative PnL
+    # Note: This is PnL-based drawdown (from trading peak to trough)
+    # Not NAV-based drawdown (which would require starting capital)
+    max_dd_pct = 0.0
+    max_dd_abs = 0.0
+    if episodes:
+        # Sort by exit_ts for sequential equity calculation
+        sorted_eps = sorted(episodes, key=lambda e: e.exit_ts)
+        cumulative_pnl = 0.0
+        peak_pnl = 0.0
+        for ep in sorted_eps:
+            cumulative_pnl += ep.net_pnl
+            if cumulative_pnl > peak_pnl:
+                peak_pnl = cumulative_pnl
+            dd = peak_pnl - cumulative_pnl
+            if dd > max_dd_abs:
+                max_dd_abs = dd
+        # Express as percentage of peak (only meaningful if ever profitable)
+        if peak_pnl > 0:
+            max_dd_pct = round((max_dd_abs / peak_pnl) * 100, 2)
+        else:
+            # Never profitable - max_dd_pct not meaningful, leave as 0
+            # Use max_dd_abs for absolute loss tracking
+            max_dd_pct = 0.0
+    
     # Metadata-based PnL estimator (independent cross-check)
     # Uses entry_price from exit fill metadata — robust for partial fills
     meta_pnl = _compute_metadata_pnl(fills, since_date, until_date)
@@ -421,6 +446,8 @@ def build_episode_ledger(
         "losers": len(losers),
         "win_rate": round(len(winners) / len(episodes) * 100, 1) if episodes else 0,
         "avg_duration_hours": round(sum(e.duration_hours for e in episodes) / len(episodes), 1) if episodes else 0,
+        "max_drawdown_pct": max_dd_pct,
+        "max_drawdown_abs": round(max_dd_abs, 2),
         "exit_reasons": {
             "tp": len([e for e in episodes if e.exit_reason == "tp"]),
             "sl": len([e for e in episodes if e.exit_reason == "sl"]),

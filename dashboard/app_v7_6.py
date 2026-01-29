@@ -271,6 +271,7 @@ def main() -> None:
     render_strategy_block(
         expectancy_data=state["expectancy"],
         kpis=state["kpis"],
+        episode_ledger=state["episode_ledger"],
     )
     
     st.divider()

@@ -182,8 +182,8 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
             
             <!-- Win Rate -->
             <div style="text-align: center;">
-                <div style="font-size: 1.1em; font-weight: 600; color: {'#21c354' if win_rate >= 0.5 else '#f2c037' if win_rate >= 0.4 else '#d94a4a'};">
-                    {win_rate:.0%}
+                <div style="font-size: 1.1em; font-weight: 600; color: {'#21c354' if win_rate >= 50 else '#f2c037' if win_rate >= 40 else '#d94a4a'};">
+                    {win_rate:.1f}%
                 </div>
                 <div style="font-size: 0.7em; color: #666;">Win Rate</div>
             </div>
