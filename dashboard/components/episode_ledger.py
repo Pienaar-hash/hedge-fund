@@ -104,12 +104,14 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
     
     # Exit reason breakdown
     exit_html = ""
-    exit_order = ["tp", "sl", "thesis", "regime_flip", "unknown"]
+    exit_order = ["tp", "sl", "thesis", "regime_flip", "position_flip", "signal_close", "unknown"]
     exit_labels = {
         "tp": "TP",
         "sl": "SL", 
         "thesis": "Thesis",
         "regime_flip": "Regime",
+        "position_flip": "Flip",
+        "signal_close": "Signal",
         "unknown": "Other"
     }
     exit_colors = {
@@ -117,7 +119,9 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
         "sl": "#d94a4a",
         "thesis": "#9370db",
         "regime_flip": "#f2c037",
-        "unknown": "#888"
+        "position_flip": "#5dade2",
+        "signal_close": "#888",
+        "unknown": "#555"
     }
     
     total_exits = sum(exit_reasons.values()) if exit_reasons else 0

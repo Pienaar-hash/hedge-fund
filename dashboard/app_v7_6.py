@@ -57,10 +57,11 @@ from dashboard.components.episode_ledger import (
     load_episode_ledger_state,
     render_episode_ledger_summary,
 )
-from dashboard.components.hydra_status import (
-    load_hydra_state,
-    render_hydra_status_strip,
-)
+# ARCHIVED 2026-01-29: Hydra status strip disabled
+# from dashboard.components.hydra_status import (
+#     load_hydra_state,
+#     render_hydra_status_strip,
+# )
 
 # NAV Composition — Investor Truth Surface
 from dashboard.components.nav_composition import (
@@ -140,7 +141,9 @@ def _load_dashboard_state() -> Dict[str, Any]:
     
     # P1: Strategy transparency surfaces
     episode_ledger = load_episode_ledger_state()
-    hydra_state = load_hydra_state()
+    # ARCHIVED 2026-01-29: Hydra state disabled
+    # hydra_state = load_hydra_state()
+    hydra_state = {}
     
     # NAV Composition (investor truth surface)
     nav_detail = load_nav_detail()
@@ -257,11 +260,10 @@ def main() -> None:
     # =========================================================================
     # P1: STRATEGY TRANSPARENCY (Capital is intentionally idle)
     # =========================================================================
-    col1, col2 = st.columns(2)
-    with col1:
-        render_episode_ledger_summary(state["episode_ledger"])
-    with col2:
-        render_hydra_status_strip(state["hydra_state"])
+    # Episode Ledger — full width (expanded per P1 requirements)
+    render_episode_ledger_summary(state["episode_ledger"])
+    # ARCHIVED 2026-01-29: Hydra status strip disabled
+    # render_hydra_status_strip(state["hydra_state"])
     
     st.divider()
     
@@ -279,11 +281,12 @@ def main() -> None:
     # =========================================================================
     # TREASURY (collapsed by default)
     # =========================================================================
-    with st.expander("Treasury & Off-Exchange Assets", expanded=False):
-        render_treasury_block(
-            offchain_assets=state["offchain_assets"],
-            offchain_yield=state["offchain_yield"],
-        )
+    # ARCHIVED 2026-01-29: Treasury block disabled
+    # with st.expander("Treasury & Off-Exchange Assets", expanded=False):
+    #     render_treasury_block(
+    #         offchain_assets=state["offchain_assets"],
+    #         offchain_yield=state["offchain_yield"],
+    #     )
     
     st.divider()
     
