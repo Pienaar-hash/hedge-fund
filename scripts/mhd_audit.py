@@ -481,10 +481,24 @@ def generate_scorecard(audit_0: dict, audit_1a: dict, audit_4a: dict) -> str:
     lines.append(f"**Verdict:** {'✓ PASS' if audit_4a['pass'] else '✗ FAIL'}")
     lines.extend(["", "---", ""])
     
+    # Get doctrine version hash
+    doctrine_hash = "unknown"
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=str(Path(__file__).parent.parent)
+        )
+        if result.returncode == 0:
+            doctrine_hash = result.stdout.strip()
+    except Exception:
+        pass
+
     # Footer
     lines.extend([
         "## Meta",
         "",
+        f"- Doctrine version: `{doctrine_hash}`",
         "- Auditor: MHD Audit Suite v1",
         f"- Generated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}",
         "- Window: 24 hours",
