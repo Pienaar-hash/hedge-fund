@@ -2,6 +2,14 @@
 #   v7.6 Canonical Runtime Configuration
 # =======================
 
+# Inception baseline (soft reference for display only)
+# NOT used for risk calculations or veto logic
+inception:
+  nav: 10760.00
+  ts: "2026-01-28T00:00:00Z"
+  mode: soft_reference  # display only, no risk impact
+  source: first_recorded_nav
+
 # Runtime environment settings
 runtime:
   env: production
