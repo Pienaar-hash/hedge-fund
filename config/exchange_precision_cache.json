@@ -4741,5 +4741,23 @@
     "minQty": "1",
     "maxQty": "40000000",
     "minNotional": "5"
+  },
+  "BIRBUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "3000000",
+    "minNotional": "5"
+  },
+  "GWEIUSDT": {
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "30000000",
+    "minNotional": "5"
   }
 }
