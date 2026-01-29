@@ -76,7 +76,8 @@ from dashboard.trader_toys import (
     render_pulse_indicator,
     render_gauge_panel,
 )
-from dashboard.treasury_panel import render_treasury_panel
+# ARCHIVED 2026-01-29: Treasury panel disabled
+# from dashboard.treasury_panel import render_treasury_panel
 LOG = logging.getLogger("dash.app")
 if not LOG.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -901,9 +902,9 @@ def main() -> None:
                 </div>
                 ''', unsafe_allow_html=True)
         
-        # Treasury Panel (v7.6) - Off-chain assets and yield
-        with st.expander("🏦 Treasury & Off-Chain Assets", expanded=False):
-            _safe_panel("Treasury Panel", render_treasury_panel)
+        # ARCHIVED 2026-01-29: Treasury panel disabled
+        # with st.expander("🏦 Treasury & Off-Chain Assets", expanded=False):
+        #     _safe_panel("Treasury Panel", render_treasury_panel)
         
         st.markdown("---")
         
