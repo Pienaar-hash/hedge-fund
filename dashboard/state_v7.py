@@ -1638,6 +1638,7 @@ def load_all_state() -> Dict[str, Any]:
             "age_s": float(nav_age),
             "updated_at": float(nav_updated_at),
             "source": NAV_STATE_PATH.name,
+            "series": nav_state.get("series", []),  # Pass through for equity curve
         }
 
         # AUM = Futures NAV + Off-exchange holdings

@@ -4759,5 +4759,14 @@
     "minQty": "1",
     "maxQty": "30000000",
     "minNotional": "5"
+  },
+  "MEGAUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "6000000",
+    "minNotional": "5"
   }
 }
