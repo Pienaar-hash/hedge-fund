@@ -60,6 +60,8 @@ logging.basicConfig(
 
 HOSTNAME = socket.gethostname()
 RUN_ID = os.getenv("EXECUTOR_RUN_ID") or str(uuid.uuid4())
+_EXECUTOR_START_TS = time.time()
+_LAST_CYCLE_TS = _EXECUTOR_START_TS
 LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
 LOG_ATTEMPTS = get_logger("logs/execution/orders_attempted.jsonl")
 LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
@@ -4479,6 +4481,7 @@ def _pub_tick() -> None:
         LOG.debug("[telemetry] diagnostics_state_write_failed: %s", exc)
     engine_meta_written = False
     try:
+        now_ts = time.time()
         write_engine_metadata_state(
             {
                 "engine_version": _ENGINE_VERSION,
@@ -4487,6 +4490,8 @@ def _pub_tick() -> None:
                 "hostname": HOSTNAME,
                 "env": ENV,
                 "status": "running",
+                "uptime_s": round(now_ts - _EXECUTOR_START_TS, 1),
+                "last_cycle_s": round(now_ts - _LAST_CYCLE_TS, 1),
             }
         )
         engine_meta_written = True
@@ -4814,6 +4819,8 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
 
     i = 0
     while True:
+        global _LAST_CYCLE_TS
+        _LAST_CYCLE_TS = time.time()
         # v7.X_DOCTRINE: Compute Sentinel-X regime FIRST, before any trading logic
         # Doctrine requires regime authority; without it, all trades are vetoed.
         _maybe_compute_sentinel_x()
