@@ -146,6 +146,24 @@ def render_positions_block(
 # STRATEGY BLOCK
 # =============================================================================
 
+def _compute_windowed_pnl(episodes: List[Dict[str, Any]], hours: int) -> float:
+    """Compute PnL from episodes closed within the last N hours."""
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    total = 0.0
+    for ep in episodes:
+        exit_ts = ep.get("exit_ts", "")
+        if not exit_ts:
+            continue
+        try:
+            ts = datetime.fromisoformat(exit_ts.replace("Z", "+00:00"))
+            if ts > cutoff:
+                total += float(ep.get("net_pnl", 0) or 0)
+        except (ValueError, TypeError):
+            continue
+    return total
+
+
 def render_strategy_block(
     expectancy_data: Dict[str, Any],
     kpis: Dict[str, Any],
@@ -170,6 +188,7 @@ def render_strategy_block(
     if episode_ledger:
         stats = episode_ledger.get("stats", {})
         episode_count = episode_ledger.get("episode_count", 0)
+        episodes = episode_ledger.get("episodes", [])
         
         # Win rate from episode ledger (already percentage, e.g. 6.2)
         if stats.get("win_rate") is not None:
@@ -179,6 +198,15 @@ def render_strategy_block(
         if stats.get("total_net_pnl") is not None:
             merged_kpis["total_pnl"] = stats.get("total_net_pnl")
             merged_kpis["all_time_pnl"] = stats.get("total_net_pnl")
+        
+        # Time-windowed PnL from episodes
+        if episodes:
+            merged_kpis["daily_pnl"] = _compute_windowed_pnl(episodes, 24)
+            merged_kpis["pnl_24h"] = merged_kpis["daily_pnl"]
+            merged_kpis["weekly_pnl"] = _compute_windowed_pnl(episodes, 168)
+            merged_kpis["pnl_7d"] = merged_kpis["weekly_pnl"]
+            merged_kpis["monthly_pnl"] = _compute_windowed_pnl(episodes, 720)
+            merged_kpis["pnl_30d"] = merged_kpis["monthly_pnl"]
         
         # Max drawdown from episode ledger (already percentage)
         if stats.get("max_drawdown_pct") is not None:

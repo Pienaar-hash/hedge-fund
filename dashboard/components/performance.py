@@ -71,7 +71,7 @@ def render_performance_block(
     # Format helper
     def fmt_pnl(val: float) -> tuple:
         cls = "text-positive" if val >= 0 else "text-negative"
-        sign = "+" if val >= 0 else ""
+        sign = "+" if val >= 0 else "-"
         return cls, f"{sign}${abs(val):,.0f}"
     
     # Build cards

@@ -88,12 +88,43 @@ def build_risk_state(risk_snapshot: Dict[str, Any], nav_value: float, gross_expo
 
 def build_router_state(router_health: Dict[str, Any]) -> Dict[str, Any]:
     """Build normalized router state for rendering."""
+    # Handle nested structure: router_health.json has {global, summary, symbol_stats}
     rh = router_health.get("router_health", router_health)
-    quality = rh.get("quality") or rh.get("policy_quality") or "ok"
-    maker_rate = float(rh.get("maker_fill_rate") or rh.get("maker_rate") or 0)
-    fallback_ratio = float(rh.get("fallback_ratio") or 0)
+    
+    # Quality from summary
+    summary = rh.get("summary", {})
+    quality_counts = summary.get("quality_counts", {})
+    if quality_counts.get("good", 0) > 0:
+        quality = "good"
+    elif quality_counts.get("degraded", 0) > 0 or quality_counts.get("broken", 0) > 0:
+        quality = "degraded"
+    else:
+        quality = rh.get("quality") or rh.get("policy_quality") or "ok"
+    
+    # Aggregate stats from symbol_stats
+    symbol_stats = rh.get("symbol_stats", {})
+    total_maker = 0
+    total_taker = 0
+    total_fallback = 0
+    total_orders = 0
+    
+    for sym, stats in symbol_stats.items():
+        if isinstance(stats, dict):
+            total_maker += int(stats.get("maker_count", 0) or 0)
+            total_taker += int(stats.get("taker_count", 0) or 0)
+            total_fallback += int(stats.get("fallback_count", 0) or 0)
+            total_orders += int(stats.get("order_count", 0) or 0)
+    
+    # Calculate rates
+    maker_rate = (total_maker / total_orders * 100) if total_orders > 0 else 0
+    fallback_ratio = (total_fallback / total_orders * 100) if total_orders > 0 else 0
+    
+    # Latency not tracked at aggregate level, use 0
     latency_ms = float(rh.get("avg_latency_ms") or rh.get("latency_ms") or 0)
-    updated_ts = rh.get("updated_ts") or router_health.get("updated_ts")
+    
+    # Timestamp from global or summary
+    global_block = rh.get("global", {})
+    updated_ts = global_block.get("last_update_ts") or summary.get("updated_ts") or rh.get("updated_ts")
     
     age_s = None
     if updated_ts:
