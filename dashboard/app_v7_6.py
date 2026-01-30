@@ -274,6 +274,7 @@ def main() -> None:
         expectancy_data=state["expectancy"],
         kpis=state["kpis"],
         episode_ledger=state["episode_ledger"],
+        nav_state=state["nav_state"],
     )
     
     st.divider()

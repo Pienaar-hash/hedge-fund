@@ -168,6 +168,7 @@ def render_strategy_block(
     expectancy_data: Dict[str, Any],
     kpis: Dict[str, Any],
     episode_ledger: Optional[Dict[str, Any]] = None,
+    nav_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Render strategy performance with 4 KPI cards.
     
@@ -222,7 +223,14 @@ def render_strategy_block(
         merged_kpis["winners"] = stats.get("winners", 0)
         merged_kpis["losers"] = stats.get("losers", 0)
     
-    render_performance_block(merged_kpis, equity_curve=None)
+    # Extract equity curve from NAV state series
+    equity_curve = None
+    if nav_state:
+        series = nav_state.get("series", [])
+        if series and len(series) > 1:
+            equity_curve = series
+    
+    render_performance_block(merged_kpis, equity_curve=equity_curve)
 
 
 # =============================================================================
