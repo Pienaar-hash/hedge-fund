@@ -59,11 +59,15 @@ def render_performance_block(
     max_dd = float(kpis.get("max_drawdown") or kpis.get("max_dd") or 0)
     trades = int(kpis.get("total_trades") or kpis.get("trades_count") or 0)
     
-    # Extract equity curve for sparkline
+    # Extract equity curve for sparkline (downsample to max 50 points)
     sparkline_html = ""
     if equity_curve and len(equity_curve) > 1:
         try:
             equity_values = [float(e.get("equity") or e.get("nav") or 0) for e in equity_curve]
+            # Downsample if too many points
+            if len(equity_values) > 50:
+                step = len(equity_values) // 50
+                equity_values = equity_values[::step]
             sparkline_html = _sparkline_svg(equity_values, width=120, height=32)
         except Exception:
             pass
