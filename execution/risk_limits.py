@@ -362,6 +362,7 @@ def _emit_veto(
     strategy: Optional[str] = None,
     signal_ts: Any = None,
     qty: Any = None,
+    source_head: Optional[str] = None,
 ) -> None:
     normalized_detail: Dict[str, Any] = {}
     if isinstance(detail, dict):
@@ -380,6 +381,7 @@ def _emit_veto(
         payload = {
             "symbol": symbol,
             "strategy": strategy,
+            "source_head": source_head,
             "veto_reason": REASONS.get(reason, reason or "unknown"),
             "original_reason": reason,
             "veto_detail": normalized_detail,
@@ -949,6 +951,8 @@ def check_order(
     open_positions_count: int | None = None,
     tier_name: Optional[str] = None,
     current_tier_gross_notional: float = 0.0,
+    # Phase A.3: Head attribution for veto analysis
+    source_head: Optional[str] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Apply per-symbol and global risk checks.
 
@@ -1661,6 +1665,19 @@ def check_order(
         detail_payload.setdefault("cap_cfg_normalized", cap_cfg_normalized)
         detail_payload.setdefault("nav_total", nav_f)
         detail_payload.setdefault("asset_breakdown", asset_breakdown)
+        # Phase A.3: Distance-to-wall metrics for constraint geometry analysis
+        available_budget = max(0.0, cap_abs - current_gross_f)
+        excess_notional = req_notional - available_budget
+        shadow_feasible_size = min(req_notional, available_budget)
+        detail_payload["constraint_geometry"] = {
+            "requested_notional": req_notional,
+            "current_symbol_exposure": current_gross_f,
+            "symbol_cap": cap_abs,
+            "available_budget": available_budget,
+            "excess_notional": excess_notional,
+            "shadow_feasible_size": shadow_feasible_size,
+            "overshoot_pct": (excess_notional / available_budget * 100) if available_budget > 0 else float("inf"),
+        }
 
     # Open quantity cap (applies to increasing long exposure)
     max_open_qty = s_cfg.get("max_open_qty", None)
@@ -1918,6 +1935,7 @@ def check_order(
         strategy=strategy_name,
         signal_ts=signal_ts,
         qty=qty_req,
+        source_head=source_head,
     )
     detail_payload["reasons"] = list(reasons)
     return True, detail_payload

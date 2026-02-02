@@ -2152,6 +2152,12 @@ def _evaluate_order_risk(
         )
         decision = engine.check_order(order_intent, _RISK_STATE)
         return (not decision.allowed), decision.diagnostics or {}
+    # Phase A.3: Extract source_head for veto attribution analysis
+    source_head = (
+        intent.get("metadata", {}).get("strategy")
+        if isinstance(intent.get("metadata"), dict)
+        else None
+    ) or intent.get("strategy") or intent.get("source")
     risk_veto, details = check_order(
         symbol=symbol,
         side=side,
@@ -2167,6 +2173,7 @@ def _evaluate_order_risk(
         open_positions_count=open_positions_count,
         tier_name=tier_name,
         current_tier_gross_notional=current_tier_gross,
+        source_head=source_head,
     )
     return risk_veto, details
 
