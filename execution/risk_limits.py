@@ -1669,6 +1669,7 @@ def check_order(
         available_budget = max(0.0, cap_abs - current_gross_f)
         excess_notional = req_notional - available_budget
         shadow_feasible_size = min(req_notional, available_budget)
+        budget_saturated = available_budget <= 0.0
         detail_payload["constraint_geometry"] = {
             "requested_notional": req_notional,
             "current_symbol_exposure": current_gross_f,
@@ -1676,7 +1677,8 @@ def check_order(
             "available_budget": available_budget,
             "excess_notional": excess_notional,
             "shadow_feasible_size": shadow_feasible_size,
-            "overshoot_pct": (excess_notional / available_budget * 100) if available_budget > 0 else float("inf"),
+            "overshoot_pct": (excess_notional / available_budget * 100) if not budget_saturated else None,
+            "budget_saturated": budget_saturated,
         }
 
     # Open quantity cap (applies to increasing long exposure)
@@ -1890,6 +1892,8 @@ def check_order(
     if nav_f > 0.0:
         context["post_trade_exposure_pct"] = ((current_gross_f + req_notional) / nav_f)
     nav_flag_snapshot = detail_payload.get("nav_fresh")
+    # Preserve constraint_geometry if it was set during symbol_cap check
+    constraint_geometry = detail_payload.get("constraint_geometry")
     detail_payload = {
         "gate": "risk_limits",
         "limit": reasons[0],
@@ -1898,6 +1902,9 @@ def check_order(
         "notional": float(req_notional),
         **diag_payload,
     }
+    # Restore constraint_geometry after reassignment
+    if constraint_geometry is not None:
+        detail_payload["constraint_geometry"] = constraint_geometry
     detail_payload.setdefault("nav_total", nav_f)
     detail_payload.setdefault("dd_state", dd_state)
     detail_payload.setdefault("atr_regime", atr_snapshot.get("atr_regime"))
