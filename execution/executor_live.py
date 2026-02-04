@@ -2635,7 +2635,7 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
         alpha_health=None,  # TODO: Wire to Alpha Decay
     )
     
-    # Log the decision
+    # Log the decision with head attribution (Phase A.3)
     log_doctrine_event(
         "ENTRY_VERDICT",
         symbol,
@@ -2647,6 +2647,7 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
             "confidence": regime.confidence,
             "direction": direction,
             "multiplier": decision.composite_multiplier,
+            "source_head": head,  # Phase A.3: attribution
         },
     )
     
