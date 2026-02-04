@@ -377,6 +377,12 @@ class RiskEngineV6:
         tier_name = intent.tier_name
         open_positions_count = intent.open_positions_count
 
+        # Phase A.3: Extract source_head for veto attribution
+        source_head: Optional[str] = intent.strategy_id
+        if not source_head and intent.metadata:
+            _int = intent.metadata.get("intent") or {}
+            source_head = _int.get("strategy") or _int.get("head") or None
+
         try:
             veto, details = check_order(
                 symbol=intent.symbol,
@@ -393,6 +399,7 @@ class RiskEngineV6:
                 open_positions_count=open_positions_count,
                 tier_name=tier_name,
                 current_tier_gross_notional=tier_gross,
+                source_head=source_head,
             )
         except Exception as exc:
             logging.getLogger("risk_engine_v6").warning(
