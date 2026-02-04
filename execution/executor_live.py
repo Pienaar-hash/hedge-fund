@@ -2560,7 +2560,15 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
     symbol = intent.get("symbol", "")
     sig = str(intent.get("signal", "")).upper()
     direction = sig if sig in ("BUY", "SELL") else "BUY"
-    head = intent.get("strategy") or intent.get("strategy_id") or "UNKNOWN"
+    # Phase A.3: Extract head from multiple possible locations
+    _meta = intent.get("metadata") or {}
+    head = (
+        intent.get("strategy")
+        or intent.get("strategy_id")
+        or _meta.get("strategy")
+        or _meta.get("head")
+        or "UNKNOWN"
+    )
     
     # Load Sentinel-X regime state
     sentinel_state = _load_sentinel_x_state()
