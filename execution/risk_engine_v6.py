@@ -378,10 +378,19 @@ class RiskEngineV6:
         open_positions_count = intent.open_positions_count
 
         # Phase A.3: Extract source_head for veto attribution
+        # Primary: intent.strategy_id (now properly populated by _build_order_intent)
+        # Fallback: dig into nested metadata.intent.metadata.strategy
         source_head: Optional[str] = intent.strategy_id
         if not source_head and intent.metadata:
-            _int = intent.metadata.get("intent") or {}
-            source_head = _int.get("strategy") or _int.get("head") or None
+            _raw_intent = intent.metadata.get("intent") or {}
+            _raw_meta = _raw_intent.get("metadata") or {}
+            source_head = (
+                _raw_intent.get("strategy")
+                or _raw_intent.get("strategy_id")
+                or _raw_meta.get("strategy")
+                or _raw_meta.get("head")
+                or None
+            )
 
         try:
             veto, details = check_order(

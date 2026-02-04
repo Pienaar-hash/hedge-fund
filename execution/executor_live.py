@@ -2093,6 +2093,15 @@ def _build_order_intent_for_executor(
     qty = _to_float(intent.get("qty"))
     if (qty is None or qty <= 0.0) and price > 0.0:
         qty = (gross_notional / price)
+    # Phase A.3: Extract strategy_id from multiple possible locations
+    _meta = intent.get("metadata") or {}
+    _strategy_id = (
+        intent.get("strategy_id")
+        or intent.get("strategy")
+        or _meta.get("strategy")
+        or _meta.get("head")
+        or None
+    )
     return OrderIntent(
         symbol=str(symbol).upper(),
         side=str(side).upper(),
@@ -2106,7 +2115,7 @@ def _build_order_intent_for_executor(
         symbol_open_qty=float(sym_open_qty),
         nav_usd=float(nav),
         open_positions_count=int(open_positions_count),
-        strategy_id=str(intent.get("strategy_id") or intent.get("strategy") or "") or None,
+        strategy_id=str(_strategy_id) if _strategy_id else None,
         account_mode=str(intent.get("account_mode") or intent.get("marginMode") or "") or None,
         metadata={"intent": dict(intent)},
     )
