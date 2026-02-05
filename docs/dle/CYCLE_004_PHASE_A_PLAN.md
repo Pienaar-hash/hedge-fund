@@ -1073,5 +1073,88 @@ PASS: Both scripts handle mixed schemas
 
 ---
 
-*This document is the implementation warrant for CYCLE_004 Phase A.*
+## Appendix: Security Audit — Log Hygiene (Codex Prompt E)
+
+**Completed:** 2026-02-05  
+**Objective:** Verify no credentials, headers, API keys, or full request payloads leak into logs.
+
+### Scope
+
+| File | Log Target | Audit Result |
+|------|------------|--------------|
+| `execution/risk_limits.py` | `logs/execution/risk_vetoes.jsonl` | ✅ CLEAN |
+| `execution/executor_live.py` | `logs/doctrine_events.jsonl` | ✅ CLEAN |
+| `execution/risk_engine_v6.py` | Wraps risk_limits, no direct logging | ✅ CLEAN |
+
+### Findings
+
+#### 1. risk_limits.py — `_emit_veto()`
+
+**Logged Fields:**
+- `symbol`, `strategy`, `source_head`, `veto_reason`, `original_reason`
+- `veto_detail` — contains numerical limits, thresholds, geometry metrics
+- `context` — contains `requested_notional`, `open_notional`, `open_positions`, `leverage`
+- `thresholds`, `observations` — numerical configuration values
+
+**Credential Risk:** None. All fields are operational trading data (symbols, numbers, ratios).
+
+**Full Payload Risk:** None. The `safe_dump()` function in `log_utils.py` recursively coerces values but does not strip any fields — however, the payload is explicitly constructed with known fields, not passed through from external sources.
+
+#### 2. executor_live.py — `log_doctrine_event()`
+
+**Logged Fields:**
+- `ts`, `type`, `symbol`, `verdict`
+- `intent` (when logging ENTRY_VETO) — contains trading parameters
+- `allowed`, `reason`, `regime`, `confidence`, `direction`, `multiplier`, `source_head`
+
+**Intent Contents Audit:**
+- `timestamp`, `symbol`, `timeframe`, `signal`, `price`, `leverage`, `qty`
+- `nav_used`, `vol` regime data, `tier`, `metadata` (strategy, adaptive weights)
+- `per_symbol_limits` — numerical caps from risk_limits.json
+
+**Credential Risk:** None. Intents are constructed in `signal_screener.py` with explicit fields — no API keys, headers, or external response payloads are ever added.
+
+#### 3. risk_engine_v6.py
+
+**Direct Logging:** Only exception warnings via `logging.getLogger()`:
+```python
+logging.getLogger("risk_engine_v6").warning(
+    "[risk] check_order_failed symbol=%s err=%s", intent.symbol, exc
+)
+```
+
+**Credential Risk:** None. Logs symbol and exception message only.
+
+### Sensitive Data Grep Results
+
+```bash
+# No matches for credentials in intent construction
+grep -r "intent.*api_key\|intent.*secret\|intent.*header" execution/
+# (0 results)
+
+# Credentials loaded from env vars, never passed through intents
+grep -r "api_key\|secret\|password\|token" execution/*.py
+# All matches are env var reads (OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, etc.)
+```
+
+### Verdict
+
+✅ **No redaction patches required.**
+
+- Credentials are loaded from environment variables at runtime, never serialized into intents
+- Intents contain only trading parameters (symbol, price, qty, sizing, regime)
+- Config files (`risk_limits.json`, `strategy_config.json`) contain only numerical limits
+- `safe_dump()` handles serialization but source payloads are already clean
+- No full HTTP request/response objects are passed through the logging paths
+
+### Recommendations (Non-Blocking)
+
+1. **Future-proofing:** If exchange API responses are ever attached to intents for debugging, add a `SENSITIVE_KEYS` blocklist to `safe_dump()`:
+   ```python
+   SENSITIVE_KEYS = {"api_key", "secret", "password", "token", "auth", "header"}
+   ```
+
+2. **Defense in depth:** Consider adding a log sanitizer middleware, though current architecture makes this unnecessary.
+
+---
 
