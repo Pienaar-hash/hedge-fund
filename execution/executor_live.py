@@ -43,6 +43,13 @@ import requests
 from execution.intel.router_policy import router_policy
 from execution.v6_flags import get_flags, flags_to_dict, log_v6_flag_snapshot
 from execution.dle_shadow import shadow_build_chain, DLEShadowWriter
+from execution.loop_timing import (
+    is_enabled as timing_enabled,
+    start_loop as timing_start_loop,
+    end_loop as timing_end_loop,
+    timed_section,
+    get_timing_summary,
+)
 
 # Optional .env so Supervisor doesn't need to export everything
 try:
@@ -4571,14 +4578,19 @@ def _loop_once(i: int) -> None:
     #   runtime.yaml -> signal_screener.generate_intents() -> executor veto/doctor -> router -> exchange.
     #   generate_intents already applies local screener gates; veto=[] means risk+router should evaluate/send.
     global _LAST_SIGNAL_PULL, _LAST_QUEUE_DEPTH
-    _sync_dry_run()
-    _refresh_risk_config()
-    _account_snapshot()
+    
+    with timed_section("loop_setup"):
+        _sync_dry_run()
+        _refresh_risk_config()
+    
+    with timed_section("account_snapshot", api_calls=2):
+        _account_snapshot()
 
-    try:
-        baseline_positions = list(get_positions() or [])
-    except Exception:
-        baseline_positions = []
+    with timed_section("get_positions", api_calls=1):
+        try:
+            baseline_positions = list(get_positions() or [])
+        except Exception:
+            baseline_positions = []
     gross_total, _ = _gross_and_open_qty("", "", baseline_positions)
     _update_risk_state_counters(baseline_positions, gross_total)
     active_symbols = {
@@ -4594,6 +4606,8 @@ def _loop_once(i: int) -> None:
 
     # V7.X_DOCTRINE: Scan for doctrine-based exits FIRST, then TP/SL seatbelt
     # Doctrine exit precedence: CRISIS → REGIME_FLIP → STRUCTURAL_FAILURE → TIME_STOP → SEATBELT
+    _exit_scanner_start = time.time() if timing_enabled() else 0.0
+    _exit_api_calls = 0
     try:
         from execution.exit_scanner import (
             scan_all_exits,
@@ -4620,6 +4634,7 @@ def _loop_once(i: int) -> None:
             else:
                 try:
                     price_map[sym] = float(get_price(sym))
+                    _exit_api_calls += 1
                 except Exception:
                     pass
         
@@ -4690,6 +4705,11 @@ def _loop_once(i: int) -> None:
         pass
     except Exception as exc:
         LOG.warning("[exit_scanner] error during exit scan: %s", exc)
+    finally:
+        if timing_enabled() and _exit_scanner_start > 0:
+            with timed_section("exit_scanner", api_calls=_exit_api_calls) as _es:
+                _es.end_ts = time.time()
+                _es.start_ts = _exit_scanner_start
 
     if INTENT_TEST:
         intent = {
@@ -4706,11 +4726,13 @@ def _loop_once(i: int) -> None:
         _LAST_QUEUE_DEPTH = 0
     else:
         _LAST_SIGNAL_PULL = time.time()
-        try:
-            intents_raw = list(generate_intents(_LAST_SIGNAL_PULL))
-        except Exception as e:
-            LOG.error("[screener] error: %s", e)
-            intents_raw = []
+        with timed_section("generate_intents") as section:
+            try:
+                intents_raw = list(generate_intents(_LAST_SIGNAL_PULL))
+            except Exception as e:
+                LOG.error("[screener] error: %s", e)
+                intents_raw = []
+            section.symbols_processed = len(intents_raw)
         _LAST_QUEUE_DEPTH = len(intents_raw)
         attempted = getattr(intents_raw, "attempted", len(intents_raw))
         screener_emitted = getattr(intents_raw, "emitted", len(intents_raw))
@@ -4848,14 +4870,26 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
     while True:
         global _LAST_CYCLE_TS
         _LAST_CYCLE_TS = time.time()
+        timing_start_loop(i)
+        
         # v7.X_DOCTRINE: Compute Sentinel-X regime FIRST, before any trading logic
         # Doctrine requires regime authority; without it, all trades are vetoed.
-        _maybe_compute_sentinel_x()
+        with timed_section("sentinel_compute", api_calls=1):
+            _maybe_compute_sentinel_x()
         
-        _loop_once(i)
-        _maybe_emit_heartbeat()
-        _maybe_run_internal_screener()
-        _maybe_write_v6_runtime_probe()
+        with timed_section("loop_once"):
+            _loop_once(i)
+        
+        with timed_section("heartbeat_emit"):
+            _maybe_emit_heartbeat()
+        
+        with timed_section("internal_screener"):
+            _maybe_run_internal_screener()
+        
+        with timed_section("runtime_probe"):
+            _maybe_write_v6_runtime_probe()
+        
+        timing_end_loop()
         i += 1
         if MAX_LOOPS and i >= MAX_LOOPS:
             LOG.info("[executor] MAX_LOOPS reached — exiting.")

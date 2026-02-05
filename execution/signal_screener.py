@@ -24,6 +24,16 @@ from .universe_resolver import (
     symbol_target_leverage,
 )
 from .nav import PortfolioSnapshot, nav_health_snapshot
+
+# Timing instrumentation (off by default)
+try:
+    from execution.loop_timing import is_enabled as timing_enabled, record_api_call
+except ImportError:
+    def timing_enabled() -> bool:
+        return False
+    def record_api_call(count: int = 1) -> None:
+        pass
+
 from execution.strategy_adaptation import (
     adaptive_sizing,
     attach_adaptive_metadata,
@@ -750,8 +760,10 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             continue
         try:
             kl = get_klines(sym, tf, limit=750)  # Extended for vol regime computation
+            record_api_call()  # klines API call
             closes = [row[4] for row in kl]
             price = get_price(sym)
+            record_api_call()  # price API call
             rsi = _rsi(closes, 14)
             z = _zscore(closes, 20)
             trend = _trend_filter(closes, 20)
@@ -1046,7 +1058,9 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                 attempted += 1
                 try:
                     vol_price = get_price(vol_sym_key)
+                    record_api_call()  # price API call
                     vol_klines = get_klines(vol_sym_key, vol_tf, limit=150)
+                    record_api_call()  # klines API call
                     vol_closes = [row[4] for row in vol_klines]
                     vol_highs = [row[2] for row in vol_klines]
                     vol_lows = [row[3] for row in vol_klines]
