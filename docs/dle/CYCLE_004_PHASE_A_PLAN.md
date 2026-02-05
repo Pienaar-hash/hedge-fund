@@ -1004,4 +1004,74 @@ log_doctrine_event("ENTRY_VETO", symbol, DoctrineVerdict.VETO_NO_REGIME, {
 
 ---
 
+## Appendix: Schema Compatibility Audit (Codex Prompt A)
+
+**Completed:** 2026-02-05  
+**Objective:** Verify new Phase A.3 log fields don't break existing consumers.
+
+### New Fields Added
+
+**`logs/execution/risk_vetoes.jsonl`:**
+- `source_head` — Hydra head that originated the signal
+- `veto_detail.constraint_geometry.overshoot_pct` — Percentage over budget
+- `veto_detail.constraint_geometry.budget_saturated` — Boolean saturation flag
+- `veto_detail.constraint_geometry.excess_notional` — Amount over limit in USDT
+- `veto_detail.constraint_geometry.available_budget` — Remaining budget in USDT
+- `veto_detail.constraint_geometry.shadow_feasible_size` — Max feasible qty
+
+**`logs/doctrine_events.jsonl`:**
+- `source_head` — Hydra head attribution (top-level)
+
+### Consumer Analysis
+
+| Consumer | File | Parses Fields | Status |
+|----------|------|---------------|--------|
+| Veto Attribution | `scripts/veto_attribution.py` | Yes — `source_head`, `constraint_geometry.*` | ✅ Safe |
+| Doctrine Attribution | `scripts/doctrine_attribution.py` | Yes — `source_head` | ✅ Safe |
+| MHD Audit | `scripts/mhd_audit.py` | No — file existence only | ✅ N/A |
+| Symbol Cap Probe | `scripts/probe_symbol_cap_veto.py` | No — test probe | ✅ N/A |
+| JQ Snippets | Docs/runbooks | Core fields only | ✅ N/A |
+
+### Compatibility Verification
+
+Both analysis scripts use defensive `.get()` patterns:
+
+**`veto_attribution.py` (line 46, 68):**
+```python
+source_head = record.get("source_head")  # → None if missing
+constraint_geometry = veto_detail.get("constraint_geometry") or {}  # → {} if missing
+```
+
+**`doctrine_attribution.py` (line 87):**
+```python
+head = v.get("source_head") or "UNKNOWN"  # → "UNKNOWN" if missing
+```
+
+### Testing Results
+
+Inline Python tests confirm both old-schema and new-schema records parse without errors:
+
+```
+Old schema (without new fields): source_head → "unknown" / "UNKNOWN"
+New schema (with new fields):    source_head → actual head value
+PASS: Both scripts handle mixed schemas
+```
+
+### Required vs Optional Fields
+
+**risk_vetoes.jsonl:**
+- **Required:** `symbol`, `veto_reason`, `ts`
+- **Optional (graceful fallback):** `source_head` → "unknown", `veto_detail.constraint_geometry.*` → None
+
+**doctrine_events.jsonl:**
+- **Required:** `type`, `symbol`
+- **Optional (graceful fallback):** `source_head` → "UNKNOWN", `allowed` → True, `verdict` → "UNKNOWN", `regime` → "UNKNOWN"
+
+### Verdict
+
+✅ **No patches required.** All new fields are optional-safe. Existing consumers use defensive parsing and will gracefully handle both old and new schema records.
+
+---
+
 *This document is the implementation warrant for CYCLE_004 Phase A.*
+
