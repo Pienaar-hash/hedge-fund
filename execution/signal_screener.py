@@ -986,6 +986,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             "tier": tier,
         }
         metadata_block = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+        metadata_block["strategy"] = strategy_id  # Phase A.3: source_head attribution
         metadata_block["adaptive_weight"] = {
             "final_weight": final_weight,
             "risk_mode": risk_mode,

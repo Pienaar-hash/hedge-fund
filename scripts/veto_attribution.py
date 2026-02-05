@@ -47,8 +47,17 @@ def extract_fields(record: dict[str, Any]) -> dict[str, Any]:
     # Phase A.3: Check for new source_head field first
     source_head = record.get("source_head")
     
-    intent = record.get("veto_detail", {}).get("intent", {})
-    metadata = intent.get("metadata", {})
+    veto_detail = record.get("veto_detail") or {}
+    if not isinstance(veto_detail, dict):
+        veto_detail = {}
+
+    intent = veto_detail.get("intent") or {}
+    if not isinstance(intent, dict):
+        intent = {}
+
+    metadata = intent.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
     
     if metadata:
         strategy = metadata.get("strategy")
@@ -61,11 +70,16 @@ def extract_fields(record: dict[str, Any]) -> dict[str, Any]:
     
     # Context may be a string ("executor") or a dict
     ctx = record.get("context", {})
-    if isinstance(ctx, str):
+    if isinstance(ctx, str) or not isinstance(ctx, dict):
         ctx = {}
     
     # Phase A.3: Extract constraint geometry if present
-    constraint_geometry = record.get("veto_detail", {}).get("constraint_geometry", {})
+    constraint_geometry = veto_detail.get("constraint_geometry") or {}
+    if not isinstance(constraint_geometry, dict):
+        constraint_geometry = {}
+
+    ts_raw = record.get("ts")
+    ts_str = ts_raw if isinstance(ts_raw, str) else None
     
     return {
         "symbol": record.get("symbol"),
@@ -74,10 +88,9 @@ def extract_fields(record: dict[str, Any]) -> dict[str, Any]:
         "source_head": source_head or strategy or "unknown",
         "regime": regime or "unknown",
         "regime_conf": regime_conf,
-        "ts": record.get("ts"),
-        "date": record.get("ts", "")[:10] if record.get("ts") else None,
-        "notional": record.get("veto_detail", {}).get("intent", {}).get("gross_usd") 
-                   or ctx.get("requested_notional"),
+        "ts": ts_raw,
+        "date": ts_str[:10] if ts_str else None,
+        "notional": intent.get("gross_usd") or ctx.get("requested_notional"),
         "nav": ctx.get("nav"),
         "tier": ctx.get("tier"),
         # Constraint geometry (distance-to-wall metrics)
@@ -132,13 +145,25 @@ def generate_report(records: list[dict]) -> str:
     """Generate full attribution report."""
     normalized = [extract_fields(r) for r in records]
     total = len(normalized)
+
+    if total == 0:
+        return "\n".join(
+            [
+                "# Veto Attribution Analysis — Phase A.3",
+                "",
+                "*No veto records found.*",
+            ]
+        )
+
+    dates = sorted(d for d in (r.get("date") for r in normalized) if d)
+    date_range = f"{dates[0]} → {dates[-1]}" if dates else "n/a"
     
     lines = [
         "# Veto Attribution Analysis — Phase A.3",
         "",
         f"**Generated:** {datetime.utcnow().isoformat()[:19]}Z",
         f"**Total Vetoes:** {total:,}",
-        f"**Date Range:** {min(r['date'] for r in normalized if r['date'])} → {max(r['date'] for r in normalized if r['date'])}",
+        f"**Date Range:** {date_range}",
         "",
         "---",
         "",
@@ -239,7 +264,8 @@ def generate_report(records: list[dict]) -> str:
     
     # By date
     by_date = aggregate_by(normalized, "date")
-    rows = [[date, count] for (date,), count in sorted(by_date.items(), key=lambda x: x[0])]
+    date_keys = sorted(d for (d,) in by_date.keys() if d is not None)
+    rows = [[date, by_date.get((date,), 0)] for date in date_keys]
     lines.append(format_table(["Date", "Count"], rows))
     
     lines.extend([
@@ -264,11 +290,11 @@ def generate_report(records: list[dict]) -> str:
     ])
     
     # Calculate key metrics
-    top_reason = list(by_reason.items())[0] if by_reason else (("none",), 0)
-    top_symbol = list(by_symbol.items())[0] if by_symbol else (("none",), 0)
-    
+    top_reason = next(iter(by_reason.items()), (("none",), 0))
+    top_symbol = next(iter(by_symbol.items()), (("none",), 0))
+
     unknown_strategy = by_strategy.get(("unknown",), 0)
-    known_strategy = total - unknown_strategy
+    known_strategy = max(0, total - unknown_strategy)
     
     # Phase A.3: Constraint geometry analysis (distance-to-wall)
     symbol_cap_records = [r for r in normalized if r["veto_reason"] == "symbol_cap" and r.get("excess_notional") is not None]
