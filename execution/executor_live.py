@@ -2597,7 +2597,9 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
         return False, "NO_REGIME_AUTHORITY", {"error": "Sentinel-X state missing or empty"}
     
     # v7.X_DOCTRINE: Check state freshness (stale regime = no authority)
-    SENTINEL_MAX_AGE_SECONDS = 300.0  # 5 minutes max staleness
+    # Threshold set to 420s (7 min) to accommodate loop cadence variability.
+    # Actual updates occur every ~90-150s; 420s provides margin for API latency spikes.
+    SENTINEL_MAX_AGE_SECONDS = 420.0
     try:
         from datetime import datetime, timezone
         updated_ts_str = sentinel_state.get("updated_ts", "")
