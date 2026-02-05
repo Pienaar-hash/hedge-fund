@@ -2169,11 +2169,16 @@ def _evaluate_order_risk(
         decision = engine.check_order(order_intent, _RISK_STATE)
         return (not decision.allowed), decision.diagnostics or {}
     # Phase A.3: Extract source_head for veto attribution analysis
+    # Must match the extraction logic in _build_order_intent_for_executor for v6 parity
+    _meta = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
     source_head = (
-        intent.get("metadata", {}).get("strategy")
-        if isinstance(intent.get("metadata"), dict)
-        else None
-    ) or intent.get("strategy") or intent.get("source")
+        intent.get("strategy_id")
+        or intent.get("strategy")
+        or _meta.get("strategy")
+        or _meta.get("head")
+        or intent.get("source")
+        or None
+    )
     risk_veto, details = check_order(
         symbol=symbol,
         side=side,
