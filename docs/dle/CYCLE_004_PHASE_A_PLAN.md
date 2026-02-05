@@ -946,6 +946,39 @@ Then — and only then — proceed to Phase B (soft enforcement).
 
 ---
 
+## Post-Phase B Hardening Notes
+
+Items identified during Phase A.3 observability work that should be addressed after Phase B stabilizes:
+
+### H001: ENTRY_VETO events missing explicit `source_head`
+
+**Identified:** 2026-02-05 (Code Review 04)
+
+**Issue:** ENTRY_VETO events at `executor_live.py` lines 2595, 2603, 2617 log the full `intent` dict but don't include `source_head` at the top level. Analysis scripts look for `event.source_head` directly, returning `"UNKNOWN"` for early vetoes.
+
+**Current Behavior:**
+```python
+log_doctrine_event("ENTRY_VETO", symbol, DoctrineVerdict.VETO_NO_REGIME, {
+    "intent": intent,  # Contains metadata.strategy after screener fix
+    "sentinel_error": error_msg,
+})
+```
+
+**Desired Behavior:**
+```python
+log_doctrine_event("ENTRY_VETO", symbol, DoctrineVerdict.VETO_NO_REGIME, {
+    "source_head": head,  # Explicit top-level attribution
+    "intent_summary": {"symbol": ..., "signal": ..., "strategy": ...},
+    "sentinel_error": error_msg,
+})
+```
+
+**Impact:** Low — these are infrastructure vetoes (Sentinel unavailable), not strategy-specific decisions.
+
+**Priority:** P3 (polish)
+
+---
+
 ## Files Changed Summary
 
 | File | Change Type | Description |
