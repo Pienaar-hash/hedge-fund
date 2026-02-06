@@ -319,6 +319,7 @@ def enforce_nav_freshness_or_veto(risk_ctx: Dict[str, Any], nav_dict: Dict[str, 
         strategy=risk_ctx.get("strategy"),
         signal_ts=risk_ctx.get("signal_ts"),
         qty=risk_ctx.get("qty"),
+        source_head=risk_ctx.get("source_head"),
     )
     return not fail_closed
 
@@ -1137,6 +1138,7 @@ def check_order(
             "qty": qty_req,
             "detail": nav_detail_payload,
             "context": nav_context,
+            "source_head": source_head,
         },
         {"age": nav_age, "sources_ok": nav_sources_ok},
         nav_guard_cfg,
@@ -1207,6 +1209,7 @@ def check_order(
                         },
                     },
                     context=nav_context,
+                    source_head=source_head,
                 )
         except Exception as exc:
             LOGGER.error("[risk] portfolio_dd_circuit check failed: %s", exc)
@@ -1299,6 +1302,7 @@ def check_order(
                             },
                         },
                         context=nav_context,
+                        source_head=source_head,
                     )
                     break  # Only emit first correlation cap veto
         except Exception as exc:
@@ -1380,6 +1384,7 @@ def check_order(
                     qty=qty_req,
                     detail=var_veto_detail,
                     context=nav_context,
+                    source_head=source_head,
                 )
         
         # Position CVaR check for the symbol being traded
@@ -1421,6 +1426,7 @@ def check_order(
                     qty=qty_req,
                     detail=cvar_veto_detail,
                     context=nav_context,
+                    source_head=source_head,
                 )
     except ImportError:
         LOGGER.debug("[risk] vol_risk module not available, skipping VaR/CVaR checks")
