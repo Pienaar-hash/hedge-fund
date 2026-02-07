@@ -50,23 +50,17 @@ def build_kpi_cards(
     # Extract values
     nav_usd = float(nav_state.get("nav_usd") or nav_state.get("nav") or nav_state.get("total_equity") or 0)
     total_aum = float(aum_data.get("total_usd") or aum_data.get("total") or nav_usd)
-    daily_pnl = float(nav_state.get("realized_pnl_today") or 0)
-    # Fallback to episode-windowed 24h PnL when realized_pnl_today is 0
-    if daily_pnl == 0 and episode_ledger:
-        episodes = episode_ledger.get("episodes", [])
-        if episodes:
-            from datetime import datetime, timedelta, timezone
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            for ep in episodes:
-                exit_ts = ep.get("exit_ts", "")
-                if not exit_ts:
-                    continue
-                try:
-                    ts = datetime.fromisoformat(exit_ts.replace("Z", "+00:00"))
-                    if ts > cutoff:
-                        daily_pnl += float(ep.get("net_pnl", 0) or 0)
-                except (ValueError, TypeError):
-                    continue
+
+    # 24h PnL = NAV delta (current - 24h ago) — NOT episode-windowed PnL.
+    # Episode PnL only counts closed trades, missing unrealised gains and
+    # mark-to-market changes on holdings. NAV delta is the true portfolio PnL.
+    from dashboard.components.nav_pnl import compute_nav_deltas
+    _nav_deltas = compute_nav_deltas()
+    daily_pnl = _nav_deltas.get("pnl_24h", 0.0)
+    # Fallback: if nav_log is empty, try realized_pnl_today from executor
+    if daily_pnl == 0.0:
+        daily_pnl = float(nav_state.get("realized_pnl_today") or 0)
+
     unrealized = float(nav_state.get("unrealized_pnl") or 0)
     gross_exp = float(nav_state.get("gross_exposure") or 0)
     drawdown_pct = float(nav_state.get("drawdown_pct") or 0)

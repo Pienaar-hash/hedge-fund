@@ -235,15 +235,6 @@ def render_strategy_block(
             merged_kpis["total_pnl"] = stats.get("total_net_pnl")
             merged_kpis["all_time_pnl"] = stats.get("total_net_pnl")
         
-        # Time-windowed PnL from episodes
-        if episodes:
-            merged_kpis["daily_pnl"] = _compute_windowed_pnl(episodes, 24)
-            merged_kpis["pnl_24h"] = merged_kpis["daily_pnl"]
-            merged_kpis["weekly_pnl"] = _compute_windowed_pnl(episodes, 168)
-            merged_kpis["pnl_7d"] = merged_kpis["weekly_pnl"]
-            merged_kpis["monthly_pnl"] = _compute_windowed_pnl(episodes, 720)
-            merged_kpis["pnl_30d"] = merged_kpis["monthly_pnl"]
-        
         # Max drawdown from episode ledger — only override if it has a real value
         _ledger_dd = stats.get("max_drawdown_pct")
         if _ledger_dd is not None and float(_ledger_dd) > 0:
@@ -258,6 +249,26 @@ def render_strategy_block(
         # Winners/losers for display
         merged_kpis["winners"] = stats.get("winners", 0)
         merged_kpis["losers"] = stats.get("losers", 0)
+    
+    # NAV-delta PnL overrides episode-windowed PnL.
+    # Episode PnL only counts closed trades — it systematically misses
+    # unrealised gains and mark-to-market on holdings.  NAV delta is
+    # the TRUE portfolio PnL.
+    from dashboard.components.nav_pnl import compute_nav_deltas
+    _nav_deltas = compute_nav_deltas()
+    if _nav_deltas.get("pnl_24h"):
+        merged_kpis["daily_pnl"] = _nav_deltas["pnl_24h"]
+        merged_kpis["pnl_24h"] = _nav_deltas["pnl_24h"]
+    if _nav_deltas.get("pnl_7d"):
+        merged_kpis["weekly_pnl"] = _nav_deltas["pnl_7d"]
+        merged_kpis["pnl_7d"] = _nav_deltas["pnl_7d"]
+    if _nav_deltas.get("pnl_30d"):
+        merged_kpis["monthly_pnl"] = _nav_deltas["pnl_30d"]
+        merged_kpis["pnl_30d"] = _nav_deltas["pnl_30d"]
+    # All-time PnL = NAV delta from first nav_log entry (if available)
+    if _nav_deltas.get("pnl_all_time"):
+        merged_kpis["total_pnl"] = _nav_deltas["pnl_all_time"]
+        merged_kpis["all_time_pnl"] = _nav_deltas["pnl_all_time"]
     
     # Extract equity curve from NAV state series
     equity_curve = None
