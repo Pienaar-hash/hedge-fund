@@ -312,12 +312,51 @@ def _escape_markdown(text: str) -> str:
     return str(text or "").translate(_MD_ESCAPE)
 
 
+def _maybe_rank_alerts(alerts: Sequence[Dict[str, Any]]) -> Sequence[Dict[str, Any]]:
+    """Apply prediction-layer alert ranking if available (P1 advisory).
+
+    Fail-open: if the prediction layer is unavailable, disabled, or errors,
+    alerts are returned unchanged.  This import is try/except to avoid
+    creating a runtime dependency (see PHASE_P1_PREDICTION_ADVISORY_DOCTRINE).
+    """
+    try:
+        import os
+        from prediction.alert_ranker import rank_alerts, PredictionSnapshot
+        from prediction.state_surface import build_prediction_state
+
+        phase = os.environ.get("PREDICTION_PHASE", "P0_OBSERVE")
+        enabled = os.environ.get("PREDICTION_DLE_ENABLED", "0") == "1"
+        if not enabled:
+            return alerts
+
+        # Build a lightweight state snapshot for ranking context
+        state = build_prediction_state()
+        # Currently no question-level snapshots wired — pass empty so the
+        # ranker returns alerts unchanged until prediction data flows in P1.
+        result = rank_alerts(
+            alerts=list(alerts),
+            prediction_snapshots=None,
+            phase=phase,
+            enabled=enabled,
+        )
+        return result.alerts
+    except Exception:
+        return alerts
+
+
 def send_execution_alerts(symbol: str, alerts: Sequence[Dict[str, Any]]) -> None:
     """
     Sends aggregated execution alerts per symbol using Markdown formatting.
+
+    If the prediction layer is enabled (P1_ADVISORY), alerts are reordered
+    by prediction uncertainty/shift before severity sorting.  This is
+    advisory-only — no alerts are added/removed.
     """
     if not alerts:
         return
+
+    # P1 advisory: reorder alerts via prediction layer (fail-open)
+    alerts = _maybe_rank_alerts(alerts)
 
     sym = str(symbol or "ALL").upper()
     now = time.time()

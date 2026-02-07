@@ -10,9 +10,9 @@ from execution.versioning import read_docs_version, read_version, version_alignm
 def test_version_matches_manifest() -> None:
     version = read_version()
     docs_version = read_docs_version()
-    engine, docs, aligned = version_alignment("v7.8")
-    assert version == "v7.8"
-    assert docs_version == "v7.8"
+    engine, docs, aligned = version_alignment("v7.9")
+    assert version == "v7.9"
+    assert docs_version == "v7.9"
     assert engine == version
     assert docs == version
     assert aligned

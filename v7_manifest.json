@@ -1,5 +1,5 @@
 {
-  "docs_version": "v7.8",
+  "docs_version": "v7.9",
   "state_files": {
     "nav": {
       "path": "logs/state/nav.json",
@@ -322,6 +322,138 @@
         "symbols": "Dict[str, AlphaStats] - per-symbol cum_alpha_usd, avg_alpha_bps, p95/p99, regime breakdown",
         "heads": "Dict[str, HeadAlphaStats] - per-head alpha attribution and suggested multipliers",
         "meta": "Dict - total_cum_alpha_usd, avg_alpha_bps, last_alerts, config_echo"
+      }
+    }
+  },
+  "prediction_layer": {
+    "belief_events_log": {
+      "path": "logs/prediction/belief_events.jsonl",
+      "owner": "prediction",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Append-only belief event log — DLE-gated probability updates from admitted sources",
+      "fields": {
+        "belief_event_id": "BEL_<hex12> deterministic ID",
+        "ts": "ISO timestamp",
+        "dataset_id": "Source dataset identifier",
+        "question_id": "Q_<id> question reference",
+        "outcome_id": "O_<id> outcome reference",
+        "p": "float ∈ [0,1] — stated probability",
+        "confidence": "float ∈ [0,1] — source confidence",
+        "evidence_hash": "sha256:<8> evidence fingerprint",
+        "dle": "{ decision_id, permit_id } — DLE authority chain",
+        "state_snapshot_hashes": "{ constraints, prior_aggregate, config } — frozen state at write time"
+      }
+    },
+    "aggregate_state_log": {
+      "path": "logs/prediction/aggregate_state.jsonl",
+      "owner": "prediction",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Append-only canonical probability aggregates after constraint solving",
+      "fields": {
+        "ts": "ISO timestamp",
+        "question_id": "Q_<id>",
+        "probs": "Dict[outcome_id, float] — constrained probabilities",
+        "aggregate_hash": "sha256:<8> — deterministic hash of probs",
+        "inputs_window": "{ from, to } — time range of input events",
+        "solver": "{ name, status, residual } — solver diagnostics"
+      }
+    },
+    "prediction_episodes_log": {
+      "path": "logs/prediction/prediction_episodes.jsonl",
+      "owner": "prediction",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Prediction episodes — end-to-end lifecycle from belief updates to outcome resolution and scoring",
+      "fields": {
+        "episode_id": "PEP_<hex12> deterministic ID",
+        "question_id": "Q_<id>",
+        "state": "OPEN | RESOLVED | EXPIRED",
+        "belief_event_ids": "List[str] — linked belief events",
+        "decision_ids": "List[str] — linked DLE decisions",
+        "permit_ids": "List[str] — linked DLE permits",
+        "scoring": "{ scoring_rule, per_outcome, aggregate_score, resolved_outcome }",
+        "source_scores": "Dict[dataset_id, scoring_result] — per-source attribution"
+      }
+    },
+    "dle_prediction_events_log": {
+      "path": "logs/prediction/dle_prediction_events.jsonl",
+      "owner": "prediction",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "DLE authority events for prediction layer — decisions, permits, vetoes",
+      "fields": {
+        "schema_version": "dle_prediction_v1",
+        "event_type": "DECISION | PERMIT | VETO",
+        "ts": "ISO timestamp",
+        "payload": "Dict — decision/permit/veto details"
+      }
+    },
+    "question_graph": {
+      "path": "prediction/question_graph.json",
+      "owner": "admin",
+      "update_frequency": "manual",
+      "optional": true,
+      "description": "Question definitions, outcomes, and logical constraints (SUM_TO_ONE, BOUNDS, IMPLIES)"
+    },
+    "rollback_triggers_log": {
+      "path": "logs/prediction/rollback_triggers.jsonl",
+      "owner": "prediction",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Rollback trigger events — temporal restatement, replay divergence, latency breach, silent gap, regime corruption",
+      "fields": {
+        "trigger_type": "TEMPORAL_RESTATEMENT | REPLAY_DIVERGENCE | LATENCY_BREACH | SILENT_GAP | REGIME_CORRUPTION",
+        "dataset_id": "Source dataset that triggered",
+        "suggested_action": "REVOKE | DOWNGRADE | LOG_ONLY",
+        "severity": "HIGH | MEDIUM | LOW",
+        "evidence": "Dict — trigger-specific evidence payload",
+        "enforced": "bool — false in P0 (log-only)"
+      }
+    },
+    "firewall_denials_log": {
+      "path": "logs/prediction/firewall_denials.jsonl",
+      "owner": "prediction",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Influence firewall denial log — every blocked consumer access attempt",
+      "fields": {
+        "consumer": "str — module requesting prediction data",
+        "question_id": "Q_<id>",
+        "verdict": "DENIED_PHASE | DENIED_DATASET | DENIED_BLACKLISTED | DENIED_DISABLED",
+        "reason": "str — human-readable denial reason"
+      }
+    },
+    "prediction_state": {
+      "path": "logs/state/prediction_state.json",
+      "owner": "prediction",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Dashboard state surface — belief counts, aggregate timestamps, dataset states, constraint violations, rollback triggers, alert ranking telemetry",
+      "fields": {
+        "phase": "P0_OBSERVE | P1_ADVISORY | P2_PRODUCTION",
+        "enabled": "bool",
+        "belief_events": "{ count, last_ts }",
+        "aggregates": "{ count, last_ts, solver_statuses }",
+        "rollback_triggers": "{ count, by_type }",
+        "firewall": "{ denial_count, by_verdict }",
+        "dataset_states": "Dict[dataset_id, state]"
+      }
+    },
+    "prediction_alert_ranking": {
+      "path": "logs/prediction/alert_ranking.jsonl",
+      "owner": "prediction",
+      "update_frequency": "per_alert_batch",
+      "optional": true,
+      "description": "P1 alert ranking telemetry — read by dashboard tile via logs/prediction/",
+      "fields": {
+        "alerts_count": "int — number of alerts in batch",
+        "consumer": "alert_ranking",
+        "firewall_verdicts": "Dict[question_id, verdict]",
+        "rankings_applied": "bool — whether prediction reordered alerts",
+        "reason": "str — ranking outcome description",
+        "ts": "ISO8601"
       }
     }
   },

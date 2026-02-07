@@ -434,6 +434,18 @@ class TestBuildTWAPMetrics:
 class TestRouteTWAP:
     """Integration tests for _route_twap with mocked exchange."""
 
+    @pytest.fixture(autouse=True)
+    def disable_slippage_pipeline(self):
+        """Disable spread-aware TWAP to prevent cross-test state leaks.
+
+        The module-level ``_SLIPPAGE_CFG`` cache can be populated by earlier
+        tests, causing ``_route_twap`` to call ``get_market_microstructure``
+        (live exchange) and skip slices due to wide spreads.  Patching the
+        flag to False isolates these tests from that global state.
+        """
+        with patch("execution.order_router._SLIPPAGE_AVAILABLE", False):
+            yield
+
     @pytest.fixture
     def mock_route_order(self):
         """Mock route_order to avoid actual exchange calls."""

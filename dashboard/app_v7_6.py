@@ -69,6 +69,12 @@ from dashboard.components.nav_composition import (
     render_nav_composition_panel,
 )
 
+# P1 Prediction Telemetry (advisory read-only)
+from dashboard.components.prediction_tile import (
+    load_prediction_telemetry,
+    render_prediction_tile,
+)
+
 # Layout engine
 from dashboard.layout_v7_6 import (
     render_header_block,
@@ -148,6 +154,9 @@ def _load_dashboard_state() -> Dict[str, Any]:
     # NAV Composition (investor truth surface)
     nav_detail = load_nav_detail()
     
+    # P1 Prediction telemetry
+    prediction_telemetry = load_prediction_telemetry()
+    
     # Compute derived values
     nav_usd = float(nav_state.get("nav_usd") or nav_state.get("nav") or nav_state.get("total_equity") or 0)
     gross_exposure = float(nav_state.get("gross_exposure") or 0)
@@ -174,6 +183,8 @@ def _load_dashboard_state() -> Dict[str, Any]:
         "hydra_state": hydra_state,
         # NAV Composition
         "nav_detail": nav_detail,
+        # Prediction telemetry
+        "prediction_telemetry": prediction_telemetry,
     }
 
 
@@ -295,6 +306,8 @@ def main() -> None:
     # DIAGNOSTICS (collapsed by default, at the bottom)
     # =========================================================================
     with st.expander("Diagnostics & Raw State", expanded=False):
+        render_prediction_tile(state["prediction_telemetry"])
+        st.divider()
         render_diagnostics_block(
             state_summary={
                 "nav": state["nav_state"],

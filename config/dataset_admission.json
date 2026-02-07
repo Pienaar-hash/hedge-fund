@@ -296,21 +296,113 @@
         "regime_neutrality": {"influences_regime": false, "notes": "Post-hoc analysis only"}
       },
       "justification": "Factor exposure and PnL attribution. Research/diagnostic only. Does not influence live decisions."
+    },
+
+    "_prediction_layer_separator": "--- Prediction Belief Layer datasets (P0 observe-only) ---",
+
+    "prediction_polymarket_feed": {
+      "name": "Polymarket Prediction Feed",
+      "source": "Polymarket API (event market prices)",
+      "state": "OBSERVE_ONLY",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": false,
+      "criteria": {
+        "temporal_integrity": {"verified": false, "notes": "Event-based, no candle alignment"},
+        "latency": {"p50_ms": null, "p90_ms": null, "p99_ms": null, "cadence": "polling"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "stale_values", "explicit_null": true},
+        "replay_determinism": {"verified": false, "notes": "Point-in-time market prices, not logged historically"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Prediction layer only, never influences regime"}
+      },
+      "justification": "External prediction market feed. P0 observe-only. DLE-gated via prediction belief layer. Does not influence any execution decisions."
+    },
+    "prediction_human_input": {
+      "name": "Human Prediction Input",
+      "source": "Manual crowd/analyst input form",
+      "state": "OBSERVE_ONLY",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": true, "notes": "Timestamped at submission"},
+        "latency": {"p50_ms": 0, "p90_ms": 0, "p99_ms": 0, "cadence": "manual"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "no_update", "explicit_null": true},
+        "replay_determinism": {"verified": true, "notes": "Logged to belief_events.jsonl"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Prediction layer only"}
+      },
+      "justification": "Human analyst predictions. P0 observe-only. All writes DLE-gated. Does not influence execution."
+    },
+    "prediction_model_output": {
+      "name": "Model Prediction Output",
+      "source": "Internal ML model inference",
+      "state": "REJECTED",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": true,
+      "criteria": {
+        "temporal_integrity": {"verified": false, "notes": "Depends on model pipeline"},
+        "latency": {"p50_ms": null, "p90_ms": null, "p99_ms": null, "cadence": "on-demand"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "no_update", "explicit_null": true},
+        "replay_determinism": {"verified": false, "notes": "Model versioning required"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Prediction layer only"}
+      },
+      "justification": "Model-generated predictions. REJECTED until model versioning and replay determinism verified. Requires full admission process."
+    },
+    "prediction_news_classifier": {
+      "name": "News Event Classifier",
+      "source": "NLP classifier on news feeds",
+      "state": "REJECTED",
+      "grandfathered": false,
+      "influences": {
+        "regime": false,
+        "signals": false,
+        "sizing": false,
+        "exits": false
+      },
+      "replay_deterministic": false,
+      "criteria": {
+        "temporal_integrity": {"verified": false, "notes": "Feed latency unknown"},
+        "latency": {"p50_ms": null, "p90_ms": null, "p99_ms": null, "cadence": "unknown"},
+        "missingness": {"acceptable_pct": 100.0, "gap_behavior": "no_update", "explicit_null": true},
+        "replay_determinism": {"verified": false, "notes": "NLP output not guaranteed stable across versions"},
+        "regime_neutrality": {"influences_regime": false, "notes": "Prediction layer only"}
+      },
+      "justification": "News-based event classifier. REJECTED until feed stability and replay determinism verified."
     }
   },
   "summary": {
     "production_eligible": 10,
-    "observe_only": 4,
+    "observe_only": 6,
     "research_only": 0,
-    "rejected": 0,
+    "rejected": 2,
     "grandfathered": 8,
-    "would_fail_admission_today": ["binance_futures_orderbook", "coingecko_prices", "polymarket_snapshot"]
+    "would_fail_admission_today": ["binance_futures_orderbook", "coingecko_prices", "polymarket_snapshot"],
+    "prediction_layer_sources": {
+      "observe_only": ["prediction_polymarket_feed", "prediction_human_input"],
+      "rejected": ["prediction_model_output", "prediction_news_classifier"]
+    }
   },
   "notes": [
     "binance_futures_orderbook: Non-replayable but does not influence decisions. Tolerated.",
     "coingecko_prices: Fallback only, never authoritative. Tolerated in OBSERVE_ONLY.",
     "polymarket_snapshot: Currently empty. Would need full admission if ever used for signals.",
-    "All PRODUCTION_ELIGIBLE datasets are either grandfathered or derived from grandfathered sources."
+    "All PRODUCTION_ELIGIBLE datasets are either grandfathered or derived from grandfathered sources.",
+    "prediction_*: DLE-gated belief layer sources. P0 observe-only. Never influence execution. See prediction/ module."
   ],
-  "updated_at": "2026-01-24T10:45:00+00:00"
+  "updated_at": "2026-02-06T00:00:00+00:00"
 }

@@ -683,15 +683,6 @@
     "maxQty": "1000000",
     "minNotional": "5"
   },
-  "NKNUSDT": {
-    "tickSize": "0.00001",
-    "minPrice": "0.00001",
-    "maxPrice": "20000",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "10000000",
-    "minNotional": "5"
-  },
   "1000SHIBUSDT": {
     "tickSize": "0.000001",
     "minPrice": "0.000157",
@@ -4776,6 +4767,15 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "minNotional": "5"
+  },
+  "TRIAUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "40000000",
     "minNotional": "5"
   }
 }

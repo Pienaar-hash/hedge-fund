@@ -1,0 +1,19 @@
+{
+  "_schema": "question_graph_v1",
+  "_doc": "Defines questions, outcomes, and logical constraints for the prediction belief ledger.",
+  "questions": {
+    "Q_example_binary": {
+      "question_id": "Q_example_binary",
+      "title": "Example binary question (placeholder)",
+      "outcomes": ["O_yes", "O_no"],
+      "constraints": [
+        {"type": "SUM_TO_ONE", "outcomes": ["O_yes", "O_no"]},
+        {"type": "BOUNDS", "outcomes": ["O_yes", "O_no"], "min": 0.0, "max": 1.0}
+      ],
+      "created_ts": "2026-02-06T00:00:00+00:00",
+      "state": "ACTIVE"
+    }
+  },
+  "implies_rules": [],
+  "updated_at": "2026-02-06T00:00:00+00:00"
+}
