@@ -221,9 +221,9 @@ def render_nav_composition_panel(
                     <span style="color: {nav_delta_color}; font-weight: 600;">{'+' if nav_delta_24h >= 0 else ''}${nav_delta_24h:,.2f}</span>
                 </div>
                 
-                <!-- Closed Trades PnL -->
+                <!-- Closed PnL (Episodes) -->
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Closed Trades PnL</span>
+                    <span style="color: #888; font-size: 0.85em;">Closed PnL (Episodes)</span>
                     <span style="color: {cycle_pnl_color}; font-weight: 600;">{'+' if cycle_net_pnl >= 0 else ''}${cycle_net_pnl:,.2f}</span>
                 </div>
                 

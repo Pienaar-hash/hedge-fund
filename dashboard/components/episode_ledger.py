@@ -97,6 +97,27 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
     win_rate = stats.get("win_rate", 0)
     avg_duration = stats.get("avg_duration_hours", 0)
     exit_reasons = stats.get("exit_reasons", {})
+
+    # Last close timestamp
+    episodes_list = state.get("episodes", [])
+    last_close_display = ""
+    if episodes_list:
+        last_exit_ts = max(
+            (e.get("exit_ts", "") for e in episodes_list),
+            default="",
+        )
+        if last_exit_ts:
+            try:
+                last_dt = datetime.fromisoformat(last_exit_ts.replace("Z", "+00:00"))
+                days_ago = (datetime.now(timezone.utc) - last_dt).days
+                if days_ago == 0:
+                    last_close_display = "Last close: today"
+                elif days_ago == 1:
+                    last_close_display = "Last close: yesterday"
+                else:
+                    last_close_display = f"Last close: {days_ago}d ago"
+            except (ValueError, TypeError):
+                pass
     
     # PnL color
     pnl_color = "#21c354" if total_net_pnl >= 0 else "#d94a4a"
@@ -171,7 +192,8 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
                 <div style="font-size: 1.4em; font-weight: 700; color: {pnl_color};">
                     {pnl_sign}${abs(total_net_pnl):.2f}
                 </div>
-                <div style="font-size: 0.7em; color: #666;">Closed Trade PnL</div>
+                <div style="font-size: 0.7em; color: #666;">Closed PnL (Episodes)</div>
+                <div style="font-size: 0.6em; color: #555;">{last_close_display}</div>
             </div>
             
             <!-- Win/Loss -->
