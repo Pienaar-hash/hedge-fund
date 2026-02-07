@@ -455,6 +455,25 @@
         "reason": "str — ranking outcome description",
         "ts": "ISO8601"
       }
+    },
+    "score_decomposition": {
+      "path": "logs/execution/score_decomposition.jsonl",
+      "owner": "signal_screener",
+      "update_frequency": "per_screener_cycle",
+      "optional": true,
+      "description": "Per-intent hybrid score decomposition — weights × factors for MHD auditability",
+      "fields": {
+        "ts": "ISO8601",
+        "symbol": "str",
+        "direction": "LONG|SHORT",
+        "hybrid_score": "float — final composite score",
+        "components": "Dict[factor, raw_score]",
+        "weighted": "Dict[factor, weight × score]",
+        "weights_used": "Dict[factor, weight]",
+        "conviction_band": "str — very_low|low|medium|high|very_high",
+        "rq_score": "float|null",
+        "rv_score": "float|null"
+      }
     }
   },
   "diagnostics": {

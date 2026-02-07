@@ -93,6 +93,9 @@ LOGGER.setLevel(logging.INFO)
 _DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
 _DEDUP_MAX_SIZE = 2048
 
+# Score decomposition JSONL log (MHD: freeze meaning per intent)
+_SCORE_DECOMP_LOG = os.path.join("logs", "execution", "score_decomposition.jsonl")
+
 
 def _log_screener_veto(
     reason: str,
@@ -1254,6 +1257,8 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                         intent["hybrid_score"] = result.get("hybrid_score", 0.5)
                         intent["hybrid_passes_threshold"] = result.get("passes_threshold", True)
                         intent["hybrid_components"] = result.get("components", {})
+                        intent["hybrid_weighted"] = result.get("weighted_contributions", {})
+                        intent["hybrid_weights_used"] = result.get("weights_used", {})
                         intent["router_quality_score"] = rq_score
                         intent["rv_momentum_score"] = rv_score_val
                         ranked_out.append(intent)
@@ -1271,6 +1276,31 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                     
                     if rq_filtered_count > 0:
                         print(f"{LOG_TAG} router_quality filter: {rq_filtered_count} intents dropped (min={rq_min_for_emission:.2f})")
+                    # MHD: Log per-intent score decomposition (freeze meaning)
+                    try:
+                        from pathlib import Path as _P
+                        from execution.log_utils import append_jsonl
+                        import datetime as _dt
+                        _ts = _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
+                        for _intent in ranked_out:
+                            _components = _intent.get("hybrid_components", {})
+                            _weighted = _intent.get("hybrid_weighted", {})
+                            _weights = _intent.get("hybrid_weights_used", {})
+                            if _components:
+                                append_jsonl(_P(_SCORE_DECOMP_LOG), {
+                                    "ts": _ts,
+                                    "symbol": _intent.get("symbol", ""),
+                                    "direction": _intent.get("direction", ""),
+                                    "hybrid_score": round(_intent.get("hybrid_score", 0.0), 6),
+                                    "components": {k: round(float(v), 4) for k, v in _components.items()},
+                                    "weighted": {k: round(float(v), 6) for k, v in _weighted.items()},
+                                    "weights_used": _weights,
+                                    "conviction_band": _intent.get("conviction_band", ""),
+                                    "rq_score": round(float(_intent.get("router_quality_score") or 0.0), 4),
+                                    "rv_score": round(float(_intent.get("rv_momentum_score") or 0.0), 4),
+                                })
+                    except Exception:
+                        pass  # fail-open: decomp logging must never block execution
                     print(f"{LOG_TAG} hybrid ranking: {len(out)} -> {len(ranked_out)} intents (filter={filter_below})")
                     out = ranked_out
             except Exception as hybrid_err:

@@ -1049,6 +1049,11 @@ def hybrid_score_universe(
                 "expectancy": expectancy_score,
                 "router": router_score,
             },
+            "weighted_contributions": {
+                name: round(weights_used.get(name, 0.0) * factors_for_score.get(name, 0.0), 6)
+                for name in weights_used
+            },
+            "weights_used": {str(k): round(float(v), 4) for k, v in weights_used.items()},
             "carry_details": carry_result,
             "rv_momentum": {
                 "score": rv_score_val,
