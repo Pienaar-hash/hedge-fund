@@ -114,10 +114,14 @@ def render_nav_composition_panel(
     
     # PnL from nav_state
     unrealized_pnl = float(nav_state.get("unrealized_pnl") or 0)
-    realized_pnl = float(nav_state.get("realized_pnl") or 0)
     gross_exposure = float(nav_state.get("gross_exposure") or 0)
+
+    # 24h NAV delta — TRUE portfolio PnL (replaces stale session counter)
+    from dashboard.components.nav_pnl import compute_nav_deltas
+    _nav_deltas = compute_nav_deltas()
+    nav_delta_24h = _nav_deltas.get("pnl_24h", 0.0)
     
-    # Cycle metrics from episode ledger
+    # Cycle metrics from episode ledger (closed trades only)
     ledger_stats = episode_ledger.get("stats", {})
     cycle_net_pnl = float(ledger_stats.get("total_net_pnl") or 0)
     cycle_fees = float(ledger_stats.get("total_fees") or 0)
@@ -145,7 +149,7 @@ def render_nav_composition_panel(
     
     # PnL colors
     unrealized_color = "#21c354" if unrealized_pnl >= 0 else "#d94a4a"
-    realized_color = "#21c354" if realized_pnl >= 0 else "#d94a4a"
+    nav_delta_color = "#21c354" if nav_delta_24h >= 0 else "#d94a4a"
     cycle_pnl_color = "#21c354" if cycle_net_pnl >= 0 else "#d94a4a"
     
     # Build full widget HTML
@@ -211,15 +215,15 @@ def render_nav_composition_panel(
                     <span style="color: {unrealized_color}; font-weight: 600;">{'+' if unrealized_pnl >= 0 else ''}${unrealized_pnl:,.2f}</span>
                 </div>
                 
-                <!-- Realized (Session) -->
+                <!-- 24h PnL (NAV Delta) -->
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Realized (Session)</span>
-                    <span style="color: {realized_color}; font-weight: 600;">{'+' if realized_pnl >= 0 else ''}${realized_pnl:,.2f}</span>
+                    <span style="color: #888; font-size: 0.85em;">24h PnL (NAV)</span>
+                    <span style="color: {nav_delta_color}; font-weight: 600;">{'+' if nav_delta_24h >= 0 else ''}${nav_delta_24h:,.2f}</span>
                 </div>
                 
-                <!-- Cycle Net PnL -->
+                <!-- Closed Trades PnL -->
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Cycle Net PnL</span>
+                    <span style="color: #888; font-size: 0.85em;">Closed Trades PnL</span>
                     <span style="color: {cycle_pnl_color}; font-weight: 600;">{'+' if cycle_net_pnl >= 0 else ''}${cycle_net_pnl:,.2f}</span>
                 </div>
                 

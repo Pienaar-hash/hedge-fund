@@ -171,7 +171,7 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
                 <div style="font-size: 1.4em; font-weight: 700; color: {pnl_color};">
                     {pnl_sign}${abs(total_net_pnl):.2f}
                 </div>
-                <div style="font-size: 0.7em; color: #666;">Net PnL</div>
+                <div style="font-size: 0.7em; color: #666;">Closed Trade PnL</div>
             </div>
             
             <!-- Win/Loss -->
