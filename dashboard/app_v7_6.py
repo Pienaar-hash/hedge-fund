@@ -224,6 +224,7 @@ def main() -> None:
         aum_data=state["aum_data"],
         kpis=state["kpis"],
         risk_snapshot=state["risk_snapshot"],
+        episode_ledger=state["episode_ledger"],
     )
     
     # =========================================================================

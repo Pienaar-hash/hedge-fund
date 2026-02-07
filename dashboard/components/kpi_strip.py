@@ -6,7 +6,7 @@ Renders 8 KPI cards in a horizontal strip:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
@@ -44,12 +44,29 @@ def build_kpi_cards(
     aum_data: Dict[str, Any],
     kpis: Dict[str, Any],
     risk_snapshot: Dict[str, Any],
+    episode_ledger: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, str]]:
     """Build list of KPI card data for rendering."""
     # Extract values
     nav_usd = float(nav_state.get("nav_usd") or nav_state.get("nav") or nav_state.get("total_equity") or 0)
     total_aum = float(aum_data.get("total_usd") or aum_data.get("total") or nav_usd)
     daily_pnl = float(nav_state.get("realized_pnl_today") or 0)
+    # Fallback to episode-windowed 24h PnL when realized_pnl_today is 0
+    if daily_pnl == 0 and episode_ledger:
+        episodes = episode_ledger.get("episodes", [])
+        if episodes:
+            from datetime import datetime, timedelta, timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            for ep in episodes:
+                exit_ts = ep.get("exit_ts", "")
+                if not exit_ts:
+                    continue
+                try:
+                    ts = datetime.fromisoformat(exit_ts.replace("Z", "+00:00"))
+                    if ts > cutoff:
+                        daily_pnl += float(ep.get("net_pnl", 0) or 0)
+                except (ValueError, TypeError):
+                    continue
     unrealized = float(nav_state.get("unrealized_pnl") or 0)
     gross_exp = float(nav_state.get("gross_exposure") or 0)
     drawdown_pct = float(nav_state.get("drawdown_pct") or 0)
@@ -121,6 +138,7 @@ def render_kpi_strip(
     aum_data: Dict[str, Any],
     kpis: Dict[str, Any],
     risk_snapshot: Dict[str, Any],
+    episode_ledger: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Render KPI strip as single HTML block.
@@ -128,7 +146,7 @@ def render_kpi_strip(
     CRITICAL: Build one HTML string, render with one st.markdown call.
     This prevents raw HTML tags from appearing in the UI.
     """
-    cards = build_kpi_cards(nav_state, aum_data, kpis, risk_snapshot)
+    cards = build_kpi_cards(nav_state, aum_data, kpis, risk_snapshot, episode_ledger=episode_ledger)
     
     # Build single HTML string
     html_parts = ['<div class="kpi-strip">']

@@ -448,12 +448,19 @@ def build_episode_ledger(
             dd = peak_pnl - cumulative_pnl
             if dd > max_dd_abs:
                 max_dd_abs = dd
-        # Express as percentage of peak (only meaningful if ever profitable)
-        if peak_pnl > 0:
-            max_dd_pct = round((max_dd_abs / peak_pnl) * 100, 2)
+        # Express as percentage of NAV-based equity peak
+        # Fallback: if we have no NAV context, use 10_000 as reasonable base
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _nav_path = _Path("logs/state/nav_state.json")
+            _nav_base = float(_json.loads(_nav_path.read_text()).get("total_equity", 10000)) if _nav_path.exists() else 10000
+        except Exception:
+            _nav_base = 10000
+        _equity_peak = _nav_base + peak_pnl
+        if _equity_peak > 0 and max_dd_abs > 0:
+            max_dd_pct = round((max_dd_abs / _equity_peak) * 100, 2)
         else:
-            # Never profitable - max_dd_pct not meaningful, leave as 0
-            # Use max_dd_abs for absolute loss tracking
             max_dd_pct = 0.0
     
     # Metadata-based PnL estimator (independent cross-check)

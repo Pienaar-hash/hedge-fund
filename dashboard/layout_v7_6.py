@@ -98,9 +98,10 @@ def render_kpi_strip(
     aum_data: Dict[str, Any],
     kpis: Dict[str, Any],
     risk_snapshot: Dict[str, Any],
+    episode_ledger: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Render horizontal KPI strip with 8 key metrics."""
-    _render_kpi_strip(nav_state, aum_data, kpis, risk_snapshot)
+    _render_kpi_strip(nav_state, aum_data, kpis, risk_snapshot, episode_ledger=episode_ledger)
 
 
 # =============================================================================
@@ -182,8 +183,42 @@ def render_strategy_block(
     
     # Layer in expectancy data
     if expectancy_data:
-        merged_kpis.setdefault("sharpe", expectancy_data.get("sharpe"))
-        merged_kpis.setdefault("total_trades", expectancy_data.get("n_trades"))
+        _exp_sharpe = expectancy_data.get("sharpe")
+        if _exp_sharpe is not None:
+            merged_kpis["sharpe"] = _exp_sharpe
+        _exp_trades = expectancy_data.get("n_trades")
+        if _exp_trades is not None:
+            merged_kpis["total_trades"] = _exp_trades
+
+    # Compute Sharpe and Max DD from episode data when upstream sources lack them
+    if episode_ledger:
+        _episodes = episode_ledger.get("episodes", [])
+        if _episodes and len(_episodes) >= 5:
+            _pnl_list = [float(e.get("net_pnl", 0) or 0) for e in _episodes]
+            import statistics as _st
+            _mean = _st.mean(_pnl_list)
+            _std = _st.stdev(_pnl_list) if len(_pnl_list) > 1 else 0
+            if _std > 0 and not merged_kpis.get("sharpe"):
+                # Daily sharpe: assume ~4 trades/day, annualise √252
+                _daily_ret = _mean * 4
+                _daily_std = _std * (4 ** 0.5)
+                _sharpe = (_daily_ret / _daily_std) * (252 ** 0.5)
+                merged_kpis["sharpe"] = round(_sharpe, 2)
+            # Max DD from cumulative equity curve (use NAV as base)
+            _nav_base = float((nav_state or {}).get("nav_usd", 0) or 10000)
+            _cum = 0.0; _peak = _nav_base; _max_dd_abs = 0.0
+            for _p in _pnl_list:
+                _cum += _p
+                _eq = _nav_base + _cum
+                if _eq > _peak:
+                    _peak = _eq
+                _dd = _peak - _eq
+                if _dd > _max_dd_abs:
+                    _max_dd_abs = _dd
+            _max_dd_pct = round((_max_dd_abs / _peak) * 100, 2) if _peak > 0 else 0.0
+            if not merged_kpis.get("max_drawdown"):
+                merged_kpis["max_drawdown"] = _max_dd_pct
+                merged_kpis["max_dd"] = _max_dd_pct
     
     # Episode ledger is authoritative for historical metrics
     if episode_ledger:
@@ -209,10 +244,11 @@ def render_strategy_block(
             merged_kpis["monthly_pnl"] = _compute_windowed_pnl(episodes, 720)
             merged_kpis["pnl_30d"] = merged_kpis["monthly_pnl"]
         
-        # Max drawdown from episode ledger (already percentage)
-        if stats.get("max_drawdown_pct") is not None:
-            merged_kpis["max_drawdown"] = stats.get("max_drawdown_pct")
-            merged_kpis["max_dd"] = stats.get("max_drawdown_pct")
+        # Max drawdown from episode ledger — only override if it has a real value
+        _ledger_dd = stats.get("max_drawdown_pct")
+        if _ledger_dd is not None and float(_ledger_dd) > 0:
+            merged_kpis["max_drawdown"] = _ledger_dd
+            merged_kpis["max_dd"] = _ledger_dd
         
         # Trade count
         if episode_count:
