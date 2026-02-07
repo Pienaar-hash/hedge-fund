@@ -134,7 +134,7 @@ def render_open_positions(state: dict[str, Any]) -> None:
 # Equity Curve Section
 # ---------------------------------------------------------------------------
 def render_equity_curve_section(state: dict[str, Any]) -> None:
-    """Render equity curve section using equity_panel."""
+    """Render equity curve section using equity_panel or nav_state series fallback."""
     st.markdown("### 📉 Equity Curve")
     
     # Try to get equity data from state, or load from file
@@ -144,11 +144,65 @@ def render_equity_curve_section(state: dict[str, Any]) -> None:
     
     if equity_data and equity_data.get("timestamps"):
         render_equity_compact(equity_data)
-    else:
+        return
+
+    # Fallback: render from nav_state.json series (always available when
+    # executor is running).  This avoids the "no data" message when
+    # equity.json doesn't exist but live NAV series does.
+    nav_state = state.get("nav", state.get("nav_state", {}))
+    series = nav_state.get("series", [])
+    if not series:
         st.info(
             "📊 Equity curve will populate as trades are executed. "
             "Run the executor to generate trade history."
         )
+        return
+
+    try:
+        import plotly.graph_objects as go  # type: ignore[import-untyped]
+
+        timestamps = []
+        equities = []
+        for pt in series:
+            t = pt.get("t")
+            eq = pt.get("equity") or pt.get("nav") or pt.get("total_equity")
+            if t is not None and eq is not None:
+                timestamps.append(str(t))
+                equities.append(float(eq))
+
+        if len(equities) < 2:
+            st.info("📊 Not enough data points for equity curve yet.")
+            return
+
+        pnl = equities[-1] - equities[0]
+        pnl_color = "#21c354" if pnl >= 0 else "#d94a4a"
+        st.markdown(
+            f'<span style="font-size:0.9em;">Session PnL: '
+            f'<b style="color:{pnl_color}">${pnl:+,.2f}</b> '
+            f'({len(equities)} samples)</span>',
+            unsafe_allow_html=True,
+        )
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=timestamps, y=equities,
+            mode="lines", name="Equity",
+            line=dict(color="#00d4ff", width=2),
+            fill="tozeroy", fillcolor="rgba(0,212,255,0.08)",
+        ))
+        fig.update_layout(
+            height=250, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis=dict(showgrid=False),
+            yaxis=dict(title="USDT", showgrid=True, gridcolor="rgba(255,255,255,0.05)"),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#ccc"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    except ImportError:
+        st.info("📊 Install plotly for equity curve visualization.")
+    except Exception:
+        st.info("📊 Equity curve will populate as trades are executed.")
 
 
 # ---------------------------------------------------------------------------

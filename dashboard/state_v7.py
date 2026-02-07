@@ -1612,9 +1612,11 @@ def load_all_state() -> Dict[str, Any]:
         positions_payload = _load_positions_payload()
         router_payload = _load_router_payload()
 
+        # Handle both nested ({nav:{}, risk:{}}) and flat ({atr_regime, dd_state, ...}) formats
+        _RISK_KEYS = ("atr_regime", "atr", "dd_state", "drawdown", "fee_pnl_ratio", "fees", "pnl", "fee_pnl")
         kpis_norm: Dict[str, Any] = {
             "nav": kpis_raw.get("nav", {}),
-            "risk": kpis_raw.get("risk", {}),
+            "risk": kpis_raw.get("risk") or {k: kpis_raw[k] for k in _RISK_KEYS if k in kpis_raw},
             "router": kpis_raw.get("router", kpis_raw.get("router_stats", {})),
             "symbols": kpis_raw.get("symbols", {}),
         }

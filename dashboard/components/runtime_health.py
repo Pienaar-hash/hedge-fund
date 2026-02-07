@@ -5,10 +5,16 @@ Two matched-height panels showing system health metrics.
 """
 from __future__ import annotations
 
+import json
+import os
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import streamlit as st
+
+_RISK_VETOES_PATH = Path(os.getenv("RISK_VETOES_PATH") or "logs/execution/risk_vetoes.jsonl")
 
 
 def _status_class(status: str) -> str:
@@ -58,12 +64,53 @@ def _metric_row(label: str, value: str) -> str:
     '''
 
 
+def _load_veto_counts_24h() -> Dict[str, int]:
+    """Scan risk_vetoes.jsonl for vetoes in the last 24 hours.
+
+    Returns dict of {veto_reason: count}.  Fail-open: returns {} on any error.
+    """
+    counts: Dict[str, int] = {}
+    try:
+        if not _RISK_VETOES_PATH.exists():
+            return counts
+        cutoff = datetime.now(timezone.utc).timestamp() - 86400
+        with _RISK_VETOES_PATH.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                # Parse ts — ISO8601 string or epoch float
+                ts_raw = rec.get("ts")
+                if ts_raw is None:
+                    continue
+                if isinstance(ts_raw, (int, float)):
+                    ts_epoch = float(ts_raw)
+                else:
+                    try:
+                        ts_epoch = datetime.fromisoformat(str(ts_raw)).timestamp()
+                    except Exception:
+                        continue
+                if ts_epoch >= cutoff:
+                    reason = rec.get("veto_reason", "unknown")
+                    counts[reason] = counts.get(reason, 0) + 1
+    except Exception:
+        pass
+    return counts
+
+
 def build_risk_state(risk_snapshot: Dict[str, Any], nav_value: float, gross_exposure: float) -> Dict[str, Any]:
     """Build normalized risk state for rendering."""
     dd_state = risk_snapshot.get("dd_state", "normal")
     atr_regime = risk_snapshot.get("atr_regime", "normal")
     risk_mode = risk_snapshot.get("risk_mode", "normal")
-    veto_counts = risk_snapshot.get("veto_counts", {})
+    # Prefer risk_snapshot.veto_counts if present; otherwise scan JSONL
+    veto_counts = risk_snapshot.get("veto_counts")
+    if not veto_counts:
+        veto_counts = _load_veto_counts_24h()
     total_vetoes = sum(veto_counts.values()) if isinstance(veto_counts, dict) else 0
     
     # Handle nested dicts
