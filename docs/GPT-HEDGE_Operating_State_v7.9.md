@@ -30,7 +30,8 @@ layers observe and log but cannot influence trade decisions.
 | **NAV** | $9,873 |
 | **Open Positions** | 3 (SOL, ETH, BTC — all LONG) |
 | **Gross Exposure** | ~$5,700 |
-| **Cash (Stablecoins)** | ~$4,200 (42% NAV) |
+| **Cash (Stablecoins)** | ~$9,170 (93% NAV) |
+| **Non-Stable Holdings** | ~$703 (BTC, 0.01) |
 | **24h PnL (NAV Δ)** | +$460 |
 | **Executor Uptime** | 43+ hours continuous |
 
