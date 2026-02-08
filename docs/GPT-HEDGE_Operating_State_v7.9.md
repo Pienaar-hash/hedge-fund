@@ -6,6 +6,23 @@
 
 ---
 
+## System Scope
+
+GPT-HEDGE consists of multiple layered subsystems operating under
+a shared doctrine and decision-ledger framework.
+
+This operating state reflects the **full system**, including:
+
+- **Live execution and routing** — order placement, TWAP, maker-first logic
+- **Risk and doctrine enforcement** — regime gating, position caps, drawdown limits
+- **Telemetry and state publication** — NAV tracking, state files, audit logs
+- **Observational and advisory subsystems** — prediction layer, dashboards
+
+Not all subsystems exercise authority over execution. Advisory
+layers observe and log but cannot influence trade decisions.
+
+---
+
 ## Portfolio Snapshot
 
 | Metric | Value |
@@ -62,6 +79,27 @@ symbols were selected or rejected.
 Documented the system's behavior when Binance is temporarily
 unreachable: fail-silent, preserve positions, resume on
 reconnection. No manual intervention required.
+
+---
+
+## What Changed / What Did Not
+
+| Layer | v7.9 Status |
+|-------|-------------|
+| Execution engine | **Unchanged** |
+| Risk limits & doctrine | **Unchanged** |
+| Order routing & sizing | **Unchanged** |
+| Strategy heads (Hydra) | **Unchanged** |
+| Regime detection (Sentinel-X) | **Unchanged** |
+| Episode ledger | **Unchanged** |
+| Capital exposure model | **Unchanged** |
+| Dashboard truth surface | **Hardened** — read-path fixes, label precision |
+| Score decomposition | **New** — logging only, no behavioral change |
+| Prediction layer | **New** — P1 advisory only, firewalled |
+
+The execution core, risk framework, and capital model are
+identical to the prior version. All changes in v7.9 are
+observational or advisory — none alter trade authority.
 
 ---
 
@@ -127,6 +165,21 @@ Next potential actions (none scheduled):
 - Evaluate prediction signal quality after 7-day soak
 - Review strategy performance at next monthly checkpoint
 - Consider P2 promotion of prediction layer if evidence supports it
+
+---
+
+## Operational Posture
+
+As of v7.9, GPT-HEDGE operates a stable execution core with
+additional observational and advisory layers enabled under strict
+non-causal constraints. All authority boundaries remain enforced.
+No subsystem introduced in this version can influence trade sizing,
+routing, or risk decisions.
+
+The system is designed to be left running without intervention.
+It will refuse to trade when conditions are unclear, veto actions
+that exceed risk limits, and fail silently when external services
+are temporarily unavailable.
 
 ---
 
