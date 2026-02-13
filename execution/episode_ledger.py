@@ -25,12 +25,14 @@ v7.9-E2 Fills-Faithful Changes:
 
 from __future__ import annotations
 
+import bisect
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 
 from dateutil import parser as dateparser
@@ -44,6 +46,13 @@ EPISODE_LEDGER_PATH = Path("logs/state/episode_ledger.json")
 EXECUTION_LOG_DIR = Path("logs/execution")
 EXECUTION_LOG_PATH = Path("logs/execution/orders_executed.jsonl")
 DOCTRINE_LOG_PATH = Path("logs/doctrine_events.jsonl")
+DLE_SHADOW_LOG_PATH = Path("logs/execution/dle_shadow_events.jsonl")
+
+# B.4 matching constants
+MATCH_WINDOW_NARROW_S = 120.0   # first pass: ±120 seconds
+MATCH_WINDOW_WIDE_S = 600.0     # fallback: ±600 seconds
+EPISODE_UID_HASH_LEN = 12       # EP_<sha256_12>
+EPISODE_LEDGER_SCHEMA_V2 = "episode_ledger_v2"
 
 
 @dataclass
@@ -91,16 +100,490 @@ class EpisodeLedger:
     """Container for all completed episodes."""
     
     episodes: list[Episode] = field(default_factory=list)
+    episodes_v2: list = field(default_factory=list)  # list[EpisodeV2] — B.4
     last_rebuild_ts: str = ""
     stats: dict = field(default_factory=dict)
     
     def to_dict(self) -> dict:
-        return {
+        d: dict = {
             "episodes": [e.to_dict() for e in self.episodes],
             "last_rebuild_ts": self.last_rebuild_ts,
             "stats": self.stats,
             "episode_count": len(self.episodes),
         }
+        # B.4: V2 surface (authority-bound episodes)
+        if self.episodes_v2:
+            d["schema_version"] = EPISODE_LEDGER_SCHEMA_V2
+            d["episodes_v2"] = [e.to_dict() for e in self.episodes_v2]
+        return d
+
+
+# ---------------------------------------------------------------------------
+# B.4 — Authority binding data structures
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AuthorityRef:
+    """Cross-reference to a DLE authority event."""
+    request_id: Optional[str] = None
+    decision_id: Optional[str] = None
+    permit_id: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class AuthorityFlags:
+    """Explicit flags for missing / ambiguous binding."""
+    entry_missing: bool = False
+    exit_missing: bool = False
+    entry_ambiguous: bool = False
+    exit_ambiguous: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class EpisodeV2:
+    """V1 Episode fields + authority chain + deterministic UID."""
+
+    # --- all V1 fields ---
+    episode_id: str
+    episode_uid: str  # EP_<sha256_12> — stable across rebuilds
+    symbol: str
+    side: str
+    entry_ts: str
+    exit_ts: str
+    duration_hours: float
+    entry_fills: int
+    exit_fills: int
+    entry_notional: float
+    exit_notional: float
+    total_qty: float
+    avg_entry_price: float
+    avg_exit_price: float
+    gross_pnl: float
+    fees: float
+    net_pnl: float
+    regime_at_entry: str
+    regime_at_exit: str
+    exit_reason: str
+    exit_reason_raw: str
+    strategy: str
+
+    # --- B.4 authority chain ---
+    authority_entry: AuthorityRef = field(default_factory=AuthorityRef)
+    authority_exit: AuthorityRef = field(default_factory=AuthorityRef)
+    authority_flags: AuthorityFlags = field(default_factory=AuthorityFlags)
+    regime_bindable: bool = False
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        # Nest authority for cleaner JSON shape
+        d["authority"] = {
+            "entry": d.pop("authority_entry"),
+            "exit": d.pop("authority_exit"),
+        }
+        return d
+
+
+# ---------------------------------------------------------------------------
+# B.4 — Shadow log index (LINK + DECISION)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _LinkRecord:
+    """Parsed LINK event for indexing."""
+    ts_unix: float
+    ts_iso: str
+    request_id: str
+    decision_id: str
+    permit_id: Optional[str]
+    symbol: str
+    action: str  # ENTRY | EXIT
+    strategy: str
+
+
+@dataclass
+class _DecisionRecord:
+    """Parsed DECISION event for regime binding."""
+    decision_id: str
+    context_snapshot: Dict[str, Any]
+    provenance: Dict[str, Any]
+
+
+def _iso_to_unix(ts_iso: str) -> Optional[float]:
+    """Convert ISO timestamp to Unix seconds. Returns None on failure."""
+    try:
+        dt = dateparser.parse(ts_iso)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _load_shadow_indexes() -> Tuple[
+    Dict[Tuple[str, str], List[_LinkRecord]],
+    Dict[Tuple[str, str], List[_LinkRecord]],
+    Dict[str, _DecisionRecord],
+]:
+    """
+    Load LINK and DECISION events from DLE shadow log.
+
+    Returns:
+      links_entry: {(symbol, strategy): [_LinkRecord sorted by ts_unix]}
+      links_exit:  {(symbol, strategy): [_LinkRecord sorted by ts_unix]}
+      decision_index: {decision_id: _DecisionRecord}
+
+    Fail-open: returns empty indexes if log is missing or unreadable.
+    """
+    links_entry: Dict[Tuple[str, str], List[_LinkRecord]] = defaultdict(list)
+    links_exit: Dict[Tuple[str, str], List[_LinkRecord]] = defaultdict(list)
+    decision_index: Dict[str, _DecisionRecord] = {}
+
+    if not DLE_SHADOW_LOG_PATH.exists():
+        logger.info("B.4: No shadow log found at %s — authority binding skipped", DLE_SHADOW_LOG_PATH)
+        return dict(links_entry), dict(links_exit), decision_index
+
+    try:
+        with open(DLE_SHADOW_LOG_PATH, "r", encoding="utf-8") as fh:
+            for line_no, raw_line in enumerate(fh, 1):
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    evt = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+
+                event_type = evt.get("event_type", "")
+                payload = evt.get("payload", {})
+
+                if event_type == "LINK":
+                    # Prefer payload.ts (B.4 addition), fall back to top-level ts
+                    ts_iso = payload.get("ts") or evt.get("ts", "")
+                    ts_unix = _iso_to_unix(ts_iso)
+                    if ts_unix is None:
+                        continue
+                    rec = _LinkRecord(
+                        ts_unix=ts_unix,
+                        ts_iso=ts_iso,
+                        request_id=payload.get("request_id", ""),
+                        decision_id=payload.get("decision_id", ""),
+                        permit_id=payload.get("permit_id"),
+                        symbol=payload.get("symbol", ""),
+                        action=payload.get("requested_action", ""),
+                        strategy=payload.get("strategy", ""),
+                    )
+                    key = (rec.symbol, rec.strategy)
+                    if rec.action == "ENTRY":
+                        links_entry[key].append(rec)
+                    elif rec.action == "EXIT":
+                        links_exit[key].append(rec)
+                    # Also store in wildcard bucket for fallback
+                    wk = (rec.symbol, "*")
+                    if rec.action == "ENTRY":
+                        links_entry[wk].append(rec)
+                    elif rec.action == "EXIT":
+                        links_exit[wk].append(rec)
+
+                elif event_type == "DECISION":
+                    dec_id = payload.get("decision_id", "")
+                    if dec_id:
+                        decision_index[dec_id] = _DecisionRecord(
+                            decision_id=dec_id,
+                            context_snapshot=payload.get("context_snapshot", {}),
+                            provenance=payload.get("provenance", {}),
+                        )
+    except Exception as e:
+        logger.warning("B.4: Failed to load shadow log: %s — authority binding skipped", e)
+        return {}, {}, {}
+
+    # Sort each bucket by ts_unix for binary search
+    for bucket in links_entry.values():
+        bucket.sort(key=lambda r: r.ts_unix)
+    for bucket in links_exit.values():
+        bucket.sort(key=lambda r: r.ts_unix)
+
+    logger.info(
+        "B.4: Shadow index loaded — %d ENTRY keys, %d EXIT keys, %d DECISION records",
+        len(links_entry), len(links_exit), len(decision_index),
+    )
+    return dict(links_entry), dict(links_exit), decision_index
+
+
+# ---------------------------------------------------------------------------
+# B.4 — Nearest-time matcher (binary search)
+# ---------------------------------------------------------------------------
+
+def _find_nearest_link(
+    ts_unix: float,
+    candidates: List[_LinkRecord],
+    strategy_hint: str,
+    window_narrow: float = MATCH_WINDOW_NARROW_S,
+    window_wide: float = MATCH_WINDOW_WIDE_S,
+) -> Tuple[Optional[_LinkRecord], bool]:
+    """
+    Find the nearest LINK record to *ts_unix* within a time window.
+
+    Returns (matched_record, is_ambiguous).
+    - (None, False): no match within window
+    - (record, False): unique nearest match
+    - (None, True): ambiguous (multiple equidistant candidates)
+    """
+    if not candidates:
+        return None, False
+
+    # Extract sorted ts list for bisect
+    ts_list = [c.ts_unix for c in candidates]
+
+    for window in (window_narrow, window_wide):
+        lo = bisect.bisect_left(ts_list, ts_unix - window)
+        hi = bisect.bisect_right(ts_list, ts_unix + window)
+        window_candidates = candidates[lo:hi]
+        if not window_candidates:
+            continue
+
+        # Sort by distance
+        scored = sorted(window_candidates, key=lambda c: abs(c.ts_unix - ts_unix))
+        best_dist = abs(scored[0].ts_unix - ts_unix)
+
+        # Collect all ties
+        ties = [c for c in scored if abs(abs(c.ts_unix - ts_unix) - best_dist) < 0.001]
+
+        if len(ties) == 1:
+            return ties[0], False
+
+        # Multiple ties — try strategy disambiguation
+        exact_strat = [c for c in ties if c.strategy == strategy_hint]
+        if len(exact_strat) == 1:
+            return exact_strat[0], False
+        elif len(exact_strat) > 1:
+            return None, True  # ambiguous even within same strategy
+        else:
+            return None, True  # ambiguous across strategies
+
+    return None, False
+
+
+# ---------------------------------------------------------------------------
+# B.4 — Deterministic episode UID
+# ---------------------------------------------------------------------------
+
+def _compute_episode_uid(
+    symbol: str,
+    side: str,
+    entry_ts: str,
+    exit_ts: str,
+    total_qty: float,
+    avg_entry_price: float,
+    avg_exit_price: float,
+) -> str:
+    """
+    Stable UID from episode identity fields.
+    Deterministic across rebuilds as long as fill aggregation is stable.
+    """
+    # Round to reasonable tolerance to absorb float jitter
+    payload = json.dumps({
+        "symbol": symbol,
+        "side": side,
+        "entry_ts": entry_ts,
+        "exit_ts": exit_ts,
+        "total_qty": round(total_qty, 6),
+        "avg_entry_price": round(avg_entry_price, 4),
+        "avg_exit_price": round(avg_exit_price, 4),
+    }, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:EPISODE_UID_HASH_LEN]
+    return f"EP_{digest}"
+
+
+# ---------------------------------------------------------------------------
+# B.4 — Regime binding from DECISION context_snapshot
+# ---------------------------------------------------------------------------
+
+def _resolve_regime(
+    authority_ref: AuthorityRef,
+    decision_index: Dict[str, _DecisionRecord],
+) -> str:
+    """
+    Pull regime from DECISION v2 context_snapshot for the given authority ref.
+    Returns regime string or "unknown".
+    """
+    if not authority_ref.decision_id:
+        return "unknown"
+    dec = decision_index.get(authority_ref.decision_id)
+    if dec is None:
+        return "unknown"
+    cs = dec.context_snapshot
+    if not isinstance(cs, dict):
+        return "unknown"
+    regime = cs.get("regime")
+    return str(regime) if regime else "unknown"
+
+
+# ---------------------------------------------------------------------------
+# B.4 — Build V2 episodes with authority binding
+# ---------------------------------------------------------------------------
+
+def _bind_authority(
+    episodes: List[Episode],
+    links_entry: Dict[Tuple[str, str], List[_LinkRecord]],
+    links_exit: Dict[Tuple[str, str], List[_LinkRecord]],
+    decision_index: Dict[str, _DecisionRecord],
+) -> Tuple[List[EpisodeV2], Dict[str, Any]]:
+    """
+    Convert V1 episodes to V2 with authority chain binding.
+
+    Returns (episodes_v2, authority_stats).
+    """
+    episodes_v2: List[EpisodeV2] = []
+    # Stats accumulators
+    entry_bound = 0
+    exit_bound = 0
+    ambiguous_count = 0
+    missing_count = 0
+    permit_null_on_entry = 0
+    max_delta_entry = 0.0
+    max_delta_exit = 0.0
+
+    for ep in episodes:
+        entry_ts_unix = _iso_to_unix(ep.entry_ts)
+        exit_ts_unix = _iso_to_unix(ep.exit_ts)
+
+        # --- Entry authority ---
+        entry_ref = AuthorityRef()
+        entry_missing = True
+        entry_ambiguous = False
+
+        if entry_ts_unix is not None:
+            # Try exact strategy key first, then wildcard
+            for strat_key in [(ep.symbol, ep.strategy), (ep.symbol, "*")]:
+                bucket = links_entry.get(strat_key, [])
+                if not bucket:
+                    continue
+                match, ambig = _find_nearest_link(entry_ts_unix, bucket, ep.strategy)
+                if ambig:
+                    entry_ambiguous = True
+                    break
+                if match is not None:
+                    entry_ref = AuthorityRef(
+                        request_id=match.request_id,
+                        decision_id=match.decision_id,
+                        permit_id=match.permit_id,
+                    )
+                    entry_missing = False
+                    delta = abs(match.ts_unix - entry_ts_unix)
+                    if delta > max_delta_entry:
+                        max_delta_entry = delta
+                    if match.permit_id is None:
+                        permit_null_on_entry += 1
+                    break
+
+        # --- Exit authority ---
+        exit_ref = AuthorityRef()
+        exit_missing = True
+        exit_ambiguous = False
+
+        if exit_ts_unix is not None:
+            for strat_key in [(ep.symbol, ep.strategy), (ep.symbol, "*")]:
+                bucket = links_exit.get(strat_key, [])
+                if not bucket:
+                    continue
+                match, ambig = _find_nearest_link(exit_ts_unix, bucket, ep.strategy)
+                if ambig:
+                    exit_ambiguous = True
+                    break
+                if match is not None:
+                    exit_ref = AuthorityRef(
+                        request_id=match.request_id,
+                        decision_id=match.decision_id,
+                        permit_id=match.permit_id,
+                    )
+                    exit_missing = False
+                    delta = abs(match.ts_unix - exit_ts_unix)
+                    if delta > max_delta_exit:
+                        max_delta_exit = delta
+                    break
+
+        # --- Regime binding from DECISION context_snapshot ---
+        regime_entry = _resolve_regime(entry_ref, decision_index)
+        regime_exit = _resolve_regime(exit_ref, decision_index)
+        regime_bindable = (regime_entry != "unknown" or regime_exit != "unknown")
+
+        # --- Deterministic UID ---
+        episode_uid = _compute_episode_uid(
+            ep.symbol, ep.side, ep.entry_ts, ep.exit_ts,
+            ep.total_qty, ep.avg_entry_price, ep.avg_exit_price,
+        )
+
+        # --- Flags ---
+        flags = AuthorityFlags(
+            entry_missing=entry_missing,
+            exit_missing=exit_missing,
+            entry_ambiguous=entry_ambiguous,
+            exit_ambiguous=exit_ambiguous,
+        )
+
+        # --- Stats ---
+        if not entry_missing:
+            entry_bound += 1
+        if not exit_missing:
+            exit_bound += 1
+        if entry_ambiguous or exit_ambiguous:
+            ambiguous_count += 1
+        if entry_missing or exit_missing:
+            missing_count += 1
+
+        ep_v2 = EpisodeV2(
+            episode_id=ep.episode_id,
+            episode_uid=episode_uid,
+            symbol=ep.symbol,
+            side=ep.side,
+            entry_ts=ep.entry_ts,
+            exit_ts=ep.exit_ts,
+            duration_hours=ep.duration_hours,
+            entry_fills=ep.entry_fills,
+            exit_fills=ep.exit_fills,
+            entry_notional=ep.entry_notional,
+            exit_notional=ep.exit_notional,
+            total_qty=ep.total_qty,
+            avg_entry_price=ep.avg_entry_price,
+            avg_exit_price=ep.avg_exit_price,
+            gross_pnl=ep.gross_pnl,
+            fees=ep.fees,
+            net_pnl=ep.net_pnl,
+            regime_at_entry=regime_entry,
+            regime_at_exit=regime_exit,
+            exit_reason=ep.exit_reason,
+            exit_reason_raw=ep.exit_reason_raw,
+            strategy=ep.strategy,
+            authority_entry=entry_ref,
+            authority_exit=exit_ref,
+            authority_flags=flags,
+            regime_bindable=regime_bindable,
+        )
+        episodes_v2.append(ep_v2)
+
+    total = len(episodes)
+    authority_stats = {
+        "entry_coverage_pct": round(entry_bound / total * 100, 1) if total else 0.0,
+        "exit_coverage_pct": round(exit_bound / total * 100, 1) if total else 0.0,
+        "ambiguous_count": ambiguous_count,
+        "missing_count": missing_count,
+        "permit_null_on_executed_entry_count": permit_null_on_entry,
+        "max_time_delta_s_entry": round(max_delta_entry, 2),
+        "max_time_delta_s_exit": round(max_delta_exit, 2),
+        "episodes_total": total,
+        "entry_bound": entry_bound,
+        "exit_bound": exit_bound,
+    }
+
+    return episodes_v2, authority_stats
 
 
 def _parse_ts(ts_val) -> Optional[datetime]:
@@ -571,8 +1054,32 @@ def build_episode_ledger(
         },
     }
     
+    # -----------------------------------------------------------------------
+    # B.4: Authority binding (shadow — never blocks, fail-open)
+    # -----------------------------------------------------------------------
+    episodes_v2: list = []
+    try:
+        links_entry_idx, links_exit_idx, decision_idx = _load_shadow_indexes()
+        if links_entry_idx or links_exit_idx:
+            episodes_v2, authority_stats = _bind_authority(
+                episodes, links_entry_idx, links_exit_idx, decision_idx,
+            )
+            stats["authority"] = authority_stats
+            logger.info(
+                "B.4: Authority binding complete — entry %.0f%%, exit %.0f%%, %d missing, %d ambiguous",
+                authority_stats["entry_coverage_pct"],
+                authority_stats["exit_coverage_pct"],
+                authority_stats["missing_count"],
+                authority_stats["ambiguous_count"],
+            )
+        else:
+            logger.info("B.4: No LINK events in shadow log — authority binding skipped")
+    except Exception as e:
+        logger.warning("B.4: Authority binding failed (shadow-safe): %s", e)
+
     return EpisodeLedger(
         episodes=episodes,
+        episodes_v2=episodes_v2,
         last_rebuild_ts=datetime.now(timezone.utc).isoformat(),
         stats=stats,
     )
@@ -596,8 +1103,21 @@ def load_episode_ledger() -> Optional[EpisodeLedger]:
             data = json.load(f)
         
         episodes = [Episode(**e) for e in data.get("episodes", [])]
+        # B.4: Load V2 episodes if present (best-effort)
+        episodes_v2: list = []
+        for raw in data.get("episodes_v2", []):
+            try:
+                # Flatten nested authority back to dataclass shape
+                auth = raw.pop("authority", {})
+                raw["authority_entry"] = AuthorityRef(**auth.get("entry", {}))
+                raw["authority_exit"] = AuthorityRef(**auth.get("exit", {}))
+                raw["authority_flags"] = AuthorityFlags(**raw.pop("authority_flags", {}))
+                episodes_v2.append(EpisodeV2(**raw))
+            except Exception:
+                continue  # skip malformed v2 entries
         return EpisodeLedger(
             episodes=episodes,
+            episodes_v2=episodes_v2,
             last_rebuild_ts=data.get("last_rebuild_ts", ""),
             stats=data.get("stats", {}),
         )

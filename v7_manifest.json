@@ -93,12 +93,47 @@
       "owner": "episode_ledger",
       "update_frequency": "on_demand",
       "optional": true,
-      "description": "Completed trade cycles derived from execution logs — read-only observability",
+      "description": "Completed trade cycles derived from execution logs — read-only observability. V2 adds authority chain binding (B.4).",
       "fields": {
-        "episodes": "Array of completed Episode objects with entry/exit/pnl/fees/duration",
+        "episodes": "Array of V1 Episode objects (backward compatible — 21 fields)",
+        "schema_version": "str|absent — 'episode_ledger_v2' when V2 episodes present",
+        "episodes_v2": "Array|absent — V2 episodes with authority chain + deterministic UID",
         "last_rebuild_ts": "ISO timestamp of last ledger rebuild",
-        "stats": "Aggregate stats: total_net_pnl, win_rate, avg_duration, exit_reasons",
-        "episode_count": "Number of completed episodes"
+        "stats": "Aggregate stats: total_net_pnl, win_rate, exit_reasons, reconciliation, authority",
+        "episode_count": "Number of completed episodes (V1)"
+      },
+      "episode_v2_fields": {
+        "episode_id": "str — sequential EP_NNNN (backward compat, not stable across rebuilds)",
+        "episode_uid": "str — EP_<sha256_12> deterministic from (symbol, side, entry_ts, exit_ts, qty, prices)",
+        "authority": {
+          "entry": "{ request_id, decision_id, permit_id } — from nearest ENTRY LINK event",
+          "exit":  "{ request_id, decision_id, permit_id } — from nearest EXIT LINK event"
+        },
+        "authority_flags": {
+          "entry_missing": "bool — no ENTRY LINK found within matching window",
+          "exit_missing": "bool — no EXIT LINK found within matching window",
+          "entry_ambiguous": "bool — multiple equidistant ENTRY LINK candidates",
+          "exit_ambiguous": "bool — multiple equidistant EXIT LINK candidates"
+        },
+        "regime_at_entry": "str — from DECISION v2 context_snapshot.regime (or 'unknown')",
+        "regime_at_exit": "str — from DECISION v2 context_snapshot.regime (or 'unknown')",
+        "regime_bindable": "bool — true if at least one regime resolved from DECISION"
+      },
+      "authority_stats": {
+        "entry_coverage_pct": "float — % of episodes with entry authority bound",
+        "exit_coverage_pct": "float — % of episodes with exit authority bound",
+        "ambiguous_count": "int — episodes with at least one ambiguous binding",
+        "missing_count": "int — episodes with at least one missing binding",
+        "permit_null_on_executed_entry_count": "int — SHADOW_INCONSISTENCY: permit_id null on executed entry",
+        "max_time_delta_s_entry": "float — worst-case time gap for entry binding",
+        "max_time_delta_s_exit": "float — worst-case time gap for exit binding"
+      },
+      "matching_algorithm": {
+        "method": "nearest-in-time binary search on LINK events",
+        "narrow_window_s": 120,
+        "wide_window_s": 600,
+        "disambiguation": "prefer exact strategy match; fail as ambiguous if tied",
+        "fail_behavior": "explicit flags, never guess"
       }
     },
     "meta_scheduler": {
@@ -776,6 +811,7 @@
         "ttl_enforcement": "Phase A: recorded only. Phase B: enforcement TBD."
       },
       "payload_fields_link": {
+        "ts": "str — ISO 8601 timestamp (redundant with top-level ts, added B.4 for join convenience)",
         "request_id": "str — cross-reference",
         "decision_id": "str — cross-reference",
         "permit_id": "str|null — cross-reference (null when verdict=DENY, no permit issued)",

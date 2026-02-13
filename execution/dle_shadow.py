@@ -368,6 +368,7 @@ def shadow_build_chain(
             event_type="LINK",
             ts=ts,
             payload={
+                "ts": ts,
                 "request_id": request_id,
                 "decision_id": decision_id,
                 "permit_id": permit_id if not _is_deny else None,
