@@ -35,6 +35,8 @@ from collections import defaultdict
 
 from dateutil import parser as dateparser
 
+from execution.exit_reason_normalizer import normalize_exit_reason as _normalize_exit
+
 logger = logging.getLogger(__name__)
 
 # State file path
@@ -74,7 +76,8 @@ class Episode:
     # Context
     regime_at_entry: str
     regime_at_exit: str
-    exit_reason: str  # tp, sl, thesis, regime_flip, unknown
+    exit_reason: str  # Canonical DLE exit reason (TAKE_PROFIT, STOP_LOSS, etc.)
+    exit_reason_raw: str = ""  # Original raw exit reason for provenance
     
     # Metadata
     strategy: str = "unknown"
@@ -442,7 +445,8 @@ def build_episode_ledger(
                         duration_hours = (exit_dt - entry_dt).total_seconds() / 3600
 
                     # Exit reason from last exit fill
-                    exit_reason = _extract_exit_reason(last_exit)
+                    _raw_reason = _extract_exit_reason(last_exit)
+                    _norm = _normalize_exit(_raw_reason, source="episode_ledger")
                     
                     episode = Episode(
                         episode_id=f"EP_{episode_counter:04d}",
@@ -463,7 +467,8 @@ def build_episode_ledger(
                         net_pnl=round(net_pnl, 4),
                         regime_at_entry="unknown",  # Would need doctrine correlation
                         regime_at_exit="unknown",
-                        exit_reason=exit_reason,
+                        exit_reason=_norm.canonical,
+                        exit_reason_raw=_norm.raw,
                         strategy=_extract_strategy(entry_fills[0]) if entry_fills else "unknown",
                     )
                     episodes.append(episode)
@@ -550,11 +555,8 @@ def build_episode_ledger(
         "max_drawdown_pct": max_dd_pct,
         "max_drawdown_abs": round(max_dd_abs, 2),
         "exit_reasons": {
-            "tp": len([e for e in episodes if e.exit_reason == "tp"]),
-            "sl": len([e for e in episodes if e.exit_reason == "sl"]),
-            "thesis": len([e for e in episodes if e.exit_reason == "thesis"]),
-            "regime_flip": len([e for e in episodes if e.exit_reason == "regime_flip"]),
-            "unknown": len([e for e in episodes if e.exit_reason == "unknown"]),
+            reason: len([e for e in episodes if e.exit_reason == reason])
+            for reason in sorted(set(e.exit_reason for e in episodes))
         },
         # Cross-check from exit metadata (more robust for partial fills)
         "metadata_pnl": meta_pnl,

@@ -12,6 +12,11 @@ from execution.episode_ledger import (
     _parse_ts,
     _extract_exit_reason,
 )
+from execution.exit_reason_normalizer import _ensure_loaded as _preload_exit_map
+
+# Pre-load the exit reason YAML map so that mock_open in tests
+# does not intercept the config file read.
+_preload_exit_map()
 
 
 class TestEpisode:
@@ -244,7 +249,8 @@ class TestBuildLedger:
                 
                 ep = ledger.episodes[0]
                 assert ep.symbol == "BTCUSDT"
-                assert ep.exit_reason == "regime_flip"
+                assert ep.exit_reason == "REGIME_CHANGE"
+                assert ep.exit_reason_raw == "regime_flip"
                 
                 # PnL should be calculated: (89000 - 90000) * 0.01 = -10.0
                 assert ep.gross_pnl == -10.0

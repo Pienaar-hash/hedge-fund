@@ -28,6 +28,7 @@ from execution.diagnostics_metrics import (
     record_exit_trigger,
     update_exit_pipeline_status,
 )
+from execution.exit_reason_normalizer import normalize_exit_reason
 
 # Cycle statistics (non-invasive, observational only)
 try:
@@ -376,8 +377,12 @@ def build_doctrine_exit_intent(candidate: DoctrineExitCandidate) -> Dict[str, An
     # For closing a LONG position, we SELL. For SHORT, we BUY.
     close_side = "SELL" if candidate.position_side == "LONG" else "BUY"
     
+    _norm = normalize_exit_reason(candidate.exit_reason, source="doctrine_kernel")
+
     exit_block = {
-        "reason": candidate.exit_reason,
+        "reason": _norm.canonical,
+        "reason_raw": _norm.raw,
+        "reason_source": "doctrine_kernel",
         "urgency": candidate.urgency,
         "trigger_price": candidate.trigger_price,
         "entry_price": candidate.entry_price,
@@ -391,7 +396,9 @@ def build_doctrine_exit_intent(candidate: DoctrineExitCandidate) -> Dict[str, An
     
     metadata = {
         "strategy": "doctrine_exit",
-        "exit_reason": candidate.exit_reason,
+        "exit_reason": _norm.canonical,
+        "exit_reason_raw": _norm.raw,
+        "exit_source": "doctrine_kernel",
         "exit_urgency": candidate.urgency,
         "trigger_price": candidate.trigger_price,
         "entry_price": candidate.entry_price,
@@ -757,8 +764,12 @@ def build_exit_intent(candidate: ExitCandidate) -> Dict[str, Any]:
 
     # For closing a LONG position, we SELL. For SHORT, we BUY.
     close_side = "SELL" if candidate.position_side == "LONG" else "BUY"
+    _norm = normalize_exit_reason(candidate.exit_reason.value, source="seatbelt")
+
     exit_block = {
-        "reason": candidate.exit_reason.value,
+        "reason": _norm.canonical,
+        "reason_raw": _norm.raw,
+        "reason_source": "seatbelt",
         "trigger_price": candidate.trigger_price,
         "tp_price": candidate.tp_price,
         "sl_price": candidate.sl_price,
@@ -767,7 +778,9 @@ def build_exit_intent(candidate: ExitCandidate) -> Dict[str, Any]:
     }
     metadata = {
         "strategy": "vol_target_exit",
-        "exit_reason": candidate.exit_reason.value,
+        "exit_reason": _norm.canonical,
+        "exit_reason_raw": _norm.raw,
+        "exit_source": "seatbelt",
         "trigger_price": candidate.trigger_price,
         "tp_price": candidate.tp_price,
         "sl_price": candidate.sl_price,

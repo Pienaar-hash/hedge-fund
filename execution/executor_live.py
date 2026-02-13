@@ -1079,6 +1079,16 @@ except Exception as exc:
 
 _publish_startup_heartbeat(_startup_flags_snapshot)
 
+# --- Exit reason normalization: verify doctrine coverage at startup ---
+try:
+    from execution.exit_reason_normalizer import verify_doctrine_coverage
+    verify_doctrine_coverage()
+    LOG.info("[startup] EXIT_REASON_MAP_OK — all doctrine exit reasons mapped to canonical")
+except ValueError as exc:
+    LOG.error("[startup] EXIT_REASON_MAP_DRIFT — %s", exc)
+except Exception as exc:
+    LOG.warning("[startup] exit reason coverage check failed: %s", exc)
+
 
 def _sync_dry_run() -> None:
     global DRY_RUN

@@ -370,7 +370,9 @@ class TestBuildExitIntent:
         assert intent["positionSide"] == "LONG"
         assert intent["quantity"] == 0.5
         assert intent["metadata"]["strategy"] == "vol_target_exit"
-        assert intent["metadata"]["exit_reason"] == "tp"
+        assert intent["metadata"]["exit_reason"] == "TAKE_PROFIT"
+        assert intent["metadata"]["exit_reason_raw"] == "tp"
+        assert intent["metadata"]["exit_source"] == "seatbelt"
         assert intent["metadata"]["trigger_price"] == 56000.0
 
     def test_short_exit_intent(self):
@@ -390,7 +392,9 @@ class TestBuildExitIntent:
         
         assert intent["signal"] == "BUY"
         assert intent["positionSide"] == "SHORT"
-        assert intent["metadata"]["exit_reason"] == "sl"
+        assert intent["metadata"]["exit_reason"] == "STOP_LOSS"
+        assert intent["metadata"]["exit_reason_raw"] == "sl"
+        assert intent["metadata"]["exit_source"] == "seatbelt"
 
     def test_intent_has_timestamp(self):
         candidate = ExitCandidate(

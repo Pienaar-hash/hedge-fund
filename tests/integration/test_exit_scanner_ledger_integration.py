@@ -224,7 +224,9 @@ class TestBuildExitIntent:
         assert intent["reduceOnly"] is True
         assert intent["positionSide"] == "LONG"
         assert intent["quantity"] == 0.5
-        assert intent["metadata"]["exit_reason"] == "sl"
+        assert intent["metadata"]["exit_reason"] == "STOP_LOSS"
+        assert intent["metadata"]["exit_reason_raw"] == "sl"
+        assert intent["metadata"]["exit_source"] == "seatbelt"
         assert intent["metadata"]["trigger_price"] == 46000.0
 
     def test_build_exit_intent_for_short_tp(self):
@@ -247,7 +249,9 @@ class TestBuildExitIntent:
         assert intent["reduceOnly"] is True
         assert intent["positionSide"] == "SHORT"
         assert intent["quantity"] == 2.0
-        assert intent["metadata"]["exit_reason"] == "tp"
+        assert intent["metadata"]["exit_reason"] == "TAKE_PROFIT"
+        assert intent["metadata"]["exit_reason_raw"] == "tp"
+        assert intent["metadata"]["exit_source"] == "seatbelt"
 
 
 class TestLegacyFallback:
