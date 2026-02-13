@@ -20,7 +20,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 SCHEMA_VERSION = "dle_shadow_v1"
-DEFAULT_LOG_PATH = "logs/dle/dle_events_v1.jsonl"
+SCHEMA_VERSION_V2 = "dle_shadow_v2"
+# Canonical path — MUST match v7_manifest.json → dle_shadow_events.path
+DEFAULT_LOG_PATH = "logs/execution/dle_shadow_events.jsonl"
+
+# Manifest-declared path (used by startup invariant)
+MANIFEST_LOG_PATH = "logs/execution/dle_shadow_events.jsonl"
 
 
 # -----------------------
@@ -180,6 +185,12 @@ def shadow_build_chain(
     constraints: Dict[str, Any],
     risk: Dict[str, Any],
     authority_source: str = "DOCTRINE",
+    # B.2 enrichment (optional — backward compatible)
+    verdict: Optional[str] = None,           # PERMIT | DENY
+    deny_reason: Optional[str] = None,       # canonical doctrine veto code
+    doctrine_verdict: Optional[str] = None,  # raw DoctrineVerdict enum value
+    context_snapshot: Optional[Dict[str, Any]] = None,  # regime, nav_usd, hashes
+    provenance: Optional[Dict[str, Any]] = None,        # engine_version, git_sha, docs_version
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Build and optionally log a complete DLE chain (Request → Decision → Permit → Link).
@@ -192,6 +203,12 @@ def shadow_build_chain(
     - Never prevents orders
     - Fail-open on errors (stderr warning, continue)
     - Deterministic IDs for replay (except permit_id which includes timestamp)
+    
+    B.2 enrichment fields (when provided):
+    - verdict/deny_reason/doctrine_verdict: canonical shadow semantics
+    - context_snapshot: regime + NAV + position/score hashes
+    - provenance: engine_version + git_sha + docs_version
+    When any enrichment field is present, DECISION event uses schema_version v2.
     """
     if not enabled:
         return (None, None, None)
@@ -261,6 +278,22 @@ def shadow_build_chain(
     if not write_logs:
         return (request_id, decision_id, permit_id)
 
+    # Build enriched DECISION payload (B.2)
+    decision_payload = asdict(dec)
+    _has_enrichment = any(x is not None for x in (verdict, deny_reason, doctrine_verdict, context_snapshot, provenance))
+    if _has_enrichment:
+        if verdict is not None:
+            decision_payload["verdict"] = verdict
+        if deny_reason is not None:
+            decision_payload["deny_reason"] = deny_reason
+        if doctrine_verdict is not None:
+            decision_payload["doctrine_verdict"] = doctrine_verdict
+        if context_snapshot is not None:
+            decision_payload["context_snapshot"] = context_snapshot
+        if provenance is not None:
+            decision_payload["provenance"] = provenance
+    _decision_schema = SCHEMA_VERSION_V2 if _has_enrichment else SCHEMA_VERSION
+
     # Write events (fail-open)
     try:
         w = writer or DLEShadowWriter()
@@ -271,10 +304,10 @@ def shadow_build_chain(
             payload=asdict(req),
         ))
         w.write(DLEShadowEvent(
-            schema_version=SCHEMA_VERSION,
+            schema_version=_decision_schema,
             event_type="DECISION",
             ts=ts,
-            payload=asdict(dec),
+            payload=decision_payload,
         ))
         w.write(DLEShadowEvent(
             schema_version=SCHEMA_VERSION,
@@ -322,3 +355,21 @@ def reset_shadow_writer() -> None:
     """Reset global instance (for testing only)."""
     global _shadow_writer
     _shadow_writer = None
+
+
+# -----------------------
+# Path invariant (B.2c)
+# -----------------------
+
+def verify_shadow_log_path() -> None:
+    """
+    Startup invariant: assert DEFAULT_LOG_PATH == MANIFEST_LOG_PATH.
+
+    Raises ValueError if the writer would emit to a non-manifest path.
+    Called once during executor startup — fail-loud (not fail-open).
+    """
+    if DEFAULT_LOG_PATH != MANIFEST_LOG_PATH:
+        raise ValueError(
+            f"DLE shadow log path mismatch: writer={DEFAULT_LOG_PATH!r} "
+            f"manifest={MANIFEST_LOG_PATH!r}"
+        )

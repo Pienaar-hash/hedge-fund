@@ -42,7 +42,7 @@ from execution.exchange_utils import get_price
 import requests
 from execution.intel.router_policy import router_policy
 from execution.v6_flags import get_flags, flags_to_dict, log_v6_flag_snapshot
-from execution.dle_shadow import shadow_build_chain, DLEShadowWriter
+from execution.dle_shadow import shadow_build_chain, DLEShadowWriter, hash_snapshot as _dle_hash_snapshot
 from execution.loop_timing import (
     is_enabled as timing_enabled,
     start_loop as timing_start_loop,
@@ -174,6 +174,56 @@ def _get_dle_writer() -> DLEShadowWriter | None:
     if _DLE_WRITER is None:
         _DLE_WRITER = DLEShadowWriter()  # Uses default log path
     return _DLE_WRITER
+
+
+def _dle_enrichment(
+    *,
+    allowed: bool,
+    doctrine_reason: str,
+    doctrine_details: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    """Build B.2 DLE enrichment kwargs for shadow_build_chain().
+
+    Returns a dict that can be unpacked as **kwargs.
+    Safe: never raises, returns empty dict on failure.
+    """
+    try:
+        details = doctrine_details or {}
+        regime = str(details.get("regime", ""))
+        confidence = details.get("confidence")
+        # NAV from last cached state
+        nav_usd: float | None = None
+        try:
+            nav_usd = float((_LAST_NAV_STATE.get("nav_detail") or _LAST_NAV_STATE or {}).get("nav_total", 0) or 0)
+        except Exception:
+            pass
+        # Position / score hashes (lightweight)
+        positions_hash = _dle_hash_snapshot("positions", _LAST_POSITIONS_STATE)
+        scores_hash = _dle_hash_snapshot("scores", _LAST_SYMBOL_SCORES_STATE)
+        context_snapshot: Dict[str, Any] = {
+            "regime": regime,
+        }
+        if confidence is not None:
+            context_snapshot["regime_confidence"] = confidence
+        if nav_usd is not None:
+            context_snapshot["nav_usd"] = nav_usd
+        context_snapshot["positions_hash"] = positions_hash
+        context_snapshot["scores_hash"] = scores_hash
+
+        provenance: Dict[str, Any] = {
+            "engine_version": _ENGINE_VERSION,
+            "git_sha": _git_commit(),
+            "docs_version": "v7.9",
+        }
+        return {
+            "verdict": "PERMIT" if allowed else "DENY",
+            "deny_reason": doctrine_reason if not allowed else None,
+            "doctrine_verdict": doctrine_reason,
+            "context_snapshot": context_snapshot,
+            "provenance": provenance,
+        }
+    except Exception:
+        return {}
 
 
 def get_v6_flag_snapshot() -> Dict[str, bool]:
@@ -1088,6 +1138,16 @@ except ValueError as exc:
     LOG.error("[startup] EXIT_REASON_MAP_DRIFT — %s", exc)
 except Exception as exc:
     LOG.warning("[startup] exit reason coverage check failed: %s", exc)
+
+# --- DLE shadow: verify log path matches manifest ---
+try:
+    from execution.dle_shadow import verify_shadow_log_path
+    verify_shadow_log_path()
+    LOG.info("[startup] DLE_SHADOW_PATH_OK — writer path matches manifest")
+except ValueError as exc:
+    LOG.error("[startup] DLE_SHADOW_PATH_DRIFT — %s", exc)
+except Exception as exc:
+    LOG.warning("[startup] DLE shadow path check failed: %s", exc)
 
 
 def _sync_dry_run() -> None:
@@ -2731,6 +2791,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         if dle_writer:
             try:
                 flags = get_flags()
+                _enrich = _dle_enrichment(allowed=False, doctrine_reason=doctrine_reason, doctrine_details=doctrine_details)
                 shadow_build_chain(
                     enabled=flags.shadow_dle_enabled,
                     write_logs=flags.shadow_dle_write_logs,
@@ -2754,6 +2815,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     constraints={"verdict": "DENY", "reason": doctrine_reason},
                     risk=doctrine_details or {},
                     authority_source="DOCTRINE",
+                    **_enrich,
                 )
             except Exception as exc:
                 LOG.debug("[dle_shadow] entry_deny hook failed: %s", exc)
@@ -2832,6 +2894,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         if dle_writer:
             try:
                 flags = get_flags()
+                _enrich = _dle_enrichment(allowed=True, doctrine_reason=doctrine_reason, doctrine_details=doctrine_details)
                 shadow_build_chain(
                     enabled=flags.shadow_dle_enabled,
                     write_logs=flags.shadow_dle_write_logs,
@@ -2856,6 +2919,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     constraints={"verdict": "ALLOW"},
                     risk=doctrine_details or {},
                     authority_source="DOCTRINE",
+                    **_enrich,
                 )
             except Exception as exc:
                 LOG.debug("[dle_shadow] entry_allow hook failed: %s", exc)
@@ -4810,6 +4874,7 @@ def _loop_once(i: int) -> None:
             if dle_writer:
                 try:
                     flags = get_flags()
+                    _exit_enrich = _dle_enrichment(allowed=True, doctrine_reason="EXIT_ALLOW", doctrine_details={})
                     shadow_build_chain(
                         enabled=flags.shadow_dle_enabled,
                         write_logs=flags.shadow_dle_write_logs,
@@ -4833,6 +4898,7 @@ def _loop_once(i: int) -> None:
                         constraints={"verdict": "ALLOW", "reason": str(candidate.exit_reason)},
                         risk={},
                         authority_source="DOCTRINE",
+                        **_exit_enrich,
                     )
                 except Exception as exc:
                     LOG.debug("[dle_shadow] exit hook failed: %s", exc)

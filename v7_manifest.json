@@ -723,17 +723,53 @@
       "owner": "dle_shadow",
       "update_frequency": "per_cycle",
       "optional": true,
-      "description": "DLE shadow gate verdicts — observation-only, never blocks execution (Phase A). Append-only.",
+      "description": "DLE shadow chain (REQUEST → DECISION → PERMIT → LINK) — observation-only, never blocks execution (Phase A). Append-only. Schema v2 adds context_snapshot + provenance.",
+      "schema_version": "dle_shadow_v2",
+      "event_types": ["REQUEST", "DECISION", "PERMIT", "LINK"],
       "fields": {
+        "schema_version": "str — dle_shadow_v1 | dle_shadow_v2",
         "ts": "str — ISO 8601 timestamp",
-        "event_type": "shadow_verdict | shadow_mismatch",
-        "decision_id": "str — DEC_<hex16> shadow decision identifier",
+        "event_type": "str — REQUEST | DECISION | PERMIT | LINK",
+        "payload": "dict — event-type-specific payload (see below)"
+      },
+      "payload_fields_decision": {
+        "decision_id": "str — DEC_<hex16> deterministic from (phase_id, action_class, constraints, policy_version)",
+        "authority_source": "str — DOCTRINE | MANUAL_OVERRIDE | ESCALATION_RESOLUTION",
+        "phase_id": "str — current cycle (e.g. CYCLE_004)",
+        "action_class": "str — ENTRY_ALLOW | ENTRY_DENY | EXIT_ALLOW",
+        "policy_version": "str — engine version string",
+        "scope": "dict — { symbol }",
+        "constraints": "dict — { verdict, reason? }",
+        "risk": "dict — doctrine decision details",
+        "verdict": "str — PERMIT | DENY (canonical shadow semantics)",
+        "deny_reason": "str|null — doctrine veto code when verdict=DENY",
+        "doctrine_verdict": "str — raw DoctrineVerdict enum value",
+        "context_snapshot": "dict — { regime, regime_confidence, nav_usd?, positions_hash, scores_hash? }",
+        "provenance": "dict — { engine_version, git_sha, docs_version }"
+      },
+      "payload_fields_request": {
+        "request_id": "str — attempt_id or REQ_<hex16> derived from payload",
+        "requested_action": "str — ENTRY | EXIT",
         "symbol": "str — trading pair",
-        "direction": "str — LONG | SHORT",
-        "verdict": "str — PERMIT | DENY",
-        "deny_reason": "str|null — canonical denial code when verdict=DENY",
-        "doctrine_verdict": "str — actual doctrine kernel verdict for comparison",
-        "mismatch": "bool — true if shadow and doctrine verdicts diverge"
+        "side": "str — BUY | SELL",
+        "strategy": "str — strategy/head name",
+        "qty_intent": "float|null — intended USD notional",
+        "context": "dict — call-site-specific context"
+      },
+      "payload_fields_permit": {
+        "permit_id": "str — PERM_<hex16> derived from (decision_id, request_id, ts)",
+        "decision_id": "str — parent decision reference",
+        "request_id": "str — parent request reference",
+        "single_use": "bool — always true in Phase A",
+        "snapshots": "dict — { positions_state_hash, regime_state_hash, config_hash }"
+      },
+      "payload_fields_link": {
+        "request_id": "str — cross-reference",
+        "decision_id": "str — cross-reference",
+        "permit_id": "str — cross-reference",
+        "symbol": "str — trading pair",
+        "requested_action": "str — ENTRY | EXIT",
+        "strategy": "str — strategy/head name"
       }
     },
     "environment_meta": {
