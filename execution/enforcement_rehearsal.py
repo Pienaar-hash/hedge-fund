@@ -459,11 +459,118 @@ def get_rehearsal_metrics() -> Dict[str, Any]:
         return _metrics.to_dict()
 
 
+# ---------------------------------------------------------------------------
+# Phase C readiness surface
+# ---------------------------------------------------------------------------
+
+_READINESS_STATE_PATH = Path("logs/state/phase_c_readiness.json")
+_WINDOW_DAYS_REQUIRED = 14
+_WOULD_BLOCK_PCT_THRESHOLD = 0.1  # 0.1%
+_EXPIRED_THRESHOLD = 0
+_MISSING_THRESHOLD = 0
+
+# Breach tracking (in-memory, reset on restart — actual persistence is in state file)
+_last_breach_ts: Optional[str] = None
+_last_breach_reason: Optional[str] = None
+_window_start_ts: Optional[str] = None
+
+
+def compute_phase_c_readiness() -> Dict[str, Any]:
+    """
+    Build the Phase C readiness payload from current rehearsal metrics.
+
+    This is called from the executor's state-publish cycle and written to
+    logs/state/phase_c_readiness.json.
+
+    Readiness is True when ALL criteria are met:
+      - would_block_pct < 0.1%
+      - expired_permit_count == 0
+      - missing_permit_count == 0
+      - 14 consecutive days sustained (tracked via window_start)
+
+    Fail-open: returns a safe payload on any error.
+    """
+    global _last_breach_ts, _last_breach_reason, _window_start_ts
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    metrics_snap = get_rehearsal_metrics()
+
+    # Evaluate gate criteria
+    would_block_pct = metrics_snap.get("would_block_pct", 0.0)
+    expired = metrics_snap.get("expired_permit_count", 0)
+    missing = metrics_snap.get("missing_permit_count", 0)
+    total = metrics_snap.get("total_orders", 0)
+    rehearsal_enabled = metrics_snap.get("enabled", False)
+
+    breaches: list[str] = []
+    if would_block_pct >= _WOULD_BLOCK_PCT_THRESHOLD:
+        breaches.append(f"would_block_pct={would_block_pct:.2f}% >= {_WOULD_BLOCK_PCT_THRESHOLD}%")
+    if expired > _EXPIRED_THRESHOLD:
+        breaches.append(f"expired_permit_count={expired} > {_EXPIRED_THRESHOLD}")
+    if missing > _MISSING_THRESHOLD:
+        breaches.append(f"missing_permit_count={missing} > {_MISSING_THRESHOLD}")
+    if not rehearsal_enabled:
+        breaches.append("rehearsal_disabled")
+    if total == 0:
+        breaches.append("no_orders_evaluated")
+
+    criteria_met_now = len(breaches) == 0
+
+    if not criteria_met_now:
+        _last_breach_ts = now_iso
+        _last_breach_reason = "; ".join(breaches)
+        _window_start_ts = None  # reset window
+    elif _window_start_ts is None:
+        # First clean tick — start the window
+        _window_start_ts = now_iso
+
+    # Calculate window days
+    window_days_met = 0
+    if _window_start_ts is not None:
+        try:
+            from dateutil import parser as dp
+            start = dp.parse(_window_start_ts)
+            now = dp.parse(now_iso)
+            window_days_met = max(0, (now - start).days)
+        except Exception:
+            window_days_met = 0
+
+    gate_satisfied = criteria_met_now and window_days_met >= _WINDOW_DAYS_REQUIRED
+
+    return {
+        "window_days_required": _WINDOW_DAYS_REQUIRED,
+        "window_days_met": window_days_met,
+        "window_start_ts": _window_start_ts,
+        "criteria_met": criteria_met_now,
+        "gate_satisfied": gate_satisfied,
+        "last_breach_ts": _last_breach_ts,
+        "breach_reason": _last_breach_reason,
+        "current_metrics": {
+            "would_block_pct": would_block_pct,
+            "expired_permit_count": expired,
+            "missing_permit_count": missing,
+            "total_orders": total,
+            "ok_count": metrics_snap.get("ok_count", 0),
+        },
+        "thresholds": {
+            "would_block_pct": _WOULD_BLOCK_PCT_THRESHOLD,
+            "expired_permit_count": _EXPIRED_THRESHOLD,
+            "missing_permit_count": _MISSING_THRESHOLD,
+        },
+        "rehearsal_enabled": rehearsal_enabled,
+        "updated_ts": now_iso,
+    }
+
+
 def reset_rehearsal() -> None:
     """Reset global state (for testing only)."""
     global _rehearsal_writer, _permit_index, _metrics, _index_loaded, _enabled
+    global _last_breach_ts, _last_breach_reason, _window_start_ts
     _rehearsal_writer = None
     _permit_index = {}
     _metrics = RehearsalMetrics()
     _index_loaded = False
     _enabled = False
+    _last_breach_ts = None
+    _last_breach_reason = None
+    _window_start_ts = None

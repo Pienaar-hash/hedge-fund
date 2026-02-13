@@ -2514,6 +2514,13 @@ def get_exit_plan(symbol: str, position_side: str) -> dict | None:
     return snap.to_dict() if getattr(snap, "exists", False) else None
 
 
+def write_phase_c_readiness_state(
+    payload: Dict[str, Any], state_dir: pathlib.Path | None = None
+) -> None:
+    """Write Phase C readiness snapshot to logs/state/phase_c_readiness.json."""
+    _write_state_file("phase_c_readiness.json", payload, state_dir)
+
+
 def publish_exit_event(symbol: str, position_side: str, event: dict) -> None:
     now = time.time()
     ev = dict(event)

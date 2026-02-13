@@ -858,6 +858,36 @@
         "description": "Phase C enforcement requires all thresholds met for 14 consecutive days"
       }
     },
+    "phase_c_readiness": {
+      "path": "logs/state/phase_c_readiness.json",
+      "owner": "enforcement_rehearsal",
+      "update_frequency": "every_pub_tick",
+      "optional": true,
+      "description": "Phase C enforcement readiness — gate criteria tracking for ops + dashboard",
+      "fields": {
+        "window_days_required": "int — consecutive clean days required (14)",
+        "window_days_met": "int — consecutive clean days achieved so far",
+        "window_start_ts": "str|null — ISO 8601 when current clean window started",
+        "criteria_met": "bool — whether all thresholds satisfied right now",
+        "gate_satisfied": "bool — criteria_met AND window_days_met >= window_days_required",
+        "last_breach_ts": "str|null — ISO 8601 of last breach",
+        "breach_reason": "str|null — description of last breach",
+        "current_metrics": {
+          "would_block_pct": "float — percentage of orders that would have been blocked",
+          "expired_permit_count": "int — blocked due to expired permit",
+          "missing_permit_count": "int — blocked due to no permit found",
+          "total_orders": "int — total orders evaluated",
+          "ok_count": "int — orders with valid permit"
+        },
+        "thresholds": {
+          "would_block_pct": "float — max allowed (0.1%)",
+          "expired_permit_count": "int — max allowed (0)",
+          "missing_permit_count": "int — max allowed (0)"
+        },
+        "rehearsal_enabled": "bool — whether B.5 rehearsal is active",
+        "updated_ts": "str — ISO 8601 last write"
+      }
+    },
     "environment_meta": {
       "path": "logs/state/environment_meta.json",
       "owner": "reset_guard",

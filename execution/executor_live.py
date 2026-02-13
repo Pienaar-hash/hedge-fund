@@ -4794,8 +4794,18 @@ def _pub_tick() -> None:
         synced_written = True
     except Exception as exc:
         LOG.error("[telemetry] synced_state_write_failed: %s", exc)
+    # B.5: Phase C readiness state surface (shadow-only, fail-open)
+    phase_c_written = False
+    try:
+        from execution.enforcement_rehearsal import compute_phase_c_readiness
+        from execution.state_publish import write_phase_c_readiness_state
+        readiness_payload = compute_phase_c_readiness()
+        write_phase_c_readiness_state(readiness_payload)
+        phase_c_written = True
+    except Exception as exc:
+        LOG.debug("[telemetry] phase_c_readiness_write_failed: %s", exc)
     LOG.info(
-        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s",
+        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s",
         nav_written,
         positions_state_written,
         positions_ledger_written,
@@ -4805,6 +4815,7 @@ def _pub_tick() -> None:
         diagnostics_written,
         engine_meta_written,
         synced_written,
+        phase_c_written,
     )
     _LAST_NAV_STATE = nav_payload
     _LAST_POSITIONS_STATE = positions_state_payload
