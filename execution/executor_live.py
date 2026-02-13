@@ -2781,6 +2781,41 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     intent["attempt_id"] = attempt_id
     intent["intent_id"] = intent_id
 
+    # ── v7.9-E2: Churn Guard ──────────────────────────────────────────────
+    try:
+        from execution.churn_guard import (
+            check_entry_allowed,
+            check_exit_allowed,
+        )
+
+        if reduce_only:
+            # Exit gate: min_hold check
+            _meta = intent.get("metadata") or {}
+            exit_reason = str(
+                _meta.get("exit_reason", "")
+                or (_meta.get("exit") or {}).get("reason", "")
+                or ""
+            )
+            cg_allowed, cg_reason = check_exit_allowed(
+                symbol_upper, pos_side or "", exit_reason=exit_reason,
+            )
+            if not cg_allowed:
+                LOG.info("[churn_guard] EXIT VETO %s %s: %s", symbol_upper, pos_side, cg_reason)
+                return
+        else:
+            # Entry gate: cooldown check
+            cg_allowed, cg_reason = check_entry_allowed(symbol_upper, pos_side or "")
+            if not cg_allowed:
+                LOG.info("[churn_guard] ENTRY VETO %s %s: %s", symbol_upper, pos_side, cg_reason)
+                return
+    except ImportError:
+        pass  # Module not yet available — safe to skip
+    except Exception as _cg_exc:
+        LOG.debug("[churn_guard] check failed: %s", _cg_exc)
+
+    # ── v7.9-E2: Fee-Aware Edge Gate → positioned after risk checks ──────
+    # (see post-risk-veto section below)
+
     # === DLE Shadow Hook: ENTRY ALLOW ===
     if not reduce_only:
         dle_writer = _get_dle_writer()
@@ -3283,6 +3318,55 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         except Exception as exc:
             LOG.error("[executor] price_fetch_err %s %s", symbol, exc)
             return
+
+    # ── v7.9-E2: Fee-Aware Edge Gate (entries only) ───────────────────────
+    # Uses gross_target (= notional, not margin) computed at L2861.
+    if not reduce_only:
+        try:
+            from execution.fee_gate import check_fee_edge
+
+            _fg_notional = gross_target  # notional USD = qty × price
+            # Use expectancy from signal metadata if available
+            _fg_meta = intent.get("metadata") or {}
+            expected_edge_pct = float(
+                _fg_meta.get("expectancy", 0)
+                or _fg_meta.get("expected_edge_pct", 0)
+                or 0
+            )
+            if _fg_notional > 0:
+                fg_allowed, fg_details = check_fee_edge(_fg_notional, expected_edge_pct)
+                if not fg_allowed:
+                    LOG.info(
+                        "[fee_gate] ENTRY VETO %s: edge $%.4f < required $%.4f",
+                        symbol_upper,
+                        fg_details.get("expected_edge_usd", 0),
+                        fg_details.get("required_edge_usd", 0),
+                    )
+                    return
+        except ImportError:
+            pass
+        except Exception as _fg_exc:
+            LOG.debug("[fee_gate] check failed: %s", _fg_exc)
+
+    # ── Sizing Snapshot: canonical pre-order audit record ──
+    try:
+        from execution.sizing_snapshot import emit_sizing_snapshot
+
+        emit_sizing_snapshot(
+            intent=intent,
+            attempt_id=attempt_id,
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side or "",
+            gross_target=gross_target,
+            nav_usd=nav_usd,
+            tier_name=tier_name,
+            price_hint=price_hint,
+            reduce_only=reduce_only,
+        )
+    except Exception as exc:
+        LOG.debug("[sizing_snapshot] emit failed: %s", exc)
+
     try:
         payload, meta = build_order_payload(
             symbol=symbol,
@@ -3882,6 +3966,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         except Exception:
             pass
         _emit_position_snapshots(symbol)
+
+        # ── v7.9-E2: Churn Guard fill recording ──────────────────────────
+        try:
+            from execution.churn_guard import record_entry, record_exit
+            if reduce_only:
+                record_exit(symbol, pos_side or "")
+            else:
+                record_entry(symbol, pos_side or "")
+        except ImportError:
+            pass
+        except Exception as _cg_fill_exc:
+            LOG.debug("[churn_guard] fill record failed: %s", _cg_fill_exc)
         
         # v7.9_P4: Record fill for Execution Alpha tracking
         try:
@@ -3895,8 +3991,16 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "is_maker": bool(getattr(fill_summary, 'is_maker', False) if fill_summary else False),
                 "fee": getattr(fill_summary, 'fee_total', 0.0) if fill_summary else 0.0,
             }
-            # Track execution quality
-            process_fill_for_quality(fill_record, intent if "intent" in dir() else {})
+            # Track execution quality (E2.4: unpack fields to match real signature)
+            process_fill_for_quality(
+                symbol=fill_record["symbol"],
+                side=fill_record["side"],
+                fill_price=fill_record["fill_price"],
+                model_price=fill_record.get("price", fill_record["fill_price"]),
+                fill_qty=fill_record["qty"],
+                target_qty=fill_record["qty"],
+                used_twap=False,
+            )
             # Track execution alpha
             alpha_result = process_fill_for_alpha(fill_record, quotes={}, regime=None, head_contributions=None)
             if alpha_result:
@@ -4596,6 +4700,41 @@ def _loop_once(i: int) -> None:
             baseline_positions = list(get_positions() or [])
         except Exception:
             baseline_positions = []
+
+    # ── Testnet Reset Guard: detect Binance testnet account wipes ──────
+    # Runs BEFORE NAV normalization and any state mutation.
+    # Fail-closed: if triggered, cycle halts immediately.
+    try:
+        from execution.reset_guard import check_for_testnet_reset
+        _rg_balance = 0.0
+        try:
+            _rg_bals = get_balances() or []
+            for _b in _rg_bals:
+                if str(_b.get("asset", "")).upper() == "USDT":
+                    _rg_balance = float(_b.get("balance", 0) or 0)
+                    break
+        except Exception:
+            pass
+        _rg_env = "testnet" if is_testnet() else "production"
+        _rg_result = check_for_testnet_reset(
+            exchange_balance=_rg_balance,
+            exchange_positions=baseline_positions,
+            env=_rg_env,
+        )
+        if _rg_result.triggered:
+            LOG.warning(
+                "[reset_guard] TESTNET RESET DETECTED — cycle_id=%s pre_nav=%.2f post_bal=%.2f archive=%s — halting cycle",
+                _rg_result.cycle_id,
+                _rg_result.pre_reset_nav or 0,
+                _rg_result.post_reset_balance or 0,
+                _rg_result.archive_path,
+            )
+            return  # Halt this cycle; next cycle starts with fresh baseline
+    except ImportError:
+        pass  # Module not yet available — safe to skip
+    except Exception as _rg_exc:
+        LOG.debug("[reset_guard] check failed: %s", _rg_exc)
+
     gross_total, _ = _gross_and_open_qty("", "", baseline_positions)
     _update_risk_state_counters(baseline_positions, gross_total)
     active_symbols = {
@@ -4687,8 +4826,41 @@ def _loop_once(i: int) -> None:
                     )
                 except Exception as exc:
                     LOG.debug("[dle_shadow] exit hook failed: %s", exc)
+            # --- E2.2: Exit dedup — suppress repeated exit intents within TTL ---
+            try:
+                from execution.exit_dedup import check_exit_dedup, record_exit_sent
+                _exit_reason_str = str(getattr(candidate, "exit_reason", "UNKNOWN"))
+                _exit_qty = float(exit_intent.get("quantity", 0) or 0)
+                _dedup_ok, _dedup_reason = check_exit_dedup(
+                    symbol=candidate.symbol,
+                    pos_side=candidate.position_side,
+                    exit_reason=_exit_reason_str,
+                    current_qty=_exit_qty,
+                )
+                if not _dedup_ok:
+                    LOG.info(
+                        "[exit_dedup] suppressed %s %s %s — %s",
+                        candidate.symbol, candidate.position_side,
+                        _exit_reason_str, _dedup_reason,
+                    )
+                    continue  # skip this exit intent
+            except ImportError:
+                pass  # module not available — fail-open
+            except Exception as _dd_exc:
+                LOG.debug("[exit_dedup] check failed (proceeding): %s", _dd_exc)
             try:
                 _send_order(exit_intent)
+                # Record successful send for dedup tracking
+                try:
+                    from execution.exit_dedup import record_exit_sent
+                    record_exit_sent(
+                        symbol=candidate.symbol,
+                        pos_side=candidate.position_side,
+                        exit_reason=_exit_reason_str,
+                        qty=_exit_qty,
+                    )
+                except Exception:
+                    pass
             except Exception as exc:
                 LOG.error("[exit_scanner] failed to send doctrine exit %s: %s", candidate.symbol, exc)
         
@@ -4870,6 +5042,23 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
             um_client_error() or "unknown",
         )
     _startup_position_check(client)
+
+    # --- E2.3: Cancel stale open orders that could fill unexpectedly ----------
+    try:
+        from execution.exchange_utils import cancel_all_open_orders
+        cancel_result = cancel_all_open_orders()
+        LOG.info("[startup] cancel_all_open_orders result: %s", cancel_result)
+    except Exception as exc:
+        LOG.warning("[startup] cancel_all_open_orders failed (non-fatal): %s", exc)
+
+    # --- E2.1: Bootstrap churn-guard state from existing positions ------------
+    try:
+        from execution.churn_guard import bootstrap_from_positions
+        live_positions = get_live_positions(client) if client and not getattr(client, "is_stub", False) else []
+        bootstrap_info = bootstrap_from_positions(live_positions)
+        LOG.info("[startup] churn_guard bootstrap: %s", bootstrap_info)
+    except Exception as exc:
+        LOG.warning("[startup] churn_guard bootstrap failed (non-fatal): %s", exc)
 
     i = 0
     while True:

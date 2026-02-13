@@ -128,7 +128,16 @@ THEN order.permit_id must reference a valid, consumed permit
 
 No permit = no execution. This is the fundamental traceability guarantee.
 
-**Implementation:** Order router rejects orders without `permit_id`.
+**Mode-gating (see DLE_DOCTRINE §5.4):**
+
+| Mode | Behavior | Failure on missing permit |
+|------|----------|---------------------------|
+| **SHADOW_MODE** (v7.x default) | Advisory — missing permit logged as shadow violation, order proceeds | Soft: log + metric |
+| **ENFORCED_MODE** (Phase B+) | Binding — order router rejects orders without `permit_id` | Hard: order rejected |
+
+This invariant is constitutionally valid in both modes. Enforcement is mode-gated.
+
+**Implementation:** Order router rejects orders without `permit_id` when `DLE_ENFORCED=1`.
 
 ---
 

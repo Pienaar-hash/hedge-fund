@@ -372,9 +372,9 @@
     "tickSize": "0.0100",
     "minPrice": "0.4200",
     "maxPrice": "6857",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "10000000",
+    "stepSize": "0.01",
+    "minQty": "0.01",
+    "maxQty": "1000000",
     "minNotional": "5"
   },
   "ICXUSDT": {
@@ -4773,6 +4773,24 @@
     "tickSize": "0.0000100",
     "minPrice": "0.0000100",
     "maxPrice": "200",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "40000000",
+    "minNotional": "5"
+  },
+  "ESPUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "0.1500000",
+    "stepSize": "1",
+    "minQty": "1",
+    "maxQty": "10000000",
+    "minNotional": "5"
+  },
+  "AZTECUSDT": {
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "0.0550000",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "40000000",

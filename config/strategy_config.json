@@ -498,6 +498,7 @@
   },
   "conviction": {
     "enabled": true,
+    "mode": "shadow",
     "size_multipliers": {
       "very_low": 0.3,
       "low": 0.5,

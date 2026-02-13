@@ -135,8 +135,10 @@ class TestBuildLedger:
 
     def test_build_empty_ledger(self):
         """Should handle missing execution log."""
-        with patch("execution.episode_ledger.EXECUTION_LOG_PATH") as mock_path:
+        with patch("execution.episode_ledger.EXECUTION_LOG_PATH") as mock_path, \
+             patch("execution.episode_ledger.EXECUTION_LOG_DIR") as mock_dir:
             mock_path.exists.return_value = False
+            mock_dir.exists.return_value = False
             ledger = build_episode_ledger()
             assert len(ledger.episodes) == 0
             assert ledger.stats["total_fills"] == 0

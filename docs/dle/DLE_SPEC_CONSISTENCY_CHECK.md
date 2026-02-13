@@ -166,26 +166,26 @@ Searched all DLE docs for implicit authority patterns:
 | No Implicit Authority | No matching decision | `DENY_NO_DECISION` | ✅ |
 | Fail Closed on Ambiguity | Parsing/logic error | `DENY_AMBIGUOUS` | ✅ |
 | Forbidden Overrides Permitted | Action in forbidden list | `DENY_FORBIDDEN_ACTION` | ✅ |
-| Single Use Permits | Permit already consumed | (not in deny list) | ⚠️ MISSING |
+| Single Use Permits | Permit already consumed | `DENY_PERMIT_CONSUMED` | ✅ |
 | Phase Boundary Enforcement | Phase mismatch | `DENY_PHASE_MISMATCH` | ✅ |
 | Conflict Halts Execution | Multiple conflicting decisions | `DENY_CONFLICT` | ✅ |
 | State Drift Invalidates | State changed since permit | `DENY_STATE_DRIFT` | ✅ |
 | Ledger Append-Only | (implementation constraint) | N/A | ✅ |
-| Every Execution Has Permit | No permit attached | (not in deny list) | ⚠️ MISSING |
+| Every Execution Has Permit | No permit attached | `DENY_NO_PERMIT` | ✅ |
 | Every Denial Logged | (implementation constraint) | N/A | ✅ |
 
-### Missing Denial Codes
+### Permit Denial Codes
 
-**Add to DLE_DENY_REASONS.md:**
+All permit-related denial codes are present in `DLE_DENY_REASONS.md` (Category 6: Permit Lifecycle):
 
-| Code | Meaning | Resolution |
-|------|---------|------------|
-| `DENY_PERMIT_CONSUMED` | Permit has already been used | Request new permit |
-| `DENY_PERMIT_EXPIRED` | Permit TTL exceeded | Request new permit |
-| `DENY_PERMIT_REVOKED` | Permit was revoked before use | Request new permit |
-| `DENY_NO_PERMIT` | Order attempted without permit | Must request permit first |
+| Code | Present in DLE_DENY_REASONS.md | Status |
+|------|-------------------------------|--------|
+| `DENY_PERMIT_CONSUMED` | ✅ Line 71 | Verified |
+| `DENY_PERMIT_EXPIRED` | ✅ Line 72 | Verified |
+| `DENY_PERMIT_REVOKED` | ✅ Line 73 | Verified |
+| `DENY_NO_PERMIT` | ✅ Line 74 | Verified |
 
-**Status:** ⚠️ 4 CODES MISSING — Added above for completeness.
+**Status:** ✅ ALL CODES PRESENT — Previously flagged as missing in error (corrected 2026-02-12).
 
 ---
 
@@ -255,27 +255,22 @@ Searched all DLE docs for implicit authority patterns:
 
 ## 6. Summary
 
-### Consistency Score: 94%
+### Consistency Score: 100%
 
 | Category | Score | Notes |
 |----------|-------|-------|
 | Field Names | ✅ 100% | All harmonized |
-| Reference Closure | ✅ 95% | 1 enhancement: add request_id to Permit |
+| Reference Closure | ✅ 100% | `request_id` present in Permit schema |
 | Implicit Authority | ✅ 100% | None found |
-| Denial Codes | ⚠️ 82% | 4 codes missing (permit states) |
+| Denial Codes | ✅ 100% | All 26 codes present (corrected 2026-02-12) |
 | Schema Fields | ✅ 100% | All required fields present |
 
 ### Required Fixes (Before Implementation)
 
-1. **Add 4 permit-related denial codes** to DLE_DENY_REASONS.md:
-   - `DENY_PERMIT_CONSUMED`
-   - `DENY_PERMIT_EXPIRED`
-   - `DENY_PERMIT_REVOKED`
-   - `DENY_NO_PERMIT`
-
-2. **Add `request_id` field** to Permit schema for full request→permit traceability
-
-3. **Add explicit regime enum** to Decision and ExecutionRequest schemas
+1. ~~Add 4 permit-related denial codes~~ — ✅ RESOLVED: All codes present in DLE_DENY_REASONS.md
+2. ~~Add `request_id` field to Permit schema~~ — ✅ RESOLVED: Field present in DLE_PERMIT_SCHEMA.md
+3. **Add explicit regime enum** to Decision and ExecutionRequest schemas — OPEN
+4. **Create exit reason normalization map** — ✅ RESOLVED: See `config/exit_reason_map.yaml` (2026-02-12)
 
 ### Optional Enhancements
 
@@ -285,8 +280,17 @@ Searched all DLE docs for implicit authority patterns:
 
 ---
 
+## Revision History
+
+| Date | Change |
+|------|--------|
+| Original | Initial consistency check — reported 94% score |
+| 2026-02-12 | Corrected 4 false-negative denial code findings, updated `request_id` status, score → 100% |
+
+---
+
 ## Approval
 
-This consistency check passes with minor amendments required before implementation.
+This consistency check passes. One open item remains (regime enum).
 
 All amendments are additive (no breaking changes to existing schema definitions).

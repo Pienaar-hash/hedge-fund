@@ -102,3 +102,21 @@ signal_gate:
   atr_lookback: 50
   atr_mult: 8.0          # multiplier vs median ATR; increase to allow higher vol
   expectancy_min: -0.10  # minimum rolling expectancy to allow trade
+# v7.9-E2: Anti-churn safety rails
+churn_guard:
+  min_hold_seconds: 120      # 2-minute minimum hold before exits allowed
+  cooldown_seconds: 300      # 5-minute cooldown after exit before re-entry
+  crisis_override: true      # CRISIS_OVERRIDE / SEATBELT bypass min_hold
+
+# v7.9-E2: Fee-aware edge gate (entries only)
+fee_gate:
+  taker_fee_rate: 0.0004     # Binance futures taker fee (0.04%)
+  maker_fee_rate: 0.0002     # Binance futures maker fee (0.02%)
+  fee_buffer_mult: 1.5       # Require 1.5x round-trip fee as edge
+  enabled: true
+
+# v7.9-E2.2: Exit intent dedup (stops REGIME_FLIP spam)
+exit_dedup:
+  ttl_seconds: 300            # 5-minute dedup window per symbol/side/reason
+  qty_change_threshold: 0.10  # >10% qty change bypasses dedup
+  enabled: true

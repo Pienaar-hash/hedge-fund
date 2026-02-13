@@ -99,6 +99,28 @@ if flags.intel_v6_enabled:
 
 Key flags: `INTEL_V6_ENABLED`, `RISK_ENGINE_V6_ENABLED`, `PIPELINE_V6_SHADOW_ENABLED`, `ROUTER_AUTOTUNE_V6_ENABLED`, `ROUTER_AUTOTUNE_V6_APPLY_ENABLED` (0=safe mode).
 
+### DLE Shadow Layer (`execution/dle_shadow.py`)
+
+The Decision Ledger Engine (DLE) runs in **shadow mode** (observation only, never blocks execution). It logs every doctrine verdict as a shadow event for future enforcement.
+
+```python
+from execution.v6_flags import get_flags
+flags = get_flags()
+if flags.shadow_dle_enabled:
+    # DLE shadow gate logs verdicts to dle_shadow_events.jsonl
+if flags.shadow_dle_log_mismatches:
+    # logs cases where shadow verdict diverges from doctrine
+```
+
+Key flags: `SHADOW_DLE_ENABLED`, `SHADOW_DLE_LOG_MISMATCHES`.
+
+**DLE does NOT gate execution in v7.x.** It is observation-only (SHADOW_MODE). Phase B enforcement is not yet active.
+
+- Shadow log: `logs/execution/dle_shadow_events.jsonl` (append-only)
+- DLE specs: `docs/dle/` (14 documents — constitution, schemas, invariants)
+- Exit reason map: `config/exit_reason_map.yaml` (canonical normalization)
+- Test coverage: `tests/unit/test_dle_shadow.py`
+
 ## Developer Workflow
 
 ### Local Development

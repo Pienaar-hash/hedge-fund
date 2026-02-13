@@ -19,6 +19,7 @@ logs/execution/
 *.swp
 
 venv/
+nohup.out
 google-chrome-stable_current_amd64.deb
 data/ohlcv/
 .env

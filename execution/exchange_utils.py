@@ -1503,6 +1503,69 @@ def should_use_close_position(
     return True, qty
 
 
+def cancel_all_open_orders(symbols: list | None = None) -> Dict[str, Any]:
+    """Cancel all open orders for the given symbols (or trading universe).
+
+    On testnet, Binance ``cancel_open_orders(symbol)`` is per-symbol,
+    so we iterate over the supplied list.  Tolerant of ``-2011`` (no open
+    orders) & stub/DRY_RUN modes.
+
+    Returns ``{"cancelled": {sym: result}, "errors": {sym: str}, "skipped": int}``.
+    """
+    if is_dry_run():
+        _LOG.info("[cancel_all] DRY_RUN — skipping cancel all open orders")
+        return {"cancelled": {}, "errors": {}, "skipped": 0}
+
+    client = get_um_client()
+    if client is None or getattr(client, "is_stub", False):
+        _LOG.warning("[cancel_all] client unavailable — cannot cancel open orders")
+        return {"cancelled": {}, "errors": {}, "skipped": 0}
+
+    if symbols is None:
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+
+            cfg = _json.loads(_Path("config/strategy_config.json").read_text())
+            symbols = cfg.get("symbols", cfg.get("universe", []))
+        except Exception:
+            symbols = []
+
+    cancelled: Dict[str, Any] = {}
+    errors: Dict[str, str] = {}
+    skipped = 0
+
+    for sym in symbols or []:
+        try:
+            result = client.cancel_open_orders(symbol=sym)
+            if result:
+                cancelled[sym] = result
+                _LOG.info("[cancel_all] cancelled open orders for %s: %s", sym, result)
+            else:
+                skipped += 1
+        except Exception as exc:
+            msg = str(exc)
+            # -2011 = "Unknown order" (no open orders for this symbol) — not an error
+            if "-2011" in msg:
+                skipped += 1
+            else:
+                errors[sym] = msg
+                _LOG.warning("[cancel_all] error cancelling %s: %s", sym, msg)
+
+    summary = {
+        "cancelled": cancelled,
+        "errors": errors,
+        "skipped": skipped,
+    }
+    _LOG.info(
+        "[cancel_all] done: %d cancelled, %d errors, %d skipped (no orders)",
+        len(cancelled),
+        len(errors),
+        skipped,
+    )
+    return summary
+
+
 def send_order(
     symbol: str,
     side: str,

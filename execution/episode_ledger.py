@@ -1,5 +1,5 @@
 """
-Episode Ledger — Completed Trade Cycle Tracking (v7.8)
+Episode Ledger — Completed Trade Cycle Tracking (v7.9-E2)
 
 This module derives completed trading episodes from execution logs.
 It is READ-ONLY observability — it does NOT influence execution decisions.
@@ -14,6 +14,13 @@ An episode is:
   - A position that was opened AND closed
   - Identified by symbol + position side + entry window
   - Contains: entry/exit times, regimes, PnL, fees, exit reason, duration
+
+v7.9-E2 Fills-Faithful Changes:
+  - Reads ALL log files (current + rotated) for complete fill history
+  - Filters to event_type='order_fill' AND executedQty > 0 (no ghosts)
+  - Tracks multi-fill exits properly (exit_fills is real count)
+  - Excess exits (more exits than entry qty) are counted as orphans
+  - Reconciliation summary: fills_total, fills_consumed, fills_orphaned
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 # State file path
 EPISODE_LEDGER_PATH = Path("logs/state/episode_ledger.json")
+EXECUTION_LOG_DIR = Path("logs/execution")
 EXECUTION_LOG_PATH = Path("logs/execution/orders_executed.jsonl")
 DOCTRINE_LOG_PATH = Path("logs/doctrine_events.jsonl")
 
@@ -105,21 +113,60 @@ def _parse_ts(ts_val) -> Optional[datetime]:
 
 
 def _load_execution_log() -> list[dict]:
-    """Load all order fill events from execution log."""
-    if not EXECUTION_LOG_PATH.exists():
-        return []
-    
-    fills = []
-    with open(EXECUTION_LOG_PATH, "r") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-                if event.get("event_type") == "order_fill":
+    """Load all order fill events from execution logs (current + rotated).
+
+    v7.9-E2: Reads all ``orders_executed*.jsonl`` files in the log
+    directory so that entries from rotated files are not lost.  Records
+    are deduplicated by ``(symbol, positionSide, side, ts_fill_first)``
+    and filtered to real fills (``event_type == 'order_fill'`` AND
+    ``executedQty > 0``).
+    """
+    log_files: list[Path] = []
+    if EXECUTION_LOG_DIR.exists():
+        # Rotated files first (oldest to newest), then current
+        rotated = sorted(
+            EXECUTION_LOG_DIR.glob("orders_executed.*.jsonl"),
+            key=lambda p: p.name,
+            reverse=True,          # .2, .1 → oldest first
+        )
+        log_files.extend(rotated)
+    if EXECUTION_LOG_PATH.exists():
+        log_files.append(EXECUTION_LOG_PATH)
+
+    fills: list[dict] = []
+    seen: set[tuple] = set()  # dedup key
+
+    for path in log_files:
+        try:
+            with open(path, "r") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    # Must be a real fill: event_type=order_fill AND qty > 0
+                    if event.get("event_type") != "order_fill":
+                        continue
+                    qty = float(event.get("executedQty", 0) or 0)
+                    if qty <= 0:
+                        continue
+                    # Dedup across rotated + current overlap
+                    dedup_key = (
+                        event.get("symbol", ""),
+                        event.get("positionSide", ""),
+                        event.get("side", ""),
+                        str(event.get("ts_fill_first", "")),
+                        str(event.get("orderId", "")),
+                    )
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
                     fills.append(event)
-            except json.JSONDecodeError:
-                continue
+        except OSError:
+            continue
+
     return fills
 
 
@@ -309,16 +356,22 @@ def build_episode_ledger(
     
     episodes = []
     episode_counter = 0
+    # v7.9-E2: reconciliation counters
+    recon_fills_total = 0
+    recon_fills_consumed = 0
+    recon_fills_orphaned = 0
     
     for (symbol, pos_side), group_fills in groups.items():
         # Sort by timestamp
-        group_fills.sort(key=lambda x: x.get("ts", ""))
+        group_fills.sort(key=lambda x: x.get("ts") or x.get("ts_fill_first") or "")
         
         # Track position state
         open_qty = 0.0
         entry_fills: list[dict] = []
+        exit_fills_accum: list[dict] = []  # v7.9-E2: accumulate exit fills
         
         for f in group_fills:
+            recon_fills_total += 1
             qty = float(f.get("executedQty", 0))
             is_reduce = f.get("reduceOnly", False)
             side = f.get("side", "")
@@ -336,11 +389,14 @@ def build_episode_ledger(
             if is_entry:
                 open_qty += qty
                 entry_fills.append(f)
+                recon_fills_consumed += 1
             
             elif is_exit and open_qty > 0:
-                # This is an exit - check if it closes the position
+                # This is an exit — consume against open_qty
                 exit_qty = min(qty, open_qty)
                 open_qty -= exit_qty
+                exit_fills_accum.append(f)
+                recon_fills_consumed += 1
                 
                 # If position is now closed (or very close), create episode
                 if open_qty < 0.0001 and entry_fills:
@@ -352,32 +408,41 @@ def build_episode_ledger(
                         for e in entry_fills
                     )
                     entry_qty = sum(float(e.get("executedQty", 0)) for e in entry_fills)
-                    entry_fees = sum(float(e.get("fee_total", 0)) for e in entry_fills)
+                    entry_fees = sum(float(e.get("fee_total", 0) or 0) for e in entry_fills)
                     avg_entry = entry_notional / entry_qty if entry_qty > 0 else 0
                     
-                    # Exit stats (just this fill for now - simplified)
-                    exit_price = float(f.get("avgPrice", 0))
-                    exit_notional = exit_price * exit_qty
-                    exit_fee = float(f.get("fee_total", 0))
+                    # v7.9-E2: exit stats from ALL accumulated exit fills
+                    exit_notional = sum(
+                        float(x.get("avgPrice", 0)) * float(x.get("executedQty", 0))
+                        for x in exit_fills_accum
+                    )
+                    exit_qty_total = sum(float(x.get("executedQty", 0)) for x in exit_fills_accum)
+                    exit_fees = sum(float(x.get("fee_total", 0) or 0) for x in exit_fills_accum)
+                    avg_exit = exit_notional / exit_qty_total if exit_qty_total > 0 else 0
                     
-                    # PnL calculation
+                    # PnL calculation — use min of entry_qty and exit_qty for trade qty
+                    trade_qty = min(entry_qty, exit_qty_total) if exit_qty_total > 0 else entry_qty
                     if pos_side == "LONG":
-                        gross_pnl = (exit_price - avg_entry) * exit_qty
+                        gross_pnl = (avg_exit - avg_entry) * trade_qty
                     else:  # SHORT
-                        gross_pnl = (avg_entry - exit_price) * exit_qty
+                        gross_pnl = (avg_entry - avg_exit) * trade_qty
                     
-                    total_fees = entry_fees + exit_fee
+                    total_fees = entry_fees + exit_fees
                     net_pnl = gross_pnl - total_fees
                     
                     # Timing
-                    entry_ts = entry_fills[0].get("ts", "")
-                    exit_ts = f.get("ts", "")
+                    entry_ts = entry_fills[0].get("ts") or entry_fills[0].get("ts_fill_first") or ""
+                    last_exit = exit_fills_accum[-1] if exit_fills_accum else f
+                    exit_ts = last_exit.get("ts") or last_exit.get("ts_fill_first") or ""
                     
                     entry_dt = _parse_ts(entry_ts)
                     exit_dt = _parse_ts(exit_ts)
                     duration_hours = 0.0
                     if entry_dt and exit_dt:
                         duration_hours = (exit_dt - entry_dt).total_seconds() / 3600
+
+                    # Exit reason from last exit fill
+                    exit_reason = _extract_exit_reason(last_exit)
                     
                     episode = Episode(
                         episode_id=f"EP_{episode_counter:04d}",
@@ -387,25 +452,30 @@ def build_episode_ledger(
                         exit_ts=exit_ts,
                         duration_hours=round(duration_hours, 2),
                         entry_fills=len(entry_fills),
-                        exit_fills=1,  # Simplified
+                        exit_fills=len(exit_fills_accum),
                         entry_notional=round(entry_notional, 2),
                         exit_notional=round(exit_notional, 2),
-                        total_qty=round(entry_qty, 6),
+                        total_qty=round(trade_qty, 6),
                         avg_entry_price=round(avg_entry, 4),
-                        avg_exit_price=round(exit_price, 4),
+                        avg_exit_price=round(avg_exit, 4),
                         gross_pnl=round(gross_pnl, 4),
                         fees=round(total_fees, 4),
                         net_pnl=round(net_pnl, 4),
                         regime_at_entry="unknown",  # Would need doctrine correlation
                         regime_at_exit="unknown",
-                        exit_reason=_extract_exit_reason(f),
+                        exit_reason=exit_reason,
                         strategy=_extract_strategy(entry_fills[0]) if entry_fills else "unknown",
                     )
                     episodes.append(episode)
                     
                     # Reset for next episode
                     entry_fills = []
+                    exit_fills_accum = []
                     open_qty = 0.0
+            
+            elif is_exit:
+                # v7.9-E2: exit without open position — orphan fill
+                recon_fills_orphaned += 1
     
     # Filter episodes by EXIT timestamp in window (the canonical semantics)
     # "Episodes ending in window" — entry can be before, but exit must be in range
@@ -488,6 +558,15 @@ def build_episode_ledger(
         },
         # Cross-check from exit metadata (more robust for partial fills)
         "metadata_pnl": meta_pnl,
+        # v7.9-E2: Reconciliation summary
+        "reconciliation": {
+            "fills_total": recon_fills_total,
+            "fills_consumed": recon_fills_consumed,
+            "fills_orphaned": recon_fills_orphaned,
+            "log_files_read": len(
+                list(EXECUTION_LOG_DIR.glob("orders_executed*.jsonl"))
+            ) if EXECUTION_LOG_DIR.exists() else 0,
+        },
     }
     
     return EpisodeLedger(
@@ -574,6 +653,17 @@ def print_ledger_summary(ledger: EpisodeLedger) -> None:
         print(f"  Gross PnL:      ${meta_pnl.get('gross_pnl', 0):+,.2f}")
         print(f"  Total Fees:     ${meta_pnl.get('fees', 0):,.2f}")
         print(f"  Net PnL:        ${meta_pnl.get('net_pnl', 0):+,.2f}")
+        print()
+    
+    # v7.9-E2: Reconciliation summary
+    recon = stats.get("reconciliation", {})
+    if recon:
+        print("RECONCILIATION (v7.9-E2)")
+        print("-" * 40)
+        print(f"  Fills total:    {recon.get('fills_total', 0)}")
+        print(f"  Fills consumed: {recon.get('fills_consumed', 0)}")
+        print(f"  Fills orphaned: {recon.get('fills_orphaned', 0)}")
+        print(f"  Log files read: {recon.get('log_files_read', 0)}")
         print()
 
 

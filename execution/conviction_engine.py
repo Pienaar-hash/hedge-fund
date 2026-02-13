@@ -89,6 +89,14 @@ class ConvictionConfig:
     # Production should explicitly enable via strategy_config.json.
     enabled: bool = False
     
+    # Mode: "off" (disabled), "shadow" (compute + log, no sizing effect),
+    # "live" (apply to sizing with clamps)
+    mode: str = "off"
+    
+    # Clamps for live mode (inert until mode="live")
+    live_clamp_min: float = 0.75
+    live_clamp_max: float = 1.25
+    
     # Thresholds for conviction bands (score must be >= threshold for band)
     thresholds: Dict[str, float] = field(default_factory=lambda: {
         "very_low": 0.20,
@@ -155,8 +163,21 @@ def load_conviction_config(strategy_config: Optional[Mapping[str, Any]] = None) 
     if not isinstance(conviction_cfg, Mapping):
         return ConvictionConfig()
     
+    # Resolve mode: explicit "mode" field takes precedence,
+    # else infer from legacy "enabled" flag for backward compat.
+    raw_mode = conviction_cfg.get("mode")
+    if raw_mode is not None:
+        mode = str(raw_mode).lower()
+        if mode not in ("off", "shadow", "live"):
+            mode = "off"
+    else:
+        mode = "off"  # legacy: enabled=true without mode → still off for shadow
+    
     return ConvictionConfig(
         enabled=bool(conviction_cfg.get("enabled", False)),  # Default to False for backward compat
+        mode=mode,
+        live_clamp_min=float(conviction_cfg.get("live_clamp_min", 0.75)),
+        live_clamp_max=float(conviction_cfg.get("live_clamp_max", 1.25)),
         thresholds=dict(conviction_cfg.get("thresholds", ConvictionConfig().thresholds)),
         size_multipliers=dict(conviction_cfg.get("size_multipliers", ConvictionConfig().size_multipliers)),
         dd_overrides=dict(conviction_cfg.get("dd_overrides", ConvictionConfig().dd_overrides)),

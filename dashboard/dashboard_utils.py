@@ -10,7 +10,7 @@ import pandas as pd
 import requests
 
 from utils.firestore_client import get_db as _get_firestore_db
-from execution.mirror_builders import build_mirror_payloads
+from dashboard.state_client import build_mirror_payloads as _build_mirror_payloads
 
 LOG = logging.getLogger("dash.utils")
 
@@ -390,14 +390,14 @@ def load_exec_snapshot(kind: str, env: str = "prod") -> Dict[str, Any]:
         except Exception as exc:
             LOG.debug("[dash] exec snapshot fetch failed (%s/%s): %s", env, kind_norm, exc)
     try:
-        payloads = build_mirror_payloads(Path(__file__).resolve().parents[1] / "logs")
+        payloads = _build_mirror_payloads(Path(__file__).resolve().parents[1] / "logs")
     except Exception as exc:
         LOG.debug("[dash] exec snapshot local fallback failed: %s", exc)
         return {}
     mapping = {
-        "router": payloads.router,
-        "trades": payloads.trades,
-        "signals": payloads.signals,
+        "router": payloads.get("router", []),
+        "trades": payloads.get("trades", []),
+        "signals": payloads.get("signals", []),
     }
     items = mapping.get(kind_norm or "router", [])
     if not items:

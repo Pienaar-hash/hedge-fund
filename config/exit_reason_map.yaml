@@ -1,0 +1,183 @@
+# Exit Reason Normalization Map
+# GPT-HEDGE v7.9 — Single source of truth for exit vocabularies
+#
+# Three vocabularies exist:
+#   1. doctrine_kernel.py  ExitReason enum    (execution authority)
+#   2. DLE_EPISODE_SCHEMA  exit_reason enum   (DLE audit surface)
+#   3. episode_ledger.py   exit_reason string (legacy logging)
+#
+# All exit reasons MUST map through this file before logging.
+# No implicit strings. No unmapped exit codes.
+#
+# Usage:
+#   from config import exit_reason_map  # or load YAML directly
+#   canonical = map[execution_exit_reason]
+#
+# Status: BINDING
+# Established: 2026-02-12
+
+# ─────────────────────────────────────────────────────────────
+# Canonical exit reasons (the single namespace)
+# ─────────────────────────────────────────────────────────────
+#
+# Each entry maps:
+#   canonical_reason:
+#     doctrine_kernel:  ExitReason enum value (or null if no equivalent)
+#     dle_episode:      DLE_EPISODE_SCHEMA exit_reason enum value
+#     episode_ledger:   episode_ledger.py string value
+#     priority:         exit priority (1=highest urgency)
+#     category:         grouping for analytics
+
+reasons:
+
+  # ── Priority 1: Crisis ──────────────────────────────────────
+  CRISIS_OVERRIDE:
+    doctrine_kernel: "CRISIS_OVERRIDE"
+    dle_episode: "EMERGENCY_HALT"
+    episode_ledger: "crisis"
+    priority: 1
+    category: crisis
+
+  # ── Priority 2: Regime invalidation ─────────────────────────
+  REGIME_FLIP:
+    doctrine_kernel: "REGIME_FLIP"
+    dle_episode: "REGIME_CHANGE"
+    episode_ledger: "regime_flip"
+    priority: 2
+    category: regime
+
+  REGIME_CONFIDENCE_COLLAPSE:
+    doctrine_kernel: "REGIME_CONFIDENCE_COLLAPSE"
+    dle_episode: "REGIME_CHANGE"
+    episode_ledger: "regime_flip"
+    priority: 2
+    category: regime
+
+  # ── Priority 3: Structural failure ──────────────────────────
+  TREND_DECAY:
+    doctrine_kernel: "TREND_DECAY"
+    dle_episode: "THESIS_INVALIDATED"
+    episode_ledger: "thesis"
+    priority: 3
+    category: structural
+
+  CARRY_DISAPPEARED:
+    doctrine_kernel: "CARRY_DISAPPEARED"
+    dle_episode: "THESIS_INVALIDATED"
+    episode_ledger: "thesis"
+    priority: 3
+    category: structural
+
+  CROSSFIRE_RESOLVED:
+    doctrine_kernel: "CROSSFIRE_RESOLVED"
+    dle_episode: "THESIS_INVALIDATED"
+    episode_ledger: "thesis"
+    priority: 3
+    category: structural
+
+  EXECUTION_ALPHA_DRAG:
+    doctrine_kernel: "EXECUTION_ALPHA_DRAG"
+    dle_episode: "THESIS_INVALIDATED"
+    episode_ledger: "thesis"
+    priority: 3
+    category: structural
+
+  # ── Priority 4: Time stop ───────────────────────────────────
+  TIME_STOP:
+    doctrine_kernel: "TIME_STOP"
+    dle_episode: "DECISION_EXPIRED"
+    episode_ledger: "time_stop"
+    priority: 4
+    category: time
+
+  # ── Priority 5: Seatbelt (emergency only) ───────────────────
+  STOP_LOSS:
+    doctrine_kernel: "STOP_LOSS_SEATBELT"
+    dle_episode: "STOP_LOSS"
+    episode_ledger: "sl"
+    priority: 5
+    category: seatbelt
+
+  # ── Target exits (non-doctrine, execution-driven) ───────────
+  TAKE_PROFIT:
+    doctrine_kernel: null             # TP is execution-level, not doctrine-driven
+    dle_episode: "TAKE_PROFIT"
+    episode_ledger: "tp"
+    priority: 6
+    category: target
+
+  TRAILING_STOP:
+    doctrine_kernel: null
+    dle_episode: "TRAILING_STOP"
+    episode_ledger: "trailing"
+    priority: 6
+    category: target
+
+  # ── Risk / administrative ───────────────────────────────────
+  RISK_VETO:
+    doctrine_kernel: null             # Risk exits bypass doctrine kernel
+    dle_episode: "RISK_VETO"
+    episode_ledger: "risk"
+    priority: 1
+    category: risk
+
+  MANUAL_CLOSE:
+    doctrine_kernel: null             # Manual exits are operator-initiated
+    dle_episode: "MANUAL_CLOSE"
+    episode_ledger: "manual"
+    priority: 7
+    category: manual
+
+  PHASE_END:
+    doctrine_kernel: null
+    dle_episode: "PHASE_END"
+    episode_ledger: "phase_end"
+    priority: 7
+    category: administrative
+
+  POSITION_FLIP:
+    doctrine_kernel: null             # Not a doctrine exit — signal-driven reduce
+    dle_episode: null                 # Not yet in DLE schema
+    episode_ledger: "position_flip"
+    priority: 6
+    category: signal
+
+  # ── Fallback ────────────────────────────────────────────────
+  UNKNOWN:
+    doctrine_kernel: null
+    dle_episode: null
+    episode_ledger: "unknown"
+    priority: 99
+    category: unmapped
+
+# ─────────────────────────────────────────────────────────────
+# Reverse lookup helpers (for code generation / validation)
+# ─────────────────────────────────────────────────────────────
+#
+# To go FROM doctrine_kernel → canonical:
+#   CRISIS_OVERRIDE       → CRISIS_OVERRIDE
+#   REGIME_FLIP           → REGIME_FLIP
+#   REGIME_CONFIDENCE_COLLAPSE → REGIME_CONFIDENCE_COLLAPSE
+#   TREND_DECAY           → TREND_DECAY
+#   CARRY_DISAPPEARED     → CARRY_DISAPPEARED
+#   CROSSFIRE_RESOLVED    → CROSSFIRE_RESOLVED
+#   EXECUTION_ALPHA_DRAG  → EXECUTION_ALPHA_DRAG
+#   TIME_STOP             → TIME_STOP
+#   STOP_LOSS_SEATBELT    → STOP_LOSS
+#   HOLD                  → (no exit — not mapped)
+#
+# To go FROM episode_ledger string → canonical:
+#   "tp"             → TAKE_PROFIT
+#   "sl"             → STOP_LOSS
+#   "thesis"         → TREND_DECAY (or CARRY_DISAPPEARED, CROSSFIRE_RESOLVED — ambiguous)
+#   "regime_flip"    → REGIME_FLIP
+#   "crisis"         → CRISIS_OVERRIDE
+#   "manual"         → MANUAL_CLOSE
+#   "position_flip"  → POSITION_FLIP
+#   "unknown"        → UNKNOWN
+#
+# NOTE: "thesis" in episode_ledger is ambiguous — it maps to multiple
+# structural failure reasons. The doctrine_kernel ExitReason should be
+# used as the authoritative disambiguation source when available.
+# Phase B must propagate doctrine_kernel reason into episode_ledger
+# to eliminate this ambiguity.

@@ -3,12 +3,9 @@
 [lint]
 exclude = [
   "dashboard/",
-  "strategies/",
   "scripts/",
-  "telegram/",
   "research/",
   "ops/",
-  "infrastructure/",
   "deploy/",
   "execution/flatten_all.py",
   "execution/*bak*",
@@ -16,4 +13,3 @@ exclude = [
 
 [lint.per-file-ignores]
 "dashboard/dashboard_utils.py" = ["E402"]
-"dashboard/main.py" = ["E402"]

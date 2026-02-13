@@ -12,23 +12,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
-from execution.risk_limits import RiskGate
-from execution.utils import load_json
-from execution.utils.metrics import (
-    fill_notional_7d,
-    submitted_notional_7d,
-    gross_realized_7d,
-    fees_7d,
-    realized_slippage_bps_7d,
-    hourly_expectancy as metrics_hourly_expectancy,
-    router_effectiveness_7d,
+from dashboard.state_client import (
+    get_execution_health_for_symbol,
+    get_hourly_expectancy as state_hourly_expectancy,
+    get_risk_caps as state_get_risk_caps,
+    get_rolling_expectancy,
+    get_symbol_score as state_get_symbol_score,
+    load_kpis_v7 as state_load_kpis_v7,
+    load_risk_config,
+    load_router_health,
 )
-from execution.utils.execution_health import compute_execution_health
-from execution.utils.expectancy import rolling_expectancy
-from execution.exchange_utils import get_price
-from execution.intel.symbol_score import compute_symbol_score
-from execution.intel.expectancy_map import hourly_expectancy as intel_hourly_expectancy
-from execution.risk_loader import load_risk_config
 
 LOG = logging.getLogger("dash.live_helpers")
 
@@ -55,34 +48,40 @@ KPI_V7_STATE_PATH = Path(os.getenv("KPI_V7_STATE_PATH") or (STATE_DIR / "kpis_v7
 
 
 def kpi_tiles(symbol: str | None = None) -> Dict[str, Any]:
-    submitted = submitted_notional_7d(symbol)
-    filled = fill_notional_7d(symbol)
-    fees = fees_7d(symbol) or 0.0
-    gpnl = gross_realized_7d(symbol) or 0.0
-    fee_ratio = (fees / gpnl) if gpnl else None
-    efficiency = (filled / submitted) if submitted else None
-    slip = realized_slippage_bps_7d(symbol)
-    expectancy = rolling_expectancy(symbol) if symbol else None
+    """KPI tiles from pre-published state files (no execution imports)."""
+    kpis = state_load_kpis_v7()
+    router_stats = kpis.get("router_stats") or {}
+    fees = kpis.get("fees")
+    gpnl = kpis.get("pnl")
+    fee_ratio = None
+    if fees is not None and gpnl:
+        try:
+            fee_ratio = float(fees) / float(gpnl)
+        except (TypeError, ValueError, ZeroDivisionError):
+            fee_ratio = None
+    expectancy = get_rolling_expectancy(symbol) if symbol else None
     return {
-        "fill_eff": efficiency,
+        "fill_eff": None,  # requires executor publishing; gracefully absent
         "fee_pnl_ratio": fee_ratio,
-        "slip_bps": slip,
+        "slip_bps": router_stats.get("slip_q50"),
         "expectancy": expectancy,
-        "hourly_expectancy": metrics_hourly_expectancy(symbol) if symbol else None,
+        "hourly_expectancy": state_hourly_expectancy(symbol) if symbol else None,
     }
 
 
 def execution_kpis(symbol: str | None = None, *, kpis_v7: Dict[str, Any] | None = None) -> Dict[str, Any]:
     base = kpi_tiles(symbol)
-    eff = router_effectiveness_7d(symbol)
-    if isinstance(eff, dict):
+    # Router effectiveness from kpis_v7 router_stats (already published)
+    kpis_v7 = kpis_v7 if kpis_v7 is not None else load_kpis_v7()
+    router_stats = (kpis_v7 or {}).get("router_stats") or {}
+    if router_stats:
         base.update(
             {
-                "maker_fill_ratio": eff.get("maker_fill_ratio"),
-                "fallback_ratio": eff.get("fallback_ratio"),
-                "slip_q25": eff.get("slip_q25"),
-                "slip_q50": eff.get("slip_q50"),
-                "slip_q75": eff.get("slip_q75"),
+                "maker_fill_ratio": router_stats.get("maker_fill_ratio"),
+                "fallback_ratio": router_stats.get("fallback_ratio"),
+                "slip_q25": router_stats.get("slip_q25"),
+                "slip_q50": router_stats.get("slip_q50"),
+                "slip_q75": router_stats.get("slip_q75"),
             }
         )
     kpis_v7 = kpis_v7 if kpis_v7 is not None else load_kpis_v7()
@@ -103,7 +102,7 @@ def execution_kpis(symbol: str | None = None, *, kpis_v7: Dict[str, Any] | None 
                 pass
     if symbol:
         try:
-            health = compute_execution_health(symbol)
+            health = get_execution_health_for_symbol(symbol)
             risk_part = health.get("risk") or {}
             vol_part = health.get("vol") or {}
             base.setdefault("dd_state_symbol", risk_part.get("dd_state"))
@@ -117,9 +116,12 @@ def execution_kpis(symbol: str | None = None, *, kpis_v7: Dict[str, Any] | None 
 
 def execution_health(symbol: str | None = None) -> Dict[str, Any]:
     """
-    Thin wrapper so the dashboard can pull execution health snapshots.
+    Execution health from pre-published state file.
     """
-    return compute_execution_health(symbol)
+    if symbol:
+        return get_execution_health_for_symbol(symbol)
+    from dashboard.state_client import load_execution_health
+    return load_execution_health()
 
 
 def _try_json(path: str) -> Any:
@@ -434,14 +436,11 @@ def get_nav_snapshot(nav_path: str | None = None) -> Dict[str, float]:
 
 def get_caps() -> Dict[str, float]:
     """
-    Return key risk caps in a lightweight dict for dashboard display.
+    Return key risk caps for dashboard display.
+    Reads config/risk_limits.json directly via state_client.
     """
-    caps = {
-        "max_trade_nav_pct": 0.0,
-        "max_gross_exposure_pct": 0.0,
-        "max_symbol_exposure_pct": 0.0,
-        "min_notional": 0.0,
-    }
+    caps = state_get_risk_caps()
+    # Supplement min_notional from universe state if available
     universe_entries = load_universe_state()
     if universe_entries:
         min_vals: List[float] = []
@@ -455,20 +454,8 @@ def get_caps() -> Dict[str, float]:
                 continue
         positive = [val for val in min_vals if val > 0]
         target_vals = positive or min_vals
-        if target_vals:
+        if target_vals and (not caps.get("min_notional")):
             caps["min_notional"] = min(target_vals)
-    try:
-        cfg = _read_risk_cfg()
-        gate = RiskGate(cfg)
-        sizing = gate.sizing
-        caps["max_trade_nav_pct"] = float(sizing.get("max_trade_nav_pct") or 0.0)
-        gross_pct = sizing.get("max_gross_exposure_pct") or sizing.get("max_portfolio_gross_nav_pct")
-        caps["max_gross_exposure_pct"] = float(gross_pct or 0.0)
-        caps["max_symbol_exposure_pct"] = float(sizing.get("max_symbol_exposure_pct") or 0.0)
-        if not caps["min_notional"]:
-            caps["min_notional"] = float(getattr(gate, "min_notional", 0.0) or 0.0)
-    except Exception:
-        pass
     return caps
 
 
@@ -515,10 +502,19 @@ def get_veto_counts(log_dir: str = "logs", max_lines: int = 100) -> Dict[str, in
 
 
 def _safe_price(symbol: str) -> float:
+    """Best-effort price lookup from state files. Returns 0.0 if unavailable."""
+    # Attempt to read from risk_snapshot or symbol_scores state
     try:
-        return float(get_price(symbol) or 0.0)
+        from dashboard.state_client import load_risk_snapshot
+        snap = load_risk_snapshot()
+        for entry in (snap.get("symbols") or []):
+            if isinstance(entry, dict) and str(entry.get("symbol", "")).upper() == symbol.upper():
+                px = entry.get("mark_price") or entry.get("price")
+                if px:
+                    return float(px)
     except Exception:
-        return 0.0
+        pass
+    return 0.0
 
 
 def _to_float(value: Any) -> float:
@@ -744,16 +740,16 @@ def get_treasury() -> Dict[str, Any]:
 
 def get_symbol_score(symbol: str) -> Dict[str, Any]:
     """
-    Thin wrapper around execution.intel.symbol_score.compute_symbol_score.
+    Per-symbol score from pre-published state file.
     """
-    return compute_symbol_score(symbol)
+    return state_get_symbol_score(symbol)
 
 
 def get_hourly_expectancy(symbol: str | None = None) -> Dict[int, Dict[str, Any]]:
     """
-    Wrapper around execution.intel.expectancy_map.hourly_expectancy.
+    Hourly expectancy from pre-published state file.
     """
-    return intel_hourly_expectancy(symbol)
+    return state_hourly_expectancy(symbol)
 
 
 __all__ = [

@@ -1,46 +1,69 @@
-name: ci
+name: CI
+
 on:
   pull_request:
   push:
-    branches: [ main ]
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  BINANCE_TESTNET: "1"
+  DRY_RUN: "1"
+  EXECUTOR_ONCE: "1"
+  PYTHONUNBUFFERED: "1"
+  PYTHONPATH: "."
+
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - run: python -m pip install -U pip wheel
+        with:
+          python-version: "3.10"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip wheel
           pip install -r requirements.txt
-          pip install -r requirements-execution.txt
-          pip install -r requirements-dashboard.txt
-          pip install pytest ruff mypy
+
       - name: Check VERSION alignment
         run: |
-          test -f VERSION
           python - <<'PY'
-from pathlib import Path
-import json
-version = Path("VERSION").read_text(encoding="utf-8").strip()
-manifest = json.loads(Path("v7_manifest.json").read_text(encoding="utf-8"))
-docs_version = manifest.get("docs_version")
-assert version == "v7.6", f"VERSION expected v7.6, got {version}"
-assert docs_version == version, f"docs_version mismatch: {docs_version} vs {version}"
-PY
+          from pathlib import Path
+          import json
+          version = Path("VERSION").read_text(encoding="utf-8").strip()
+          manifest = json.loads(Path("v7_manifest.json").read_text(encoding="utf-8"))
+          docs_version = manifest.get("docs_version")
+          assert version == docs_version, f"VERSION ({version}) != manifest docs_version ({docs_version})"
+          PY
+
       - name: Lint
         run: ruff check .
+
       - name: Typecheck
         run: mypy .
-      - name: Test fast suite
-        run: make test-fast
-      - name: Integration state subset
+
+      - name: Dashboard import boundary check
         run: |
-          pytest -q \
-            tests/integration/test_manifest_state_contract.py \
-            tests/integration/test_state_surface_health.py \
-            tests/integration/test_state_publish_diagnostics.py \
-            tests/integration/test_state_publish_factor_diagnostics.py \
-            tests/integration/test_risk_snapshot_contract.py \
-            tests/integration/test_state_positions_ledger_contract.py
+          if grep -rn "^from execution\|^import execution" dashboard/ --include="*.py"; then
+            echo "ERROR: dashboard/ must not import from execution/"
+            exit 1
+          fi
+
+      - name: Manifest audit
+        run: python scripts/manifest_audit.py ci
+
+      - name: Test (unit + integration)
+        run: pytest tests/unit tests/integration -q --tb=short

@@ -323,6 +323,197 @@
         "heads": "Dict[str, HeadAlphaStats] - per-head alpha attribution and suggested multipliers",
         "meta": "Dict - total_cum_alpha_usd, avg_alpha_bps, last_alerts, config_echo"
       }
+    },
+    "execution_health": {
+      "path": "logs/state/execution_health.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Per-symbol execution health — router, risk, vol, sizing diagnostics"
+    },
+    "expectancy_v6": {
+      "path": "logs/state/expectancy_v6.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "description": "Per-symbol expectancy and hourly breakdown from intel pipeline"
+    },
+    "leaderboard_state": {
+      "path": "logs/state/leaderboard_state.json",
+      "owner": "sync_state",
+      "update_frequency": "per_sync",
+      "optional": true,
+      "description": "Leaderboard cache for dashboard ranking tiles"
+    },
+    "offchain_assets": {
+      "path": "logs/state/offchain_assets.json",
+      "owner": "treasury",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Off-chain asset holdings from treasury aggregator"
+    },
+    "offchain_yield": {
+      "path": "logs/state/offchain_yield.json",
+      "owner": "treasury",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Off-chain yield metrics from treasury aggregator"
+    },
+    "pipeline_v6_compare_summary": {
+      "path": "logs/state/pipeline_v6_compare_summary.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "V6 pipeline comparison summary — shadow vs production scoring delta"
+    },
+    "pipeline_v6_shadow_head": {
+      "path": "logs/state/pipeline_v6_shadow_head.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "V6 shadow pipeline head state for comparison diagnostics"
+    },
+    "pnl_attribution": {
+      "path": "logs/state/pnl_attribution.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "PnL attribution — per-symbol realized/unrealized breakdown"
+    },
+    "position_tp_sl": {
+      "path": "logs/state/position_tp_sl.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "TP/SL registry — per-position take-profit and stop-loss levels"
+    },
+    "positions": {
+      "path": "logs/state/positions.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Legacy positions snapshot — canonical source is positions_state.json"
+    },
+    "positions_state_sync": {
+      "path": "logs/state/positions_state_sync.json",
+      "owner": "sync_state",
+      "update_frequency": "per_sync",
+      "optional": true,
+      "description": "Sync-side positions mirror for diagnostics (not canonical)"
+    },
+    "risk_advanced": {
+      "path": "logs/state/risk_advanced.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "VaR/CVaR advanced risk metrics (v7.5_A1)"
+    },
+    "risk_allocation_suggestions_v6": {
+      "path": "logs/state/risk_allocation_suggestions_v6.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "Intel-generated risk allocation suggestions for router autotune"
+    },
+    "router_policy_suggestions_v6": {
+      "path": "logs/state/router_policy_suggestions_v6.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "Intel-generated router policy suggestions for feedback allocator"
+    },
+    "synced_state": {
+      "path": "logs/state/synced_state.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Aggregated sync-ready state snapshot for Firestore publish"
+    },
+    "universe": {
+      "path": "logs/state/universe.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "description": "Active trading universe — resolved symbol list"
+    },
+    "v6_runtime_probe": {
+      "path": "logs/state/v6_runtime_probe.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "V6 runtime probe diagnostics — feature flag echoes and pipeline health"
+    }
+  },
+  "execution_logs": {
+    "_doc": "Append-only JSONL execution logs. Rotated files (*.1.jsonl, *.2.jsonl) are covered by the base entry.",
+    "execution_events": {
+      "path": "logs/execution/execution_events.jsonl",
+      "owner": "minotaur_engine",
+      "description": "Minotaur microstructure execution events"
+    },
+    "execution_health_log": {
+      "path": "logs/execution/execution_health.jsonl",
+      "owner": "executor",
+      "description": "Per-loop execution health snapshots"
+    },
+    "execution_alerts": {
+      "path": "logs/execution/execution_alerts.jsonl",
+      "owner": "executor",
+      "description": "Execution alert events (anomalies, breaches)"
+    },
+    "loop_timing": {
+      "path": "logs/execution/loop_timing.jsonl",
+      "owner": "executor",
+      "description": "Per-loop timing breakdowns for performance tracking"
+    },
+    "order_metrics": {
+      "path": "logs/execution/order_metrics.jsonl",
+      "owner": "executor",
+      "description": "Per-order fill metrics — slippage, latency, notional"
+    },
+    "orders_attempted": {
+      "path": "logs/execution/orders_attempted.jsonl",
+      "owner": "executor",
+      "description": "All order attempts (pre-fill) with sizing and doctrine context"
+    },
+    "orders_executed": {
+      "path": "logs/execution/orders_executed.jsonl",
+      "owner": "executor",
+      "description": "Confirmed filled orders — canonical trade record"
+    },
+    "position_state_log": {
+      "path": "logs/execution/position_state.jsonl",
+      "owner": "executor",
+      "description": "Per-loop position state snapshots"
+    },
+    "risk_vetoes": {
+      "path": "logs/execution/risk_vetoes.jsonl",
+      "owner": "risk_limits",
+      "description": "Risk module veto events with reason codes"
+    },
+    "router_decisions": {
+      "path": "logs/execution/router_decisions.jsonl",
+      "owner": "order_router",
+      "description": "Router execution path decisions (maker/taker/TWAP)"
+    },
+    "router_metrics": {
+      "path": "logs/execution/router_metrics.jsonl",
+      "owner": "executor",
+      "description": "Router quality metrics — latency, slippage, fill rates"
+    },
+    "signal_metrics": {
+      "path": "logs/execution/signal_metrics.jsonl",
+      "owner": "executor",
+      "description": "Signal quality metrics — score distributions, veto rates"
+    },
+    "sync_heartbeats": {
+      "path": "logs/execution/sync_heartbeats.jsonl",
+      "owner": "executor",
+      "description": "Sync heartbeat events for liveness monitoring"
+    },
+    "twap_events": {
+      "path": "logs/execution/twap_events.jsonl",
+      "owner": "order_router",
+      "description": "TWAP slice lifecycle events (start, fill, complete, abort)"
+    },
+    "dataset_rollback": {
+      "path": "logs/execution/dataset_rollback.jsonl",
+      "owner": "dataset_rollback",
+      "optional": true,
+      "description": "Dataset rollback trigger events — temporal/replay anomalies"
     }
   },
   "prediction_layer": {
@@ -473,6 +664,89 @@
         "conviction_band": "str — very_low|low|medium|high|very_high",
         "rq_score": "float|null",
         "rv_score": "float|null"
+      }
+    },
+    "sizing_snapshots": {
+      "path": "logs/execution/sizing_snapshots.jsonl",
+      "owner": "executor",
+      "update_frequency": "per_order_attempt",
+      "optional": true,
+      "description": "Pre-order sizing decomposition — canonical audit of base_nav_pct × vol × adaptive × doctrine → final notional",
+      "fields": {
+        "ts": "Unix timestamp",
+        "attempt_id": "str — unique order attempt ID",
+        "symbol": "str",
+        "side": "BUY|SELL",
+        "position_side": "LONG|SHORT",
+        "strategy": "str — source strategy head",
+        "tier": "CORE|SATELLITE|TACTICAL|ALT-EXT",
+        "reduce_only": "bool",
+        "nav_usd": "float — NAV at time of sizing",
+        "base_nav_pct": "float — base per_trade_nav_pct (fractional)",
+        "vol_regime": "str — low|normal|high|crisis",
+        "vol_multiplier": "float — tier × vol regime sizing multiplier",
+        "adaptive_weight": "float — compute_adaptive_weight output",
+        "atr_factor": "float — ATR regime shrink factor",
+        "dd_factor": "float — drawdown regime shrink factor",
+        "risk_factor": "float — risk mode shrink factor",
+        "adaptive_factor": "float — atr × dd × risk combined",
+        "doctrine_multiplier": "float — doctrine composite multiplier (1.0 if no scaling)",
+        "final_nav_pct": "float — actual NAV % used (target_notional / nav)",
+        "target_notional_usd": "float — final notional sent to build_order_payload",
+        "final_qty": "float — estimated qty (notional / price)",
+        "price_hint": "float — price used for qty estimation",
+        "caps_applied": "List[str] — binding caps (PER_SYMBOL_CAP, MIN_NOTIONAL, RISK_ADJUSTED)",
+        "conviction_mult_shadow": "float|absent — shadow conviction size multiplier (present only when conviction.mode=shadow)",
+        "conviction_band_shadow": "str|absent — shadow conviction band (very_low..very_high)",
+        "conviction_score_shadow": "float|absent — shadow conviction score (0-1)"
+      }
+    },
+    "environment_events": {
+      "path": "logs/execution/environment_events.jsonl",
+      "owner": "reset_guard",
+      "update_frequency": "on_event",
+      "optional": true,
+      "description": "Testnet reset events and production balance anomalies — append-only",
+      "fields": {
+        "ts": "Unix timestamp",
+        "event_type": "TESTNET_RESET | BALANCE_ANOMALY_PRODUCTION",
+        "event": "str — event category",
+        "environment": "str — binance_futures_testnet | production",
+        "pre_reset_nav": "float — last logged NAV before reset",
+        "post_reset_balance": "float — exchange balance after reset",
+        "cycle_id": "str — new cycle identifier (CYCLE_TEST_NNN)",
+        "archive_path": "str — path to archived state files"
+      }
+    },
+    "dle_shadow_events": {
+      "path": "logs/execution/dle_shadow_events.jsonl",
+      "owner": "dle_shadow",
+      "update_frequency": "per_cycle",
+      "optional": true,
+      "description": "DLE shadow gate verdicts — observation-only, never blocks execution (Phase A). Append-only.",
+      "fields": {
+        "ts": "str — ISO 8601 timestamp",
+        "event_type": "shadow_verdict | shadow_mismatch",
+        "decision_id": "str — DEC_<hex16> shadow decision identifier",
+        "symbol": "str — trading pair",
+        "direction": "str — LONG | SHORT",
+        "verdict": "str — PERMIT | DENY",
+        "deny_reason": "str|null — canonical denial code when verdict=DENY",
+        "doctrine_verdict": "str — actual doctrine kernel verdict for comparison",
+        "mismatch": "bool — true if shadow and doctrine verdicts diverge"
+      }
+    },
+    "environment_meta": {
+      "path": "logs/state/environment_meta.json",
+      "owner": "reset_guard",
+      "update_frequency": "on_reset",
+      "optional": true,
+      "description": "Current test cycle watermark — dashboard-readable",
+      "fields": {
+        "cycle_id": "str — current CYCLE_TEST_NNN identifier",
+        "last_testnet_reset_ts": "float — Unix timestamp of last reset",
+        "last_testnet_reset_iso": "str — ISO 8601 timestamp of last reset",
+        "updated_ts": "float — last write timestamp"
       }
     }
   },
