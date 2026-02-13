@@ -1224,6 +1224,20 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
 
     ex.set_dry_run(bool(dry_run))
 
+    # B.5: DLE enforcement rehearsal (counterfactual — never blocks)
+    try:
+        from execution.enforcement_rehearsal import rehearse_order as _rehearse_order
+        _rehearse_order(
+            symbol=symbol,
+            direction=side,
+            order_id=str(intent.get("attempt_id") or intent.get("intent_id") or ""),
+            phase_id=str(intent.get("phase_id") or risk_ctx.get("phase_id") or ""),
+            engine_version=str(risk_ctx.get("engine_version") or ""),
+            git_sha=str(risk_ctx.get("git_sha") or ""),
+        )
+    except Exception:
+        pass  # B.5: fail-open — never affects order routing
+
     try:
         filters_snapshot = ex.get_symbol_filters(symbol)
     except Exception:

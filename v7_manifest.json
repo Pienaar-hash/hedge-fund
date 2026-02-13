@@ -820,6 +820,44 @@
         "strategy": "str — strategy/head name"
       }
     },
+    "dle_enforcement_rehearsal": {
+      "path": "logs/execution/dle_enforcement_rehearsal.jsonl",
+      "owner": "enforcement_rehearsal",
+      "update_frequency": "per_order",
+      "optional": true,
+      "description": "B.5 counterfactual enforcement rehearsal — measures what would be blocked if PERMIT was required. Shadow-only, never blocks execution. Append-only.",
+      "fields": {
+        "ts": "str — ISO 8601 timestamp of evaluation",
+        "order_id": "str — attempt_id or intent reference",
+        "symbol": "str — trading pair",
+        "direction": "str — BUY | SELL",
+        "matched_permit_id": "str|null — PERM_<hex16> if found",
+        "permit_valid": "bool — true if valid permit covers this order",
+        "reason": "str — OK | NO_PERMIT | EXPIRED | MISMATCH_SYMBOL | MISMATCH_DIRECTION | REHEARSAL_DISABLED",
+        "would_block": "bool — true if enforcement would have rejected this order",
+        "phase_id": "str — current cycle identifier",
+        "engine_version": "str — engine version string",
+        "git_sha": "str — git commit sha"
+      },
+      "runtime_metrics": {
+        "total_orders": "int — total orders evaluated",
+        "would_block_count": "int — orders that would have been blocked",
+        "would_block_pct": "float — percentage blocked",
+        "expired_permit_count": "int — blocked due to expired permit",
+        "missing_permit_count": "int — blocked due to no permit found",
+        "mismatch_count": "int — blocked due to symbol/direction mismatch",
+        "ok_count": "int — orders with valid permit",
+        "last_evaluation_ts": "str — ISO timestamp of last evaluation",
+        "enabled": "bool — whether rehearsal is active"
+      },
+      "phase_c_gate": {
+        "would_block_pct_threshold": 0.1,
+        "sustained_days": 14,
+        "expired_permit_count_threshold": 0,
+        "missing_permit_count_threshold": 0,
+        "description": "Phase C enforcement requires all thresholds met for 14 consecutive days"
+      }
+    },
     "environment_meta": {
       "path": "logs/state/environment_meta.json",
       "owner": "reset_guard",

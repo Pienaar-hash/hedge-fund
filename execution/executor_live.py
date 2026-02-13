@@ -1176,6 +1176,17 @@ except ValueError as exc:
 except Exception as exc:
     LOG.warning("[startup] DLE shadow path check failed: %s", exc)
 
+# --- B.5: DLE enforcement rehearsal init (shadow-only) ---
+try:
+    from execution.enforcement_rehearsal import init_rehearsal
+    _b5_ready = init_rehearsal()
+    if _b5_ready:
+        LOG.info("[startup] DLE_ENFORCEMENT_REHEARSAL_OK — permit index loaded")
+    else:
+        LOG.info("[startup] DLE_ENFORCEMENT_REHEARSAL_SKIP — disabled or no shadow data")
+except Exception as exc:
+    LOG.warning("[startup] DLE enforcement rehearsal init failed: %s", exc)
+
 
 def _sync_dry_run() -> None:
     global DRY_RUN
