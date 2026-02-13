@@ -16,7 +16,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 SCHEMA_VERSION = "dle_shadow_v1"
@@ -28,12 +28,27 @@ DEFAULT_LOG_PATH = "logs/execution/dle_shadow_events.jsonl"
 MANIFEST_LOG_PATH = "logs/execution/dle_shadow_events.jsonl"
 
 
+# Default permit TTLs (shadow — not enforced in Phase A)
+DEFAULT_ENTRY_PERMIT_TTL_S = 30.0
+DEFAULT_EXIT_PERMIT_TTL_S = 60.0
+
+
 # -----------------------
 # Helpers (determinism)
 # -----------------------
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _compute_expires_ts(issued_iso: str, ttl_s: float) -> str:
+    """Compute expiry timestamp from issued ISO + TTL seconds."""
+    try:
+        issued = datetime.fromisoformat(issued_iso)
+        return (issued + timedelta(seconds=ttl_s)).isoformat()
+    except Exception:
+        # Fallback: just offset from now
+        return (datetime.now(timezone.utc) + timedelta(seconds=ttl_s)).isoformat()
 
 
 def _stable_json(obj: Any) -> str:
@@ -191,6 +206,9 @@ def shadow_build_chain(
     doctrine_verdict: Optional[str] = None,  # raw DoctrineVerdict enum value
     context_snapshot: Optional[Dict[str, Any]] = None,  # regime, nav_usd, hashes
     provenance: Optional[Dict[str, Any]] = None,        # engine_version, git_sha, docs_version
+    # B.3 permit enrichment (optional — backward compatible)
+    permit_action: Optional[Dict[str, Any]] = None,     # {type, symbol, direction, qty?}
+    permit_ttl_s: Optional[float] = None,               # TTL in seconds
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Build and optionally log a complete DLE chain (Request → Decision → Permit → Link).
@@ -209,6 +227,13 @@ def shadow_build_chain(
     - context_snapshot: regime + NAV + position/score hashes
     - provenance: engine_version + git_sha + docs_version
     When any enrichment field is present, DECISION event uses schema_version v2.
+    
+    B.3 permit enrichment (when provided):
+    - permit_action: action snapshot (type, symbol, direction, qty)
+    - permit_ttl_s: TTL for permit expiry (recorded, not enforced in Phase A)
+    - context_snapshot + provenance reused from B.2 for scope_snapshot
+    When verdict == "DENY", PERMIT event is suppressed (no permit for denials).
+    When permit enrichment present, PERMIT event uses schema_version v2.
     """
     if not enabled:
         return (None, None, None)
@@ -280,8 +305,8 @@ def shadow_build_chain(
 
     # Build enriched DECISION payload (B.2)
     decision_payload = asdict(dec)
-    _has_enrichment = any(x is not None for x in (verdict, deny_reason, doctrine_verdict, context_snapshot, provenance))
-    if _has_enrichment:
+    _has_decision_enrichment = any(x is not None for x in (verdict, deny_reason, doctrine_verdict, context_snapshot, provenance))
+    if _has_decision_enrichment:
         if verdict is not None:
             decision_payload["verdict"] = verdict
         if deny_reason is not None:
@@ -292,7 +317,27 @@ def shadow_build_chain(
             decision_payload["context_snapshot"] = context_snapshot
         if provenance is not None:
             decision_payload["provenance"] = provenance
-    _decision_schema = SCHEMA_VERSION_V2 if _has_enrichment else SCHEMA_VERSION
+    _decision_schema = SCHEMA_VERSION_V2 if _has_decision_enrichment else SCHEMA_VERSION
+
+    # B.3: Determine whether to emit PERMIT
+    _is_deny = (verdict == "DENY")
+    _has_permit_enrichment = permit_action is not None or permit_ttl_s is not None
+
+    # Build enriched PERMIT payload (B.3)
+    permit_payload = asdict(perm)
+    if _has_permit_enrichment and not _is_deny:
+        if permit_action is not None:
+            permit_payload["action"] = permit_action
+        _ttl = permit_ttl_s if permit_ttl_s is not None else DEFAULT_ENTRY_PERMIT_TTL_S
+        permit_payload["permit_ttl_s"] = _ttl
+        permit_payload["expires_ts"] = _compute_expires_ts(ts, _ttl)
+        permit_payload["state"] = "ISSUED"
+        permit_payload["consumable"] = True
+        if context_snapshot is not None:
+            permit_payload["scope_snapshot"] = context_snapshot
+        if provenance is not None:
+            permit_payload["provenance"] = provenance
+    _permit_schema = SCHEMA_VERSION_V2 if (_has_permit_enrichment and not _is_deny) else SCHEMA_VERSION
 
     # Write events (fail-open)
     try:
@@ -309,12 +354,14 @@ def shadow_build_chain(
             ts=ts,
             payload=decision_payload,
         ))
-        w.write(DLEShadowEvent(
-            schema_version=SCHEMA_VERSION,
-            event_type="PERMIT",
-            ts=ts,
-            payload=asdict(perm),
-        ))
+        # B.3: PERMIT suppressed on DENY (no permit for denied outcomes)
+        if not _is_deny:
+            w.write(DLEShadowEvent(
+                schema_version=_permit_schema,
+                event_type="PERMIT",
+                ts=ts,
+                payload=permit_payload,
+            ))
         # LINK event allows easy episode binding later (even in PRE_DLE)
         w.write(DLEShadowEvent(
             schema_version=SCHEMA_VERSION,
@@ -323,7 +370,7 @@ def shadow_build_chain(
             payload={
                 "request_id": request_id,
                 "decision_id": decision_id,
-                "permit_id": permit_id,
+                "permit_id": permit_id if not _is_deny else None,
                 "symbol": symbol,
                 "requested_action": requested_action,
                 "strategy": strategy,

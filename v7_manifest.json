@@ -761,12 +761,24 @@
         "decision_id": "str — parent decision reference",
         "request_id": "str — parent request reference",
         "single_use": "bool — always true in Phase A",
-        "snapshots": "dict — { positions_state_hash, regime_state_hash, config_hash }"
+        "snapshots": "dict — { positions_state_hash, regime_state_hash, config_hash }",
+        "action": "dict|absent — v2 only: { type (ENTRY|EXIT), symbol, direction, qty? }",
+        "permit_ttl_s": "float|absent — v2 only: TTL seconds (30 entry, 60 exit). Recorded, not enforced in Phase A",
+        "expires_ts": "str|absent — v2 only: ISO 8601 expiry computed from ts + permit_ttl_s",
+        "state": "str|absent — v2 only: ISSUED (shadow always)",
+        "consumable": "bool|absent — v2 only: true",
+        "scope_snapshot": "dict|absent — v2 only: { regime, regime_confidence?, nav_usd?, positions_hash, scores_hash? }",
+        "provenance": "dict|absent — v2 only: { engine_version, git_sha, docs_version }"
+      },
+      "permit_behavior": {
+        "deny_suppression": "When verdict=DENY, no PERMIT event is emitted. LINK.permit_id is null.",
+        "ttl_defaults": { "entry": 30.0, "exit": 60.0 },
+        "ttl_enforcement": "Phase A: recorded only. Phase B: enforcement TBD."
       },
       "payload_fields_link": {
         "request_id": "str — cross-reference",
         "decision_id": "str — cross-reference",
-        "permit_id": "str — cross-reference",
+        "permit_id": "str|null — cross-reference (null when verdict=DENY, no permit issued)",
         "symbol": "str — trading pair",
         "requested_action": "str — ENTRY | EXIT",
         "strategy": "str — strategy/head name"

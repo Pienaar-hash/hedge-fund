@@ -42,7 +42,7 @@ from execution.exchange_utils import get_price
 import requests
 from execution.intel.router_policy import router_policy
 from execution.v6_flags import get_flags, flags_to_dict, log_v6_flag_snapshot
-from execution.dle_shadow import shadow_build_chain, DLEShadowWriter, hash_snapshot as _dle_hash_snapshot
+from execution.dle_shadow import shadow_build_chain, DLEShadowWriter, hash_snapshot as _dle_hash_snapshot, DEFAULT_ENTRY_PERMIT_TTL_S, DEFAULT_EXIT_PERMIT_TTL_S
 from execution.loop_timing import (
     is_enabled as timing_enabled,
     start_loop as timing_start_loop,
@@ -181,10 +181,17 @@ def _dle_enrichment(
     allowed: bool,
     doctrine_reason: str,
     doctrine_details: Dict[str, Any] | None,
+    # B.3: permit action fields
+    action_type: str = "ENTRY",
+    action_symbol: str = "",
+    action_direction: str = "",
+    action_qty: float | None = None,
+    permit_ttl_s: float | None = None,
 ) -> Dict[str, Any]:
-    """Build B.2 DLE enrichment kwargs for shadow_build_chain().
+    """Build B.2/B.3 DLE enrichment kwargs for shadow_build_chain().
 
     Returns a dict that can be unpacked as **kwargs.
+    Includes both DECISION enrichment (B.2) and PERMIT enrichment (B.3).
     Safe: never raises, returns empty dict on failure.
     """
     try:
@@ -215,13 +222,33 @@ def _dle_enrichment(
             "git_sha": _git_commit(),
             "docs_version": "v7.9",
         }
-        return {
+
+        result: Dict[str, Any] = {
             "verdict": "PERMIT" if allowed else "DENY",
             "deny_reason": doctrine_reason if not allowed else None,
             "doctrine_verdict": doctrine_reason,
             "context_snapshot": context_snapshot,
             "provenance": provenance,
         }
+
+        # B.3: Permit enrichment (only on ALLOW paths — DENY auto-suppressed by shadow_build_chain)
+        if allowed:
+            result["permit_action"] = {
+                "type": action_type,
+                "symbol": action_symbol,
+                "direction": action_direction,
+            }
+            if action_qty is not None:
+                result["permit_action"]["qty"] = action_qty
+            if permit_ttl_s is not None:
+                result["permit_ttl_s"] = permit_ttl_s
+            else:
+                result["permit_ttl_s"] = (
+                    DEFAULT_EXIT_PERMIT_TTL_S if action_type == "EXIT"
+                    else DEFAULT_ENTRY_PERMIT_TTL_S
+                )
+
+        return result
     except Exception:
         return {}
 
@@ -2791,7 +2818,15 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         if dle_writer:
             try:
                 flags = get_flags()
-                _enrich = _dle_enrichment(allowed=False, doctrine_reason=doctrine_reason, doctrine_details=doctrine_details)
+                _enrich = _dle_enrichment(
+                    allowed=False,
+                    doctrine_reason=doctrine_reason,
+                    doctrine_details=doctrine_details,
+                    action_type="ENTRY",
+                    action_symbol=str(intent.get("symbol", "")),
+                    action_direction=str(intent.get("signal", "")).upper(),
+                    action_qty=float(intent.get("gross_usd", 0) or 0),
+                )
                 shadow_build_chain(
                     enabled=flags.shadow_dle_enabled,
                     write_logs=flags.shadow_dle_write_logs,
@@ -2894,7 +2929,16 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         if dle_writer:
             try:
                 flags = get_flags()
-                _enrich = _dle_enrichment(allowed=True, doctrine_reason=doctrine_reason, doctrine_details=doctrine_details)
+                _enrich = _dle_enrichment(
+                    allowed=True,
+                    doctrine_reason=doctrine_reason,
+                    doctrine_details=doctrine_details,
+                    action_type="ENTRY",
+                    action_symbol=symbol_upper,
+                    action_direction=side,
+                    action_qty=float(intent.get("gross_usd", 0) or 0),
+                    permit_ttl_s=DEFAULT_ENTRY_PERMIT_TTL_S,
+                )
                 shadow_build_chain(
                     enabled=flags.shadow_dle_enabled,
                     write_logs=flags.shadow_dle_write_logs,
@@ -4874,7 +4918,15 @@ def _loop_once(i: int) -> None:
             if dle_writer:
                 try:
                     flags = get_flags()
-                    _exit_enrich = _dle_enrichment(allowed=True, doctrine_reason="EXIT_ALLOW", doctrine_details={})
+                    _exit_enrich = _dle_enrichment(
+                        allowed=True,
+                        doctrine_reason="EXIT_ALLOW",
+                        doctrine_details={},
+                        action_type="EXIT",
+                        action_symbol=candidate.symbol,
+                        action_direction="SELL" if candidate.position_side == "LONG" else "BUY",
+                        permit_ttl_s=DEFAULT_EXIT_PERMIT_TTL_S,
+                    )
                     shadow_build_chain(
                         enabled=flags.shadow_dle_enabled,
                         write_logs=flags.shadow_dle_write_logs,
