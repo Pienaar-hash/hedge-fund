@@ -26,6 +26,8 @@ class V6Flags:
     # Phase A: Shadow DLE gate (log-only, no execution impact)
     shadow_dle_enabled: bool
     shadow_dle_write_logs: bool
+    # Phase C.1: Entry-only enforcement (block ENTRY orders missing valid permit)
+    dle_enforce_entry_only: bool
 
 
 def _load_flags() -> V6Flags:
@@ -40,6 +42,8 @@ def _load_flags() -> V6Flags:
         shadow_dle_enabled=_env_bool("SHADOW_DLE_ENABLED", "0"),
         # Shadow DLE: write logs (default ON when enabled; allows dry-run in CI)
         shadow_dle_write_logs=_env_bool("SHADOW_DLE_WRITE_LOGS", "1"),
+        # Phase C.1: Entry-only enforcement (default OFF — requires shadow_dle_enabled)
+        dle_enforce_entry_only=_env_bool("DLE_ENFORCE_ENTRY_ONLY", "0"),
     )
 
 
@@ -65,6 +69,7 @@ def flags_to_dict(flags: V6Flags | None = None) -> Dict[str, bool]:
         "ROUTER_AUTOTUNE_V6_APPLY_ENABLED": snapshot["router_autotune_v6_apply_enabled"],
         "SHADOW_DLE_ENABLED": snapshot["shadow_dle_enabled"],
         "SHADOW_DLE_WRITE_LOGS": snapshot["shadow_dle_write_logs"],
+        "DLE_ENFORCE_ENTRY_ONLY": snapshot["dle_enforce_entry_only"],
     }
 
 

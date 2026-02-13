@@ -19,6 +19,7 @@ def test_v6_flag_snapshot_reflects_globals(monkeypatch):
             router_autotune_v6_apply_enabled=True,
             shadow_dle_enabled=False,
             shadow_dle_write_logs=True,
+            dle_enforce_entry_only=False,
         ),
     )
     snapshot = executor_live.get_v6_flag_snapshot()
@@ -48,6 +49,7 @@ def test_v6_runtime_probe_writes(monkeypatch):
             router_autotune_v6_apply_enabled=False,
             shadow_dle_enabled=False,
             shadow_dle_write_logs=True,
+            dle_enforce_entry_only=False,
         ),
     )
     executor_live._maybe_write_v6_runtime_probe(force=True)

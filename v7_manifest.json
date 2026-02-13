@@ -858,6 +858,23 @@
         "description": "Phase C enforcement requires all thresholds met for 14 consecutive days"
       }
     },
+    "dle_entry_denials": {
+      "path": "logs/execution/dle_entry_denials.jsonl",
+      "owner": "enforcement_rehearsal",
+      "update_frequency": "per_denied_entry",
+      "optional": true,
+      "description": "C.1 entry-only enforcement denial log. Append-only. Every blocked ENTRY order is recorded here. EXIT orders are never blocked and never appear in this log.",
+      "fields": {
+        "event_type": "str — always ENTRY_DENIAL",
+        "ts": "str — ISO 8601 timestamp of denial",
+        "symbol": "str — trading pair",
+        "direction": "str — BUY | SELL",
+        "order_id": "str — attempt_id or intent reference",
+        "deny_reason": "str — ENTRY_DENIED_NO_PERMIT | ENTRY_DENIED_EXPIRED_PERMIT | ENTRY_DENIED_MISMATCH_SYMBOL | ENTRY_DENIED_MISMATCH_DIRECTION | ENTRY_DENIED_INDEX_UNAVAILABLE",
+        "matched_permit_id": "str|null — permit that was found but invalid (e.g. expired)",
+        "phase": "str — always C.1"
+      }
+    },
     "phase_c_readiness": {
       "path": "logs/state/phase_c_readiness.json",
       "owner": "enforcement_rehearsal",
@@ -885,6 +902,17 @@
           "missing_permit_count": "int — max allowed (0)"
         },
         "rehearsal_enabled": "bool — whether B.5 rehearsal is active",
+        "enforcement": {
+          "entry_evaluated": "int — total ENTRY orders evaluated by C.1 gate",
+          "entry_permitted": "int — ENTRY orders with valid permit (passed)",
+          "entry_denied": "int — ENTRY orders blocked (no valid permit)",
+          "entry_blocks_pct": "float — denial rate percentage",
+          "exit_passthrough": "int — EXIT orders that bypassed enforcement (always pass)",
+          "deny_reasons": "dict — histogram of denial reason codes",
+          "last_denial_ts": "str — ISO 8601 of most recent denial",
+          "last_denial_symbol": "str — symbol of most recent denial",
+          "enforce_enabled": "bool — whether C.1 enforcement is active"
+        },
         "updated_ts": "str — ISO 8601 last write"
       }
     },

@@ -1187,6 +1187,17 @@ try:
 except Exception as exc:
     LOG.warning("[startup] DLE enforcement rehearsal init failed: %s", exc)
 
+# --- C.1: Entry-only enforcement init ---
+try:
+    from execution.enforcement_rehearsal import init_enforcement
+    _c1_ready = init_enforcement()
+    if _c1_ready:
+        LOG.info("[startup] DLE_ENFORCE_ENTRY_ONLY_ACTIVE — entry orders require valid permit")
+    else:
+        LOG.info("[startup] DLE_ENFORCE_ENTRY_ONLY_OFF — enforcement disabled")
+except Exception as exc:
+    LOG.warning("[startup] DLE enforcement init failed: %s", exc)
+
 
 def _sync_dry_run() -> None:
     global DRY_RUN

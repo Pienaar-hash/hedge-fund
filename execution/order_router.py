@@ -1238,6 +1238,33 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     except Exception:
         pass  # B.5: fail-open — never affects order routing
 
+    # C.1: Entry-only enforcement gate (exits NEVER blocked)
+    try:
+        from execution.enforcement_rehearsal import enforce_entry_permit_or_deny
+        _c1_ok, _c1_deny_reason = enforce_entry_permit_or_deny(
+            symbol=symbol,
+            direction=side,
+            reduce_only=bool(reduce_only) or bool(payload.get("reduceOnly")),
+            intent_action=str(intent.get("action") or intent.get("intent_action") or ""),
+            order_id=str(intent.get("attempt_id") or intent.get("intent_id") or ""),
+        )
+        if not _c1_ok:
+            _LOG.warning(
+                "[C.1] ENTRY_DENIED symbol=%s side=%s reason=%s",
+                symbol, side, _c1_deny_reason,
+            )
+            return {
+                "accepted": False,
+                "reason": _c1_deny_reason or "ENTRY_DENIED",
+                "order_id": None,
+                "price": None,
+                "qty": None,
+                "raw": None,
+                "enforcement": "C.1_ENTRY_ONLY",
+            }
+    except Exception:
+        pass  # C.1: fail-open — never traps an order
+
     try:
         filters_snapshot = ex.get_symbol_filters(symbol)
     except Exception:

@@ -558,6 +558,7 @@ def compute_phase_c_readiness() -> Dict[str, Any]:
             "missing_permit_count": _MISSING_THRESHOLD,
         },
         "rehearsal_enabled": rehearsal_enabled,
+        "enforcement": get_enforcement_metrics(),
         "updated_ts": now_iso,
     }
 
@@ -566,6 +567,7 @@ def reset_rehearsal() -> None:
     """Reset global state (for testing only)."""
     global _rehearsal_writer, _permit_index, _metrics, _index_loaded, _enabled
     global _last_breach_ts, _last_breach_reason, _window_start_ts
+    global _denial_writer, _enforcement_metrics, _enforce_entry_only
     _rehearsal_writer = None
     _permit_index = {}
     _metrics = RehearsalMetrics()
@@ -574,3 +576,310 @@ def reset_rehearsal() -> None:
     _last_breach_ts = None
     _last_breach_reason = None
     _window_start_ts = None
+    _denial_writer = None
+    _enforcement_metrics = EnforcementMetrics()
+    _enforce_entry_only = False
+
+
+# ===========================================================================
+# Phase C.1: Entry-Only Enforcement
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Entry vs Exit classification
+# ---------------------------------------------------------------------------
+
+# Actions classified as ENTRY (require permit)
+_ENTRY_SIGNALS = frozenset({
+    "BUY", "SELL",   # generic order sides when NOT reduceOnly
+})
+
+# Explicit exit indicators (never blocked)
+_EXIT_INDICATORS = frozenset({
+    "CLOSE", "EXIT", "REDUCE", "STOP_LOSS", "TAKE_PROFIT",
+})
+
+
+def is_entry_order(
+    *,
+    side: str,
+    reduce_only: bool = False,
+    intent_action: str = "",
+) -> bool:
+    """
+    Classify whether an order is an ENTRY (new risk) or EXIT (reducing risk).
+
+    ENTRY = opening/increasing a position.
+    EXIT  = closing/reducing a position.
+
+    Rules:
+      1. reduceOnly=True → always EXIT
+      2. intent action in _EXIT_INDICATORS → EXIT
+      3. Otherwise → ENTRY
+
+    Conservative: when in doubt, classify as ENTRY (safe direction).
+    """
+    if reduce_only:
+        return False
+    action_upper = str(intent_action).upper().strip()
+    if action_upper in _EXIT_INDICATORS:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Denial reason codes (canonical, append to enforcement schema)
+# ---------------------------------------------------------------------------
+
+DENY_NO_PERMIT = "ENTRY_DENIED_NO_PERMIT"
+DENY_EXPIRED = "ENTRY_DENIED_EXPIRED_PERMIT"
+DENY_MISMATCH_SYMBOL = "ENTRY_DENIED_MISMATCH_SYMBOL"
+DENY_MISMATCH_DIRECTION = "ENTRY_DENIED_MISMATCH_DIRECTION"
+DENY_INDEX_UNAVAILABLE = "ENTRY_DENIED_INDEX_UNAVAILABLE"
+
+_REHEARSAL_TO_DENY: Dict[str, str] = {
+    REASON_NO_PERMIT: DENY_NO_PERMIT,
+    REASON_EXPIRED: DENY_EXPIRED,
+    REASON_MISMATCH_SYMBOL: DENY_MISMATCH_SYMBOL,
+    REASON_MISMATCH_DIRECTION: DENY_MISMATCH_DIRECTION,
+}
+
+
+# ---------------------------------------------------------------------------
+# Denial log writer (append-only JSONL)
+# ---------------------------------------------------------------------------
+
+DENIAL_LOG_PATH = Path("logs/execution/dle_entry_denials.jsonl")
+
+
+class DenialWriter:
+    """Append-only JSONL writer for C.1 entry denial records."""
+
+    def __init__(self, log_path: Optional[str] = None) -> None:
+        self.log_path = log_path or str(DENIAL_LOG_PATH)
+        self._write_failures = 0
+        self._lock = threading.Lock()
+
+    def write(self, record: Dict[str, Any]) -> None:
+        """Append denial record. Fail-open: never raises."""
+        try:
+            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+            line = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            with self._lock:
+                with open(self.log_path, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+        except Exception as e:
+            self._write_failures += 1
+            logger.warning("C.1: denial log write failed (%d): %s", self._write_failures, e)
+
+    @property
+    def write_failure_count(self) -> int:
+        return self._write_failures
+
+
+# ---------------------------------------------------------------------------
+# Enforcement metrics (runtime, reset on restart)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EnforcementMetrics:
+    """Runtime metrics for Phase C.1 entry enforcement."""
+    entry_evaluated: int = 0
+    entry_permitted: int = 0
+    entry_denied: int = 0
+    entry_blocks_pct: float = 0.0
+    exit_passthrough: int = 0
+    deny_reasons: Dict[str, int] = field(default_factory=dict)
+    last_denial_ts: str = ""
+    last_denial_symbol: str = ""
+    enforce_enabled: bool = False
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        # asdict copies the dict — safe
+        return d
+
+    def _update_pct(self) -> None:
+        if self.entry_evaluated > 0:
+            self.entry_blocks_pct = round(
+                self.entry_denied / self.entry_evaluated * 100, 4
+            )
+        else:
+            self.entry_blocks_pct = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Enforcement global state
+# ---------------------------------------------------------------------------
+
+_denial_writer: Optional[DenialWriter] = None
+_enforcement_metrics = EnforcementMetrics()
+_enforcement_metrics_lock = threading.Lock()
+_enforce_entry_only = False
+
+
+def init_enforcement(
+    *,
+    denial_log_path: Optional[str] = None,
+) -> bool:
+    """
+    Initialize Phase C.1 entry enforcement. Called once at startup.
+
+    Requires:
+      - shadow_dle_enabled=True (shadow layer must be running)
+      - dle_enforce_entry_only=True (enforcement flag)
+      - rehearsal must be initialized (permit index available)
+
+    Returns True if enforcement is active.
+    Fail-open: returns False on any error.
+    """
+    global _denial_writer, _enforcement_metrics, _enforce_entry_only
+
+    try:
+        from execution.v6_flags import get_flags
+        flags = get_flags()
+        if not flags.shadow_dle_enabled:
+            logger.info("C.1: Enforcement disabled — SHADOW_DLE_ENABLED=0")
+            _enforce_entry_only = False
+            return False
+        if not flags.dle_enforce_entry_only:
+            logger.info("C.1: Enforcement disabled — DLE_ENFORCE_ENTRY_ONLY=0")
+            _enforce_entry_only = False
+            return False
+    except Exception:
+        logger.info("C.1: Enforcement disabled — cannot read flags")
+        _enforce_entry_only = False
+        return False
+
+    if not _enabled:
+        logger.warning("C.1: Enforcement disabled — rehearsal not initialized (no permit index)")
+        _enforce_entry_only = False
+        return False
+
+    _denial_writer = DenialWriter(denial_log_path)
+    _enforcement_metrics = EnforcementMetrics(enforce_enabled=True)
+    _enforce_entry_only = True
+    logger.info("C.1: Entry-only enforcement ACTIVE — exits always pass")
+    return True
+
+
+def enforce_entry_permit_or_deny(
+    *,
+    symbol: str,
+    direction: str,
+    reduce_only: bool = False,
+    intent_action: str = "",
+    order_id: str = "",
+    order_ts: Optional[float] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Phase C.1 entry-only enforcement gate.
+
+    Called from order_router AFTER rehearsal, BEFORE dispatch.
+
+    Returns: (ok, deny_reason)
+      - ok=True  → order proceeds (either EXIT or valid ENTRY)
+      - ok=False → order denied (ENTRY without valid permit)
+
+    CRITICAL SAFETY RULES:
+      - EXIT orders ALWAYS return (True, None) — never blocked
+      - If enforcement is disabled → (True, None)
+      - If any internal error → (True, None) — fail-open
+    """
+    global _enforcement_metrics
+
+    # --- EXIT orders: always pass, log shadow violation if applicable ---
+    if not is_entry_order(
+        side=direction, reduce_only=reduce_only, intent_action=intent_action
+    ):
+        with _enforcement_metrics_lock:
+            _enforcement_metrics.exit_passthrough += 1
+        return True, None
+
+    # --- Enforcement disabled: pass through ---
+    if not _enforce_entry_only:
+        return True, None
+
+    try:
+        ts_unix = order_ts or time.time()
+        ts_iso = datetime.fromtimestamp(ts_unix, tz=timezone.utc).isoformat()
+
+        # Check permit index availability
+        if not _index_loaded or _permit_index is None:
+            deny_reason = DENY_INDEX_UNAVAILABLE
+            _record_denial(
+                symbol=symbol, direction=direction, order_id=order_id,
+                deny_reason=deny_reason, ts_iso=ts_iso,
+                matched_permit_id=None,
+            )
+            return False, deny_reason
+
+        # Evaluate against permit index (same logic as rehearsal)
+        would_block, reason, matched_permit_id = evaluate_order(
+            symbol=symbol,
+            direction=direction,
+            order_ts_unix=ts_unix,
+            permit_index=_permit_index,
+        )
+
+        if would_block:
+            deny_reason = _REHEARSAL_TO_DENY.get(reason, DENY_NO_PERMIT)
+            _record_denial(
+                symbol=symbol, direction=direction, order_id=order_id,
+                deny_reason=deny_reason, ts_iso=ts_iso,
+                matched_permit_id=matched_permit_id,
+            )
+            return False, deny_reason
+
+        # Valid permit — entry allowed
+        with _enforcement_metrics_lock:
+            _enforcement_metrics.entry_evaluated += 1
+            _enforcement_metrics.entry_permitted += 1
+            _enforcement_metrics._update_pct()
+
+        return True, None
+
+    except Exception as e:
+        # FAIL-OPEN: any error means the order proceeds
+        logger.warning("C.1: Enforcement evaluation failed (fail-open): %s", e)
+        return True, None
+
+
+def _record_denial(
+    *,
+    symbol: str,
+    direction: str,
+    order_id: str,
+    deny_reason: str,
+    ts_iso: str,
+    matched_permit_id: Optional[str],
+) -> None:
+    """Record a denial in metrics and append to denial log."""
+    with _enforcement_metrics_lock:
+        _enforcement_metrics.entry_evaluated += 1
+        _enforcement_metrics.entry_denied += 1
+        _enforcement_metrics.deny_reasons[deny_reason] = (
+            _enforcement_metrics.deny_reasons.get(deny_reason, 0) + 1
+        )
+        _enforcement_metrics.last_denial_ts = ts_iso
+        _enforcement_metrics.last_denial_symbol = symbol
+        _enforcement_metrics._update_pct()
+
+    if _denial_writer is not None:
+        _denial_writer.write({
+            "event_type": "ENTRY_DENIAL",
+            "ts": ts_iso,
+            "symbol": symbol.upper(),
+            "direction": _normalize_direction(direction),
+            "order_id": order_id,
+            "deny_reason": deny_reason,
+            "matched_permit_id": matched_permit_id,
+            "phase": "C.1",
+        })
+
+
+def get_enforcement_metrics() -> Dict[str, Any]:
+    """Return current enforcement metrics snapshot (for state surface)."""
+    with _enforcement_metrics_lock:
+        return _enforcement_metrics.to_dict()
+
