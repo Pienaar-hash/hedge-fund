@@ -1225,9 +1225,10 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
     ex.set_dry_run(bool(dry_run))
 
     # B.5: DLE enforcement rehearsal (counterfactual — never blocks)
+    _rehearsal_result = None
     try:
         from execution.enforcement_rehearsal import rehearse_order as _rehearse_order
-        _rehearse_order(
+        _rehearsal_result = _rehearse_order(
             symbol=symbol,
             direction=side,
             order_id=str(intent.get("attempt_id") or intent.get("intent_id") or ""),
@@ -1239,6 +1240,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         pass  # B.5: fail-open — never affects order routing
 
     # C.1: Entry-only enforcement gate (exits NEVER blocked)
+    _c1_denied = False
     try:
         from execution.enforcement_rehearsal import enforce_entry_permit_or_deny
         _c1_ok, _c1_deny_reason = enforce_entry_permit_or_deny(
@@ -1249,21 +1251,37 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
             order_id=str(intent.get("attempt_id") or intent.get("intent_id") or ""),
         )
         if not _c1_ok:
+            _c1_denied = True
             _LOG.warning(
                 "[C.1] ENTRY_DENIED symbol=%s side=%s reason=%s",
                 symbol, side, _c1_deny_reason,
             )
-            return {
-                "accepted": False,
-                "reason": _c1_deny_reason or "ENTRY_DENIED",
-                "order_id": None,
-                "price": None,
-                "qty": None,
-                "raw": None,
-                "enforcement": "C.1_ENTRY_ONLY",
-            }
     except Exception:
-        pass  # C.1: fail-open — never traps an order
+        _c1_ok = True
+        _c1_deny_reason = None  # fail-open — never traps an order
+
+    # Split-brain detection: compare rehearsal vs enforcement verdicts
+    try:
+        from execution.enforcement_rehearsal import record_split_brain_check
+        record_split_brain_check(
+            symbol=symbol,
+            direction=side,
+            rehearsal_would_block=getattr(_rehearsal_result, "would_block", None),
+            enforcement_denied=_c1_denied,
+        )
+    except Exception:
+        pass  # fail-open
+
+    if _c1_denied:
+        return {
+            "accepted": False,
+            "reason": _c1_deny_reason or "ENTRY_DENIED",
+            "order_id": None,
+            "price": None,
+            "qty": None,
+            "raw": None,
+            "enforcement": "C.1_ENTRY_ONLY",
+        }
 
     try:
         filters_snapshot = ex.get_symbol_filters(symbol)

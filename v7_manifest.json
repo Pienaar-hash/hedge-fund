@@ -911,7 +911,10 @@
           "deny_reasons": "dict — histogram of denial reason codes",
           "last_denial_ts": "str — ISO 8601 of most recent denial",
           "last_denial_symbol": "str — symbol of most recent denial",
-          "enforce_enabled": "bool — whether C.1 enforcement is active"
+          "enforce_enabled": "bool — whether C.1 enforcement is active",
+          "split_brain_count": "int — divergences where enforcement denied but rehearsal would allow (expect ~0)",
+          "last_split_brain_ts": "str — ISO 8601 of most recent split-brain event",
+          "last_split_brain_symbol": "str — symbol of most recent split-brain event"
         },
         "updated_ts": "str — ISO 8601 last write"
       }

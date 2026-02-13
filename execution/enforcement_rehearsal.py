@@ -693,6 +693,10 @@ class EnforcementMetrics:
     last_denial_ts: str = ""
     last_denial_symbol: str = ""
     enforce_enabled: bool = False
+    # Split-brain detection: enforcement blocked but rehearsal would allow
+    split_brain_count: int = 0
+    last_split_brain_ts: str = ""
+    last_split_brain_symbol: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -882,4 +886,38 @@ def get_enforcement_metrics() -> Dict[str, Any]:
     """Return current enforcement metrics snapshot (for state surface)."""
     with _enforcement_metrics_lock:
         return _enforcement_metrics.to_dict()
+
+
+def record_split_brain_check(
+    *,
+    symbol: str,
+    direction: str,
+    rehearsal_would_block: Optional[bool],
+    enforcement_denied: bool,
+) -> None:
+    """
+    Compare rehearsal verdict with enforcement verdict.
+
+    Detects divergence: enforcement blocked an entry that rehearsal
+    would have allowed. This should be ~0. Nonzero means the two
+    code paths have drifted (different index, timing, or logic).
+
+    Called from order_router after both B.5 and C.1 have run.
+    Fail-open: never throws.
+    """
+    try:
+        if rehearsal_would_block is None:
+            return  # rehearsal didn't run or returned None — nothing to compare
+        if enforcement_denied and not rehearsal_would_block:
+            ts_iso = datetime.now(timezone.utc).isoformat()
+            with _enforcement_metrics_lock:
+                _enforcement_metrics.split_brain_count += 1
+                _enforcement_metrics.last_split_brain_ts = ts_iso
+                _enforcement_metrics.last_split_brain_symbol = symbol.upper()
+            logger.warning(
+                "C.1 SPLIT_BRAIN: enforcement denied %s %s but rehearsal would allow",
+                symbol, direction,
+            )
+    except Exception:
+        pass  # fail-open
 
