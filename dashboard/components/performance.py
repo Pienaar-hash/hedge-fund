@@ -87,6 +87,12 @@ def render_performance_block(
     win_cls = "text-positive" if win_rate >= 50 else "text-warning"
     sharpe_cls = "text-positive" if sharpe >= 1 else ("text-warning" if sharpe >= 0 else "text-negative")
     
+    # Span diagnostic note (injected by layout when NAV windows suppressed)
+    span_note = kpis.get("_nav_span_note", "")
+    span_html = ""
+    if span_note:
+        span_html = f'<div style="color:#f59e0b;font-size:11px;margin-top:6px;text-align:center;">⚠ {span_note}</div>'
+
     html = f'''
     <div class="quant-card">
         <div class="performance-grid">
@@ -126,6 +132,7 @@ def render_performance_block(
                 <div class="perf-value">{trades:,}</div>
             </div>
         </div>
+        {span_html}
         
         <!-- Equity sparkline -->
         <div class="equity-sparkline-row">

@@ -48,6 +48,34 @@ DEFAULT_CONFIG_PATH = Path("config/strategy_config.json")
 
 _LOG = logging.getLogger(__name__)
 
+# Maximum age (seconds) for state dict inputs before they are treated as stale.
+_DEFAULT_MAX_STATE_AGE_S: float = 300.0  # 5 minutes
+
+
+def _is_fresh(state: Dict[str, Any], max_age_s: float = _DEFAULT_MAX_STATE_AGE_S) -> bool:
+    """Return True if *state* has an ``updated_ts`` younger than *max_age_s*.
+
+    When ``updated_ts`` is missing or unparseable the dict is treated as stale.
+    """
+    ts_raw = state.get("updated_ts") or state.get("timestamp")
+    if not ts_raw:
+        return False
+    try:
+        if isinstance(ts_raw, (int, float)):
+            updated = datetime.fromtimestamp(float(ts_raw), tz=timezone.utc)
+        else:
+            ts_str = str(ts_raw)
+            # Accept both ISO-8601 and common variants
+            if ts_str.endswith("Z"):
+                ts_str = ts_str[:-1] + "+00:00"
+            updated = datetime.fromisoformat(ts_str)
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - updated).total_seconds()
+        return age <= max_age_s
+    except (ValueError, TypeError, OverflowError):
+        return False
+
 # Canonical strategy heads
 STRATEGY_HEADS = [
     "TREND",
@@ -552,9 +580,13 @@ def extract_cerberus_signals(
     cross_pair: Dict[str, Any],
     alpha_miner: Dict[str, Any],
     universe_optimizer: Dict[str, Any],
+    max_state_age_s: float = _DEFAULT_MAX_STATE_AGE_S,
 ) -> CerberusSignals:
     """
     Extract signals from all intel surfaces.
+
+    Stale inputs (``updated_ts`` older than *max_state_age_s*) are silently
+    skipped to prevent acting on outdated data.
 
     Args:
         sentinel_x: Sentinel-X regime state
@@ -564,11 +596,36 @@ def extract_cerberus_signals(
         cross_pair: Cross-pair edges state
         alpha_miner: Alpha miner state
         universe_optimizer: Universe optimizer state
+        max_state_age_s: Maximum age in seconds before an input is treated
+            as stale and skipped.  Default 300 s.
 
     Returns:
         CerberusSignals with all extracted signals
     """
     signals = CerberusSignals()
+
+    # --- Freshness filter (presence ≠ validity) ---
+    if sentinel_x and not _is_fresh(sentinel_x, max_state_age_s):
+        _LOG.warning("cerberus: sentinel_x stale — skipping")
+        sentinel_x = {}
+    if alpha_decay and not _is_fresh(alpha_decay, max_state_age_s):
+        _LOG.warning("cerberus: alpha_decay stale — skipping")
+        alpha_decay = {}
+    if meta_scheduler and not _is_fresh(meta_scheduler, max_state_age_s):
+        _LOG.warning("cerberus: meta_scheduler stale — skipping")
+        meta_scheduler = {}
+    if edge_insights and not _is_fresh(edge_insights, max_state_age_s):
+        _LOG.warning("cerberus: edge_insights stale — skipping")
+        edge_insights = {}
+    if cross_pair and not _is_fresh(cross_pair, max_state_age_s):
+        _LOG.warning("cerberus: cross_pair stale — skipping")
+        cross_pair = {}
+    if alpha_miner and not _is_fresh(alpha_miner, max_state_age_s):
+        _LOG.warning("cerberus: alpha_miner stale — skipping")
+        alpha_miner = {}
+    if universe_optimizer and not _is_fresh(universe_optimizer, max_state_age_s):
+        _LOG.warning("cerberus: universe_optimizer stale — skipping")
+        universe_optimizer = {}
 
     # Regime from Sentinel-X
     if sentinel_x:

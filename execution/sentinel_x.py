@@ -790,8 +790,8 @@ class SimpleRegimeModel:
         Returns:
             RegimeProbabilities with normalized probabilities
         """
-        if features.data_quality < 0.3:
-            # Insufficient data → uniform
+        if features.data_quality < 0.5:
+            # Insufficient data → uniform (need ≥50% of intended window)
             probs = RegimeProbabilities()
             probs.normalize()
             return probs

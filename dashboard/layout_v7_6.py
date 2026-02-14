@@ -193,7 +193,7 @@ def render_strategy_block(
     # Compute Sharpe and Max DD from episode data when upstream sources lack them
     if episode_ledger:
         _episodes = episode_ledger.get("episodes", [])
-        if _episodes and len(_episodes) >= 5:
+        if _episodes and len(_episodes) >= 30:
             _pnl_list = [float(e.get("net_pnl", 0) or 0) for e in _episodes]
             import statistics as _st
             _mean = _st.mean(_pnl_list)
@@ -257,20 +257,36 @@ def render_strategy_block(
     from dashboard.components.nav_pnl import compute_nav_deltas
     _nav_deltas = compute_nav_deltas()
     _log_span = _nav_deltas.get("log_span_days", 0)
+    _span_suppressed: List[str] = []  # windows skipped due to short span
     if _nav_deltas.get("pnl_24h") and _log_span >= 0.9:
         merged_kpis["daily_pnl"] = _nav_deltas["pnl_24h"]
         merged_kpis["pnl_24h"] = _nav_deltas["pnl_24h"]
+    elif _log_span < 0.9:
+        _span_suppressed.append("24h")
     if _nav_deltas.get("pnl_7d") and _log_span >= 6:
         merged_kpis["weekly_pnl"] = _nav_deltas["pnl_7d"]
         merged_kpis["pnl_7d"] = _nav_deltas["pnl_7d"]
+    elif _log_span < 6:
+        _span_suppressed.append("7d")
     if _nav_deltas.get("pnl_30d") and _log_span >= 25:
         merged_kpis["monthly_pnl"] = _nav_deltas["pnl_30d"]
         merged_kpis["pnl_30d"] = _nav_deltas["pnl_30d"]
+    elif _log_span < 25:
+        _span_suppressed.append("30d")
     # All-time PnL = NAV delta, but ONLY if nav_log spans enough history.
     # Short logs (after restart) must not overwrite episode ledger truth.
     if _nav_deltas.get("pnl_all_time") and _nav_deltas.get("log_span_days", 0) >= 7:
         merged_kpis["total_pnl"] = _nav_deltas["pnl_all_time"]
         merged_kpis["all_time_pnl"] = _nav_deltas["pnl_all_time"]
+    elif _log_span < 7:
+        _span_suppressed.append("all-time")
+
+    # Inject span diagnostic for downstream rendering
+    if _span_suppressed:
+        merged_kpis["_nav_span_note"] = (
+            f"NAV log span {_log_span:.1f}d — "
+            f"{', '.join(_span_suppressed)} windows use ledger values"
+        )
     
     # Extract equity curve from NAV state series
     equity_curve = None

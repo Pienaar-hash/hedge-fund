@@ -262,9 +262,12 @@ class TestSignalExtraction:
 
     def test_extract_sentinel_x_signals(self) -> None:
         """Test extraction of Sentinel-X signals."""
+        from datetime import datetime, timezone
+        _now = datetime.now(timezone.utc).isoformat()
         sentinel_x = {
             "primary_regime": "BREAKOUT",
             "smoothed_probs": {"BREAKOUT": 0.6, "TREND_UP": 0.3},
+            "updated_ts": _now,
         }
         signals = extract_cerberus_signals(
             sentinel_x=sentinel_x,
@@ -280,10 +283,13 @@ class TestSignalExtraction:
 
     def test_extract_alpha_decay_signals(self) -> None:
         """Test extraction of alpha decay signals."""
+        from datetime import datetime, timezone
+        _now = datetime.now(timezone.utc).isoformat()
         alpha_decay = {
             "avg_symbol_survival": 0.75,
             "avg_factor_survival": 0.80,
             "overall_alpha_health": 0.65,
+            "updated_ts": _now,
         }
         signals = extract_cerberus_signals(
             sentinel_x={},
@@ -300,12 +306,15 @@ class TestSignalExtraction:
 
     def test_extract_crossfire_signals(self) -> None:
         """Test extraction of Crossfire signals."""
+        from datetime import datetime, timezone
+        _now = datetime.now(timezone.utc).isoformat()
         cross_pair = {
             "pairs_eligible": 5,
             "pair_edges": {
                 "BTCUSDT-ETHUSDT": {"edge_score": 0.7},
                 "SOLUSDT-AVAXUSDT": {"edge_score": 0.5},
             },
+            "updated_ts": _now,
         }
         signals = extract_cerberus_signals(
             sentinel_x={},
@@ -497,9 +506,11 @@ class TestRunCerberusStep:
         self, enabled_config: CerberusConfig, sample_state: CerberusState
     ) -> None:
         """Test step with full signals."""
-        sentinel_x = {"primary_regime": "TREND_UP", "smoothed_probs": {"TREND_UP": 0.7}}
-        alpha_decay = {"avg_symbol_survival": 0.85}
-        edge_insights = {"strategy_health": {"health_score": 0.72}}
+        from datetime import datetime, timezone
+        _now = datetime.now(timezone.utc).isoformat()
+        sentinel_x = {"primary_regime": "TREND_UP", "smoothed_probs": {"TREND_UP": 0.7}, "updated_ts": _now}
+        alpha_decay = {"avg_symbol_survival": 0.85, "updated_ts": _now}
+        edge_insights = {"strategy_health": {"health_score": 0.72}, "updated_ts": _now}
 
         state = run_cerberus_step(
             enabled_config,

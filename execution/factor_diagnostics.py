@@ -81,6 +81,7 @@ class AdaptiveConfig:
     ir_cut_threshold: float = 0.0  # IR below this gets negative bias
     pnl_min_for_boost: float = 0.0  # PnL must be >= this for boost
     max_shift: float = 0.10  # Maximum bias per factor
+    min_observations: int = 20  # Minimum data points before bias is applied
 
 
 @dataclass
@@ -758,6 +759,7 @@ def compute_factor_ir_from_vectors(
     vectors: List[NormalizedFactorVector],
     factor_names: List[str],
     eps: float = 1e-9,
+    min_observations: int = 10,
 ) -> Dict[str, float]:
     """
     Compute per-factor IR using cross-sectional mean/std of normalized vectors.
@@ -766,12 +768,14 @@ def compute_factor_ir_from_vectors(
         vectors: Normalized factor vectors
         factor_names: Factor names to include
         eps: Small constant to avoid division by zero
+        min_observations: Minimum vector count required for meaningful IR.
+            Below this threshold, all factors return 0.0 (neutral).
 
     Returns:
         Dict mapping factor name to IR (mean / std)
     """
     ir: Dict[str, float] = {}
-    if not vectors:
+    if not vectors or len(vectors) < min_observations:
         return ir
 
     for factor in factor_names:
@@ -820,6 +824,7 @@ def compute_adaptive_weight_bias(
     base_weights: Dict[str, float],
     factor_perf: Dict[str, FactorPerformance],
     cfg: AdaptiveConfig,
+    n_observations: int = 0,
 ) -> Dict[str, float]:
     """
     Compute per-factor bias based on IR/PnL outcomes (v7.7_P2).
@@ -840,11 +845,17 @@ def compute_adaptive_weight_bias(
         base_weights: Current factor weights (before adaptive adjustment)
         factor_perf: Per-factor performance metrics
         cfg: Adaptive weighting configuration
+        n_observations: Number of data points backing the perf metrics.
+            Below cfg.min_observations, all-zero bias is returned (neutral).
 
     Returns:
         Dict mapping factor name to bias value in [-max_shift, +max_shift]
     """
     bias: Dict[str, float] = {}
+
+    # Presence ≠ validity: refuse to bias with insufficient history
+    if n_observations < cfg.min_observations:
+        return {f: 0.0 for f in base_weights}
 
     for factor in base_weights:
         if factor not in factor_perf:

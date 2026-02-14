@@ -133,7 +133,7 @@ class TestComputeAdaptiveWeightBias:
             "carry": FactorPerformance("carry", ir=0.1, pnl_contrib=10.0),   # Low IR
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config, n_observations=100)
 
         assert bias["trend"] > 0  # Should get positive bias
         assert bias["trend"] <= default_adaptive_config.max_shift
@@ -146,7 +146,7 @@ class TestComputeAdaptiveWeightBias:
             "carry": FactorPerformance("carry", ir=0.3, pnl_contrib=10.0),
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config, n_observations=100)
 
         assert bias["trend"] < 0  # Negative PnL → negative bias
         assert bias["trend"] >= -default_adaptive_config.max_shift
@@ -159,7 +159,7 @@ class TestComputeAdaptiveWeightBias:
             "carry": FactorPerformance("carry", ir=0.3, pnl_contrib=10.0),
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config, n_observations=100)
 
         assert bias["trend"] < 0  # Low IR → negative bias
 
@@ -171,7 +171,7 @@ class TestComputeAdaptiveWeightBias:
             "carry": FactorPerformance("carry", ir=-10.0, pnl_contrib=-1000.0),  # Very low
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config, n_observations=100)
 
         assert bias["trend"] <= default_adaptive_config.max_shift
         assert bias["carry"] >= -default_adaptive_config.max_shift
@@ -184,7 +184,7 @@ class TestComputeAdaptiveWeightBias:
             # carry and vol_regime missing
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config, n_observations=100)
 
         assert bias["carry"] == pytest.approx(0.0)
         assert bias["vol_regime"] == pytest.approx(0.0)
@@ -197,7 +197,7 @@ class TestComputeAdaptiveWeightBias:
             "trend": FactorPerformance("trend", ir=0.1, pnl_contrib=5.0),
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config, n_observations=100)
 
         assert bias["trend"] == pytest.approx(0.0)
 
@@ -460,7 +460,7 @@ class TestAdaptiveEdgeCases:
             "c": FactorPerformance("c", ir=0.4, pnl_contrib=80.0),
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config, n_observations=100)
 
         # All should have positive bias
         assert all(b > 0 for b in bias.values())
@@ -476,7 +476,7 @@ class TestAdaptiveEdgeCases:
             "c": FactorPerformance("c", ir=-0.1, pnl_contrib=-80.0),
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, default_adaptive_config, n_observations=100)
 
         # All should have negative bias
         assert all(b < 0 for b in bias.values())
@@ -491,13 +491,13 @@ class TestAdaptiveEdgeCases:
             "trend": FactorPerformance("trend", ir=10.0, pnl_contrib=1000.0),
         }
 
-        bias = compute_adaptive_weight_bias(base_weights, factor_perf, cfg)
+        bias = compute_adaptive_weight_bias(base_weights, factor_perf, cfg, n_observations=100)
 
         assert bias["trend"] == pytest.approx(0.0)
 
     def test_empty_base_weights(self, default_adaptive_config):
         """Empty base weights returns empty bias."""
-        bias = compute_adaptive_weight_bias({}, {}, default_adaptive_config)
+        bias = compute_adaptive_weight_bias({}, {}, default_adaptive_config, n_observations=100)
         assert bias == {}
 
     def test_snapshot_to_dict_includes_adaptive_fields(
