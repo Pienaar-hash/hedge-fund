@@ -220,4 +220,4 @@ def render_enforcement_widget(state: Optional[Dict[str, Any]] = None) -> None:
         '''
 
     html += '</div>'
-    st.markdown(html, unsafe_allow_html=True)
+    st.html(html)

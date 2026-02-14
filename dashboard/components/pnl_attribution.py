@@ -140,15 +140,14 @@ def render_pnl_attribution_widget(state: Dict[str, Any]) -> None:
             tc = int(v.get("trade_count", 0) or 0)
             tint = _RISK_MODE_TINTS.get(mode, "#f0f0f020")
             with col:
-                st.markdown(
+                st.html(
                     f'<div style="padding:0.6rem;border-radius:8px;background:{tint};">'
                     f'<div style="font-weight:700;">{mode}</div>'
                     f"<div>Realized: {r:,.2f}</div>"
                     f"<div>Unrealized: {u:,.2f}</div>"
                     f"<div>Total: {t:,.2f}</div>"
                     f"<div>Trades: {tc}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True,
+                    f"</div>"
                 )
 
     # ── Empty-state fallback ──────────────────────────────────────────────

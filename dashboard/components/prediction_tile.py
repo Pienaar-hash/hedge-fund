@@ -178,12 +178,11 @@ def render_prediction_tile(state: Optional[Dict[str, Any]] = None) -> None:
 
     disabled_html = "" if enabled else ' <span style="color:#888;font-size:0.8em;">DISABLED</span>'
 
-    st.markdown(
+    st.html(
         f'<span style="background:{phase_color};color:#000;padding:2px 8px;'
         f'border-radius:4px;font-weight:600;font-size:0.85em;">'
         f'PREDICTION: {phase_label}</span>'
-        f'{disabled_html}',
-        unsafe_allow_html=True,
+        f'{disabled_html}'
     )
 
     # Metrics row
