@@ -88,16 +88,24 @@ def compute_nav_deltas() -> Dict[str, float]:
     # Earliest entry for all-time
     earliest = entries[0]
     nav_first = float(earliest.get("nav", nav_now))
+    t_first = float(earliest.get("t", t_now))
+    log_span_days = (t_now - t_first) / 86400
 
     # Window deltas
     nav_24h = _nav_at_offset(entries, t_now, 86400)  # 24 hours
     nav_7d = _nav_at_offset(entries, t_now, 604800)   # 7 days
     nav_30d = _nav_at_offset(entries, t_now, 2592000)  # 30 days
 
+    # Only report all-time PnL if nav_log spans >= 7 days.
+    # Short logs (e.g. 12 hours after restart) would silently
+    # overwrite the episode ledger's true historical PnL.
+    pnl_all_time = round(nav_now - nav_first, 2) if log_span_days >= 7 else 0.0
+
     return {
         "pnl_24h": round(nav_now - nav_24h, 2) if nav_24h is not None else 0.0,
         "pnl_7d": round(nav_now - nav_7d, 2) if nav_7d is not None else 0.0,
         "pnl_30d": round(nav_now - nav_30d, 2) if nav_30d is not None else 0.0,
-        "pnl_all_time": round(nav_now - nav_first, 2),
+        "pnl_all_time": pnl_all_time,
         "nav_current": nav_now,
+        "log_span_days": round(log_span_days, 2),
     }
