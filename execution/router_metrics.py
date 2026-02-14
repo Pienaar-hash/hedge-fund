@@ -773,10 +773,20 @@ def build_all_router_quality_snapshots(
         # Get TWAP skip ratio (default to 0 if no data)
         twap_skip_ratio = twap_skip_by_symbol.get(symbol_upper, 0.0)
         
+        # Presence ≠ validity: when slippage EWMA is immature, use
+        # neutral (zero) assumption so routing doesn't over-fit to
+        # a handful of early fills.
+        if stats.is_mature:
+            ewma_exp = stats.ewma_expected_bps
+            ewma_real = stats.ewma_realized_bps
+        else:
+            ewma_exp = 0.0
+            ewma_real = 0.0
+
         snapshot = build_router_quality_snapshot(
             symbol=symbol_upper,
-            ewma_expected_bps=stats.ewma_expected_bps,
-            ewma_realized_bps=stats.ewma_realized_bps,
+            ewma_expected_bps=ewma_exp,
+            ewma_realized_bps=ewma_real,
             bucket=bucket,
             twap_skip_ratio=twap_skip_ratio,
             trade_count=stats.trade_count,

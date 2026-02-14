@@ -181,6 +181,7 @@ class CerberusConfig:
     signal_weights: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SIGNAL_WEIGHTS))
     smoothing_alpha: float = 0.20
     run_interval_cycles: int = 5
+    min_warmup_cycles: int = 10  # Hold multipliers neutral during cold start
 
     def __post_init__(self) -> None:
         """Validate and normalize config values."""
@@ -1086,13 +1087,18 @@ def run_cerberus_step(
         alpha = config.smoothing_alpha
         new_ema = alpha * signal_score + (1 - alpha) * prev_metrics.ema_score
 
-        # Update multiplier
-        new_multiplier = update_head_multiplier(
-            prev_multiplier=prev_metrics.multiplier,
-            signal_score=signal_score,
-            learning_rate=config.learning_rate,
-            bounds=config.bounds,
-        )
+        # Warm-up guard: hold multipliers neutral until we have enough
+        # cycles to avoid cold-start noise distorting head budgets.
+        if cycle_count < config.min_warmup_cycles:
+            new_multiplier = 1.0  # neutral
+        else:
+            # Update multiplier
+            new_multiplier = update_head_multiplier(
+                prev_multiplier=prev_metrics.multiplier,
+                signal_score=signal_score,
+                learning_rate=config.learning_rate,
+                bounds=config.bounds,
+            )
 
         # Compute trend direction
         trend_dir = compute_trend_direction(signal_score, prev_metrics.ema_score)
@@ -1116,6 +1122,13 @@ def run_cerberus_step(
         if abs(mult_change) > 0.1:
             direction = "boosted" if mult_change > 0 else "reduced"
             notes.append(f"{head} {direction}: {prev_metrics.multiplier:.2f} → {new_multiplier:.2f}")
+
+    # Warmup note
+    if cycle_count < config.min_warmup_cycles:
+        notes.append(
+            f"warmup: cycle {cycle_count}/{config.min_warmup_cycles} "
+            "— multipliers held neutral"
+        )
 
     # Normalize multipliers
     raw_multipliers = {h: m.multiplier for h, m in new_heads.items()}

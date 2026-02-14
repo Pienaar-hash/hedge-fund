@@ -27,6 +27,11 @@ Side = Literal["BUY", "SELL"]
 DEFAULT_STATE_DIR = Path(os.getenv("HEDGE_STATE_DIR") or "logs/state")
 SLIPPAGE_STATE_FILE = "slippage_metrics.json"
 
+# Minimum trades before slippage EWMA is considered mature.
+# Below this threshold, consumers should treat the symbol as having
+# unknown slippage (use global default / neutral assumption).
+DEFAULT_MIN_MATURE_TRADES: int = 20
+
 
 # ---------------------------------------------------------------------------
 # Data Structures
@@ -52,6 +57,19 @@ class SlippageStats:
     ewma_realized_bps: float = 0.0
     trade_count: int = 0
     last_obs_ts: float = 0.0
+    min_samples: int = DEFAULT_MIN_MATURE_TRADES
+
+    @property
+    def is_mature(self) -> bool:
+        """Whether enough trades have been observed for EWMA to be trusted."""
+        return self.trade_count >= self.min_samples
+
+    @property
+    def maturity_ratio(self) -> float:
+        """Progress toward maturity in [0.0, 1.0]."""
+        if self.min_samples <= 0:
+            return 1.0
+        return min(1.0, self.trade_count / self.min_samples)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -59,6 +77,8 @@ class SlippageStats:
             "ewma_realized_bps": round(self.ewma_realized_bps, 4),
             "trade_count": self.trade_count,
             "last_obs_ts": self.last_obs_ts,
+            "is_mature": self.is_mature,
+            "maturity_ratio": round(self.maturity_ratio, 4),
         }
 
     @classmethod

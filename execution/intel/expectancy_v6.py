@@ -153,7 +153,16 @@ def _max_drawdown(pnls: Iterable[float]) -> float:
     return drawdown
 
 
-def _expectancy_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+# Minimum trades before expectancy statistics are considered meaningful.
+# Below this threshold, return neutral values to prevent sparse-data
+# distortion in intel scoring and operator dashboards.
+MIN_EXPECTANCY_TRADES: int = 30
+
+
+def _expectancy_stats(
+    records: List[Dict[str, Any]],
+    min_trades: int = MIN_EXPECTANCY_TRADES,
+) -> Dict[str, Any]:
     pnls = [float(r.get("pnl_usd") or 0.0) for r in records]
     n = len(pnls)
     if n == 0:
@@ -164,6 +173,22 @@ def _expectancy_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
             "expectancy": None,
             "expectancy_per_risk": None,
             "drawdown_penalty": None,
+            "is_mature": False,
+        }
+    # Presence ≠ validity: refuse to compute meaningful expectancy
+    # from fewer than min_trades observations.
+    if n < min_trades:
+        return {
+            "count": n,
+            "hit_rate": None,
+            "avg_return": None,
+            "avg_win": None,
+            "avg_loss": None,
+            "expectancy": 0.0,
+            "expectancy_per_risk": 0.0,
+            "max_drawdown": 0.0,
+            "drawdown_adjusted": 0.0,
+            "is_mature": False,
         }
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
@@ -186,6 +211,7 @@ def _expectancy_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "expectancy_per_risk": expectancy_per_risk,
         "max_drawdown": drawdown,
         "drawdown_adjusted": dd_adjusted,
+        "is_mature": True,
     }
 
 
