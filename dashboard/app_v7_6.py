@@ -32,8 +32,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from dashboard.state_v7 import (
     load_all_state,
     load_risk_snapshot,
-    load_offchain_assets,
-    load_offchain_yield,
     validate_surface_health,
     load_engine_metadata,
 )
@@ -50,6 +48,12 @@ from dashboard.components.regime_pressure import (
 from dashboard.components.sentinel_x import (
     load_sentinel_x_state,
     render_sentinel_x_compact,
+)
+
+# Governance Widget — DLE Authority Gate
+from dashboard.components.enforcement import (
+    load_enforcement_state,
+    render_enforcement_widget,
 )
 
 # P1 Widgets — Strategy Transparency
@@ -137,14 +141,15 @@ def _load_dashboard_state() -> Dict[str, Any]:
     risk_snapshot = load_risk_snapshot()
     router_health = load_router_health_state() or {}
     expectancy = load_expectancy_v6() or {}
-    offchain_assets = load_offchain_assets({})
-    offchain_yield = load_offchain_yield({})
     engine_meta = load_engine_metadata({})
     
     # P0: Regime visibility surfaces
     regime_pressure = load_regime_pressure_state()
     sentinel_x = load_sentinel_x_state()
     
+    # Governance: DLE enforcement surface
+    enforcement_state = load_enforcement_state()
+
     # P1: Strategy transparency surfaces
     episode_ledger = load_episode_ledger_state()
     # ARCHIVED 2026-01-29: Hydra state disabled
@@ -170,14 +175,14 @@ def _load_dashboard_state() -> Dict[str, Any]:
         "risk_snapshot": risk_snapshot,
         "router_health": router_health,
         "expectancy": expectancy,
-        "offchain_assets": offchain_assets,
-        "offchain_yield": offchain_yield,
         "engine_meta": engine_meta,
         "nav_usd": nav_usd,
         "gross_exposure": gross_exposure,
         # P0: Regime visibility
         "regime_pressure": regime_pressure,
         "sentinel_x": sentinel_x,
+        # Governance
+        "enforcement_state": enforcement_state,
         # P1: Strategy transparency
         "episode_ledger": episode_ledger,
         "hydra_state": hydra_state,
@@ -262,6 +267,13 @@ def main() -> None:
     st.divider()
     
     # =========================================================================
+    # GOVERNANCE — DLE Authority Gate
+    # =========================================================================
+    render_enforcement_widget(state["enforcement_state"])
+    
+    st.divider()
+    
+    # =========================================================================
     # POSITIONS & EXECUTION
     # =========================================================================
     render_positions_block(
@@ -288,18 +300,6 @@ def main() -> None:
         episode_ledger=state["episode_ledger"],
         nav_state=state["nav_state"],
     )
-    
-    st.divider()
-    
-    # =========================================================================
-    # TREASURY (collapsed by default)
-    # =========================================================================
-    # ARCHIVED 2026-01-29: Treasury block disabled
-    # with st.expander("Treasury & Off-Exchange Assets", expanded=False):
-    #     render_treasury_block(
-    #         offchain_assets=state["offchain_assets"],
-    #         offchain_yield=state["offchain_yield"],
-    #     )
     
     st.divider()
     

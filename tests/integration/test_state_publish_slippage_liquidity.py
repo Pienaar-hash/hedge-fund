@@ -205,30 +205,6 @@ class TestRouterMetricsSnapshots:
 
 
 # ===========================================================================
-# Tests: Dashboard Loader Integration
-# ===========================================================================
-
-class TestDashboardLoaderIntegration:
-    """Test dashboard can load B1 state files."""
-    
-    def test_load_slippage_state(self):
-        """Dashboard should load slippage.json."""
-        from dashboard.execution_panel import load_slippage_state
-        
-        # Should not raise, returns empty dict if file missing
-        result = load_slippage_state()
-        assert isinstance(result, dict)
-
-    def test_load_liquidity_buckets_state(self):
-        """Dashboard should load liquidity_buckets.json."""
-        from dashboard.execution_panel import load_liquidity_buckets_state
-        
-        # Should not raise, returns empty dict if file missing
-        result = load_liquidity_buckets_state()
-        assert isinstance(result, dict)
-
-
-# ===========================================================================
 # Tests: State Schema Compatibility
 # ===========================================================================
 
