@@ -79,6 +79,20 @@ from dashboard.components.prediction_tile import (
     render_prediction_tile,
 )
 
+# D.2 Execution Visibility
+from dashboard.components.execution_quality import (
+    load_execution_quality_state,
+    render_execution_quality_widget,
+)
+from dashboard.components.pnl_attribution import (
+    load_pnl_attribution_state,
+    render_pnl_attribution_widget,
+)
+from dashboard.components.alpha_decay import (
+    load_alpha_decay_state,
+    render_alpha_decay_widget,
+)
+
 # Layout engine
 from dashboard.layout_v7_6 import (
     render_header_block,
@@ -162,6 +176,11 @@ def _load_dashboard_state() -> Dict[str, Any]:
     # P1 Prediction telemetry
     prediction_telemetry = load_prediction_telemetry()
     
+    # D.2: Execution visibility surfaces
+    execution_quality = load_execution_quality_state()
+    pnl_attribution = load_pnl_attribution_state()
+    alpha_decay = load_alpha_decay_state()
+    
     # Compute derived values
     nav_usd = float(nav_state.get("nav_usd") or nav_state.get("nav") or nav_state.get("total_equity") or 0)
     gross_exposure = float(nav_state.get("gross_exposure") or 0)
@@ -190,6 +209,10 @@ def _load_dashboard_state() -> Dict[str, Any]:
         "nav_detail": nav_detail,
         # Prediction telemetry
         "prediction_telemetry": prediction_telemetry,
+        # D.2: Execution visibility
+        "execution_quality": execution_quality,
+        "pnl_attribution": pnl_attribution,
+        "alpha_decay": alpha_decay,
     }
 
 
@@ -300,6 +323,21 @@ def main() -> None:
         episode_ledger=state["episode_ledger"],
         nav_state=state["nav_state"],
     )
+    
+    st.divider()
+    
+    # =========================================================================
+    # D.2: EXECUTION VISIBILITY
+    # =========================================================================
+    render_execution_quality_widget(state["execution_quality"])
+    
+    st.divider()
+    
+    render_pnl_attribution_widget(state["pnl_attribution"])
+    
+    st.divider()
+    
+    render_alpha_decay_widget(state["alpha_decay"])
     
     st.divider()
     

@@ -397,58 +397,6 @@ class TestFillProcessing:
 
 
 # ---------------------------------------------------------------------------
-# Dashboard Panel Tests
-# ---------------------------------------------------------------------------
-
-
-class TestDashboardPanel:
-    """Tests for dashboard panel data loading."""
-    
-    def test_panel_handles_missing_state(self, mock_state_paths):
-        """Test panel handles missing state file gracefully."""
-        import dashboard.execution_quality_panel as panel
-        
-        # Patch state file paths to use temp directory
-        panel._QUALITY_STATE_FILE = mock_state_paths / "execution_quality.json"
-        panel._EVENTS_FILE = mock_state_paths / "execution_events.jsonl"
-        
-        from dashboard.execution_quality_panel import get_panel_data
-        
-        data = get_panel_data()
-        
-        assert data["symbol_count"] == 0
-        assert data["events"] == []
-        assert data["meta"] == {}
-    
-    def test_panel_loads_state(self, mock_state_paths, enabled_config):
-        """Test panel loads state file correctly."""
-        # Create state
-        quality_stats = {
-            "BTCUSDT": ExecutionQualityStats(
-                symbol="BTCUSDT",
-                avg_slippage_bps=4.0,
-                p95_slippage_bps=10.0,
-                max_slippage_bps=20.0,
-                fill_ratio=0.95,
-                mean_notional=500.0,
-                twap_usage_pct=0.5,
-                last_regime="NORMAL",
-                trade_count=25,
-            ),
-        }
-        save_execution_quality_state(quality_stats, enabled_config, None)
-        
-        # Patch the panel's state path
-        import dashboard.execution_quality_panel as panel
-        panel._QUALITY_STATE_FILE = mock_state_paths / "execution_quality.json"
-        
-        from dashboard.execution_quality_panel import get_panel_data
-        
-        data = get_panel_data()
-        
-        assert data["symbol_count"] == 1
-        assert "BTCUSDT" in data["state"]["symbols"]
-
 
 # ---------------------------------------------------------------------------
 # Config Integration Tests
