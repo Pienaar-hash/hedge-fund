@@ -79,6 +79,30 @@ If a breach occurs:
 
 ---
 
+## Maturity Soak Tracker
+
+After each daily checkpoint, record whether any maturity guard has flipped
+from immature → mature.  This turns the soak phase into measurable
+phase progression without changing the system.
+
+```
+Maturity flips observed today: slippage / expectancy / cerberus (Y/N)
+```
+
+Example entries in `ops/phase_c_window.log`:
+
+```
+2026-02-14 | maturity: slippage=N expectancy=N cerberus=N
+2026-02-21 | maturity: slippage=Y expectancy=N cerberus=N  # slippage EWMA reached 20 trades
+```
+
+Sources:
+- Slippage: `logs/state/execution_quality.json` → `slippage.is_mature`
+- Expectancy: `logs/state/symbol_scores_v6.json` → per-symbol `is_mature`
+- Cerberus: `logs/state/cerberus_state.json` → `warmup_progress`
+
+---
+
 ## When Gate Satisfied
 
 When `gate_satisfied == true` (14 consecutive clean days):

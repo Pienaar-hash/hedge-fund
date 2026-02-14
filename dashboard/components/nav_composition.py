@@ -117,9 +117,11 @@ def render_nav_composition_panel(
     gross_exposure = float(nav_state.get("gross_exposure") or 0)
 
     # 24h NAV delta — TRUE portfolio PnL (replaces stale session counter)
+    # SPAN AUTHORITY: Only display NAV delta if log span is sufficient.
     from dashboard.components.nav_pnl import compute_nav_deltas
     _nav_deltas = compute_nav_deltas()
-    nav_delta_24h = _nav_deltas.get("pnl_24h", 0.0)
+    _span_ok = _nav_deltas.get("span_ok", {})
+    nav_delta_24h = _nav_deltas.get("pnl_24h", 0.0) if _span_ok.get("24h", False) else 0.0
     
     # Cycle metrics from episode ledger (closed trades only)
     ledger_stats = episode_ledger.get("stats", {})

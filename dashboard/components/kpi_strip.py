@@ -54,12 +54,17 @@ def build_kpi_cards(
     # 24h PnL = NAV delta (current - 24h ago) — NOT episode-windowed PnL.
     # Episode PnL only counts closed trades, missing unrealised gains and
     # mark-to-market changes on holdings. NAV delta is the true portfolio PnL.
+    #
+    # SPAN AUTHORITY: Only display NAV delta if log span is sufficient.
+    # Silent fallback to a stale delta is a structural violation.
     from dashboard.components.nav_pnl import compute_nav_deltas
     _nav_deltas = compute_nav_deltas()
-    daily_pnl = _nav_deltas.get("pnl_24h", 0.0)
-    # Fallback: if nav_log is empty, try realized_pnl_today from executor
-    if daily_pnl == 0.0:
-        daily_pnl = float(nav_state.get("realized_pnl_today") or 0)
+    _span_ok = _nav_deltas.get("span_ok", {})
+    if _span_ok.get("24h", False):
+        daily_pnl = _nav_deltas.get("pnl_24h", 0.0)
+    else:
+        # Span insufficient — show neutral zero, never a misleading delta
+        daily_pnl = 0.0
 
     unrealized = float(nav_state.get("unrealized_pnl") or 0)
     gross_exp = float(nav_state.get("gross_exposure") or 0)

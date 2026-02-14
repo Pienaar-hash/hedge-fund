@@ -257,28 +257,31 @@ def render_strategy_block(
     from dashboard.components.nav_pnl import compute_nav_deltas
     _nav_deltas = compute_nav_deltas()
     _log_span = _nav_deltas.get("log_span_days", 0)
+    _span_ok = _nav_deltas.get("span_ok", {})
     _span_suppressed: List[str] = []  # windows skipped due to short span
-    if _nav_deltas.get("pnl_24h") and _log_span >= 0.9:
+
+    # Use centralized span_ok flags — thresholds live in nav_pnl.py only.
+    if _span_ok.get("24h") and _nav_deltas.get("pnl_24h"):
         merged_kpis["daily_pnl"] = _nav_deltas["pnl_24h"]
         merged_kpis["pnl_24h"] = _nav_deltas["pnl_24h"]
-    elif _log_span < 0.9:
+    elif not _span_ok.get("24h"):
         _span_suppressed.append("24h")
-    if _nav_deltas.get("pnl_7d") and _log_span >= 6:
+    if _span_ok.get("7d") and _nav_deltas.get("pnl_7d"):
         merged_kpis["weekly_pnl"] = _nav_deltas["pnl_7d"]
         merged_kpis["pnl_7d"] = _nav_deltas["pnl_7d"]
-    elif _log_span < 6:
+    elif not _span_ok.get("7d"):
         _span_suppressed.append("7d")
-    if _nav_deltas.get("pnl_30d") and _log_span >= 25:
+    if _span_ok.get("30d") and _nav_deltas.get("pnl_30d"):
         merged_kpis["monthly_pnl"] = _nav_deltas["pnl_30d"]
         merged_kpis["pnl_30d"] = _nav_deltas["pnl_30d"]
-    elif _log_span < 25:
+    elif not _span_ok.get("30d"):
         _span_suppressed.append("30d")
     # All-time PnL = NAV delta, but ONLY if nav_log spans enough history.
     # Short logs (after restart) must not overwrite episode ledger truth.
-    if _nav_deltas.get("pnl_all_time") and _nav_deltas.get("log_span_days", 0) >= 7:
+    if _span_ok.get("all_time") and _nav_deltas.get("pnl_all_time"):
         merged_kpis["total_pnl"] = _nav_deltas["pnl_all_time"]
         merged_kpis["all_time_pnl"] = _nav_deltas["pnl_all_time"]
-    elif _log_span < 7:
+    elif not _span_ok.get("all_time"):
         _span_suppressed.append("all-time")
 
     # Inject span diagnostic for downstream rendering
