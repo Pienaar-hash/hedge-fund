@@ -1,0 +1,4 @@
+2026-02-14 | Day 0/14 | criteria_met=false | would_block_pct=0.00 | expired=0 | missing=0 | enforce=OFF | split_brain=0 | BREACH: no_orders_evaluated (rehearsal active, enforcement not yet enabled — D+1 pre-flight)
+2026-02-15 | CONTRACTION DAY 0 | v7.9-S1 baseline | commit=9c069755 | NAV=$9688.30 | regime=CHOPPY | positions=0 | episodes_post=0
+2026-02-15 | CONFIG LOCK | sha256: strategy=267dd161 risk=9f8d0b37 universe=885539d6 | NO CHANGES FOR 14 DAYS
+2026-02-15 | SCORING BASELINE | hybrid_std=0.0011 conviction=100%_very_low scored_episodes=0 | This is the measurement floor
