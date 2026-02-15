@@ -2,7 +2,7 @@
   "version": "v6.4",
   "use_futures": true,
   "poll_seconds": 300,
-  "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
+  "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
   "dry_run": {
     "simulated_nav_usdt": 10000.0,
     "simulated_balances": {
@@ -34,6 +34,7 @@
     }
   },
   "hybrid_scoring": {
+    "enabled": true,
     "default": {
       "w_trend": 0.7,
       "w_carry": 0.3,
@@ -187,7 +188,7 @@
     {
       "id": "doge_m15",
       "label": "DOGE 15m momentum",
-      "enabled": true,
+      "enabled": false,
       "symbol": "DOGEUSDT",
       "timeframe": "15m",
       "params": {
@@ -212,7 +213,7 @@
     {
       "id": "link_m15",
       "label": "LINK 15m momentum",
-      "enabled": true,
+      "enabled": false,
       "short_enabled": false,
       "symbol": "LINKUSDT",
       "timeframe": "15m",
@@ -238,7 +239,7 @@
     {
       "id": "ltc_m15",
       "label": "LTC 15m momentum",
-      "enabled": true,
+      "enabled": false,
       "short_enabled": false,
       "symbol": "LTCUSDT",
       "timeframe": "15m",
@@ -264,7 +265,7 @@
     {
       "id": "sui_m15",
       "label": "SUI 15m momentum",
-      "enabled": true,
+      "enabled": false,
       "short_enabled": false,
       "symbol": "SUIUSDT",
       "timeframe": "15m",
@@ -290,7 +291,7 @@
     {
       "id": "wif_m15",
       "label": "WIF 15m momentum",
-      "enabled": true,
+      "enabled": false,
       "symbol": "WIFUSDT",
       "timeframe": "15m",
       "params": {
@@ -316,7 +317,7 @@
   "vol_target": {
     "enabled": true,
     "timeframes": ["15m"],
-    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "LINKUSDT", "LTCUSDT", "SUIUSDT", "WIFUSDT"],
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
     "base_per_trade_nav_pct": 0.015,
     "min_per_trade_nav_pct": 0.005,
     "max_per_trade_nav_pct": 0.03,
@@ -498,7 +499,8 @@
   },
   "conviction": {
     "enabled": true,
-    "mode": "shadow",
+    "mode": "live",
+    "min_entry_band": "low",
     "size_multipliers": {
       "very_low": 0.3,
       "low": 0.5,

@@ -3124,6 +3124,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             or intent.get("strategy_name")
             or intent.get("strategyId")
             or intent.get("source")
+            or (intent.get("metadata") or {}).get("strategy")
         ),
         "signal_ts": (
             intent.get("signal_ts")
@@ -3138,11 +3139,85 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         "reduce_only": reduce_only,
         "price_hint": price_guess,
     }
+    # v7.9-S1: Veto unattributed entries.  If a strategy/head does not
+    # provide attribution, the intent cannot be measured and is therefore
+    # untradeable.  Exits (reduce_only) are exempt — they must always go
+    # through regardless of attribution.
+    _resolved_strategy = attempt_payload.get("strategy") or ""
+    if not reduce_only and (not _resolved_strategy or _resolved_strategy == "unknown"):
+        LOG.warning(
+            "[strategy_attribution] veto %s %s: no strategy attribution (resolved=%r)",
+            symbol, side, _resolved_strategy,
+        )
+        _persist_veto(
+            "no_strategy_attribution",
+            price_guess,
+            {
+                "intent": intent,
+                "nav_snapshot": nav_snapshot,
+                "thresholds": {"strategy_required": True},
+            },
+        )
+        return None
+
+    # v7.9-S1: Conviction band gate.  If conviction.mode="live" and
+    # min_entry_band is configured, veto entries below the minimum band.
+    # Exits (reduce_only) are exempt.  Band ordering:
+    #   very_low < low < medium < high < very_high
+    if not reduce_only:
+        _BAND_ORDER = {"very_low": 0, "low": 1, "medium": 2, "high": 3, "very_high": 4}
+        try:
+            _strat_cfg = _load_strategy_config() if "_load_strategy_config" in dir() else {}
+            if not _strat_cfg:
+                import json as _json
+                with open("config/strategy_config.json") as _f:
+                    _strat_cfg = _json.load(_f)
+            _conv_cfg = _strat_cfg.get("conviction", {})
+            _conv_mode = str(_conv_cfg.get("mode", "off")).lower()
+            _min_band_str = str(_conv_cfg.get("min_entry_band", "")).lower()
+            if _conv_mode == "live" and _min_band_str in _BAND_ORDER:
+                _intent_meta = intent.get("metadata") or {}
+                _intent_band = str(
+                    intent.get("conviction_band")
+                    or _intent_meta.get("conviction_band")
+                    or ""
+                ).lower()
+                _intent_band_rank = _BAND_ORDER.get(_intent_band, -1)
+                _min_band_rank = _BAND_ORDER[_min_band_str]
+                if _intent_band_rank < _min_band_rank:
+                    LOG.warning(
+                        "[conviction_gate] veto %s %s: band=%s < min_entry_band=%s",
+                        symbol, side, _intent_band or "none", _min_band_str,
+                    )
+                    _persist_veto(
+                        "conviction_band_below_minimum",
+                        price_guess,
+                        {
+                            "intent": intent,
+                            "nav_snapshot": nav_snapshot,
+                            "thresholds": {
+                                "min_entry_band": _min_band_str,
+                                "actual_band": _intent_band or "none",
+                            },
+                        },
+                    )
+                    return None
+        except Exception as _conv_err:
+            LOG.debug("[conviction_gate] check failed (proceeding): %s", _conv_err)
+
     attempt_payload["decision_latency_ms"] = decision_latency_ms
+    # v7.9-S1: Penalize confidence default.  If a strategy/head does not
+    # supply confidence, it should not masquerade as full-conviction.  The
+    # default 0.25 triggers "very_low" band and forces explicit attribution.
+    _PENALIZED_CONFIDENCE_DEFAULT = 0.25
     try:
-        attempt_payload["confidence"] = float(intent.get("confidence", 1.0) or 1.0)
+        _raw_confidence = intent.get("confidence")
+        if _raw_confidence is not None and _raw_confidence != "":
+            attempt_payload["confidence"] = float(_raw_confidence)
+        else:
+            attempt_payload["confidence"] = _PENALIZED_CONFIDENCE_DEFAULT
     except Exception:
-        attempt_payload["confidence"] = 1.0
+        attempt_payload["confidence"] = _PENALIZED_CONFIDENCE_DEFAULT
     attempt_payload["expected_edge"] = float(intent.get("expected_edge", 0.0) or 0.0)
     _record_structured_event(LOG_ATTEMPTS, "order_attempt", attempt_payload)
 

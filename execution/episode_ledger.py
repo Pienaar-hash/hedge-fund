@@ -91,6 +91,18 @@ class Episode:
     # Metadata
     strategy: str = "unknown"
     
+    # ── Scoring fields (v7.9-S1: audit-grade joinability) ──────────────
+    # These fields make every episode attributable to the intent that
+    # triggered it.  Without them, we cannot compute conviction deciles
+    # or prove edge.
+    intent_id: str = ""          # join key → orders_attempted / score_decomposition
+    attempt_id: str = ""         # join key → sizing_snapshots
+    confidence: float = 0.0      # registry confidence at entry [0, 1.5]
+    hybrid_score: float = 0.0    # composite signal quality [0, 1]
+    conviction_score: float = 0.0  # conviction engine output [0, 1]
+    conviction_band: str = ""    # very_low / low / medium / high / very_high
+    entry_regime_confidence: float = 0.0  # sentinel-X confidence at entry
+    
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -716,6 +728,39 @@ def _extract_strategy(fill: dict) -> str:
     return meta.get("strategy", "unknown")
 
 
+def _extract_scoring_fields(entry_fill: dict) -> dict:
+    """Extract scoring/joinability fields from entry fill metadata.
+
+    v7.9-S1: Every episode must carry the scoring context that existed
+    at entry time.  These fields flow from:
+      screener -> intent metadata -> fill metadata -> episode
+
+    Returns dict suitable for unpacking into Episode kwargs.
+    """
+    meta = entry_fill.get("metadata", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    return {
+        "intent_id": str(entry_fill.get("intent_id", "") or ""),
+        "attempt_id": str(entry_fill.get("attempt_id", "") or ""),
+        "confidence": float(meta.get("confidence", 0) or 0),
+        "hybrid_score": float(meta.get("hybrid_score", 0) or 0),
+        "conviction_score": float(meta.get("conviction_score", 0) or 0),
+        "conviction_band": str(meta.get("conviction_band", "") or ""),
+        "entry_regime_confidence": float(
+            meta.get("entry_regime_confidence", 0) or 0
+        ),
+    }
+
+
+def _extract_regime_at_entry(entry_fill: dict) -> str:
+    """Extract regime at entry from fill metadata."""
+    meta = entry_fill.get("metadata", {})
+    if not isinstance(meta, dict):
+        return "unknown"
+    return str(meta.get("entry_regime", "unknown") or "unknown")
+
+
 def _compute_metadata_pnl(
     fills: list[dict],
     since_date: Optional[str],
@@ -948,11 +993,12 @@ def build_episode_ledger(
                         gross_pnl=round(gross_pnl, 4),
                         fees=round(total_fees, 4),
                         net_pnl=round(net_pnl, 4),
-                        regime_at_entry="unknown",  # Would need doctrine correlation
+                        regime_at_entry=_extract_regime_at_entry(entry_fills[0]) if entry_fills else "unknown",
                         regime_at_exit="unknown",
                         exit_reason=_norm.canonical,
                         exit_reason_raw=_norm.raw,
                         strategy=_extract_strategy(entry_fills[0]) if entry_fills else "unknown",
+                        **(_extract_scoring_fields(entry_fills[0]) if entry_fills else {}),
                     )
                     episodes.append(episode)
                     

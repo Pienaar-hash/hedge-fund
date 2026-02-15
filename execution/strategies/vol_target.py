@@ -778,4 +778,18 @@ def generate_vol_target_intent(
         },
     }
 
+    # v7.9-S1: Surface scoring fields at intent top-level so they flow
+    # through screener → fill metadata → episode.  Without this, the
+    # executor defaults confidence to 0.25 (penalized).
+    intent["hybrid_score"] = hybrid_score
+    if conviction_metadata and isinstance(conviction_metadata, dict):
+        intent["confidence"] = float(conviction_metadata.get("conviction_score", 0.0) or 0.0)
+        intent["conviction_score"] = float(conviction_metadata.get("conviction_score", 0.0) or 0.0)
+        intent["conviction_band"] = str(conviction_metadata.get("conviction_band", "") or "")
+    else:
+        # No conviction computed — use hybrid_score as proxy confidence
+        intent["confidence"] = hybrid_score
+        intent["conviction_score"] = 0.0
+        intent["conviction_band"] = ""
+
     return intent

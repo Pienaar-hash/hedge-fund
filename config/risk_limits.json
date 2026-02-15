@@ -1,13 +1,14 @@
 {
   "global": {
-    "daily_loss_limit_pct": 0.10,
+    "daily_loss_limit_pct": 0.01,
+    "weekly_loss_limit_pct": 0.03,
     "cooldown_minutes_after_stop": 30,
     "max_trades_per_symbol_per_hour": 10,
     "drawdown_alert_pct": 0.03,
     "max_gross_exposure_pct": 1.5,
     "max_symbol_exposure_pct": 0.4,
     "max_nav_drawdown_pct": 0.30,
-    "max_concurrent_positions": 15,
+    "max_concurrent_positions": 2,
     "max_leverage": 4,
     "min_notional_usdt": 25,
     "max_trade_nav_pct": 0.06,

@@ -1289,9 +1289,11 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                             if _components:
                                 append_jsonl(_P(_SCORE_DECOMP_LOG), {
                                     "ts": _ts,
+                                    "intent_id": _intent.get("intent_id", ""),
                                     "symbol": _intent.get("symbol", ""),
                                     "direction": _intent.get("direction", ""),
                                     "hybrid_score": round(_intent.get("hybrid_score", 0.0), 6),
+                                    "confidence": round(float(_intent.get("confidence", 0.0) or 0.0), 4),
                                     "components": {k: round(float(v), 4) for k, v in _components.items()},
                                     "weighted": {k: round(float(v), 6) for k, v in _weighted.items()},
                                     "weights_used": _weights,
@@ -1305,6 +1307,23 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                     out = ranked_out
             except Exception as hybrid_err:
                 print(f"{LOG_TAG} hybrid ranking error (keeping original order): {hybrid_err}")
+
+    # v7.9-S1: Push scoring fields into intent metadata so they flow through
+    # fills to episodes.  Without this, episodes cannot carry scoring context.
+    for _intent in out:
+        _meta = _intent.get("metadata")
+        if not isinstance(_meta, dict):
+            _meta = {}
+            _intent["metadata"] = _meta
+        # Scoring fields — these are the join surface for episode attribution
+        if _intent.get("hybrid_score") is not None:
+            _meta["hybrid_score"] = round(float(_intent.get("hybrid_score", 0)), 6)
+        if _intent.get("confidence") is not None:
+            _meta["confidence"] = round(float(_intent.get("confidence", 0)), 4)
+        if _intent.get("conviction_score") is not None:
+            _meta["conviction_score"] = round(float(_intent.get("conviction_score", 0)), 4)
+        if _intent.get("conviction_band"):
+            _meta["conviction_band"] = str(_intent.get("conviction_band", ""))
 
     for _ in out:
         try:
