@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from prediction.round_observer import (
+    INTRAROUND_INTERVAL_S,
     ORACLE_STALE_MS,
     SNAPSHOT_OFFSETS_S,
     RoundObserver,
@@ -918,3 +919,139 @@ class TestCaptureTerminalSnapshot:
 
         assert snap.best_bid_up is None
         assert snap.oracle_price is None
+
+
+# ---------------------------------------------------------------------------
+# Tests — Intraround Sampling
+# ---------------------------------------------------------------------------
+class TestComputeIntraaroundStats:
+    def test_empty_samples(self) -> None:
+        rnd = _make_round_state()
+        stats = rnd._compute_intraround_stats()
+        assert stats["sample_count"] == 0
+
+    def test_no_dislocations(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "ts": "t1"},
+            {"bundle_cost": 1.005, "ts": "t2"},
+            {"bundle_cost": 1.001, "ts": "t3"},
+        ]
+        stats = rnd._compute_intraround_stats()
+        assert stats["sample_count"] == 3
+        assert stats["dislocation_count"] == 0
+        assert stats["min_bundle_cost"] == pytest.approx(1.001, abs=1e-6)
+        assert stats["max_bundle_cost"] == pytest.approx(1.01, abs=1e-6)
+        assert stats["mean_bundle_cost"] == pytest.approx(1.005333, abs=1e-3)
+        assert stats["min_dislocation"] is None
+
+    def test_with_dislocations(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "ts": "t1"},
+            {"bundle_cost": 0.995, "ts": "t2"},
+            {"bundle_cost": 0.992, "ts": "t3"},
+            {"bundle_cost": 1.005, "ts": "t4"},
+        ]
+        stats = rnd._compute_intraround_stats()
+        assert stats["sample_count"] == 4
+        assert stats["dislocation_count"] == 2
+        assert stats["min_dislocation"] == pytest.approx(0.992, abs=1e-6)
+        assert stats["min_bundle_cost"] == pytest.approx(0.992, abs=1e-6)
+
+    def test_none_bundle_costs_skipped(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": None, "ts": "t1"},
+            {"bundle_cost": 1.01, "ts": "t2"},
+        ]
+        stats = rnd._compute_intraround_stats()
+        assert stats["sample_count"] == 1
+        assert stats["dislocation_count"] == 0
+
+    def test_all_none_bundle_costs(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": None, "ts": "t1"},
+            {"bundle_cost": None, "ts": "t2"},
+        ]
+        stats = rnd._compute_intraround_stats()
+        assert stats["sample_count"] == 2
+        assert "dislocation_count" not in stats
+
+
+class TestToRecordIntraaroundFields:
+    def test_intraround_fields_present(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "ts": "t1", "ask_up": 0.51, "ask_down": 0.50},
+        ]
+        _inject_snapshot(rnd, "t_minus_3")
+        rec = rnd.to_record()
+
+        assert "intraround_samples" in rec
+        assert len(rec["intraround_samples"]) == 1
+        assert "intraround_stats" in rec
+        assert rec["intraround_stats"]["sample_count"] == 1
+        assert rec["intraround_stats"]["dislocation_count"] == 0
+
+    def test_intraround_empty_when_no_samples(self) -> None:
+        rnd = _make_round_state()
+        _inject_snapshot(rnd, "t_minus_3")
+        rec = rnd.to_record()
+
+        assert rec["intraround_samples"] == []
+        assert rec["intraround_stats"]["sample_count"] == 0
+
+
+class TestCaptureIntraaroundSample:
+    def test_captures_from_logs(self, tmp_path: Path) -> None:
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {"asset_id": "UP_TOKEN", "best_bid": 0.50, "best_ask": 0.52, "ts_arrival_ms": 1000},
+            {"asset_id": "DOWN_TOKEN", "best_bid": 0.47, "best_ask": 0.49, "ts_arrival_ms": 1000},
+        ])
+
+        obs = RoundObserver(market_log=market_log)
+        rnd = _make_round_state()
+        rnd.round_start_ts = time.time() - 120  # started 2 min ago
+
+        sample = obs._capture_intraround_sample(rnd)
+
+        assert sample["ask_up"] == 0.52
+        assert sample["ask_down"] == 0.49
+        assert sample["bundle_cost"] == pytest.approx(1.01, abs=1e-6)
+        assert sample["spread_up"] == pytest.approx(0.02, abs=1e-6)
+        assert sample["spread_down"] == pytest.approx(0.02, abs=1e-6)
+        assert sample["mid_up"] == pytest.approx(0.51, abs=1e-6)
+        assert sample["mid_down"] == pytest.approx(0.48, abs=1e-6)
+        assert sample["elapsed_s"] > 0
+        assert sample["ts"] != ""
+
+    def test_handles_missing_data(self, tmp_path: Path) -> None:
+        obs = RoundObserver(market_log=tmp_path / "clob.jsonl")
+        rnd = _make_round_state()
+        rnd.round_start_ts = time.time() - 60
+
+        sample = obs._capture_intraround_sample(rnd)
+
+        assert sample["ask_up"] is None
+        assert sample["ask_down"] is None
+        assert sample["bundle_cost"] is None
+
+    def test_bundle_cost_sub_one(self, tmp_path: Path) -> None:
+        """Verify bundle_cost correctly reflects ask sums below 1.0."""
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {"asset_id": "UP_TOKEN", "best_bid": 0.48, "best_ask": 0.49, "ts_arrival_ms": 1000},
+            {"asset_id": "DOWN_TOKEN", "best_bid": 0.49, "best_ask": 0.50, "ts_arrival_ms": 1000},
+        ])
+
+        obs = RoundObserver(market_log=market_log)
+        rnd = _make_round_state()
+        rnd.round_start_ts = time.time() - 60
+
+        sample = obs._capture_intraround_sample(rnd)
+
+        assert sample["bundle_cost"] == pytest.approx(0.99, abs=1e-6)
+

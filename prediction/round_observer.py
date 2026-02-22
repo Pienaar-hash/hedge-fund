@@ -66,6 +66,9 @@ PRE_SUBSCRIBE_S: float = float(os.environ.get("OBSERVER_PRE_SUBSCRIBE_S", "60"))
 # Terminal snapshot offsets (seconds before round end)
 SNAPSHOT_OFFSETS_S: List[int] = [30, 10, 3]
 
+# Intraround sampling interval (seconds)
+INTRAROUND_INTERVAL_S: int = int(os.environ.get("OBSERVER_INTRAROUND_INTERVAL_S", "60"))
+
 # Assumed latency for EV calculations (ms)
 ASSUMED_LATENCY_MS: int = int(os.environ.get("OBSERVER_LATENCY_MS", "250"))
 
@@ -187,8 +190,33 @@ class RoundState:
     # Tick-size changes during round
     tick_size_changes: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Intraround periodic samples (every 60s)
+    intraround_samples: List[Dict[str, Any]] = field(default_factory=list)
+
     # Event counts during round
     event_count: int = 0
+
+    def _compute_intraround_stats(self) -> Dict[str, Any]:
+        """Compute aggregate dislocation statistics from intraround samples."""
+        if not self.intraround_samples:
+            return {"sample_count": 0}
+
+        bundle_costs = [
+            s["bundle_cost"] for s in self.intraround_samples
+            if s.get("bundle_cost") is not None
+        ]
+        if not bundle_costs:
+            return {"sample_count": len(self.intraround_samples)}
+
+        sub_one = [c for c in bundle_costs if c < 1.0]
+        return {
+            "sample_count": len(bundle_costs),
+            "min_bundle_cost": round(min(bundle_costs), 6),
+            "max_bundle_cost": round(max(bundle_costs), 6),
+            "mean_bundle_cost": round(sum(bundle_costs) / len(bundle_costs), 6),
+            "dislocation_count": len(sub_one),
+            "min_dislocation": round(min(sub_one), 6) if sub_one else None,
+        }
 
     def direction_from_oracle(self) -> Optional[str]:
         """Determine direction from oracle start/end prices."""
@@ -292,6 +320,8 @@ class RoundState:
             "snapshots": {
                 k: v.to_dict() for k, v in self.snapshots.items()
             },
+            "intraround_samples": self.intraround_samples,
+            "intraround_stats": self._compute_intraround_stats(),
             "bundle_cost": bundle,
             "net_ev_after_fee": net_ev,
             "latency_assumed_ms": ASSUMED_LATENCY_MS,
@@ -491,6 +521,37 @@ class RoundObserver:
         self._completed_rounds: int = 0
 
     # ----- snapshot capture -----
+
+    def _capture_intraround_sample(self, rnd: RoundState) -> Dict[str, Any]:
+        """Capture a periodic intraround sample for dislocation analysis.
+
+        Returns a compact dict with ask_up, ask_down, bundle_cost, spreads.
+        """
+        up_state = read_clob_state_for_asset(rnd.up_token, self.market_log)
+        down_state = read_clob_state_for_asset(rnd.down_token, self.market_log)
+
+        ask_up = up_state["best_ask"] if up_state else None
+        ask_down = down_state["best_ask"] if down_state else None
+        spread_up = up_state["spread"] if up_state else None
+        spread_down = down_state["spread"] if down_state else None
+        mid_up = up_state["mid"] if up_state else None
+        mid_down = down_state["mid"] if down_state else None
+
+        bundle_cost: Optional[float] = None
+        if ask_up is not None and ask_down is not None:
+            bundle_cost = round(ask_up + ask_down, 6)
+
+        return {
+            "ts": _now_iso(),
+            "elapsed_s": round(time.time() - rnd.round_start_ts, 1),
+            "ask_up": ask_up,
+            "ask_down": ask_down,
+            "bundle_cost": bundle_cost,
+            "spread_up": spread_up,
+            "spread_down": spread_down,
+            "mid_up": mid_up,
+            "mid_down": mid_down,
+        }
 
     def _capture_book_state(self, up_token: str, down_token: str) -> Dict[str, Any]:
         """Capture current best_bid/ask for both UP and DOWN tokens."""
@@ -823,7 +884,42 @@ class RoundObserver:
         rnd = self._current_round
         assert rnd is not None
 
-        # Schedule terminal snapshots and finalization
+        # Schedule intraround samples + terminal snapshots + finalization
+        now = time.time()
+        time_to_end = rnd.round_end_ts - now
+
+        # --- Intraround periodic sampling (every INTRAROUND_INTERVAL_S) ---
+        # Sample from now until T-30, then terminal snapshots take over
+        first_terminal_offset = max(SNAPSHOT_OFFSETS_S)  # 30
+        while self._running:
+            now = time.time()
+            time_to_end = rnd.round_end_ts - now
+            if time_to_end <= first_terminal_offset:
+                break  # Hand off to terminal snapshot loop
+
+            sample = self._capture_intraround_sample(rnd)
+            rnd.intraround_samples.append(sample)
+            bc = sample.get("bundle_cost")
+            bc_str = f"{bc:.4f}" if bc is not None else "None"
+            logger.debug(
+                "[observer] intraround sample #%d: elapsed=%.0fs bundle=%s",
+                len(rnd.intraround_samples),
+                sample.get("elapsed_s", 0),
+                bc_str,
+            )
+
+            # Sleep until next sample or until terminal snapshots begin
+            now = time.time()
+            time_to_first_terminal = rnd.round_end_ts - now - first_terminal_offset
+            sleep_s = min(INTRAROUND_INTERVAL_S, max(0, time_to_first_terminal))
+            if sleep_s <= 0:
+                break
+            await asyncio.sleep(sleep_s)
+
+        if not self._running:
+            return
+
+        # --- Terminal snapshots at T-30, T-10, T-3 ---
         now = time.time()
         time_to_end = rnd.round_end_ts - now
 
