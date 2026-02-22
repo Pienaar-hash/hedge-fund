@@ -162,9 +162,9 @@ def build_router_state(router_health: Dict[str, Any]) -> Dict[str, Any]:
             total_fallback += int(stats.get("fallback_count", 0) or 0)
             total_orders += int(stats.get("order_count", 0) or 0)
     
-    # Calculate rates
-    maker_rate = (total_maker / total_orders * 100) if total_orders > 0 else 0
-    fallback_ratio = (total_fallback / total_orders * 100) if total_orders > 0 else 0
+    # Calculate rates as fractions (0-1) for :.0% formatting
+    maker_rate = (total_maker / total_orders) if total_orders > 0 else 0
+    fallback_ratio = (total_fallback / total_orders) if total_orders > 0 else 0
     
     # Latency not tracked at aggregate level, use 0
     latency_ms = float(rh.get("avg_latency_ms") or rh.get("latency_ms") or 0)

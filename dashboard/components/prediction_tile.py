@@ -124,8 +124,8 @@ def load_prediction_telemetry(log_dir: Optional[Path] = None) -> Dict[str, Any]:
 
 _PHASE_COLORS = {
     "P0_OBSERVE": "#888",
-    "P1_ADVISORY": "#f2c037",
-    "P2_PRODUCTION": "#21c354",
+    "P1_ADVISORY": "#f59e0b",
+    "P2_PRODUCTION": "#22c55e",
 }
 
 _PHASE_LABELS = {

@@ -23,9 +23,9 @@ import streamlit as st
 _STATE_PATH = Path("logs/state/pnl_attribution.json")
 
 _RISK_MODE_TINTS: Dict[str, str] = {
-    "OK": "#21c35420",
-    "WARN": "#f2c03720",
-    "DEFENSIVE": "#d94a4a20",
+    "OK": "#22c55e20",
+    "WARN": "#f59e0b20",
+    "DEFENSIVE": "#ef444420",
     "HALTED": "#ff003320",
 }
 

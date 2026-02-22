@@ -710,7 +710,7 @@ hr {
 }
 
 .aum-indicator-treasury {
-    background: #14b8a6;
+    background: var(--color-warning);
 }
 
 .aum-label {

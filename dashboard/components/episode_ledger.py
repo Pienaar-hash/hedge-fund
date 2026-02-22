@@ -84,11 +84,11 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
             age_hours = age_mins // 60
             age_display = f"{age_hours}h ago"
         if is_stale:
-            age_badge = f'<span style="color: #f2c037; font-size: 0.65em;">⚠️ {age_display}</span>'
+            age_badge = f'<span style="color: #f59e0b; font-size: 0.65em;">⚠️ {age_display}</span>'
         else:
-            age_badge = f'<span style="color: #21c354; font-size: 0.65em;">✓ {age_display}</span>'
+            age_badge = f'<span style="color: #22c55e; font-size: 0.65em;">✓ {age_display}</span>'
     else:
-        age_badge = '<span style="color: #d94a4a; font-size: 0.65em;">⚠️ unknown</span>'
+        age_badge = '<span style="color: #ef4444; font-size: 0.65em;">⚠️ unknown</span>'
     
     # Core metrics
     total_net_pnl = stats.get("total_net_pnl", 0)
@@ -120,7 +120,7 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
                 pass
     
     # PnL color
-    pnl_color = "#21c354" if total_net_pnl >= 0 else "#d94a4a"
+    pnl_color = "#22c55e" if total_net_pnl >= 0 else "#ef4444"
     pnl_sign = "+" if total_net_pnl >= 0 else ""
     
     # Exit reason breakdown
@@ -136,10 +136,10 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
         "unknown": "Other"
     }
     exit_colors = {
-        "tp": "#21c354",
-        "sl": "#d94a4a",
+        "tp": "#22c55e",
+        "sl": "#ef4444",
         "thesis": "#9370db",
-        "regime_flip": "#f2c037",
+        "regime_flip": "#f59e0b",
         "position_flip": "#5dade2",
         "signal_close": "#888",
         "unknown": "#555"
@@ -199,16 +199,16 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
             <!-- Win/Loss -->
             <div style="text-align: center;">
                 <div style="font-size: 1.1em;">
-                    <span style="color: #21c354; font-weight: 600;">{winners}W</span>
+                    <span style="color: #22c55e; font-weight: 600;">{winners}W</span>
                     <span style="color: #666;">/</span>
-                    <span style="color: #d94a4a; font-weight: 600;">{losers}L</span>
+                    <span style="color: #ef4444; font-weight: 600;">{losers}L</span>
                 </div>
                 <div style="font-size: 0.7em; color: #666;">Record</div>
             </div>
             
             <!-- Win Rate -->
             <div style="text-align: center;">
-                <div style="font-size: 1.1em; font-weight: 600; color: {'#21c354' if win_rate >= 50 else '#f2c037' if win_rate >= 40 else '#d94a4a'};">
+                <div style="font-size: 1.1em; font-weight: 600; color: {'#22c55e' if win_rate >= 50 else '#f59e0b' if win_rate >= 40 else '#ef4444'};">
                     {win_rate:.1f}%
                 </div>
                 <div style="font-size: 0.7em; color: #666;">Win Rate</div>

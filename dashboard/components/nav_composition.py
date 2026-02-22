@@ -150,9 +150,9 @@ def render_nav_composition_panel(
         position_rows = '<div style="color: #555; font-size: 0.85em; padding: 4px 0;">No open positions</div>'
     
     # PnL colors
-    unrealized_color = "#21c354" if unrealized_pnl >= 0 else "#d94a4a"
-    nav_delta_color = "#21c354" if nav_delta_24h >= 0 else "#d94a4a"
-    cycle_pnl_color = "#21c354" if cycle_net_pnl >= 0 else "#d94a4a"
+    unrealized_color = "#22c55e" if unrealized_pnl >= 0 else "#ef4444"
+    nav_delta_color = "#22c55e" if nav_delta_24h >= 0 else "#ef4444"
+    cycle_pnl_color = "#22c55e" if cycle_net_pnl >= 0 else "#ef4444"
     
     # Build full widget HTML
     html = f'''
@@ -187,8 +187,8 @@ def render_nav_composition_panel(
                 <!-- Cash Section -->
                 <div style="margin-bottom: 16px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span style="font-size: 0.85em; font-weight: 600; color: #21c354;">Cash (Stablecoins)</span>
-                        <span style="font-size: 0.9em; font-weight: 600; color: #21c354;">${cash_total:,.2f} <span style="color: #666; font-size: 0.85em;">({cash_pct:.1f}%)</span></span>
+                        <span style="font-size: 0.85em; font-weight: 600; color: #22c55e;">Cash (Stablecoins)</span>
+                        <span style="font-size: 0.9em; font-weight: 600; color: #22c55e;">${cash_total:,.2f} <span style="color: #666; font-size: 0.85em;">({cash_pct:.1f}%)</span></span>
                     </div>
                     <div style="background: #12141a; border-radius: 4px; padding: 8px;">
                         {cash_rows}
@@ -198,8 +198,8 @@ def render_nav_composition_panel(
                 <!-- Positions Section -->
                 <div>
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span style="font-size: 0.85em; font-weight: 600; color: #f2c037;">Positions (Non-Stable)</span>
-                        <span style="font-size: 0.9em; font-weight: 600; color: #f2c037;">${position_total:,.2f} <span style="color: #666; font-size: 0.85em;">({position_pct:.1f}%)</span></span>
+                        <span style="font-size: 0.85em; font-weight: 600; color: #f59e0b;">Positions (Non-Stable)</span>
+                        <span style="font-size: 0.9em; font-weight: 600; color: #f59e0b;">${position_total:,.2f} <span style="color: #666; font-size: 0.85em;">({position_pct:.1f}%)</span></span>
                     </div>
                     <div style="background: #12141a; border-radius: 4px; padding: 8px;">
                         {position_rows}
@@ -232,7 +232,7 @@ def render_nav_composition_panel(
                 <!-- Fees Paid -->
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
                     <span style="color: #888; font-size: 0.85em;">Fees Paid (Cycle)</span>
-                    <span style="color: #d94a4a;">-${cycle_fees:,.2f}</span>
+                    <span style="color: #ef4444;">-${cycle_fees:,.2f}</span>
                 </div>
                 
                 <!-- Episodes -->
@@ -245,7 +245,7 @@ def render_nav_composition_panel(
                 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #2d3139;">
                     <div style="display: flex; justify-content: space-between;">
                         <span style="color: #666; font-size: 0.8em;">Gross Exposure</span>
-                        <span style="color: {'#f2c037' if gross_exposure > 0 else '#555'}; font-size: 0.85em;">${gross_exposure:,.2f}</span>
+                        <span style="color: {'#f59e0b' if gross_exposure > 0 else '#555'}; font-size: 0.85em;">${gross_exposure:,.2f}</span>
                     </div>
                 </div>
             </div>

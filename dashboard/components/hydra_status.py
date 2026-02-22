@@ -103,7 +103,7 @@ def render_hydra_status_strip(state: Optional[Dict[str, Any]] = None) -> None:
             status_color = "#444"
             status_text = "OFF"
         elif positions > 0:
-            status_color = "#21c354"
+            status_color = "#22c55e"
             status_text = f"{positions} pos"
         else:
             status_color = "#666"
@@ -147,8 +147,8 @@ def render_hydra_status_strip(state: Optional[Dict[str, Any]] = None) -> None:
                     🐉 Hydra Engine
                 </span>
                 <span style="
-                    background: {'#21c35422' if total_positions > 0 else '#88888822'};
-                    color: {'#21c354' if total_positions > 0 else '#888'};
+                    background: {'#22c55e22' if total_positions > 0 else '#88888822'};
+                    color: {'#22c55e' if total_positions > 0 else '#888'};
                     padding: 2px 8px;
                     border-radius: 4px;
                     font-size: 0.7em;

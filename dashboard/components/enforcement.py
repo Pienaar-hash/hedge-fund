@@ -80,8 +80,8 @@ def render_enforcement_widget(state: Optional[Dict[str, Any]] = None) -> None:
 
     # --- Status badges ---
     if enforce_on:
-        enforce_badge = '<span style="color:#21c354;font-weight:700;">● ON</span>'
-        enforce_border = "#21c354"
+        enforce_badge = '<span style="color:#22c55e;font-weight:700;">● ON</span>'
+        enforce_border = "#22c55e"
     else:
         enforce_badge = '<span style="color:#888;font-weight:700;">○ OFF</span>'
         enforce_border = "#2d3139"
@@ -96,16 +96,16 @@ def render_enforcement_widget(state: Optional[Dict[str, Any]] = None) -> None:
         sb_color = "#ff1744"
         sb_badge = f'<span style="color:{sb_color};font-weight:700;">⚠ {split_brain}</span>'
     else:
-        sb_color = "#21c354"
+        sb_color = "#22c55e"
         sb_badge = f'<span style="color:{sb_color};">0</span>'
 
     # Window progress
     progress_pct = min(100, int(window_days_met / max(1, window_days_required) * 100))
     if gate_satisfied:
-        window_color = "#21c354"
+        window_color = "#22c55e"
         window_label = "SATISFIED"
     elif criteria_met:
-        window_color = "#f2c037"
+        window_color = "#f59e0b"
         window_label = f"Day {window_days_met}/{window_days_required}"
     else:
         window_color = "#888"
@@ -114,7 +114,7 @@ def render_enforcement_widget(state: Optional[Dict[str, Any]] = None) -> None:
     # --- Denial rate display ---
     if entry_evaluated > 0:
         denial_display = f"{entry_blocks_pct:.2f}%"
-        denial_color = "#ff1744" if entry_blocks_pct > 1.0 else "#f2c037" if entry_blocks_pct > 0 else "#21c354"
+        denial_color = "#ff1744" if entry_blocks_pct > 1.0 else "#f59e0b" if entry_blocks_pct > 0 else "#22c55e"
     else:
         denial_display = "—"
         denial_color = "#888"

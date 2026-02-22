@@ -42,8 +42,8 @@ def render_treasury_block(
             if age_days > 7:
                 stale_warning = f'''
                 <div style="
-                    background: #d94a4a22;
-                    border: 1px solid #d94a4a;
+                    background: #ef444422;
+                    border: 1px solid #ef4444;
                     border-radius: 4px;
                     padding: 8px 12px;
                     margin-bottom: 12px;
@@ -51,7 +51,7 @@ def render_treasury_block(
                     justify-content: space-between;
                     align-items: center;
                 ">
-                    <span style="color: #d94a4a; font-size: 0.85em;">
+                    <span style="color: #ef4444; font-size: 0.85em;">
                         ⚠️ <strong>STALE DATA</strong> — Last updated {last_update.strftime('%Y-%m-%d')} ({age_days} days ago)
                     </span>
                     <span style="color: #888; font-size: 0.75em;">
@@ -62,13 +62,13 @@ def render_treasury_block(
             elif age_days > 1:
                 stale_warning = f'''
                 <div style="
-                    background: #f2c03722;
-                    border: 1px solid #f2c037;
+                    background: #f59e0b22;
+                    border: 1px solid #f59e0b;
                     border-radius: 4px;
                     padding: 6px 12px;
                     margin-bottom: 12px;
                     font-size: 0.8em;
-                    color: #f2c037;
+                    color: #f59e0b;
                 ">
                     Last updated: {last_update.strftime('%Y-%m-%d %H:%M')} ({age_days}d ago)
                 </div>

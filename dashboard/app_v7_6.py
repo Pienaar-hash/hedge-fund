@@ -93,6 +93,9 @@ from dashboard.components.alpha_decay import (
     render_alpha_decay_widget,
 )
 
+# Equity Curve
+from dashboard.components.equity_curve import render_equity_curve
+
 # Layout engine
 from dashboard.layout_v7_6 import (
     render_header_block,
@@ -275,6 +278,11 @@ def main() -> None:
         episode_ledger=state["episode_ledger"],
     )
     
+    # =========================================================================
+    # EQUITY CURVE (NAV over time)
+    # =========================================================================
+    render_equity_curve()
+    
     st.divider()
     
     # =========================================================================
@@ -290,9 +298,10 @@ def main() -> None:
     st.divider()
     
     # =========================================================================
-    # GOVERNANCE — DLE Authority Gate
+    # GOVERNANCE — DLE Authority Gate (collapsed — enforcement detail)
     # =========================================================================
-    render_enforcement_widget(state["enforcement_state"])
+    with st.expander("Governance — Doctrine Enforcement", expanded=False):
+        render_enforcement_widget(state["enforcement_state"])
     
     st.divider()
     
@@ -327,17 +336,14 @@ def main() -> None:
     st.divider()
     
     # =========================================================================
-    # D.2: EXECUTION VISIBILITY
+    # D.2: EXECUTION VISIBILITY (collapsed — operational detail)
     # =========================================================================
-    render_execution_quality_widget(state["execution_quality"])
-    
-    st.divider()
-    
-    render_pnl_attribution_widget(state["pnl_attribution"])
-    
-    st.divider()
-    
-    render_alpha_decay_widget(state["alpha_decay"])
+    with st.expander("Execution Visibility", expanded=False):
+        render_execution_quality_widget(state["execution_quality"])
+        st.divider()
+        render_pnl_attribution_widget(state["pnl_attribution"])
+        st.divider()
+        render_alpha_decay_widget(state["alpha_decay"])
     
     st.divider()
     

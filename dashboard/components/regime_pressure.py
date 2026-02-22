@@ -76,19 +76,19 @@ def render_regime_pressure_widget(state: Optional[Dict[str, Any]] = None) -> Non
     
     # Regime colors
     regime_colors = {
-        "TREND_UP": "#21c354",
+        "TREND_UP": "#22c55e",
         "TREND_DOWN": "#f44",
         "MEAN_REVERT": "#9370db",
-        "BREAKOUT": "#f2c037",
+        "BREAKOUT": "#f59e0b",
         "CHOPPY": "#888",
         "CRISIS": "#ff1744",
     }
     
     # Hostility badge colors
     hostility_colors = {
-        "HOSTILE": "#d94a4a",
-        "UNCERTAIN": "#f2c037",
-        "FAVORABLE": "#21c354",
+        "HOSTILE": "#ef4444",
+        "UNCERTAIN": "#f59e0b",
+        "FAVORABLE": "#22c55e",
     }
     
     regime_color = regime_colors.get(regime, "#888")
@@ -96,11 +96,11 @@ def render_regime_pressure_widget(state: Optional[Dict[str, Any]] = None) -> Non
     
     # Confidence bar color based on stability
     if confidence >= 0.65:
-        conf_color = "#21c354"  # Green — stable
+        conf_color = "#22c55e"  # Green — stable
     elif confidence >= 0.55:
-        conf_color = "#f2c037"  # Gold — marginal
+        conf_color = "#f59e0b"  # Gold — marginal
     else:
-        conf_color = "#d94a4a"  # Red — unstable / near-flip zone
+        conf_color = "#ef4444"  # Red — unstable / near-flip zone
     
     # Build HTML widget
     html = f'''
@@ -159,14 +159,14 @@ def render_regime_pressure_widget(state: Optional[Dict[str, Any]] = None) -> Non
             
             <!-- Flip Metrics -->
             <div style="text-align: center; min-width: 70px;">
-                <div style="font-size: 1.2em; font-weight: 600; color: {'#d94a4a' if near_flip_24h > 50 else '#f2c037' if near_flip_24h > 20 else '#888'};">
+                <div style="font-size: 1.2em; font-weight: 600; color: {'#ef4444' if near_flip_24h > 50 else '#f59e0b' if near_flip_24h > 20 else '#888'};">
                     {near_flip_24h}
                 </div>
                 <div style="font-size: 0.65em; color: #666;">Flips 24h</div>
             </div>
             
             <div style="text-align: center; min-width: 70px;">
-                <div style="font-size: 1.2em; font-weight: 600; color: {'#d94a4a' if near_flip_7d > 200 else '#f2c037' if near_flip_7d > 100 else '#888'};">
+                <div style="font-size: 1.2em; font-weight: 600; color: {'#ef4444' if near_flip_7d > 200 else '#f59e0b' if near_flip_7d > 100 else '#888'};">
                     {near_flip_7d}
                 </div>
                 <div style="font-size: 0.65em; color: #666;">Flips 7d</div>
@@ -174,7 +174,7 @@ def render_regime_pressure_widget(state: Optional[Dict[str, Any]] = None) -> Non
             
             <!-- Regime Changes -->
             <div style="text-align: center; min-width: 70px;">
-                <div style="font-size: 1.2em; font-weight: 600; color: {'#d94a4a' if regime_changes_24h > 4 else '#f2c037' if regime_changes_24h > 2 else '#21c354'};">
+                <div style="font-size: 1.2em; font-weight: 600; color: {'#ef4444' if regime_changes_24h > 4 else '#f59e0b' if regime_changes_24h > 2 else '#22c55e'};">
                     {regime_changes_24h}
                 </div>
                 <div style="font-size: 0.65em; color: #666;">Changes 24h</div>

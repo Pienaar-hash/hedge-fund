@@ -35,10 +35,10 @@ def load_sentinel_x_state(path: Optional[Path] = None) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 REGIME_COLORS = {
-    "TREND_UP": "#21c354",
+    "TREND_UP": "#22c55e",
     "TREND_DOWN": "#f44",
     "MEAN_REVERT": "#9370db",
-    "BREAKOUT": "#f2c037",
+    "BREAKOUT": "#f59e0b",
     "CHOPPY": "#888",
     "CRISIS": "#ff1744",
 }
