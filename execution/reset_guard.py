@@ -160,18 +160,69 @@ def _next_cycle_id() -> str:
 def _archive_state(cycle_id: str) -> str:
     """Archive current state files into a timestamped directory.
 
+    Archives ALL critical state — not just the three original files.
+    Execution logs (JSONL) are the irreplaceable trade record.
+    State files (JSON) capture point-in-time snapshots.
+    NAV log captures the equity curve history.
+
     Returns the archive path as a string.
     """
     ts_label = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     archive_dir = _ARCHIVE_BASE / f"{cycle_id}_{ts_label}"
     archive_dir.mkdir(parents=True, exist_ok=True)
 
-    for src in (_NAV_STATE_PATH, _EPISODE_LEDGER_PATH, _POSITIONS_STATE_PATH):
+    # --- Critical state files (always archive) ---
+    critical_state = [
+        _NAV_STATE_PATH,
+        _EPISODE_LEDGER_PATH,
+        _POSITIONS_STATE_PATH,
+        Path("logs/state/nav.json"),
+        Path("logs/state/risk_snapshot.json"),
+        Path("logs/state/positions_ledger.json"),
+        Path("logs/state/position_tp_sl.json"),
+        Path("logs/state/hydra_state.json"),
+        Path("logs/state/cerberus_state.json"),
+        Path("logs/state/sentinel_x.json"),
+        Path("logs/state/execution_quality.json"),
+        Path("logs/state/diagnostics.json"),
+        Path("logs/state/symbol_scores_v6.json"),
+        Path("logs/cache/peak_state.json"),
+        Path("logs/cache/nav_confirmed.json"),
+    ]
+    for src in critical_state:
         if src.exists():
             try:
                 shutil.copy2(str(src), str(archive_dir / src.name))
             except Exception:
-                pass  # Best-effort; do not block on archive failure
+                pass
+
+    # --- NAV log (equity curve history — irreplaceable long-term) ---
+    nav_log = Path("logs/nav_log.json")
+    if nav_log.exists():
+        try:
+            shutil.copy2(str(nav_log), str(archive_dir / nav_log.name))
+        except Exception:
+            pass
+
+    # --- Execution logs (append-only JSONL — the canonical trade record) ---
+    exec_log_dir = archive_dir / "execution"
+    exec_log_dir.mkdir(exist_ok=True)
+    exec_logs = Path("logs/execution")
+    if exec_logs.exists():
+        for f in exec_logs.glob("*.jsonl"):
+            try:
+                shutil.copy2(str(f), str(exec_log_dir / f.name))
+            except Exception:
+                pass
+
+    # --- Doctrine events (audit trail) ---
+    doctrine_log = Path("logs/doctrine_events.jsonl")
+    if doctrine_log.exists():
+        try:
+            shutil.copy2(str(doctrine_log), str(archive_dir / doctrine_log.name))
+        except Exception:
+            pass
+
     return str(archive_dir)
 
 
