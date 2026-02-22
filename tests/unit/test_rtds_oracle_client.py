@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -21,6 +22,7 @@ import pytest
 from prediction.rtds_oracle_client import (
     AnomalyType,
     HealthAccumulator,
+    ROUND_VALIDITY_STALE_MS,
     RTDSOracleClient,
     _append_jsonl,
 )
@@ -414,3 +416,71 @@ class TestLogIntegrity:
         lines = _read_jsonl(tmp_logs["oracle"])
         assert len(lines) == 2
         assert lines[0]["seq"] != lines[1]["seq"]  # unique
+
+
+# ---------------------------------------------------------------------------
+# Round validity (Layer 1 hardening B)
+# ---------------------------------------------------------------------------
+class TestRoundValidity:
+    def test_no_ticks_returns_false(self, client: RTDSOracleClient):
+        assert client.is_round_valid() is False
+        assert client.oracle_age_ms() is None
+
+    def test_recent_tick_returns_true(self, client: RTDSOracleClient):
+        """A tick received just now should be valid."""
+        client._last_oracle_ts_ms = int(time.time() * 1000) - 500  # 500ms ago
+        assert client.is_round_valid() is True
+
+    def test_stale_tick_returns_false(self, client: RTDSOracleClient):
+        """A tick older than ROUND_VALIDITY_STALE_MS should be invalid."""
+        client._last_oracle_ts_ms = int(time.time() * 1000) - (ROUND_VALIDITY_STALE_MS + 5000)
+        assert client.is_round_valid() is False
+
+    def test_oracle_age_ms(self, client: RTDSOracleClient):
+        now_ms = int(time.time() * 1000)
+        client._last_oracle_ts_ms = now_ms - 3000
+        age = client.oracle_age_ms()
+        assert age is not None
+        assert 2500 <= age <= 4000  # within reasonable drift
+
+
+# ---------------------------------------------------------------------------
+# Subscription stall detection (Layer 1 hardening A)
+# ---------------------------------------------------------------------------
+class TestSubscriptionStall:
+    def test_stall_fires_after_threshold(self, client: RTDSOracleClient, tmp_logs):
+        """If many messages arrive without BTC data and no ticks, log stall."""
+        import prediction.rtds_oracle_client as mod
+        orig = mod.STALL_DETECT_MSG_COUNT
+        mod.STALL_DETECT_MSG_COUNT = 5  # lower for test
+        try:
+            for i in range(6):
+                client._process_message(
+                    {"payload": {"symbol": "eth/usd", "data": []}}
+                )
+            anomalies = _read_jsonl(tmp_logs["env"])
+            stall = [e for e in anomalies if e["event"] == AnomalyType.SUBSCRIPTION_STALL]
+            assert len(stall) == 1
+            assert stall[0]["action"] == "stall_detected_post_backfill"
+        finally:
+            mod.STALL_DETECT_MSG_COUNT = orig
+
+    def test_no_stall_when_btc_data_arrives(self, client: RTDSOracleClient, tmp_logs):
+        """BTC data arriving resets the stall counter."""
+        import prediction.rtds_oracle_client as mod
+        orig = mod.STALL_DETECT_MSG_COUNT
+        mod.STALL_DETECT_MSG_COUNT = 3
+        try:
+            # 2 non-BTC, then 1 BTC, then 2 more non-BTC — should not stall
+            for _ in range(2):
+                client._process_message({"payload": {"symbol": "eth/usd", "data": []}})
+            client._process_message(
+                {"payload": {"symbol": "btc/usd", "data": [{"timestamp": 1000000, "value": 67000.0}]}}
+            )
+            for _ in range(2):
+                client._process_message({"payload": {"symbol": "eth/usd", "data": []}})
+            anomalies = _read_jsonl(tmp_logs["env"])
+            stall = [e for e in anomalies if e["event"] == AnomalyType.SUBSCRIPTION_STALL]
+            assert len(stall) == 0
+        finally:
+            mod.STALL_DETECT_MSG_COUNT = orig

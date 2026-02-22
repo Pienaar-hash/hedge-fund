@@ -704,6 +704,44 @@
         "ts": "ISO8601"
       }
     },
+    "clob_market_events": {
+      "path": "logs/prediction/clob_market.jsonl",
+      "owner": "prediction",
+      "update_frequency": "per_event",
+      "optional": true,
+      "description": "CLOB market data events — Layer 2 binary sleeve data plane (best_bid_ask, last_trade_price, tick_size_change, market_resolved, book, price_change)",
+      "fields": {
+        "ts_arrival_ms": "int — local arrival epoch ms",
+        "event_type": "str — best_bid_ask|last_trade_price|tick_size_change|market_resolved|book|price_change",
+        "asset_id": "str — CLOB token ID",
+        "seq": "int — local event sequence number",
+        "source": "CLOB",
+        "best_bid": "float|null — (best_bid_ask only)",
+        "best_ask": "float|null — (best_bid_ask only)",
+        "spread": "float|null — (best_bid_ask only)",
+        "price": "float|null — (last_trade_price, price_change)",
+        "side": "str|null — BUY|SELL (last_trade_price, price_change)",
+        "winning_outcome": "str|null — YES|NO (market_resolved only)"
+      }
+    },
+    "clob_market_health": {
+      "path": "logs/prediction/clob_market_health.jsonl",
+      "owner": "prediction",
+      "update_frequency": "periodic_60s",
+      "optional": true,
+      "description": "CLOB market client health summaries — event counts, spread stats, trade frequency",
+      "fields": {
+        "ts": "ISO8601",
+        "window_s": "float — health window duration",
+        "total_events": "int",
+        "event_counts": "Dict[event_type, count]",
+        "anomaly_count": "int",
+        "spread": "{ mean, median, min, max, samples } or null",
+        "last_trade_price": "float|null",
+        "trade_count": "int",
+        "event_frequency_hz": "float"
+      }
+    },
     "rtds_oracle_ticks": {
       "path": "logs/prediction/rtds_oracle.jsonl",
       "owner": "prediction",

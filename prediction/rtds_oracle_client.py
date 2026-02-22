@@ -79,6 +79,18 @@ HEALTH_EMIT_INTERVAL_S: float = float(
     os.environ.get("RTDS_HEALTH_INTERVAL_S", "60")
 )
 
+# Strict staleness bound for 15m round validity.
+# If the most recent oracle tick is older than this, the round window
+# is considered stale and should NOT be used for EV calculation.
+# Separate from STALE_TICK_THRESHOLD_S which monitors connection health.
+ROUND_VALIDITY_STALE_MS: int = int(
+    os.environ.get("RTDS_ROUND_VALIDITY_STALE_MS", "10000")  # 10 s
+)
+
+# Subscription stall detection — if we receive N messages with no
+# BTC/USD data after the initial backfill, auto-fallback to unfiltered.
+STALL_DETECT_MSG_COUNT: int = 50  # ~50 heartbeats at 1 Hz ≈ 50s
+
 # ---------------------------------------------------------------------------
 # Logger
 # ---------------------------------------------------------------------------
@@ -95,6 +107,7 @@ class AnomalyType:
     STALE = "rtds_stale"
     RECONNECT_STORM = "rtds_reconnect_storm"
     WS_ERROR = "rtds_ws_error"
+    SUBSCRIPTION_STALL = "rtds_subscription_stall"
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +223,8 @@ class RTDSOracleClient:
         self._seq_counter: int = 0
         self._consecutive_reconnects: int = 0
         self._running: bool = False
+        self._msgs_since_last_btc_tick: int = 0
+        self._stall_detected: bool = False
 
         self.health = HealthAccumulator()
 
@@ -268,7 +283,24 @@ class RTDSOracleClient:
         if isinstance(payload, dict) and isinstance(payload.get("data"), list):
             symbol_raw = str(payload.get("symbol", "")).lower().replace("_", "/")
             if "btc" not in symbol_raw:
+                # Track messages without BTC data for stall detection
+                self._msgs_since_last_btc_tick += 1
+                if (
+                    not self._stall_detected
+                    and self._msgs_since_last_btc_tick >= STALL_DETECT_MSG_COUNT
+                    and self.health.tick_count == 0
+                ):
+                    self._stall_detected = True
+                    self._log_anomaly(
+                        AnomalyType.SUBSCRIPTION_STALL,
+                        {
+                            "msgs_without_btc": self._msgs_since_last_btc_tick,
+                            "action": "stall_detected_post_backfill",
+                        },
+                    )
                 return results
+            # Reset stall counter on BTC data
+            self._msgs_since_last_btc_tick = 0
             for item in payload["data"]:
                 if not isinstance(item, dict):
                     continue
@@ -400,9 +432,25 @@ class RTDSOracleClient:
 
         return record
 
+    def oracle_age_ms(self) -> Optional[int]:
+        """Age of the most recent oracle tick in milliseconds, or None if no tick yet."""
+        if self._last_oracle_ts_ms is None:
+            return None
+        return int(time.time() * 1000) - self._last_oracle_ts_ms
+
+    def is_round_valid(self) -> bool:
+        """True if the most recent oracle tick is within ROUND_VALIDITY_STALE_MS.
+
+        Used by Layer 3 (Round Observer) to gate round boundaries.
+        If no ticks have been received yet, returns False.
+        """
+        age = self.oracle_age_ms()
+        if age is None:
+            return False
+        return age <= ROUND_VALIDITY_STALE_MS
+
     # ----- subscription message -----
 
-    @staticmethod
     @staticmethod
     def _subscribe_message() -> str:
         """Build the RTDS subscribe payload per documented protocol.
