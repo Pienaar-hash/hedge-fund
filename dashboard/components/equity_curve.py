@@ -172,8 +172,13 @@ def _build_equity_svg(
     # Span display
     if span_hours < 24:
         span_text = f"{span_hours:.1f}h"
-    else:
+    elif span_hours < 48:
         span_text = f"{span_hours / 24:.1f}d"
+    else:
+        span_days = span_hours / 24
+        start_dt = datetime.fromtimestamp(t_min, tz=timezone.utc)
+        end_dt = datetime.fromtimestamp(t_max, tz=timezone.utc)
+        span_text = f"{start_dt.strftime('%b %d')} — {end_dt.strftime('%b %d')} ({span_days:.0f}d)"
 
     svg = f'''
     <svg width="100%" height="{_CHART_H}" viewBox="0 0 {_CHART_W} {_CHART_H}"
