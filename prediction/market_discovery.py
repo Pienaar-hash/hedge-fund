@@ -230,6 +230,38 @@ def _validate_token_ordering(
     return None
 
 
+def _discover_by_slug(
+    timeframe: str,
+    now: float,
+    num_windows: int = 4,
+) -> List[Dict[str, Any]]:
+    """Discover current + upcoming markets via direct slug lookup.
+
+    The Gamma bulk ``/events`` endpoint with ``closed=false`` often
+    misses the **currently-active** 15m/5m window because Gamma marks
+    events ``closed=true`` at or shortly after their end time, and the
+    current window may already be in-flight.
+
+    This function computes the expected slug timestamps for the current
+    and next *num_windows* windows and queries Gamma by exact slug.
+    """
+    duration_s = 900 if timeframe == "15m" else 300
+    prefix = SLUG_15M if timeframe == "15m" else SLUG_5M
+
+    # Round down to the current window start
+    current_start = int(now / duration_s) * duration_s
+    events: List[Dict[str, Any]] = []
+
+    for i in range(num_windows):
+        start_ts = current_start + (i * duration_s)
+        slug = f"{prefix}{start_ts}"
+        data = _gamma_get("events", params={"slug": slug})
+        if data and isinstance(data, list):
+            events.extend(data)
+
+    return events
+
+
 # ---------------------------------------------------------------------------
 # Core discovery
 # ---------------------------------------------------------------------------
@@ -263,8 +295,15 @@ def discover_btc_updown_markets(
         ts=datetime.now(timezone.utc).isoformat(),
     )
 
-    # Fetch events sorted by newest start date first
-    data = _gamma_get("events", params={
+    # ---- Phase 1: slug-based discovery for current + near-term windows ----
+    # The bulk /events endpoint with closed=false misses the currently-active
+    # window.  Slug-based lookup finds it reliably.
+    slug_events: List[Dict[str, Any]] = []
+    for tf in tf_set:
+        slug_events.extend(_discover_by_slug(tf, now, num_windows=4))
+
+    # ---- Phase 2: bulk endpoint for longer-horizon discovery ----
+    bulk_data = _gamma_get("events", params={
         "active": "true",
         "closed": "false",
         "limit": str(GAMMA_LIMIT),
@@ -272,12 +311,29 @@ def discover_btc_updown_markets(
         "ascending": "false",
     })
 
-    if data is None:
+    # Merge: slug results take precedence (they include current window)
+    seen_slugs: set = set()
+    all_events: List[Dict[str, Any]] = []
+    for ev in slug_events:
+        s = ev.get("slug", "")
+        if s and s not in seen_slugs:
+            seen_slugs.add(s)
+            all_events.append(ev)
+    if bulk_data and isinstance(bulk_data, list):
+        for ev in bulk_data:
+            s = ev.get("slug", "")
+            if s and s not in seen_slugs:
+                seen_slugs.add(s)
+                all_events.append(ev)
+
+    data = all_events
+
+    if not data and bulk_data is None and not slug_events:
         snap.error = "gamma_fetch_failed"
         return snap
 
-    if not isinstance(data, list):
-        snap.error = f"unexpected_response_type:{type(data).__name__}"
+    if not data:
+        snap.error = f"unexpected_response_type:empty"
         return snap
 
     snap.raw_event_count = len(data)
@@ -302,6 +358,10 @@ def discover_btc_updown_markets(
 
         for mkt in event.get("markets", []):
             if not isinstance(mkt, dict):
+                continue
+
+            # Skip markets already resolved/closed
+            if mkt.get("closed") is True:
                 continue
 
             end_str = mkt.get("endDate", "")

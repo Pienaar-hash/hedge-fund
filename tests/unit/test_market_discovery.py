@@ -174,6 +174,12 @@ class TestParseTokens:
 # Tests — discover_btc_updown_markets
 # ---------------------------------------------------------------------------
 class TestDiscoverMarkets:
+    @pytest.fixture(autouse=True)
+    def _patch_slug_discovery(self) -> Any:
+        """Bypass slug-based discovery so bulk-path tests are unchanged."""
+        with patch("prediction.market_discovery._discover_by_slug", return_value=[]):
+            yield
+
     @patch("prediction.market_discovery._gamma_get")
     def test_basic_discovery_15m(self, mock_get: Any) -> None:
         """Should find a single 15m market and set current_15m."""
@@ -276,12 +282,20 @@ class TestDiscoverMarkets:
     def test_non_btc_events_filtered(self, mock_get: Any) -> None:
         """Events not matching 'bitcoin up or down' should be excluded."""
         mock_get.return_value = [
-            _make_event(title="Ethereum Up or Down - Window"),
-            _make_event(title="Bitcoin Up or Down - Window"),
+            _make_event(
+                title="Ethereum Up or Down - Window",
+                slug="eth-updown-15m-1771833600",
+                event_id="900",
+            ),
+            _make_event(
+                title="Bitcoin Up or Down - Window",
+                slug="btc-updown-15m-1771833600",
+                event_id="901",
+            ),
         ]
         snap = discover_btc_updown_markets(timeframes=["15m"])
 
-        # Ethereum event still matches title filter, but slug check matters
+        # Ethereum event has non-BTC slug prefix — filtered by slug check
         assert snap.btc_updown_count >= 1
 
     @patch("prediction.market_discovery._gamma_get")
@@ -357,6 +371,12 @@ class TestDiscoverMarkets:
 # Tests — get_current_tokens convenience
 # ---------------------------------------------------------------------------
 class TestGetCurrentTokens:
+    @pytest.fixture(autouse=True)
+    def _patch_slug_discovery(self) -> Any:
+        """Bypass slug-based discovery so bulk-path tests are unchanged."""
+        with patch("prediction.market_discovery._discover_by_slug", return_value=[]):
+            yield
+
     @patch("prediction.market_discovery._gamma_get")
     def test_returns_15m(self, mock_get: Any) -> None:
         mock_get.return_value = [_make_15m_event()]
@@ -500,3 +520,108 @@ class TestValidateTokenOrdering:
     def test_whitespace_trimmed(self) -> None:
         result = _validate_token_ordering([" Up ", " Down "], ["T_UP", "T_DOWN"])
         assert result == ("T_UP", "T_DOWN")
+
+
+# ---------------------------------------------------------------------------
+# Tests — _discover_by_slug
+# ---------------------------------------------------------------------------
+class TestDiscoverBySlug:
+    """Tests for the slug-based discovery that finds current live markets."""
+
+    @patch("prediction.market_discovery._gamma_get")
+    def test_queries_correct_slugs_15m(self, mock_get: Any) -> None:
+        """Should compute 4 slug timestamps for 15m windows."""
+        from prediction.market_discovery import _discover_by_slug
+
+        mock_get.return_value = []
+        now = 1771833600.0  # exact 15m boundary
+        _discover_by_slug("15m", now, num_windows=4)
+
+        assert mock_get.call_count == 4
+        slugs_queried = [
+            call.kwargs.get("params", call.args[1] if len(call.args) > 1 else {}).get("slug", "")
+            for call in mock_get.call_args_list
+        ]
+        # Extract slug params from positional or keyword args
+        actual_slugs = []
+        for call in mock_get.call_args_list:
+            params = call[1].get("params") if len(call[1]) else call[0][1] if len(call[0]) > 1 else {}
+            actual_slugs.append(params.get("slug", ""))
+
+        expected = [
+            "btc-updown-15m-1771833600",
+            "btc-updown-15m-1771834500",
+            "btc-updown-15m-1771835400",
+            "btc-updown-15m-1771836300",
+        ]
+        assert actual_slugs == expected
+
+    @patch("prediction.market_discovery._gamma_get")
+    def test_queries_correct_slugs_5m(self, mock_get: Any) -> None:
+        """Should compute 4 slug timestamps for 5m windows."""
+        from prediction.market_discovery import _discover_by_slug
+
+        mock_get.return_value = []
+        now = 1771833600.0
+        _discover_by_slug("5m", now, num_windows=4)
+
+        assert mock_get.call_count == 4
+        actual_slugs = []
+        for call in mock_get.call_args_list:
+            params = call[1].get("params") if len(call[1]) else call[0][1] if len(call[0]) > 1 else {}
+            actual_slugs.append(params.get("slug", ""))
+
+        expected = [
+            "btc-updown-5m-1771833600",
+            "btc-updown-5m-1771833900",
+            "btc-updown-5m-1771834200",
+            "btc-updown-5m-1771834500",
+        ]
+        assert actual_slugs == expected
+
+    @patch("prediction.market_discovery._gamma_get")
+    def test_returns_found_events(self, mock_get: Any) -> None:
+        """Should accumulate events from slug lookups."""
+        from prediction.market_discovery import _discover_by_slug
+
+        event = _make_15m_event()
+        mock_get.side_effect = [
+            [event],  # hit
+            [],       # miss
+            None,     # fail
+            [],       # miss
+        ]
+        result = _discover_by_slug("15m", 1771833600.0, num_windows=4)
+
+        assert len(result) == 1
+        assert result[0] == event
+
+    @patch("prediction.market_discovery._gamma_get")
+    def test_mid_window_rounds_down(self, mock_get: Any) -> None:
+        """Now at mid-window should still round to window start."""
+        from prediction.market_discovery import _discover_by_slug
+
+        mock_get.return_value = []
+        now = 1771833600.0 + 450  # 7.5 minutes into a 15m window
+        _discover_by_slug("15m", now, num_windows=1)
+
+        params = mock_get.call_args_list[0][1].get("params") if len(mock_get.call_args_list[0][1]) else mock_get.call_args_list[0][0][1]
+        assert params.get("slug") == "btc-updown-15m-1771833600"
+
+    @patch("prediction.market_discovery._gamma_get")
+    def test_slug_discovery_integrated_into_main(self, mock_get: Any) -> None:
+        """When slug discovery finds a market, it should appear in the snapshot."""
+        event = _make_15m_event()
+        # _gamma_get is called 4 times for slug lookups, then 1 time for bulk
+        mock_get.side_effect = [
+            [event],  # slug hit (window 0)
+            [],       # slug miss (window 1)
+            [],       # slug miss (window 2)
+            [],       # slug miss (window 3)
+            [],       # bulk endpoint
+        ]
+        snap = discover_btc_updown_markets(timeframes=["15m"], safety_buffer_s=0)
+
+        assert snap.error is None
+        assert len(snap.markets) == 1
+        assert snap.current_15m is not None
