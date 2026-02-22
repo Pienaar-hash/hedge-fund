@@ -20,8 +20,8 @@ import streamlit.components.v1 as st_components
 _NAV_LOG_PATH = Path("logs/nav_log.json")
 
 # Chart dimensions
-_CHART_W = 720
-_CHART_H = 220
+_CHART_W = 960
+_CHART_H = 240
 _PAD_L = 70   # left padding for y-axis labels
 _PAD_R = 20
 _PAD_T = 24
@@ -176,8 +176,9 @@ def _build_equity_svg(
         span_text = f"{span_hours / 24:.1f}d"
 
     svg = f'''
-    <svg width="{_CHART_W}" height="{_CHART_H}" viewBox="0 0 {_CHART_W} {_CHART_H}"
-         xmlns="http://www.w3.org/2000/svg" style="display:block;max-width:100%;">
+    <svg width="100%" height="{_CHART_H}" viewBox="0 0 {_CHART_W} {_CHART_H}"
+         xmlns="http://www.w3.org/2000/svg" style="display:block;"
+         preserveAspectRatio="xMidYMid meet">
         <defs>
             <linearGradient id="{grad_id}" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stop-color="{grad_top}" />
@@ -229,32 +230,36 @@ def render_equity_curve(nav_log_path: Optional[Path] = None) -> None:
         background: linear-gradient(135deg, #1a1d24 0%, #12141a 100%);
         border: 1px solid #2d3139;
         border-radius: 8px;
-        padding: 16px;
+        padding: 20px;
         margin: 8px 0;
+        width: 100%;
+        box-sizing: border-box;
     ">
         <!-- Header row -->
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
             <div style="display: flex; align-items: baseline; gap: 12px;">
-                <span style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">
+                <span style="font-size: 0.8em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">
                     Equity Curve
                 </span>
                 <span style="font-size: 0.7em; color: #555;">
-                    {span_text} span
+                    {span_text}
                 </span>
             </div>
             <div style="display: flex; align-items: baseline; gap: 16px;">
-                <span style="font-size: 1.1em; font-weight: 700; color: #ccc;">
+                <span style="font-size: 1.2em; font-weight: 700; color: #ccc;">
                     ${current_nav:,.2f}
                 </span>
-                <span style="font-size: 0.85em; font-weight: 600; color: {delta_color};">
+                <span style="font-size: 0.9em; font-weight: 600; color: {delta_color};">
                     {delta_sign}${abs(delta):,.2f} ({delta_sign}{abs(delta_pct):.2f}%)
                 </span>
             </div>
         </div>
         <!-- Chart -->
-        {svg}
+        <div style="width: 100%; overflow: hidden;">
+            {svg}
+        </div>
     </div>
     '''
 
-    iframe_h = _CHART_H + 100  # header + chart + padding
+    iframe_h = _CHART_H + 110  # header + chart + padding
     st_components.html(html, height=iframe_h, scrolling=False)

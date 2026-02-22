@@ -60,29 +60,14 @@ def build_kpi_cards(
     from dashboard.components.nav_pnl import compute_nav_deltas
     _nav_deltas = compute_nav_deltas()
     _span_ok = _nav_deltas.get("span_ok", {})
-    _pnl_24h_available = _span_ok.get("24h", False)
-    if _pnl_24h_available:
-        daily_pnl = _nav_deltas.get("pnl_24h", 0.0)
-    else:
-        daily_pnl = None  # will render as "—"
-
-    unrealized = float(nav_state.get("unrealized_pnl") or 0)
     gross_exp = float(nav_state.get("gross_exposure") or 0)
-    # Detect idle state: no exposure AND no unrealized PnL
-    _is_idle = (abs(gross_exp) < 0.01 and abs(unrealized) < 0.01)
     drawdown_pct = float(nav_state.get("drawdown_pct") or 0)
     
     # Risk metrics
     risk_block = kpis.get("risk", {})
-    atr_regime_raw = risk_snapshot.get("atr_regime") or risk_block.get("atr_regime") or "normal"
     dd_state_raw = risk_snapshot.get("dd_state") or risk_block.get("dd_state") or "normal"
     
-    # Normalize nested dicts
-    if isinstance(atr_regime_raw, dict):
-        atr_regime = str(atr_regime_raw.get("atr_regime") or atr_regime_raw.get("regime") or "normal")
-    else:
-        atr_regime = str(atr_regime_raw) if atr_regime_raw else "normal"
-    
+    # Normalize nested dict
     if isinstance(dd_state_raw, dict):
         dd_state = str(dd_state_raw.get("dd_state") or dd_state_raw.get("state") or "normal")
     else:
@@ -91,23 +76,13 @@ def build_kpi_cards(
     # Exposure percentage
     exp_pct = (gross_exp / nav_usd * 100) if nav_usd > 0 else 0
     
-    # Format 24h PnL — show "—" when span insufficient
-    if daily_pnl is not None:
-        _pnl_html = ("+" if daily_pnl >= 0 else "") + _fmt_usd(daily_pnl)
-        _pnl_class = _value_class(daily_pnl)
-    else:
-        _pnl_html = "—"
-        _pnl_class = "muted"
-
-    # Format unrealized — show "—" when idle (no positions)
-    if _is_idle:
-        _unr_html = "—"
-        _unr_class = "muted"
-        _exp_html = "—"
-    else:
-        _unr_html = ("+" if unrealized >= 0 else "") + _fmt_usd(unrealized)
-        _unr_class = _value_class(unrealized)
-        _exp_html = f"{exp_pct:.0f}%"
+    # All-time PnL from episode ledger (authoritative)
+    _at_pnl = 0.0
+    if episode_ledger:
+        _at_pnl = float(episode_ledger.get("stats", {}).get("total_net_pnl") or 0)
+    _win_rate = 0.0
+    if episode_ledger:
+        _win_rate = float(episode_ledger.get("stats", {}).get("win_rate") or 0)
 
     cards = [
         {
@@ -116,18 +91,13 @@ def build_kpi_cards(
             "value_class": "",
         },
         {
-            "label": "24h PnL",
-            "value_html": _pnl_html,
-            "value_class": _pnl_class,
-        },
-        {
-            "label": "Unrealized",
-            "value_html": _unr_html,
-            "value_class": _unr_class,
+            "label": "All-Time PnL",
+            "value_html": ("+" if _at_pnl >= 0 else "") + _fmt_usd(_at_pnl),
+            "value_class": _value_class(_at_pnl),
         },
         {
             "label": "Exposure",
-            "value_html": _exp_html,
+            "value_html": f"{exp_pct:.0f}%",
             "value_class": "",
         },
         {
@@ -136,10 +106,9 @@ def build_kpi_cards(
             "value_class": "negative" if drawdown_pct > 5 else "",
         },
         {
-            "label": "ATR",
-            "value_html": f'<span class="status-badge {_status_class(atr_regime)}">{atr_regime.upper()}</span>',
-            "value_class": "",
-            "is_badge": True,
+            "label": "Win Rate",
+            "value_html": f"{_win_rate:.1f}%",
+            "value_class": "positive" if _win_rate >= 50 else "",
         },
         {
             "label": "Risk",

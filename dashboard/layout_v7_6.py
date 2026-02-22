@@ -250,48 +250,43 @@ def render_strategy_block(
         merged_kpis["winners"] = stats.get("winners", 0)
         merged_kpis["losers"] = stats.get("losers", 0)
     
-    # NAV-delta PnL overrides episode-windowed PnL.
-    # Episode PnL only counts closed trades — it systematically misses
-    # unrealised gains and mark-to-market on holdings.  NAV delta is
-    # the TRUE portfolio PnL.
+    # NAV-delta PnL is preferred (includes unrealised + mark-to-market).
+    # When NAV log span is insufficient, fall back to episode-windowed PnL.
+    # Never show "awaiting span" — always provide a real number.
     from dashboard.components.nav_pnl import compute_nav_deltas
     _nav_deltas = compute_nav_deltas()
-    _log_span = _nav_deltas.get("log_span_days", 0)
     _span_ok = _nav_deltas.get("span_ok", {})
-    _span_suppressed: List[str] = []  # windows skipped due to short span
 
-    # Use centralized span_ok flags — thresholds live in nav_pnl.py only.
+    # Helper: compute episode-windowed PnL as fallback
+    _episodes_list = (episode_ledger or {}).get("episodes", [])
+
     if _span_ok.get("24h") and _nav_deltas.get("pnl_24h"):
         merged_kpis["daily_pnl"] = _nav_deltas["pnl_24h"]
         merged_kpis["pnl_24h"] = _nav_deltas["pnl_24h"]
-    elif not _span_ok.get("24h"):
-        _span_suppressed.append("24h")
+    else:
+        merged_kpis["daily_pnl"] = _compute_windowed_pnl(_episodes_list, 24)
+        merged_kpis["pnl_24h"] = merged_kpis["daily_pnl"]
+
     if _span_ok.get("7d") and _nav_deltas.get("pnl_7d"):
         merged_kpis["weekly_pnl"] = _nav_deltas["pnl_7d"]
         merged_kpis["pnl_7d"] = _nav_deltas["pnl_7d"]
-    elif not _span_ok.get("7d"):
-        _span_suppressed.append("7d")
+    else:
+        merged_kpis["weekly_pnl"] = _compute_windowed_pnl(_episodes_list, 168)
+        merged_kpis["pnl_7d"] = merged_kpis["weekly_pnl"]
+
     if _span_ok.get("30d") and _nav_deltas.get("pnl_30d"):
         merged_kpis["monthly_pnl"] = _nav_deltas["pnl_30d"]
         merged_kpis["pnl_30d"] = _nav_deltas["pnl_30d"]
-    elif not _span_ok.get("30d"):
-        _span_suppressed.append("30d")
-    # All-time PnL = NAV delta, but ONLY if nav_log spans enough history.
-    # Short logs (after restart) must not overwrite episode ledger truth.
+    else:
+        merged_kpis["monthly_pnl"] = _compute_windowed_pnl(_episodes_list, 720)
+        merged_kpis["pnl_30d"] = merged_kpis["monthly_pnl"]
+
+    # All-time: use NAV delta if span sufficient, otherwise episode ledger
     if _span_ok.get("all_time") and _nav_deltas.get("pnl_all_time"):
         merged_kpis["total_pnl"] = _nav_deltas["pnl_all_time"]
         merged_kpis["all_time_pnl"] = _nav_deltas["pnl_all_time"]
-    elif not _span_ok.get("all_time"):
-        _span_suppressed.append("all-time")
+    # (episode ledger already set all_time above — no override needed)
 
-    # Inject span diagnostic for downstream rendering
-    if _span_suppressed:
-        merged_kpis["_nav_span_note"] = (
-            f"NAV log span {_log_span:.1f}d — "
-            f"{', '.join(_span_suppressed)} windows use ledger values"
-        )
-        merged_kpis["_nav_span_suppressed_windows"] = set(_span_suppressed)
-    
     render_performance_block(merged_kpis)
 
 

@@ -56,6 +56,30 @@ def load_episode_ledger(path: Optional[Path] = None) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _build_exit_reasons_html(stats: Dict[str, Any]) -> str:
+    """Build compact exit reasons HTML from ledger stats."""
+    reasons = stats.get("exit_reasons", {})
+    if not reasons:
+        return '<span style="color: #555; font-size: 0.85em;">—</span>'
+    # Sort by count desc, show top 4
+    sorted_reasons = sorted(reasons.items(), key=lambda x: -x[1])[:4]
+    total = sum(v for _, v in sorted_reasons)
+    parts = []
+    for reason, count in sorted_reasons:
+        pct = (count / total * 100) if total > 0 else 0
+        label = reason.replace("_", " ").title()
+        parts.append(
+            f'<div style="display:flex;justify-content:space-between;padding:2px 0;">'
+            f'<span style="color:#666;font-size:0.8em;">{label}</span>'
+            f'<span style="color:#888;font-size:0.8em;">{count} ({pct:.0f}%)</span></div>'
+        )
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Widget Renderer
 # ---------------------------------------------------------------------------
 
@@ -112,17 +136,6 @@ def render_nav_composition_panel(
             position_total += val
             position_assets[asset] = val
     
-    # PnL from nav_state
-    unrealized_pnl = float(nav_state.get("unrealized_pnl") or 0)
-    gross_exposure = float(nav_state.get("gross_exposure") or 0)
-
-    # 24h NAV delta — TRUE portfolio PnL (replaces stale session counter)
-    # SPAN AUTHORITY: Only display NAV delta if log span is sufficient.
-    from dashboard.components.nav_pnl import compute_nav_deltas
-    _nav_deltas = compute_nav_deltas()
-    _span_ok = _nav_deltas.get("span_ok", {})
-    nav_delta_24h = _nav_deltas.get("pnl_24h", 0.0) if _span_ok.get("24h", False) else 0.0
-    
     # Cycle metrics from episode ledger (closed trades only)
     ledger_stats = episode_ledger.get("stats", {})
     cycle_net_pnl = float(ledger_stats.get("total_net_pnl") or 0)
@@ -150,8 +163,6 @@ def render_nav_composition_panel(
         position_rows = '<div style="color: #555; font-size: 0.85em; padding: 4px 0;">No open positions</div>'
     
     # PnL colors
-    unrealized_color = "#22c55e" if unrealized_pnl >= 0 else "#ef4444"
-    nav_delta_color = "#22c55e" if nav_delta_24h >= 0 else "#ef4444"
     cycle_pnl_color = "#22c55e" if cycle_net_pnl >= 0 else "#ef4444"
     
     # Build full widget HTML
@@ -207,46 +218,32 @@ def render_nav_composition_panel(
                 </div>
             </div>
             
-            <!-- Right: PnL State -->
+            <!-- Right: Trading Summary -->
             <div style="min-width: 200px;">
-                <div style="font-size: 0.85em; font-weight: 600; color: #888; margin-bottom: 12px;">PnL State</div>
-                
-                <!-- Unrealized -->
-                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Unrealized</span>
-                    <span style="color: {unrealized_color}; font-weight: 600;">{'+' if unrealized_pnl >= 0 else ''}${unrealized_pnl:,.2f}</span>
-                </div>
-                
-                <!-- 24h PnL (NAV Delta) -->
-                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">24h PnL (NAV)</span>
-                    <span style="color: {nav_delta_color}; font-weight: 600;">{'+' if nav_delta_24h >= 0 else ''}${nav_delta_24h:,.2f}</span>
-                </div>
+                <div style="font-size: 0.85em; font-weight: 600; color: #888; margin-bottom: 12px;">Trading Summary</div>
                 
                 <!-- Closed PnL (Episodes) -->
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Closed PnL (Episodes)</span>
-                    <span style="color: {cycle_pnl_color}; font-weight: 600;">{'+' if cycle_net_pnl >= 0 else ''}${cycle_net_pnl:,.2f}</span>
+                    <span style="color: #888; font-size: 0.85em;">Realized PnL</span>
+                    <span style="color: {cycle_pnl_color}; font-weight: 600;">${cycle_net_pnl:,.2f}</span>
                 </div>
                 
                 <!-- Fees Paid -->
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Fees Paid (Cycle)</span>
+                    <span style="color: #888; font-size: 0.85em;">Fees Paid</span>
                     <span style="color: #ef4444;">-${cycle_fees:,.2f}</span>
                 </div>
                 
                 <!-- Episodes -->
-                <div style="display: flex; justify-content: space-between; padding: 8px 0;">
-                    <span style="color: #888; font-size: 0.85em;">Episodes Closed</span>
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
+                    <span style="color: #888; font-size: 0.85em;">Episodes</span>
                     <span style="color: #888;">{episode_count}</span>
                 </div>
                 
-                <!-- Exposure -->
-                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #2d3139;">
-                    <div style="display: flex; justify-content: space-between;">
-                        <span style="color: #666; font-size: 0.8em;">Gross Exposure</span>
-                        <span style="color: {'#f59e0b' if gross_exposure > 0 else '#555'}; font-size: 0.85em;">${gross_exposure:,.2f}</span>
-                    </div>
+                <!-- Exit Reasons -->
+                <div style="margin-top: 8px; padding-top: 8px;">
+                    <div style="font-size: 0.75em; color: #555; text-transform: uppercase; margin-bottom: 6px;">Exit Reasons</div>
+                    {_build_exit_reasons_html(ledger_stats)}
                 </div>
             </div>
         </div>

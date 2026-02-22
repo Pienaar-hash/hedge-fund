@@ -151,10 +151,10 @@ class TestSpanThresholdConstants:
 
 
 class TestKpiStripSpanAuthority:
-    """KPI strip must respect span_ok — never show misleading delta."""
+    """KPI strip shows All-Time PnL from episode ledger (always real data)."""
 
-    def test_kpi_strip_suppresses_when_span_insufficient(self):
-        """With 12h span, KPI strip 24h PnL must be 0, not the raw delta."""
+    def test_kpi_strip_shows_all_time_pnl(self):
+        """KPI strip should show All-Time PnL from episode ledger."""
         from dashboard.components.kpi_strip import build_kpi_cards
         entries = _make_nav_log(span_hours=12)
         with patch("dashboard.components.nav_pnl._load_nav_log", return_value=entries):
@@ -163,14 +163,14 @@ class TestKpiStripSpanAuthority:
                 aum_data={},
                 kpis={},
                 risk_snapshot={},
+                episode_ledger={"stats": {"total_net_pnl": -500, "win_rate": 12.0}},
             )
-        pnl_card = next(c for c in cards if c["label"] == "24h PnL")
-        # Should show "—" (not a misleading dollar amount) when span insufficient
-        assert pnl_card["value_html"] == "—"
-        assert pnl_card["value_class"] == "muted"
+        pnl_card = next(c for c in cards if c["label"] == "All-Time PnL")
+        assert "$-500" in pnl_card["value_html"] or "-$500" in pnl_card["value_html"]
+        assert pnl_card["value_class"] == "negative"
 
-    def test_kpi_strip_shows_pnl_when_span_sufficient(self):
-        """With 25h span, KPI strip 24h PnL should show the delta."""
+    def test_kpi_strip_has_no_24h_card(self):
+        """24h PnL card is removed — replaced by All-Time PnL."""
         from dashboard.components.kpi_strip import build_kpi_cards
         entries = _make_nav_log(span_hours=25)
         with patch("dashboard.components.nav_pnl._load_nav_log", return_value=entries):
@@ -180,6 +180,6 @@ class TestKpiStripSpanAuthority:
                 kpis={},
                 risk_snapshot={},
             )
-        pnl_card = next(c for c in cards if c["label"] == "24h PnL")
-        # Should show actual value (non-zero since we have NAV drift in synthetic data)
-        assert pnl_card["value_html"] != "$0"
+        labels = [c["label"] for c in cards]
+        assert "24h PnL" not in labels
+        assert "All-Time PnL" in labels

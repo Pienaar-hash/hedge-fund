@@ -28,7 +28,16 @@ def render_positions_block(
     meta: Dict[str, Any],
 ) -> None:
     """Render positions block with institutional table styling."""
-    # Section header
+    # Empty state — minimal one-liner, no wasted space
+    if not positions:
+        st.html('''
+        <div style="padding: 12px 16px; border-left: 3px solid #2d3139; margin: 8px 0; color: #666; font-size: 0.85em;">
+            No open positions — capital preserved, awaiting regime shift
+        </div>
+        ''')
+        return
+
+    # Section header (only shown when positions exist)
     st.html('''
     <div class="section-header">
         <svg class="section-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -39,16 +48,6 @@ def render_positions_block(
         <h2>Positions</h2>
     </div>
     ''')
-    
-    # Empty state - compact, not a giant block
-    if not positions:
-        st.html('''
-        <div class="quant-card empty-card">
-            <div class="empty-title">No open positions</div>
-            <div class="empty-subtitle">Engine is running, awaiting signals.</div>
-        </div>
-        ''')
-        return
     
     # Calculate totals
     total_unrealized = 0.0
