@@ -65,9 +65,15 @@ Hard-blocked by `prediction/firewall.py` — no override path:
 
 During P1:
 
-* All prediction sources remain **OBSERVE_ONLY** or **REJECTED**
-* No dataset may be promoted to `RESEARCH_ONLY` or `PRODUCTION_ELIGIBLE`
+* Prediction sources must remain execution-inert for P1 consumers (advisory-only)
+* Any promotion to `PRODUCTION_ELIGIBLE` requires explicit amendment + bounded consumer scope
 * Dataset state is enforced at consumption time by the firewall
+
+Promotion planning note:
+
+* Any future promotion that grants execution influence must be amendment-bound
+  with explicit consumer scope (example: Binary Lab-only scope in
+  `docs/amendments/DATASET_PROMOTION_POLYMARKET_v1.md`).
 
 ---
 
@@ -125,7 +131,7 @@ fundamentally different authority level from P1.
 |---|------|----------|--------|
 | 1 | **P1 trial PASS** | `p1_audit_bundle.sh check` → `P1_RESULT: PASS` | ✅ Passed (29h window, 2026-02-06/07) |
 | 2 | **Closed-cycle postmortem** | Written analysis of P1 advisory value — what ranking changed, what it didn't, false positive rate | ☐ Not started |
-| 3 | **Dataset promotion** | All prediction datasets moved from OBSERVE_ONLY → PRODUCTION_ELIGIBLE in `config/dataset_admission.json` with justification per dataset | ☐ Not started |
+| 3 | **Dataset promotion** | Target datasets moved from OBSERVE_ONLY → PRODUCTION_ELIGIBLE in `config/dataset_admission.json` with bounded consumer scope and amendment record per dataset | ✅ Enacted (2026-02-19) |
 | 4 | **Rollback triggers enforced** | `prediction/rollback_triggers.py` triggers promoted to `enforced=True` — constraint violations cause automatic P0 revert | ☐ Not started |
 | 5 | **Firewall scope expansion** | New `_PRODUCTION_CONSUMERS` set defined — which modules may consume in P2, with what authority | ☐ Not started |
 | 6 | **Sizing guard** | If prediction influences sizing: max effect capped (e.g., ±10% of base size), hard limit, logged | ☐ Not designed |

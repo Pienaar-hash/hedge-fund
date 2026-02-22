@@ -308,7 +308,15 @@ def score_symbol(symbol: str, metrics: Mapping[str, Any]) -> Dict[str, Any]:
     router = metrics.get("router") if isinstance(metrics, Mapping) else None
     expect = expect if isinstance(expect, Mapping) else {}
     router = router if isinstance(router, Mapping) else {}
-    expectancy_score = _scale_expectancy(float(expect.get("expectancy") or 0.0))
+    # For prior entries (no trade data), use expectancy_per_risk which is
+    # pre-scaled to the range _scale_expectancy expects (±1 rather than
+    # the raw prior's ±0.12).  This prevents the tanh(x/10) compression
+    # from collapsing prior-derived scores to ~0.50.
+    if expect.get("is_prior"):
+        _exp_input = float(expect.get("expectancy_per_risk") or expect.get("expectancy") or 0.0)
+    else:
+        _exp_input = float(expect.get("expectancy") or 0.0)
+    expectancy_score = _scale_expectancy(_exp_input)
     hit_rate = expect.get("hit_rate")
     if isinstance(hit_rate, (int, float)):
         expectancy_score = 0.7 * expectancy_score + 0.3 * _clamp01(float(hit_rate))
@@ -763,6 +771,140 @@ def build_alpha_decay_snapshot(
 
 
 # ---------------------------------------------------------------------------
+# Calibration Hooks — Episode-gated scoring adjustments (v7.9)
+# ---------------------------------------------------------------------------
+# When episode_count < CALIBRATION_MIN_EPISODES: use priors + fixed mapping.
+# When episode_count >= CALIBRATION_MIN_EPISODES: enable calibration overlay
+# that tunes weight temperatures and carry/trend scoring sensitivity.
+#
+# Calibration NEVER alters doctrine gates — it only tunes scoring quality.
+
+CALIBRATION_MIN_EPISODES: int = 30  # matches MIN_EXPECTANCY_TRADES
+
+
+@dataclass
+class CalibrationState:
+    """Calibration overlay state for a symbol's hybrid scoring."""
+    episode_count: int = 0
+    calibrated: bool = False
+    weight_temperature: float = 1.0     # <1 = sharpen weights; >1 = flatten
+    carry_sensitivity: float = 1.0      # multiplier on carry deviation from 0.5
+    trend_sensitivity: float = 1.0      # multiplier on trend deviation from 0.5
+    expectancy_sensitivity: float = 1.0  # multiplier on expectancy deviation from 0.5
+
+
+def get_calibration_state(
+    symbol: str,
+    expectancy_snapshot: Mapping[str, Any],
+    min_episodes: int = CALIBRATION_MIN_EPISODES,
+) -> CalibrationState:
+    """
+    Determine calibration state for a symbol based on episode count.
+
+    When sufficient episodes exist, sensitivity multipliers are derived
+    from the hit_rate and expectancy_per_risk to tilt scoring toward
+    higher-confidence components.
+
+    Args:
+        symbol: Trading pair.
+        expectancy_snapshot: Full expectancy snapshot with ``symbols`` key.
+        min_episodes: Minimum episodes to activate calibration.
+
+    Returns:
+        CalibrationState with calibration parameters.
+    """
+    stats = _get_symbol_stats(expectancy_snapshot).get(symbol.upper(), {})
+    count = int(stats.get("count") or 0)
+
+    if count < min_episodes:
+        return CalibrationState(episode_count=count, calibrated=False)
+
+    # --- Calibrate from observed statistics ---
+    hit_rate = stats.get("hit_rate")
+    epr = stats.get("expectancy_per_risk")
+
+    # Weight temperature: good hit_rate → sharpen weights (temp < 1)
+    # to reward the dominant factor; poor hit_rate → flatten (temp > 1)
+    temp = 1.0
+    if isinstance(hit_rate, (int, float)):
+        hr = float(hit_rate)
+        if hr > 0.55:
+            temp = max(0.7, 1.0 - (hr - 0.55) * 2.0)
+        elif hr < 0.40:
+            temp = min(1.3, 1.0 + (0.40 - hr) * 2.0)
+
+    # Expectancy-per-risk → tune sensitivities
+    carry_sens = 1.0
+    trend_sens = 1.0
+    exp_sens = 1.0
+    if isinstance(epr, (int, float)):
+        epr_val = float(epr)
+        # Positive EPR: trust trend + expectancy more
+        if epr_val > 0.2:
+            trend_sens = min(1.3, 1.0 + epr_val * 0.5)
+            exp_sens = min(1.3, 1.0 + epr_val * 0.3)
+        # Negative EPR: flatten trend, boost carry (mean-revert tilt)
+        elif epr_val < -0.1:
+            trend_sens = max(0.7, 1.0 + epr_val * 0.5)
+            carry_sens = min(1.3, 1.0 - epr_val * 0.3)
+
+    return CalibrationState(
+        episode_count=count,
+        calibrated=True,
+        weight_temperature=round(temp, 4),
+        carry_sensitivity=round(carry_sens, 4),
+        trend_sensitivity=round(trend_sens, 4),
+        expectancy_sensitivity=round(exp_sens, 4),
+    )
+
+
+def apply_calibration(
+    factors: Dict[str, float],
+    weights: Dict[str, float],
+    cal: CalibrationState,
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    """
+    Apply calibration overlay to raw factors and weights.
+
+    When ``cal.calibrated`` is False, returns inputs unchanged.
+    Otherwise, applies sensitivity multipliers to factor deviations
+    from 0.5 and temperature scaling to weights.
+
+    Returns:
+        (adjusted_factors, adjusted_weights).
+    """
+    if not cal.calibrated:
+        return factors, weights
+
+    adj_factors = dict(factors)
+
+    # Apply sensitivities to factor deviations from neutral (0.5)
+    sensitivity_map = {
+        "trend": cal.trend_sensitivity,
+        "carry": cal.carry_sensitivity,
+        "expectancy": cal.expectancy_sensitivity,
+    }
+    for name, sens in sensitivity_map.items():
+        if name in adj_factors:
+            raw = adj_factors[name]
+            deviation = raw - 0.5
+            adj_factors[name] = max(0.0, min(1.0, 0.5 + deviation * sens))
+
+    # Apply weight temperature
+    adj_weights = dict(weights)
+    if abs(cal.weight_temperature - 1.0) > 0.01:
+        total = 0.0
+        for k, w in adj_weights.items():
+            powered = max(1e-9, w) ** (1.0 / cal.weight_temperature)
+            adj_weights[k] = powered
+            total += powered
+        if total > 0:
+            adj_weights = {k: v / total for k, v in adj_weights.items()}
+
+    return adj_factors, adj_weights
+
+
+# ---------------------------------------------------------------------------
 # Hybrid Score (Blends Trend, Carry, Expectancy, Router)
 # ---------------------------------------------------------------------------
 
@@ -981,6 +1123,13 @@ def hybrid_score_universe(
         base_weights["router"] = base_weights.get("router", 0.0) * weight_mods.router
         weights_used = _normalize_weight_map(base_weights)
 
+        # Calibration overlay (v7.9) — episode-gated sensitivity tuning
+        cal_state = get_calibration_state(symbol, expectancy_snapshot)
+        if cal_state.calibrated:
+            factors_for_score, weights_used = apply_calibration(
+                factors_for_score, weights_used, cal_state,
+            )
+
         base_score = sum(
             weights_used.get(name, 0.0) * factors_for_score.get(name, 0.0)
             for name in weights_used
@@ -1076,6 +1225,14 @@ def hybrid_score_universe(
                 "router": weight_mods.router,
             },
             "alpha_decay": alpha_decay_meta,
+            "calibration": {
+                "calibrated": cal_state.calibrated,
+                "episode_count": cal_state.episode_count,
+                "weight_temperature": cal_state.weight_temperature,
+                "trend_sensitivity": cal_state.trend_sensitivity,
+                "carry_sensitivity": cal_state.carry_sensitivity,
+                "expectancy_sensitivity": cal_state.expectancy_sensitivity,
+            },
             "passes_threshold": passes_threshold,
             "min_threshold": min_threshold,
             "intent": dict(intent),

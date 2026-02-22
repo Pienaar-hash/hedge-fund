@@ -1,4 +1,4 @@
-# Agent Patchset Protocol (v7.6)
+# Agent Patchset Protocol (v7.9)
 
 ## Lifecycle
 1. **Plan** — define scope, files, risks, tests.

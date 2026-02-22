@@ -17,10 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from prediction.firewall import (
-    AdvisoryPayload,
-    FirewallResult,
     FirewallVerdict,
     is_consumer_allowed,
     request_advisory,
@@ -196,6 +193,44 @@ class TestDatasetStateEnforcement:
             enabled=True,
         )
         assert result.verdict == FirewallVerdict.ALLOWED
+
+    def test_p2_binary_lab_only_scope_denies_futures_consumer_and_logs(self, tmp_path: Path):
+        log_path = tmp_path / "denials.jsonl"
+        result = request_advisory(
+            consumer="futures_execution",
+            question_id="Q_scope",
+            probs={"O_yes": 0.55, "O_no": 0.45},
+            dataset_states={
+                "polymarket_snapshot": "PRODUCTION_ELIGIBLE",
+                "prediction_polymarket_feed": "PRODUCTION_ELIGIBLE",
+            },
+            phase="P2_PRODUCTION",
+            enabled=True,
+            denial_log_path=log_path,
+        )
+        assert result.verdict == FirewallVerdict.DENIED_DATASET
+        assert result.payload is None
+        assert "scope" in result.reason
+        assert log_path.exists()
+        record = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert record["consumer"] == "futures_execution"
+        assert record["verdict"] == "DENIED_DATASET"
+
+    def test_p2_binary_lab_consumer_allowed_for_scoped_polymarket_datasets(self):
+        result = request_advisory(
+            consumer="binary_lab",
+            question_id="Q_scope",
+            probs={"O_yes": 0.55, "O_no": 0.45},
+            dataset_states={
+                "polymarket_snapshot": "PRODUCTION_ELIGIBLE",
+                "prediction_polymarket_feed": "PRODUCTION_ELIGIBLE",
+            },
+            phase="P2_PRODUCTION",
+            enabled=True,
+        )
+        assert result.verdict == FirewallVerdict.ALLOWED
+        assert result.payload is not None
+        assert result.payload.advisory_only is False
 
     def test_p0_ignores_dataset_state(self):
         """In P0, dataset state doesn't matter — P0 blocks all consumers."""

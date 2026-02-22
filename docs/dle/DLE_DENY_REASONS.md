@@ -1,8 +1,10 @@
 # DLE Deny Reasons v1
 
-> **Status:** SPECIFICATION — not yet implemented  
+> **Status:** SPECIFICATION — partially implemented (C.1 uses `ENTRY_DENIED_*` subset: `NO_PERMIT`, `EXPIRED_PERMIT`, `MISMATCH_SYMBOL`, `MISMATCH_DIRECTION`, `INDEX_UNAVAILABLE`)  
+> **Implementation:** `execution/enforcement_gate.py`, `v7_manifest.json → dle_entry_denials`  
 > **Author:** GPT-Hedge governance audit  
-> **Date:** 2026-01-28
+> **Date:** 2026-01-28  
+> **Updated:** 2026-02-18 (status only — spec text unchanged)
 
 ## Purpose
 

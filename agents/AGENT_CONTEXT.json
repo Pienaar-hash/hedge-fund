@@ -1,19 +1,28 @@
 {
-  "version": "v7.6",
-  "architecture_doc": "docs/v7.6_Architecture.md",
-  "state_contract": "docs/v7.6_State_Contract.md",
-  "runtime_diagnostics": "docs/v7.6_Runtime_Diagnostics.md",
-  "testing_guide": "docs/TESTING.md",
-  "developer_guide": "docs/v7.6_Developer_Guide.md",
+  "version": "v7.9",
+  "behavioral_contract": "agents/GPT_BEHAVIORAL_CONTRACT.md",
+  "architecture_doc": "docs/SYSTEM_BASELINE_v7.9.md",
+  "copilot_instructions": ".github/copilot-instructions.md",
   "manifest": "v7_manifest.json",
+  "active_ops": {
+    "phase_c_checkpoint": "ops/PHASE_C_DAILY_CHECKPOINT.md",
+    "phase_c_window": "ops/PHASE_C_CONTRACTION_WINDOW_LAUNCH_2026-02-15.md",
+    "c1_protocol": "ops/C1_OPS_PROTOCOL.md",
+    "binary_lab": "ops/BINARY_LAB_WINDOW_2026-02-XX.md"
+  },
+  "doctrine": {
+    "dle_constitution": "docs/dle/DLE_CONSTITUTION_V1.md",
+    "dle_doctrine": "docs/dle/DLE_DOCTRINE.md",
+    "dle_gate_invariants": "docs/dle/DLE_GATE_INVARIANTS.md",
+    "dataset_admission": "docs/DATASET_ADMISSION_GATE.md",
+    "prediction_firewall": "docs/PHASE_P1_PREDICTION_ADVISORY_DOCTRINE.md"
+  },
   "repo_invariants": {
     "single_writer": true,
     "atomic_state": true,
-    "lanes": [
-      "unit",
-      "integration",
-      "runtime",
-      "legacy"
-    ]
+    "dashboard_read_only": true,
+    "doctrine_no_config": true,
+    "append_only_jsonl": true,
+    "lanes": ["unit", "integration", "runtime", "legacy"]
   }
 }

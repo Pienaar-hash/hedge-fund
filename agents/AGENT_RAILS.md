@@ -1,4 +1,4 @@
-# Agent Safety Rails (v7.6)
+# Agent Safety Rails (v7.9)
 
 ## You MUST NOT
 - Modify trading logic, risk gates, or veto rules unless patchset explicitly authorizes it.

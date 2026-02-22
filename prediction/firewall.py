@@ -9,6 +9,7 @@ Invariant (hard-coded, not configurable):
         1. The prediction dataset state is PRODUCTION_ELIGIBLE
         2. The prediction phase is P2_PRODUCTION
         3. The consumer explicitly declares its intent via this function
+        4. Any dataset-level consumer scope constraints are satisfied
 
 This is Dataset Admission Gate language applied to *consumption*, not just
 ingestion.  Every downstream module that wants to read prediction aggregates
@@ -24,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -36,6 +37,7 @@ from typing import Any, Dict, Optional, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DENIALS_LOG = _REPO_ROOT / "logs" / "prediction" / "firewall_denials.jsonl"
+_DATASET_ADMISSION_PATH = _REPO_ROOT / "config" / "dataset_admission.json"
 
 # Phase must be at least P2 for any production influence
 _PRODUCTION_PHASES = frozenset({"P2_PRODUCTION"})
@@ -126,6 +128,75 @@ def _append_denial(
         print(f"[prediction.firewall] denial log failed: {e}", file=sys.stderr)
 
 
+def _load_dataset_policies(dataset_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Load per-dataset consumer scope metadata from dataset_admission.json.
+
+    Returns a map keyed by dataset id with optional fields:
+      - allowed_consumers: list[str]
+      - denied_consumers: list[str]
+      - execution_scope: str
+    """
+    if not dataset_ids:
+        return {}
+
+    try:
+        with _DATASET_ADMISSION_PATH.open("r", encoding="utf-8") as f:
+            admission = json.load(f)
+    except Exception:
+        return {}
+
+    datasets = admission.get("datasets", {}) or {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for ds_id in dataset_ids:
+        row = datasets.get(ds_id) or {}
+        allowed = row.get("allowed_consumers")
+        denied = row.get("denied_consumers")
+        scope = row.get("execution_scope")
+        if allowed is None and denied is None and scope is None:
+            continue
+        out[ds_id] = {
+            "allowed_consumers": allowed if isinstance(allowed, list) else [],
+            "denied_consumers": denied if isinstance(denied, list) else [],
+            "execution_scope": scope,
+        }
+    return out
+
+
+def _consumer_scope_violation_reason(
+    *,
+    consumer: str,
+    dataset_states: Dict[str, str],
+    dataset_policies: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    """
+    Return a denial reason when consumer violates dataset-level scope rules.
+    """
+    for ds_id, state in dataset_states.items():
+        if state != "PRODUCTION_ELIGIBLE":
+            continue
+        policy = dataset_policies.get(ds_id) or {}
+        allowed_raw = policy.get("allowed_consumers") or []
+        denied_raw = policy.get("denied_consumers") or []
+        scope = policy.get("execution_scope")
+
+        allowed = {str(v) for v in allowed_raw if str(v).strip()}
+        denied = {str(v) for v in denied_raw if str(v).strip()}
+
+        if consumer in denied:
+            return (
+                f"Consumer '{consumer}' denied by dataset scope for '{ds_id}'"
+                + (f" (scope={scope})" if scope else "")
+            )
+
+        if allowed and consumer not in allowed:
+            return (
+                f"Consumer '{consumer}' not in allowed_consumers for '{ds_id}'"
+                + (f" (scope={scope})" if scope else "")
+            )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -138,6 +209,7 @@ def request_advisory(
     aggregate_hash: str = "",
     aggregate_ts: str = "",
     dataset_states: Optional[Dict[str, str]] = None,
+    dataset_policies: Optional[Dict[str, Dict[str, Any]]] = None,
     phase: str = "P0_OBSERVE",
     enabled: Optional[bool] = None,
     denial_log_path: Optional[Path] = None,
@@ -159,7 +231,9 @@ def request_advisory(
         3. If phase < P2_PRODUCTION → allowed as advisory-only (dashboard/research)
         4. If phase == P2_PRODUCTION but any source dataset is not PRODUCTION_ELIGIBLE
            → DENIED_DATASET
-        5. Otherwise → ALLOWED with advisory_only flag set appropriately
+        5. If phase == P2_PRODUCTION and dataset scope disallows consumer
+           → DENIED_DATASET
+        6. Otherwise → ALLOWED with advisory_only flag set appropriately
     """
     is_enabled = enabled if enabled is not None else (
         os.environ.get("PREDICTION_DLE_ENABLED", "0") == "1"
@@ -220,6 +294,29 @@ def request_advisory(
                 verdict=FirewallVerdict.DENIED_DATASET,
                 payload=None,
                 reason=reason,
+            )
+
+        # Gate 5: dataset-scoped consumer constraints (bounded authority).
+        policies = dataset_policies
+        if policies is None:
+            policies = _load_dataset_policies(tuple(ds_states.keys()))
+        scope_violation = _consumer_scope_violation_reason(
+            consumer=consumer,
+            dataset_states=ds_states,
+            dataset_policies=policies,
+        )
+        if scope_violation:
+            _append_denial(
+                consumer,
+                question_id,
+                FirewallVerdict.DENIED_DATASET,
+                scope_violation,
+                denial_log_path,
+            )
+            return FirewallResult(
+                verdict=FirewallVerdict.DENIED_DATASET,
+                payload=None,
+                reason=scope_violation,
             )
 
     # All gates passed

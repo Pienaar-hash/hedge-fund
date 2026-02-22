@@ -745,6 +745,112 @@ def get_klines(symbol: str, interval: str, limit: int = 150) -> List[List[float]
     return out
 
 
+def get_premium_index(symbols: List[str] | None = None) -> List[Dict[str, Any]]:
+    """
+    Fetch premium index (mark price, funding rate, next funding time) for USD-M futures.
+
+    Uses ``GET /fapi/v1/premiumIndex``.  When *symbols* is ``None`` the endpoint
+    returns data for **all** listed symbols; otherwise it is called once per symbol.
+
+    Args:
+        symbols: Optional list of trading pairs.  ``None`` → fetch all.
+
+    Returns:
+        List of dicts, each containing at minimum::
+
+            {"symbol": str, "markPrice": str, "lastFundingRate": str,
+             "nextFundingTime": int, "indexPrice": str, "time": int}
+    """
+    if is_dry_run():
+        _mock: List[Dict[str, Any]] = []
+        for sym in (symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"]):
+            _mock.append({
+                "symbol": sym.upper(),
+                "markPrice": "50000.0" if "BTC" in sym.upper() else "2000.0",
+                "indexPrice": "50000.0" if "BTC" in sym.upper() else "2000.0",
+                "lastFundingRate": "0.0001",
+                "nextFundingTime": int(time.time() * 1000) + 28800000,
+                "time": int(time.time() * 1000),
+            })
+        return _mock
+
+    if symbols is None:
+        try:
+            r = _req("GET", "/fapi/v1/premiumIndex")
+            data = r.json()
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            _LOG.warning("[premiumIndex] fetch_all_failed: %s", exc)
+            return []
+
+    results: List[Dict[str, Any]] = []
+    for sym in symbols:
+        try:
+            r = _req("GET", "/fapi/v1/premiumIndex", params={"symbol": sym.upper()})
+            data = r.json()
+            if isinstance(data, dict):
+                results.append(data)
+            elif isinstance(data, list) and data:
+                results.append(data[0])
+        except Exception as exc:
+            _LOG.warning("[premiumIndex] fetch_failed symbol=%s: %s", sym, exc)
+    return results
+
+
+def build_funding_and_basis_snapshots(
+    symbols: List[str] | None = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Build funding-rate and basis snapshots from the Binance premiumIndex endpoint.
+
+    Returns:
+        (funding_snapshot, basis_snapshot) each with ``{"symbols": {<sym>: {...}}}``
+        schema expected by ``carry_score()`` in ``symbol_score_v6.py``.
+    """
+    premium_rows = get_premium_index(symbols)
+    funding_symbols: Dict[str, Any] = {}
+    basis_symbols: Dict[str, Any] = {}
+
+    for row in premium_rows:
+        sym = str(row.get("symbol", "")).upper()
+        if not sym:
+            continue
+        # --- funding rate ---
+        rate_raw = row.get("lastFundingRate")
+        try:
+            rate = float(rate_raw) if rate_raw is not None else 0.0
+        except (TypeError, ValueError):
+            rate = 0.0
+        funding_symbols[sym] = {
+            "rate": rate,
+            "funding_rate": rate,
+            "next_funding_time": row.get("nextFundingTime"),
+        }
+
+        # --- basis (mark vs index gives the perp premium / discount) ---
+        try:
+            mark = float(row.get("markPrice") or 0.0)
+            index = float(row.get("indexPrice") or 0.0)
+        except (TypeError, ValueError):
+            mark, index = 0.0, 0.0
+
+        if index > 0 and mark > 0:
+            basis_pct = (mark - index) / index
+        else:
+            basis_pct = 0.0
+
+        basis_symbols[sym] = {
+            "basis_pct": basis_pct,
+            "mark_price": mark,
+            "index_price": index,
+        }
+
+    return (
+        {"symbols": funding_symbols},
+        {"symbols": basis_symbols},
+    )
+
+
 def get_orderbook(symbol: str, limit: int = 5) -> Dict[str, Any]:
     """
     Fetch order book depth for a USD-M symbol.

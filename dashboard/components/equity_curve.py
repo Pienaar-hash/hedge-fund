@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import streamlit as st
+import streamlit.components.v1 as st_components
 
 _NAV_LOG_PATH = Path("logs/nav_log.json")
 
@@ -212,16 +213,7 @@ def render_equity_curve(nav_log_path: Optional[Path] = None) -> None:
     entries = _load_nav_series(nav_log_path)
 
     if len(entries) < 2:
-        st.html('''
-        <div class="quant-card" style="padding: 16px; text-align: center;">
-            <div class="section-header">
-                <h2>Equity Curve</h2>
-            </div>
-            <div style="color: #555; padding: 32px 0;">
-                Insufficient NAV history — awaiting data collection.
-            </div>
-        </div>
-        ''')
+        st.caption("Equity Curve — awaiting NAV history")
         return
 
     sampled = _downsample(entries, max_points=300)
@@ -231,9 +223,6 @@ def render_equity_curve(nav_log_path: Optional[Path] = None) -> None:
         return
 
     svg, span_text, current_nav, delta, delta_pct, delta_color, delta_sign = result
-
-    # Height for st.html iframe: header (~50px) + chart + padding
-    iframe_h = _CHART_H + 80
 
     html = f'''
     <div style="
@@ -267,4 +256,5 @@ def render_equity_curve(nav_log_path: Optional[Path] = None) -> None:
     </div>
     '''
 
-    st.html(html, height=iframe_h)
+    iframe_h = _CHART_H + 100  # header + chart + padding
+    st_components.html(html, height=iframe_h, scrolling=False)

@@ -8,16 +8,11 @@ These tests lock in the doctrine invariants from:
 If these tests fail, doctrine has been violated.
 """
 
-import json
-import os
-import tempfile
 from datetime import datetime, timezone
-from unittest.mock import patch
 
 import pytest
 
 from execution.utils.dataset_registry import (
-    DatasetInfo,
     DatasetState,
     DatasetTier,
     get_dataset_info,
@@ -98,7 +93,6 @@ class TestDatasetStateInvariants:
 
     @pytest.mark.parametrize("dataset_id", [
         "coingecko_prices",
-        "polymarket_snapshot",
         "regime_pressure",
         "factor_diagnostics",
     ])
@@ -106,6 +100,13 @@ class TestDatasetStateInvariants:
         """OBSERVATIONAL datasets must be OBSERVE_ONLY state."""
         assert is_observe_only(dataset_id)
         assert get_dataset_tier(dataset_id) == DatasetTier.OBSERVATIONAL
+
+    def test_polymarket_snapshot_promoted_with_observational_tier(self):
+        """
+        Polymarket snapshot may be promoted while remaining observational tier.
+        """
+        assert is_production_eligible("polymarket_snapshot")
+        assert get_dataset_tier("polymarket_snapshot") == DatasetTier.OBSERVATIONAL
 
 
 class TestDatasetInfoProperties:

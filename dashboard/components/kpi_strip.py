@@ -60,14 +60,16 @@ def build_kpi_cards(
     from dashboard.components.nav_pnl import compute_nav_deltas
     _nav_deltas = compute_nav_deltas()
     _span_ok = _nav_deltas.get("span_ok", {})
-    if _span_ok.get("24h", False):
+    _pnl_24h_available = _span_ok.get("24h", False)
+    if _pnl_24h_available:
         daily_pnl = _nav_deltas.get("pnl_24h", 0.0)
     else:
-        # Span insufficient — show neutral zero, never a misleading delta
-        daily_pnl = 0.0
+        daily_pnl = None  # will render as "—"
 
     unrealized = float(nav_state.get("unrealized_pnl") or 0)
     gross_exp = float(nav_state.get("gross_exposure") or 0)
+    # Detect idle state: no exposure AND no unrealized PnL
+    _is_idle = (abs(gross_exp) < 0.01 and abs(unrealized) < 0.01)
     drawdown_pct = float(nav_state.get("drawdown_pct") or 0)
     
     # Risk metrics
@@ -89,6 +91,24 @@ def build_kpi_cards(
     # Exposure percentage
     exp_pct = (gross_exp / nav_usd * 100) if nav_usd > 0 else 0
     
+    # Format 24h PnL — show "—" when span insufficient
+    if daily_pnl is not None:
+        _pnl_html = ("+" if daily_pnl >= 0 else "") + _fmt_usd(daily_pnl)
+        _pnl_class = _value_class(daily_pnl)
+    else:
+        _pnl_html = "—"
+        _pnl_class = "muted"
+
+    # Format unrealized — show "—" when idle (no positions)
+    if _is_idle:
+        _unr_html = "—"
+        _unr_class = "muted"
+        _exp_html = "—"
+    else:
+        _unr_html = ("+" if unrealized >= 0 else "") + _fmt_usd(unrealized)
+        _unr_class = _value_class(unrealized)
+        _exp_html = f"{exp_pct:.0f}%"
+
     cards = [
         {
             "label": "NAV",
@@ -97,17 +117,17 @@ def build_kpi_cards(
         },
         {
             "label": "24h PnL",
-            "value_html": ("+" if daily_pnl >= 0 else "") + _fmt_usd(daily_pnl),
-            "value_class": _value_class(daily_pnl),
+            "value_html": _pnl_html,
+            "value_class": _pnl_class,
         },
         {
             "label": "Unrealized",
-            "value_html": ("+" if unrealized >= 0 else "") + _fmt_usd(unrealized),
-            "value_class": _value_class(unrealized),
+            "value_html": _unr_html,
+            "value_class": _unr_class,
         },
         {
             "label": "Exposure",
-            "value_html": f"{exp_pct:.0f}%",
+            "value_html": _exp_html,
             "value_class": "",
         },
         {

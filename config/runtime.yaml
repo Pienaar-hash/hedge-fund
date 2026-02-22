@@ -120,3 +120,15 @@ exit_dedup:
   ttl_seconds: 300            # 5-minute dedup window per symbol/side/reason
   qty_change_threshold: 0.10  # >10% qty change bypasses dedup
   enabled: true
+
+# v7.9-CW: Calibration Window — Episode-Capped Trading Gate
+# Enables a bounded trading window for expectancy calibration.
+# When episode_cap is reached, KILL_SWITCH auto-activates.
+# DUAL-KEY: requires BOTH enabled=true AND env CALIBRATION_WINDOW_ACK=1
+# To activate: set enabled=true, start_ts, DRY_RUN=0, CALIBRATION_WINDOW_ACK=1, restart.
+calibration_window:
+  enabled: true
+  episode_cap: 30               # halt after 30 new episodes
+  start_ts: "2026-02-22T07:53:26Z"  # activation timestamp
+  drawdown_kill_pct: 0.05       # 5% NAV drawdown → immediate halt
+  per_trade_nav_pct: 0.005      # 0.5% NAV per trade (reduced from 1.5%)

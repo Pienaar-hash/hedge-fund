@@ -307,11 +307,46 @@ def _load_nav_snapshot(path: Path) -> Dict[str, Any]:
     return {}
 
 
-def build_expectancy(table_inputs: Mapping[str, Any]) -> Dict[str, Any]:
+def build_expectancy(
+    table_inputs: Mapping[str, Any],
+    prior_inputs: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build expectancy snapshot, blending priors for symbols below MIN_EXPECTANCY_TRADES.
+
+    Args:
+        table_inputs: Standard inputs dict with ``trades``, ``lookback_hours``, ``metadata``.
+        prior_inputs: Optional observable inputs for the Bayesian prior.
+            Expected keys: ``regime``, ``regime_confidence``, ``vol_state``,
+            ``router_health_score``, ``trend_score``, ``carry_score``.
+            When ``None`` or empty, symbols with insufficient episodes
+            get neutral expectancy (backward-compatible).
+    """
     trades = list(table_inputs.get("trades") or [])
     lookback_hours = float(table_inputs.get("lookback_hours") or 0.0)
+    symbol_stats = compute_symbol_expectancy(trades)
+
+    # If prior_inputs are provided, enrich immature symbols
+    if prior_inputs and isinstance(prior_inputs, Mapping):
+        prior = compute_expectancy_prior(
+            regime=prior_inputs.get("regime"),
+            regime_confidence=float(prior_inputs.get("regime_confidence") or 0.5),
+            vol_state=prior_inputs.get("vol_state"),
+            router_health_score=float(prior_inputs.get("router_health_score") or 0.5),
+            trend_score=float(prior_inputs.get("trend_score") or 0.5),
+            carry_score=float(prior_inputs.get("carry_score") or 0.5),
+        )
+        for sym, stats in symbol_stats.items():
+            count = int(stats.get("count") or 0)
+            if count < MIN_EXPECTANCY_TRADES:
+                symbol_stats[sym] = blend_expectancy(prior, stats, episode_count=count)
+        # Ensure prior metadata is surfaced for diagnostics
+        for sym in (prior_inputs.get("symbols") or []):
+            sym = str(sym).upper()
+            if sym and sym not in symbol_stats:
+                symbol_stats[sym] = dict(prior)
+
     agora = {
-        "symbols": compute_symbol_expectancy(trades),
+        "symbols": symbol_stats,
         "hours": compute_hourly_expectancy(trades),
         "regimes": compute_regime_expectancy(trades),
         "sample_count": len(trades),
@@ -321,11 +356,20 @@ def build_expectancy(table_inputs: Mapping[str, Any]) -> Dict[str, Any]:
     meta = table_inputs.get("metadata")
     if isinstance(meta, Mapping):
         agora["metadata"] = dict(meta)
+    if prior_inputs:
+        agora["has_prior"] = True
     return agora
 
 
-def build_expectancy_snapshot(trades: List[Dict[str, Any]], lookback_hours: float) -> Dict[str, Any]:
-    return build_expectancy({"trades": trades, "lookback_hours": lookback_hours})
+def build_expectancy_snapshot(
+    trades: List[Dict[str, Any]],
+    lookback_hours: float,
+    prior_inputs: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    return build_expectancy(
+        {"trades": trades, "lookback_hours": lookback_hours},
+        prior_inputs=prior_inputs,
+    )
 
 
 def save_expectancy(path: Path | str, snapshot: Mapping[str, Any]) -> None:
@@ -344,6 +388,164 @@ def load_expectancy(path: Path | str) -> Dict[str, Any]:
     return json.loads(path.read_text())
 
 
+# ---------------------------------------------------------------------------
+# Bayesian Expectancy Prior (v7.9)
+# ---------------------------------------------------------------------------
+# Produces non-degenerate expectancy from observable inputs only.
+# This eliminates the cold-start gap: expectancy_score exists with
+# zero trade episodes and varies with regime / vol / router health.
+
+# Regime → base prior (before vol/router adjustment).
+# TREND_UP has positive tilt; CRISIS has negative tilt.
+_REGIME_PRIOR: Dict[str, float] = {
+    "TREND_UP": 0.08,
+    "TREND_DOWN": -0.02,
+    "MEAN_REVERT": 0.03,
+    "BREAKOUT": 0.06,
+    "CHOPPY": -0.04,
+    "CRISIS": -0.12,
+}
+
+# Vol state → additive adjustment.
+_VOL_PRIOR_ADJ: Dict[str, float] = {
+    "low": 0.02,
+    "normal": 0.0,
+    "high": -0.03,
+    "crisis": -0.06,
+}
+
+# Minimum shrinkage weight on the prior even with mature observations.
+_MIN_PRIOR_WEIGHT: float = 0.10
+# Number of episodes at which posterior is fully mature.
+_MATURITY_EPISODES: int = 60
+
+
+def compute_expectancy_prior(
+    regime: Optional[str] = None,
+    regime_confidence: float = 0.5,
+    vol_state: Optional[str] = None,
+    router_health_score: float = 0.5,
+    trend_score: float = 0.5,
+    carry_score: float = 0.5,
+) -> Dict[str, Any]:
+    """
+    Produce expectancy from observable inputs only (no trade records).
+
+    Args:
+        regime: Sentinel-X primary regime label.
+        regime_confidence: Confidence ∈ [0, 1] of the regime classification.
+        vol_state: Volatility state label ("low", "normal", "high", "crisis").
+        router_health_score: Router health ∈ [0, 1] (0 = poor, 1 = excellent).
+        trend_score: Trend score ∈ [0, 1] (0.5 = neutral).
+        carry_score: Carry score ∈ [0, 1] (0.5 = neutral).
+
+    Returns:
+        Dict with ``expectancy``, ``expectancy_per_risk``, ``is_prior``, and components.
+    """
+    # 1. Regime base prior (scaled by confidence)
+    conf = max(0.0, min(1.0, regime_confidence))
+    base = _REGIME_PRIOR.get((regime or "").upper(), 0.0) * conf
+
+    # 2. Vol-state adjustment
+    vol_adj = _VOL_PRIOR_ADJ.get((vol_state or "normal").lower(), 0.0)
+
+    # 3. Router health contribution: good router → boosts prior
+    #    Map [0, 1] to [-0.04, +0.04]
+    router_adj = (router_health_score - 0.5) * 0.08
+
+    # 4. Alignment signals: trend + carry as directional confirmation
+    #    Each is [0, 1]; remap to [-0.03, +0.03]
+    trend_adj = (trend_score - 0.5) * 0.06
+    carry_adj = (carry_score - 0.5) * 0.04
+
+    expectancy = base + vol_adj + router_adj + trend_adj + carry_adj
+
+    # Simple risk-unit mapping (assume unit risk = $1):
+    # expectancy_per_risk ≈ expectancy clamped
+    expectancy_per_risk = max(-1.0, min(1.0, expectancy * 10.0))
+
+    return {
+        "count": 0,
+        "expectancy": round(expectancy, 6),
+        "expectancy_per_risk": round(expectancy_per_risk, 6),
+        "hit_rate": None,
+        "avg_return": None,
+        "avg_win": None,
+        "avg_loss": None,
+        "max_drawdown": 0.0,
+        "drawdown_adjusted": round(expectancy, 6),
+        "is_mature": False,
+        "is_prior": True,
+        "prior_components": {
+            "regime_base": round(base, 6),
+            "vol_adj": round(vol_adj, 6),
+            "router_adj": round(router_adj, 6),
+            "trend_adj": round(trend_adj, 6),
+            "carry_adj": round(carry_adj, 6),
+        },
+        "prior_inputs": {
+            "regime": regime,
+            "regime_confidence": round(conf, 4),
+            "vol_state": vol_state,
+            "router_health_score": round(router_health_score, 4),
+            "trend_score": round(trend_score, 4),
+            "carry_score": round(carry_score, 4),
+        },
+    }
+
+
+def blend_expectancy(
+    prior: Mapping[str, Any],
+    posterior: Mapping[str, Any],
+    episode_count: int = 0,
+    maturity_n: int = _MATURITY_EPISODES,
+) -> Dict[str, Any]:
+    """
+    Bayesian shrinkage between prior and posterior expectancy.
+
+    When episode_count == 0 the prior is returned as-is.
+    As episodes grow toward *maturity_n*, posterior weight increases.
+    Even at full maturity a minimum prior weight is retained.
+
+    Returns a merged expectancy dict.
+    """
+    if episode_count <= 0 or posterior.get("expectancy") is None:
+        return dict(prior)
+
+    # Shrinkage weight on prior (starts at 1, decays toward _MIN_PRIOR_WEIGHT)
+    t = min(episode_count / max(maturity_n, 1), 1.0)
+    prior_w = max(_MIN_PRIOR_WEIGHT, 1.0 - t * (1.0 - _MIN_PRIOR_WEIGHT))
+    post_w = 1.0 - prior_w
+
+    prior_exp = float(prior.get("expectancy") or 0.0)
+    post_exp = float(posterior.get("expectancy") or 0.0)
+    blended_exp = prior_w * prior_exp + post_w * post_exp
+
+    prior_epr = float(prior.get("expectancy_per_risk") or 0.0)
+    post_epr = float(posterior.get("expectancy_per_risk") or 0.0)
+    blended_epr = prior_w * prior_epr + post_w * post_epr
+
+    return {
+        "count": episode_count,
+        "expectancy": round(blended_exp, 6),
+        "expectancy_per_risk": round(blended_epr, 6),
+        "hit_rate": posterior.get("hit_rate"),
+        "avg_return": posterior.get("avg_return"),
+        "avg_win": posterior.get("avg_win"),
+        "avg_loss": posterior.get("avg_loss"),
+        "max_drawdown": posterior.get("max_drawdown", 0.0),
+        "drawdown_adjusted": posterior.get("drawdown_adjusted", 0.0),
+        "is_mature": posterior.get("is_mature", False),
+        "is_prior": False,
+        "blend_weights": {
+            "prior": round(prior_w, 4),
+            "posterior": round(post_w, 4),
+            "episode_count": episode_count,
+            "maturity_n": maturity_n,
+        },
+    }
+
+
 __all__ = [
     "load_trade_records",
     "load_router_metrics",
@@ -356,4 +558,7 @@ __all__ = [
     "build_expectancy_snapshot",
     "save_expectancy",
     "load_expectancy",
+    "compute_expectancy_prior",
+    "blend_expectancy",
+    "MIN_EXPECTANCY_TRADES",
 ]

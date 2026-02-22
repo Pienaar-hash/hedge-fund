@@ -1,14 +1,15 @@
-# Agent Bootstrap (v7.6)
+# Agent Bootstrap (v7.9)
 
 This is the first file every GPT/Copilot agent must read before touching the repo.
 
 ## Required Context (read before coding)
-- `docs/v7.6_Architecture.md`
-- `docs/v7.6_State_Contract.md`
-- `docs/v7.6_Runtime_Diagnostics.md`
-- `docs/v7.6_Testing.md`
-- `docs/v7.6_Developer_Guide.md`
-- `v7_manifest.json`
+- `agents/GPT_BEHAVIORAL_CONTRACT.md` — division of labor + doctrine library
+- `docs/SYSTEM_BASELINE_v7.9.md` — architectural invariants + CI gates
+- `v7_manifest.json` — machine-readable state registry (authoritative)
+- `VERSION` — canonical version (v7.9)
+- `.github/copilot-instructions.md` — component map + coding conventions
+- `ops/PHASE_C_DAILY_CHECKPOINT.md` — active experiment SOP
+- `ops/C1_OPS_PROTOCOL.md` — enforcement ladder
 
 ## Pre-Patch Checklist
 1. Load architecture to understand module boundaries and data flow.
@@ -20,9 +21,12 @@ This is the first file every GPT/Copilot agent must read before touching the rep
 
 ## Repo Invariants
 - Single-writer per state surface; atomic JSON writes only.
-- State files live under `logs/state/` with canonical names (positions_state, positions_ledger, kpis_v7, diagnostics, nav, nav_state, risk_snapshot, router_health, symbol_scores, rv_momentum, factor_diagnostics).
-- Dashboard is read-only; only executor/state_publish/sync_state write state.
-- Tests are lane-based: `unit`, `integration`, `runtime`, `legacy`.
+- State files live under `logs/state/` (44 surfaces registered in `v7_manifest.json`).
+- Execution logs live under `logs/execution/` (16 JSONL streams, append-only).
+- Dashboard is read-only via `dashboard/state_client.py`; only executor/state_publish/sync_state write state.
+- Tests are lane-based: `unit`, `integration`, `runtime`, `legacy` (3052 collected).
+- Doctrine Kernel (`execution/doctrine_kernel.py`) has NO config — it IS the law.
+- DLE shadow observes but does not gate (Phase A/B); C.1 enforcement is entry-only when active.
 
 ## Naming Rules
 - Use canonical state file names; do not introduce alternates without manifest + contract updates.

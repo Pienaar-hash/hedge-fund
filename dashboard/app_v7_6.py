@@ -283,25 +283,6 @@ def main() -> None:
     # =========================================================================
     render_equity_curve()
     
-    st.divider()
-    
-    # =========================================================================
-    # RUNTIME HEALTH (Risk + Router — collapsed, operational detail)
-    # =========================================================================
-    with st.expander("Trading Engine", expanded=False):
-        render_runtime_block(
-            risk_snapshot=state["risk_snapshot"],
-            router_health=state["router_health"],
-            nav_value=state["nav_usd"],
-            gross_exposure=state["gross_exposure"],
-        )
-    
-    # =========================================================================
-    # GOVERNANCE — DLE Authority Gate (collapsed — enforcement detail)
-    # =========================================================================
-    with st.expander("Governance — Doctrine Enforcement", expanded=False):
-        render_enforcement_widget(state["enforcement_state"])
-    
     # =========================================================================
     # POSITIONS & EXECUTION
     # =========================================================================
@@ -313,12 +294,7 @@ def main() -> None:
     # =========================================================================
     # P1: STRATEGY TRANSPARENCY (Capital is intentionally idle)
     # =========================================================================
-    # Episode Ledger — full width (expanded per P1 requirements)
     render_episode_ledger_summary(state["episode_ledger"])
-    # ARCHIVED 2026-01-29: Hydra status strip disabled
-    # render_hydra_status_strip(state["hydra_state"])
-    
-    st.divider()
     
     # =========================================================================
     # STRATEGY PERFORMANCE
@@ -330,17 +306,34 @@ def main() -> None:
         nav_state=state["nav_state"],
     )
     
-    st.divider()
-    
     # =========================================================================
-    # D.2: EXECUTION VISIBILITY (collapsed — operational detail)
+    # OPERATIONAL DETAIL (collapsed — internals, only when relevant)
     # =========================================================================
-    with st.expander("Execution Visibility", expanded=False):
-        render_execution_quality_widget(state["execution_quality"])
+    with st.expander("System Internals", expanded=False):
+        render_runtime_block(
+            risk_snapshot=state["risk_snapshot"],
+            router_health=state["router_health"],
+            nav_value=state["nav_usd"],
+            gross_exposure=state["gross_exposure"],
+        )
         st.divider()
-        render_pnl_attribution_widget(state["pnl_attribution"])
-        st.divider()
-        render_alpha_decay_widget(state["alpha_decay"])
+        render_enforcement_widget(state["enforcement_state"])
+        # Only show execution detail if there's actual fill data
+        _exec_q = state["execution_quality"]
+        if _exec_q and _exec_q.get("symbols"):
+            st.divider()
+            render_execution_quality_widget(_exec_q)
+        # Only show PnL attribution if there are recorded trades
+        _pnl_attr = state["pnl_attribution"]
+        _pnl_count = (_pnl_attr.get("summary", {}).get("record_count", 0) or 0) if _pnl_attr else 0
+        if _pnl_count > 0:
+            st.divider()
+            render_pnl_attribution_widget(_pnl_attr)
+        # Only show alpha decay if enabled
+        _alpha = state["alpha_decay"]
+        if _alpha and _alpha.get("config", {}).get("enabled", False):
+            st.divider()
+            render_alpha_decay_widget(_alpha)
     
     # =========================================================================
     # DIAGNOSTICS (collapsed by default, at the bottom)

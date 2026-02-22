@@ -165,8 +165,9 @@ class TestKpiStripSpanAuthority:
                 risk_snapshot={},
             )
         pnl_card = next(c for c in cards if c["label"] == "24h PnL")
-        # Should show +$0 or $0, not a misleading delta
-        assert "$0" in pnl_card["value_html"]
+        # Should show "—" (not a misleading dollar amount) when span insufficient
+        assert pnl_card["value_html"] == "—"
+        assert pnl_card["value_class"] == "muted"
 
     def test_kpi_strip_shows_pnl_when_span_sufficient(self):
         """With 25h span, KPI strip 24h PnL should show the delta."""

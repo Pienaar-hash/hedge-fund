@@ -1021,6 +1021,17 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             (signal == "BUY" and trend == "BULL") or
             (signal == "SELL" and trend == "BEAR")
         )
+        # Compute numeric trend_score from price geometry (v7.9 trend feature)
+        try:
+            from execution.intel.trend_score import compute_trend_score_from_prices
+            _regime_label = (metadata_block.get("entry_regime") or None)
+            _regime_conf = float(metadata_block.get("entry_regime_confidence") or 0.5)
+            intent["trend_score"] = compute_trend_score_from_prices(
+                closes, regime=_regime_label, regime_confidence=_regime_conf,
+            )
+        except Exception as _trend_exc:
+            LOGGER.warning("[screener] trend_score computation failed for %s: %s", sym, _trend_exc)
+            intent["trend_score"] = 0.5
         if dbg:
             print(
                 f"[sigdbg] {sym} tf={tf} z={round(z,3)} rsi={round(rsi,1)} trend={trend} pct={per_trade_nav_pct} lev={lev} ok"
@@ -1287,6 +1298,24 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                             _weighted = _intent.get("hybrid_weighted", {})
                             _weights = _intent.get("hybrid_weights_used", {})
                             if _components:
+                                # Shadow conviction band: if the conviction
+                                # engine didn't label this intent, derive a
+                                # band from hybrid_score using the same
+                                # thresholds.  Observability-only — no
+                                # execution impact.
+                                _cb = _intent.get("conviction_band", "")
+                                if not _cb:
+                                    _hs = float(_intent.get("hybrid_score", 0.0) or 0.0)
+                                    if _hs >= 0.92:
+                                        _cb = "very_high"
+                                    elif _hs >= 0.80:
+                                        _cb = "high"
+                                    elif _hs >= 0.60:
+                                        _cb = "medium"
+                                    elif _hs >= 0.40:
+                                        _cb = "low"
+                                    else:
+                                        _cb = "very_low"
                                 append_jsonl(_P(_SCORE_DECOMP_LOG), {
                                     "ts": _ts,
                                     "intent_id": _intent.get("intent_id", ""),
@@ -1297,7 +1326,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                                     "components": {k: round(float(v), 4) for k, v in _components.items()},
                                     "weighted": {k: round(float(v), 6) for k, v in _weighted.items()},
                                     "weights_used": _weights,
-                                    "conviction_band": _intent.get("conviction_band", ""),
+                                    "conviction_band": _cb,
                                     "rq_score": round(float(_intent.get("router_quality_score") or 0.0), 4),
                                     "rv_score": round(float(_intent.get("rv_momentum_score") or 0.0), 4),
                                 })

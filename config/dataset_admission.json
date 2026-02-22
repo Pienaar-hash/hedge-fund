@@ -132,7 +132,10 @@
     "polymarket_snapshot": {
       "name": "Polymarket Positions Snapshot",
       "source": "Polymarket API (via script)",
-      "state": "OBSERVE_ONLY",
+      "state": "PRODUCTION_ELIGIBLE",
+      "execution_scope": "BINARY_LAB_ONLY",
+      "allowed_consumers": ["binary_lab"],
+      "denied_consumers": ["futures_execution", "doctrine_kernel", "risk_limits", "router"],
       "grandfathered": false,
       "influences": {
         "regime": false,
@@ -148,7 +151,7 @@
         "replay_determinism": {"verified": false, "notes": "Not logged historically"},
         "regime_neutrality": {"influences_regime": false, "notes": "Display only"}
       },
-      "justification": "External market observation. Currently empty. Does not influence any decisions. Display/research only."
+      "justification": "Dataset promotion enacted under AMEND_DATASET_PROMOTION_POLYMARKET_V1. Execution influence is strictly bounded to Binary Lab sleeve. Forbidden for futures execution and doctrine/risk/router consumers."
     },
     "sentinel_x_features": {
       "name": "Sentinel-X Derived Features",
@@ -298,12 +301,15 @@
       "justification": "Factor exposure and PnL attribution. Research/diagnostic only. Does not influence live decisions."
     },
 
-    "_prediction_layer_separator": "--- Prediction Belief Layer datasets (P0 observe-only) ---",
+    "_prediction_layer_separator": "--- Prediction Belief Layer datasets (scope-gated by phase + firewall) ---",
 
     "prediction_polymarket_feed": {
       "name": "Polymarket Prediction Feed",
       "source": "Polymarket API (event market prices)",
-      "state": "OBSERVE_ONLY",
+      "state": "PRODUCTION_ELIGIBLE",
+      "execution_scope": "BINARY_LAB_ONLY",
+      "allowed_consumers": ["binary_lab"],
+      "denied_consumers": ["futures_execution", "doctrine_kernel", "risk_limits", "router"],
       "grandfathered": false,
       "influences": {
         "regime": false,
@@ -319,7 +325,7 @@
         "replay_determinism": {"verified": false, "notes": "Point-in-time market prices, not logged historically"},
         "regime_neutrality": {"influences_regime": false, "notes": "Prediction layer only, never influences regime"}
       },
-      "justification": "External prediction market feed. P0 observe-only. DLE-gated via prediction belief layer. Does not influence any execution decisions."
+      "justification": "Dataset promotion enacted under AMEND_DATASET_PROMOTION_POLYMARKET_V1. Execution influence is strictly bounded to Binary Lab sleeve and still phase-gated by P2_PRODUCTION in reducer/firewall."
     },
     "prediction_human_input": {
       "name": "Human Prediction Input",
@@ -386,23 +392,23 @@
     }
   },
   "summary": {
-    "production_eligible": 10,
-    "observe_only": 6,
+    "production_eligible": 12,
+    "observe_only": 4,
     "research_only": 0,
     "rejected": 2,
     "grandfathered": 8,
-    "would_fail_admission_today": ["binance_futures_orderbook", "coingecko_prices", "polymarket_snapshot"],
+    "would_fail_admission_today": ["binance_futures_orderbook", "coingecko_prices"],
     "prediction_layer_sources": {
-      "observe_only": ["prediction_polymarket_feed", "prediction_human_input"],
+      "observe_only": ["prediction_human_input"],
       "rejected": ["prediction_model_output", "prediction_news_classifier"]
     }
   },
   "notes": [
     "binance_futures_orderbook: Non-replayable but does not influence decisions. Tolerated.",
     "coingecko_prices: Fallback only, never authoritative. Tolerated in OBSERVE_ONLY.",
-    "polymarket_snapshot: Currently empty. Would need full admission if ever used for signals.",
-    "All PRODUCTION_ELIGIBLE datasets are either grandfathered or derived from grandfathered sources.",
-    "prediction_*: DLE-gated belief layer sources. P0 observe-only. Never influence execution. See prediction/ module."
+    "polymarket_snapshot and prediction_polymarket_feed: Promoted with bounded consumer scope under AMEND_DATASET_PROMOTION_POLYMARKET_V1.",
+    "Most PRODUCTION_ELIGIBLE datasets are grandfathered/derived; bounded exceptions require explicit amendment artifacts.",
+    "prediction_*: DLE-gated belief layer sources. Execution influence requires explicit scope + phase gates. See prediction/ module."
   ],
-  "updated_at": "2026-02-06T00:00:00+00:00"
+  "updated_at": "2026-02-19T00:00:00+00:00"
 }

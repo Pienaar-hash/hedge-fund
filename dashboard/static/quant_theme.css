@@ -193,6 +193,11 @@ p, span, div {
     color: var(--color-negative);
 }
 
+.kpi-card-value.muted {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-lg);
+}
+
 .kpi-card-sub {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);

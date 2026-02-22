@@ -166,6 +166,22 @@ No mid-cycle promotions.
 
 ---
 
+### Sleeve-Scoped Production Eligibility (Bounded Authority)
+
+`PRODUCTION_ELIGIBLE` does not imply universal consumer access.
+
+When an amendment defines bounded scope (for example
+`docs/amendments/DATASET_PROMOTION_POLYMARKET_v1.md`), a dataset may be
+`PRODUCTION_ELIGIBLE` but limited to an explicit consumer set.
+
+For bounded promotions:
+
+* execution influence must be restricted to the named sleeve only,
+* non-listed consumers must be deny-logged and ignored,
+* any scope expansion requires a new amendment.
+
+---
+
 ## VI. FAILURE & REVOCATION
 
 A dataset is **immediately revoked** if it causes:

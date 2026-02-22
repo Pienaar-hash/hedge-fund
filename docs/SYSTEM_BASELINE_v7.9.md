@@ -60,9 +60,11 @@ The manifest is an **executable contract**, not documentation.
 | Section | Entries | Description |
 |---------|---------|-------------|
 | `state_files` | 44 | JSON state surfaces in `logs/state/` |
-| `execution_logs` | 15 | Append-only JSONL in `logs/execution/` |
-| `prediction_layer` | 14 | Prediction subsystem logs and state |
-| **Total** | **73** | |
+| `execution_logs` | 16 | Append-only JSONL in `logs/execution/` |
+| `prediction_layer` | 18 | Prediction subsystem logs and state |
+| **Total** | **78** | |
+
+> Counts updated 2026-02-18 (post-Phase B + Binary Lab additions).
 
 ### Manifest Invariants
 
@@ -93,7 +95,7 @@ Single authoritative workflow. No redundant pipelines.
 | **Typecheck** | `mypy .` clean (Python 3.10 target) |
 | **Dashboard boundary** | Zero `^from execution` / `^import execution` in `dashboard/` |
 | **Manifest audit** | `scripts/manifest_audit.py ci` returns `MANIFEST_OK` |
-| **Tests** | `pytest tests/unit tests/integration` — 2819 passed, 35 skipped, 0 failures |
+| **Tests** | `pytest tests/unit tests/integration` — 3052 collected, ~47 skipped, 0 failures |
 
 ---
 
@@ -101,11 +103,11 @@ Single authoritative workflow. No redundant pipelines.
 
 | Metric | Value |
 |--------|-------|
-| Total passed | 2819 |
-| Skipped | 35 |
+| Total collected | 3052 |
+| Skipped | ~47 |
 | Failures | 0 |
 | Markers | `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.runtime` |
-| Key coverage | risk_limits, state_files_schema, manifest_state_contract, manifest_audit, dashboard_intel_helpers |
+| Key coverage | risk_limits, state_files_schema, manifest_state_contract, manifest_audit, dashboard_intel_helpers, exit_reason_normalization, dle_shadow_b2/b3, episode_authority_b4 |
 
 ---
 
@@ -113,8 +115,11 @@ Single authoritative workflow. No redundant pipelines.
 
 | Phase | Status |
 |-------|--------|
-| **Phase A** (Shadow / Observe) | **Structurally complete** |
-| Phase B (Explicit Decision/Permit) | Not started — system now ready |
+| **Phase A** (Shadow / Observe) | **Complete** |
+| **Phase B** (Shadow Authority B.1–B.4) | **Complete** — tag `v7.9-b4-shadow-authority` |
+| **Phase B.5** (Enforcement Rehearsal) | **Active** — rehearsal running, `phase_c_readiness.json` live |
+| **Phase C** (Contraction Window) | **Active** — 14-day validation, Day 3/14 (2026-02-18) |
+| Phase C.1 (Entry-only Enforcement) | Formalized — `ops/C1_OPS_PROTOCOL.md` — not yet enabled |
 
 ### Phase A Artefacts
 
@@ -155,7 +160,8 @@ These are explicitly deferred. Do not assume they are done:
 - `executor_live.py` decomposition (5,095 lines — functional, not pretty)
 - `execution/` directory flattening (75 files — stable, not ideal)
 - Documentation tree rewrite (README, CHANGELOG, RELEASE.md are stale)
-- DLE Phase B enforcement (Decision/Permit objects, exit normalization)
+- ~~DLE Phase B enforcement~~ — **Done** (B.1–B.4 complete, B.5 rehearsal active)
+- DLE Phase C.1 enforcement activation (entry-only binding, gated on 14-day window)
 - Remote state transport (state_client.py seam exists but is local-only)
 - `fill_eff` in dashboard KPIs (returns `None` — requires executor publishing)
 

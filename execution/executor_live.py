@@ -701,14 +701,72 @@ def _maybe_publish_execution_intel() -> None:
             compute_and_write_rv_momentum_state,
             compute_and_write_factor_diagnostics_state,
             compute_and_write_edge_insights,
+            publish_funding_snapshot,
+            publish_basis_snapshot,
         )
+        from execution.exchange_utils import build_funding_and_basis_snapshots
 
         trades = expectancy_v6.load_trade_records(lookback_hours=48.0)
         router_metrics = expectancy_v6.load_router_metrics(lookback_hours=48.0)
         trades = expectancy_v6.merge_trades_with_policy(trades, router_metrics)
-        expectancy_snapshot = expectancy_v6.build_expectancy_snapshot(trades, 48.0)
-        write_expectancy_state(expectancy_snapshot)
         router_health = _build_router_health_snapshot()
+
+        # Publish funding + basis snapshots FIRST so carry data is available
+        # for both the expectancy prior and downstream hybrid scoring (v7.9).
+        _carry_score_agg = 0.5
+        try:
+            funding_snap, basis_snap = build_funding_and_basis_snapshots()
+            publish_funding_snapshot(funding_snap)
+            publish_basis_snapshot(basis_snap)
+            # Compute aggregate carry score for expectancy prior inputs:
+            # average carry across symbols using a representative direction.
+            _carry_scores = []
+            from execution.intel.symbol_score_v6 import carry_score as _carry_score_fn
+            for _cs_sym in (funding_snap.get("symbols") or {}):
+                try:
+                    _cs_result = _carry_score_fn(_cs_sym, "LONG", funding_snap, basis_snap)
+                    _carry_scores.append(float(_cs_result.get("score", 0.5)))
+                except Exception:
+                    pass
+            if _carry_scores:
+                _carry_score_agg = sum(_carry_scores) / len(_carry_scores)
+        except Exception as _carry_exc:
+            LOG.warning("[intel] carry_snapshot_publish_failed: %s", _carry_exc)
+
+        # Build expectancy prior inputs from observable state (v7.9 expectancy prior)
+        _prior_inputs = None
+        try:
+            from execution.sentinel_x import load_sentinel_x_state as _load_sx
+            _sx_state = _load_sx()
+            _regime = _sx_state.primary_regime if _sx_state else None
+            _regime_conf = max(_sx_state.smoothed_probs.values()) if _sx_state and _sx_state.smoothed_probs else 0.5
+            _rh_score = 0.5
+            if isinstance(router_health, Mapping):
+                _rh_entries = router_health.get("symbols") or router_health.get("by_symbol") or {}
+                if isinstance(_rh_entries, Mapping) and _rh_entries:
+                    _scores = [float(v.get("score") or v.get("quality") or 0.5)
+                               for v in _rh_entries.values() if isinstance(v, Mapping)]
+                    _rh_score = sum(_scores) / len(_scores) if _scores else 0.5
+            # Trend score is per-intent (computed in signal_screener), not
+            # available as an aggregate in the intel loop.  Leave at neutral
+            # for the prior — the screener path provides real per-symbol trend.
+            _prior_inputs = {
+                "regime": _regime,
+                "regime_confidence": _regime_conf,
+                "vol_state": "normal",
+                "router_health_score": _rh_score,
+                "trend_score": 0.5,
+                "carry_score": _carry_score_agg,
+                "symbols": sorted(universe_by_symbol().keys()),
+            }
+        except Exception:
+            pass
+
+        expectancy_snapshot = expectancy_v6.build_expectancy_snapshot(
+            trades, 48.0, prior_inputs=_prior_inputs,
+        )
+        write_expectancy_state(expectancy_snapshot)
+
         scores_snapshot = symbol_score_v6.build_symbol_scores(expectancy_snapshot, router_health)
         scores_snapshot.setdefault("updated_ts", now)
         write_symbol_scores_state(scores_snapshot)
@@ -869,6 +927,16 @@ from execution.state_publish import (
     compute_and_write_alpha_decay_state,
     write_runtime_diagnostics_state,
 )
+try:
+    from execution.binary_lab_executor import BinaryLabEventType, BinaryLabMode
+    from execution.binary_lab_runtime import BinaryLabRuntimeWriter, RuntimeLoopContext
+    _BINARY_LAB_RUNTIME_AVAILABLE = True
+except Exception:
+    BinaryLabEventType = None  # type: ignore[assignment]
+    BinaryLabMode = None  # type: ignore[assignment]
+    BinaryLabRuntimeWriter = None  # type: ignore[assignment]
+    RuntimeLoopContext = None  # type: ignore[assignment]
+    _BINARY_LAB_RUNTIME_AVAILABLE = False
 # v7.9_P4: Execution Alpha observability hooks
 try:
     from execution.minotaur_integration import (
@@ -896,6 +964,75 @@ try:
     from execution.signal_screener import run_once as run_screener_once
 except ImportError:  # pragma: no cover - optional dependency
     run_screener_once = None
+
+# Binary Lab state writer globals (observational only)
+_BINARY_LAB_WRITER: Optional[Any] = None
+_BINARY_LAB_ACTIVATION_ATTEMPTED = False
+
+
+def _parse_binary_lab_mode(raw: str) -> Any:
+    if not _BINARY_LAB_RUNTIME_AVAILABLE or BinaryLabMode is None:
+        return None
+    value = str(raw or "").strip().upper()
+    if value == "LIVE":
+        return BinaryLabMode.LIVE
+    return BinaryLabMode.PAPER
+
+
+def _binary_lab_writer() -> Optional[Any]:
+    global _BINARY_LAB_WRITER
+    if not _BINARY_LAB_RUNTIME_AVAILABLE or BinaryLabRuntimeWriter is None:
+        return None
+    if _BINARY_LAB_WRITER is not None:
+        return _BINARY_LAB_WRITER
+    try:
+        _BINARY_LAB_WRITER = BinaryLabRuntimeWriter(
+            expected_limits_hash=os.getenv("BINARY_LAB_LIMITS_HASH"),
+        )
+    except Exception as exc:
+        LOG.debug("[binary-lab] writer_init_failed: %s", exc)
+        _BINARY_LAB_WRITER = None
+    return _BINARY_LAB_WRITER
+
+
+def _binary_lab_tick(now_iso: str) -> bool:
+    """
+    Emit binary_lab_state once per loop via deterministic context.
+    This path is observational and never influences order execution.
+    """
+    global _BINARY_LAB_ACTIVATION_ATTEMPTED
+    writer = _binary_lab_writer()
+    if writer is None or RuntimeLoopContext is None:
+        return False
+    try:
+        activate_requested = os.getenv("BINARY_LAB_ACTIVATE", "0").strip().lower() in {"1", "true", "yes", "on"}
+        activate_now = activate_requested and not _BINARY_LAB_ACTIVATION_ATTEMPTED
+        if activate_now:
+            _BINARY_LAB_ACTIVATION_ATTEMPTED = True
+
+        event_override = BinaryLabEventType.DAILY_CHECKPOINT if BinaryLabEventType is not None else None
+
+        mode = _parse_binary_lab_mode(os.getenv("BINARY_LAB_MODE", "PAPER"))
+        gate_go = os.getenv("BINARY_LAB_ACTIVATION_GATE_GO", "0").strip().lower() in {"1", "true", "yes", "on"}
+        horizon_minutes = int(float(os.getenv("BINARY_LAB_HORIZON_MINUTES", "15") or 15))
+        prediction_phase = os.getenv("PREDICTION_PHASE", "P0_OBSERVE")
+
+        ctx = RuntimeLoopContext(
+            now_ts=now_iso,
+            open_positions=0,
+            activate=activate_now,
+            activation_gate_go=gate_go,
+            mode=mode,
+            prediction_phase=prediction_phase,
+            horizon_minutes=horizon_minutes,
+            event_type_override=event_override,
+        )
+        writer.tick(ctx)
+        return True
+    except Exception as exc:
+        LOG.debug("[binary-lab] tick_failed: %s", exc)
+        return False
+
 # ---- Firestore publisher handle (revisions differ) ----
 def _resolve_env(default: str = "dev") -> str:
     raw = (os.getenv("ENV") or os.getenv("ENVIRONMENT") or "").strip()
@@ -1206,6 +1343,18 @@ def _sync_dry_run() -> None:
         LOG.info("[executor] DRY_RUN flag changed -> %s", current)
         DRY_RUN = current
     set_dry_run(DRY_RUN)
+    # v7.9-CW: Calibration window episode-cap check
+    try:
+        from execution.calibration_window import check_calibration_window
+        cw_status = check_calibration_window()
+        if cw_status.get("halted"):
+            LOG.info(
+                "[calibration_window] episode cap reached (%d/%d) — KILL_SWITCH active",
+                cw_status.get("episodes_completed", 0),
+                cw_status.get("episode_cap", 0),
+            )
+    except Exception:
+        pass  # fail-open: calibration check must never block executor
 
 
 def _clean_testnet_caches() -> None:
@@ -3111,6 +3260,23 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         float((_RISK_CFG.get("global") or {}).get("min_notional_usdt", 0.0) or 0.0),
     )
     gross_target = float(intent.get("gross_usd") or gross_target or 0.0)
+    # --- Calibration window sizing cap ---
+    # When active, cap gross_target to calibration per_trade_nav_pct * NAV.
+    # This is a hard ceiling — screener/intent sizing cannot exceed it.
+    if not reduce_only:
+        try:
+            from execution.calibration_window import get_calibration_sizing_override
+            _cal_pct = get_calibration_sizing_override()
+            if _cal_pct is not None and nav_usd > 0:
+                _cal_cap = float(_cal_pct) * nav_usd
+                if _cal_cap > 0 and gross_target > _cal_cap:
+                    LOG.info(
+                        "[calibration_window] sizing cap: %.2f → %.2f (%.3f%% NAV)",
+                        gross_target, _cal_cap, float(_cal_pct) * 100,
+                    )
+                    gross_target = _cal_cap
+        except Exception as _cal_err:
+            LOG.debug("[calibration_window] sizing check failed: %s", _cal_err)
     margin_target = gross_target / max(lev, 1.0)
     attempt_start_monotonic = time.monotonic()
     attempt_payload = {
@@ -4683,6 +4849,7 @@ def _pub_tick() -> None:
     scores_written = False
     diagnostics_written = False
     synced_written = False
+    binary_lab_written = False
     try:
         write_nav_state(nav_payload)
         nav_written = True
@@ -4890,8 +5057,12 @@ def _pub_tick() -> None:
         phase_c_written = True
     except Exception as exc:
         LOG.debug("[telemetry] phase_c_readiness_write_failed: %s", exc)
+    try:
+        binary_lab_written = _binary_lab_tick(now_iso)
+    except Exception as exc:
+        LOG.debug("[telemetry] binary_lab_state_write_failed: %s", exc)
     LOG.info(
-        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s",
+        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s binary_lab=%s",
         nav_written,
         positions_state_written,
         positions_ledger_written,
@@ -4902,6 +5073,7 @@ def _pub_tick() -> None:
         engine_meta_written,
         synced_written,
         phase_c_written,
+        binary_lab_written,
     )
     _LAST_NAV_STATE = nav_payload
     _LAST_POSITIONS_STATE = positions_state_payload
@@ -5240,6 +5412,12 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
     parser.parse_args(args_list)
 
     _sync_dry_run()
+    # v7.9-CW: Log calibration window status at boot
+    try:
+        from execution.calibration_window import log_calibration_boot_status
+        log_calibration_boot_status()
+    except Exception as _cw_boot_err:
+        LOG.debug("[startup] calibration boot status failed: %s", _cw_boot_err)
     _clean_testnet_caches()
     
     # Refresh exchange precision cache at startup

@@ -1,0 +1,53 @@
+{
+  "_meta": {
+    "sleeve_id": "binary_lab_s1",
+    "version": "1.0",
+    "created": "2026-02-17",
+    "status": "FORMALIZED_NOT_DEPLOYED",
+    "parent_window": "phase_c_contraction_v7.9-S1",
+    "freeze_duration_days": 30,
+    "time_horizon_minutes": 15
+  },
+  "capital": {
+    "sleeve_total_usd": 2000,
+    "max_deployed_usd": 1200,
+    "reserve_usd": 800,
+    "per_round_usd": 20,
+    "per_round_pct": 0.01
+  },
+  "position_rules": {
+    "max_concurrent": 3,
+    "same_direction_stacking": false,
+    "martingale": false,
+    "size_escalation_after_wins": false
+  },
+  "kill_conditions": {
+    "sleeve_drawdown_usd": 300,
+    "sleeve_drawdown_pct": 0.15,
+    "kill_nav_usd": 1700,
+    "immediate_termination": true
+  },
+  "entry_gate": {
+    "min_conviction_band": "medium",
+    "blocked_regimes": ["CHOPPY"],
+    "regime_confidence_fallback_min": 0.60,
+    "signal_source": "futures_pipeline",
+    "new_signals_allowed": false,
+    "new_indicators_allowed": false
+  },
+  "time_horizon": {
+    "round_minutes": 15,
+    "locked": true,
+    "no_mid_experiment_changes": true
+  },
+  "freeze_rules": {
+    "no_threshold_adjustments": true,
+    "no_regime_threshold_changes": true,
+    "no_conviction_mapping_tweaks": true,
+    "no_timing_adjustments": true,
+    "no_adding_filters": true,
+    "no_removing_filters": true,
+    "no_size_changes": true,
+    "no_kill_line_changes": true
+  }
+}

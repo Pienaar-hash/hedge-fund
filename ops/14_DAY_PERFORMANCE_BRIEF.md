@@ -284,3 +284,32 @@ cat logs/state/risk_snapshot.json | jq '{
 *Generated from template: `ops/14_DAY_PERFORMANCE_BRIEF.md`*  
 *System: GPT Hedge v7.9-S1*  
 *Contraction commit: `6733c08a`*
+
+---
+
+## Appendix B: Binary Lab Satellite Sleeve
+
+_This section reports only when `binary_lab_state.json` status = `ACTIVE`._  
+_If binary lab is not deployed, this section is blank._
+
+| Metric | Value |
+|--------|-------|
+| Sleeve NAV | $ _______ |
+| Day | __ / 30 |
+| Total trades | _____ |
+| Win rate | _____ % |
+| PnL | $ _______ |
+| Kill line distance | $ _______ |
+| Rule violations | 0 |
+
+### Band Separation (if deployed)
+
+| Band | Trades | Win Rate | EV/Trade |
+|------|--------|----------|----------|
+| very_high | | | |
+| high | | | |
+| medium | | | |
+
+**Source:** `logs/state/binary_lab_state.json`, `logs/execution/binary_lab_trades.jsonl`
+
+> Binary lab PnL is **never blended** into core NAV reporting above.

@@ -1,8 +1,10 @@
 # DLE Gate Invariants v1
 
-> **Status:** SPECIFICATION — not yet implemented  
+> **Status:** SPECIFICATION — partially implemented via B.5 rehearsal + C.1 entry-only enforcement  
+> **Implementation:** `execution/dle_shadow.py` (shadow), `execution/enforcement_gate.py` (C.1 entry gate)  
 > **Author:** GPT-Hedge governance audit  
-> **Date:** 2026-01-28
+> **Date:** 2026-01-28  
+> **Updated:** 2026-02-18 (status only — spec text unchanged)
 
 ## Purpose
 
