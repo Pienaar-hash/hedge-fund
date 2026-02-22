@@ -261,6 +261,17 @@
         "meta.calculation_window_hours": "int - lookback window for metrics"
       }
     },
+    "basis_snapshot": {
+      "path": "logs/state/basis_snapshot.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "Per-symbol spot-futures basis snapshot from premiumIndex — carries basis_pct, mark, index prices",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "symbols": "Dict[str, BasisInfo] — per-symbol basis_pct (float), mark_price (float), index_price (float)"
+      }
+    },
     "alpha_decay": {
       "path": "logs/state/alpha_decay.json",
       "owner": "executor",
@@ -370,6 +381,17 @@
       "owner": "executor",
       "update_frequency": "per_intel",
       "description": "Per-symbol expectancy and hourly breakdown from intel pipeline"
+    },
+    "funding_snapshot": {
+      "path": "logs/state/funding_snapshot.json",
+      "owner": "executor",
+      "update_frequency": "per_intel",
+      "optional": true,
+      "description": "Per-symbol funding rate snapshot from premiumIndex — carries rate, funding_rate, next_funding_time",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "symbols": "Dict[str, FundingInfo] — per-symbol rate (float), funding_rate (float), next_funding_time (int epoch-ms)"
+      }
     },
     "leaderboard_state": {
       "path": "logs/state/leaderboard_state.json",
@@ -682,6 +704,38 @@
         "ts": "ISO8601"
       }
     },
+    "rtds_oracle_ticks": {
+      "path": "logs/prediction/rtds_oracle.jsonl",
+      "owner": "prediction",
+      "update_frequency": "per_tick",
+      "optional": true,
+      "description": "RTDS Chainlink BTC/USD oracle price ticks — Layer 1 binary sleeve data plane",
+      "fields": {
+        "ts_arrival_ms": "int — local arrival epoch ms",
+        "oracle_ts_ms": "int — Chainlink oracle epoch ms",
+        "symbol": "BTC/USD",
+        "price": "float — oracle price",
+        "latency_ms": "int — arrival minus oracle ms",
+        "seq": "int — upstream or local sequence number",
+        "source": "RTDS"
+      }
+    },
+    "rtds_oracle_health": {
+      "path": "logs/prediction/rtds_oracle_health.jsonl",
+      "owner": "prediction",
+      "update_frequency": "periodic_60s",
+      "optional": true,
+      "description": "RTDS oracle client health summaries — latency, gap, frequency stats",
+      "fields": {
+        "ts": "ISO8601",
+        "window_s": "float — health window duration",
+        "tick_count": "int",
+        "anomaly_count": "int",
+        "latency_ms": "{ mean, median, p95, max, min } or null",
+        "gap_ms": "{ mean, max, p95 } or null",
+        "tick_frequency_hz": "float"
+      }
+    },
     "score_decomposition": {
       "path": "logs/execution/score_decomposition.jsonl",
       "owner": "signal_screener",
@@ -930,6 +984,32 @@
         "last_testnet_reset_ts": "float — Unix timestamp of last reset",
         "last_testnet_reset_iso": "str — ISO 8601 timestamp of last reset",
         "updated_ts": "float — last write timestamp"
+      }
+    },
+    "binary_lab_state": {
+      "path": "logs/state/binary_lab_state.json",
+      "owner": "binary_lab_executor",
+      "update_frequency": "per_round",
+      "optional": true,
+      "description": "Binary lab satellite sleeve state — segregated from core NAV. Read-only for dashboard.",
+      "fields": {
+        "sleeve_id": "str — always binary_lab_s1",
+        "status": "str — DISABLED | NOT_DEPLOYED | ACTIVE | TERMINATED | COMPLETED",
+        "day": "int — current experiment day (0-30)",
+        "day_total": "int — total experiment days (30)",
+        "capital.current_nav_usd": "float — current sleeve NAV",
+        "capital.pnl_usd": "float — cumulative PnL",
+        "kill_line.distance_usd": "float — distance to kill line",
+        "kill_line.breached": "bool — true if kill line hit",
+        "metrics.total_trades": "int — total trades taken",
+        "metrics.wins": "int — winning trades",
+        "metrics.losses": "int — losing trades",
+        "metrics.win_rate": "float|null — overall win rate",
+        "metrics.by_conviction_band": "dict — per-band breakdown",
+        "rule_violations": "int — must be 0",
+        "freeze_intact": "bool — true if no parameter changes",
+        "config_hash": "str|null — SHA-256 of binary_lab_limits.json",
+        "last_checkpoint_utc_date": "str|null — last UTC date (YYYY-MM-DD) checkpoint counted"
       }
     }
   },
