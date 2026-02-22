@@ -174,6 +174,62 @@ def _parse_tokens(raw: Any) -> List[str]:
     return []
 
 
+def _parse_outcomes(raw: Any) -> List[str]:
+    """Parse outcomes which may be a JSON string or list."""
+    if isinstance(raw, list):
+        return [str(o) for o in raw]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(o) for o in parsed]
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return []
+
+
+def _validate_token_ordering(
+    outcomes: List[str], tokens: List[str],
+) -> Optional[tuple]:
+    """Validate and return (up_token, down_token) based on outcomes field.
+
+    Returns None if the ordering cannot be determined.
+
+    Expected: outcomes = ["Up", "Down"], tokens[0] = Up token, tokens[1] = Down.
+    If outcomes are reversed, we swap the tokens.
+    If outcomes don't match expected labels, we reject.
+    """
+    if len(tokens) < 2:
+        return None
+
+    # Normalise outcome labels
+    labels = [o.strip().lower() for o in outcomes]
+
+    if len(labels) >= 2 and labels[0] == "up" and labels[1] == "down":
+        return (tokens[0], tokens[1])  # Standard ordering
+    if len(labels) >= 2 and labels[0] == "down" and labels[1] == "up":
+        logger.warning(
+            "[discovery] outcomes reversed — swapping token order: %s",
+            outcomes,
+        )
+        return (tokens[1], tokens[0])  # Swap
+
+    # Fallback: if outcomes field is missing/empty, trust index order
+    # but flag it
+    if not labels or labels == ["", ""]:
+        logger.debug(
+            "[discovery] no outcomes field — trusting index order",
+        )
+        return (tokens[0], tokens[1])
+
+    # Unknown labels — reject
+    logger.warning(
+        "[discovery] unexpected outcome labels: %s — skipping",
+        outcomes,
+    )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Core discovery
 # ---------------------------------------------------------------------------
@@ -265,6 +321,17 @@ def discover_btc_updown_markets(
                 logger.debug("[discovery] skipping market with <2 tokens: %s", slug)
                 continue
 
+            # Validate token ordering against outcomes field
+            outcomes = _parse_outcomes(mkt.get("outcomes"))
+            validated = _validate_token_ordering(outcomes, tokens)
+            if validated is None:
+                logger.warning(
+                    "[discovery] cannot determine UP/DOWN ordering for %s — skipping",
+                    slug,
+                )
+                continue
+            up_token, down_token = validated
+
             market_id = str(mkt.get("id", ""))
             condition_id = mkt.get("conditionId", mkt.get("condition_id", ""))
             question = mkt.get("question", title)
@@ -276,8 +343,8 @@ def discover_btc_updown_markets(
                 slug=slug,
                 question=question,
                 timeframe=timeframe,
-                up_token=tokens[0],
-                down_token=tokens[1],
+                up_token=up_token,
+                down_token=down_token,
                 end_date_utc=end_str,
                 end_ts=end_ts,
                 remaining_s=round(remaining, 1),

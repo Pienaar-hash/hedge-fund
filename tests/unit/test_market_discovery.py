@@ -28,8 +28,10 @@ from prediction.market_discovery import (
     TITLE_FILTER,
     _gamma_get,
     _parse_iso,
+    _parse_outcomes,
     _parse_tokens,
     _slug_to_timeframe,
+    _validate_token_ordering,
     discover_btc_updown_markets,
     get_current_tokens,
 )
@@ -428,3 +430,73 @@ class TestDiscoverySnapshot:
         assert snap.error is None
         assert snap.raw_event_count == 0
         assert snap.btc_updown_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests — _parse_outcomes
+# ---------------------------------------------------------------------------
+class TestParseOutcomes:
+    def test_json_string(self) -> None:
+        raw = json.dumps(["Up", "Down"])
+        assert _parse_outcomes(raw) == ["Up", "Down"]
+
+    def test_list_directly(self) -> None:
+        assert _parse_outcomes(["Up", "Down"]) == ["Up", "Down"]
+
+    def test_empty_string(self) -> None:
+        assert _parse_outcomes("") == []
+
+    def test_none(self) -> None:
+        assert _parse_outcomes(None) == []
+
+    def test_invalid_json(self) -> None:
+        assert _parse_outcomes("{not json}") == []
+
+    def test_single_element(self) -> None:
+        raw = json.dumps(["Up"])
+        assert _parse_outcomes(raw) == ["Up"]
+
+    def test_numeric_elements(self) -> None:
+        raw = json.dumps([1, 2])
+        assert _parse_outcomes(raw) == ["1", "2"]
+
+
+# ---------------------------------------------------------------------------
+# Tests — _validate_token_ordering
+# ---------------------------------------------------------------------------
+class TestValidateTokenOrdering:
+    def test_standard_up_down(self) -> None:
+        result = _validate_token_ordering(["Up", "Down"], ["T_UP", "T_DOWN"])
+        assert result == ("T_UP", "T_DOWN")
+
+    def test_standard_case_insensitive(self) -> None:
+        result = _validate_token_ordering(["up", "down"], ["T_UP", "T_DOWN"])
+        assert result == ("T_UP", "T_DOWN")
+
+    def test_reversed_outcomes_swaps_tokens(self) -> None:
+        result = _validate_token_ordering(["Down", "Up"], ["T_DOWN", "T_UP"])
+        assert result == ("T_UP", "T_DOWN")
+
+    def test_reversed_mixed_case(self) -> None:
+        result = _validate_token_ordering(["DOWN", "UP"], ["T_D", "T_U"])
+        assert result == ("T_U", "T_D")
+
+    def test_empty_outcomes_trusts_index(self) -> None:
+        result = _validate_token_ordering([], ["T0", "T1"])
+        assert result == ("T0", "T1")
+
+    def test_blank_labels_trusts_index(self) -> None:
+        result = _validate_token_ordering(["", ""], ["T0", "T1"])
+        assert result == ("T0", "T1")
+
+    def test_unknown_labels_rejected(self) -> None:
+        result = _validate_token_ordering(["Yes", "No"], ["T0", "T1"])
+        assert result is None
+
+    def test_fewer_than_2_tokens_rejected(self) -> None:
+        result = _validate_token_ordering(["Up", "Down"], ["T_ONLY"])
+        assert result is None
+
+    def test_whitespace_trimmed(self) -> None:
+        result = _validate_token_ordering([" Up ", " Down "], ["T_UP", "T_DOWN"])
+        assert result == ("T_UP", "T_DOWN")

@@ -165,6 +165,7 @@ class HealthAccumulator:
     def __init__(self) -> None:
         self.event_counts: Dict[str, int] = {}
         self.spreads: List[float] = []
+        self.mids: List[float] = []
         self.trade_prices: List[float] = []
         self.anomaly_count: int = 0
         self.total_events: int = 0
@@ -174,8 +175,10 @@ class HealthAccumulator:
         self.total_events += 1
         self.event_counts[event_type] = self.event_counts.get(event_type, 0) + 1
 
-    def record_spread(self, spread: float) -> None:
+    def record_spread(self, spread: float, mid: Optional[float] = None) -> None:
         self.spreads.append(spread)
+        if mid is not None:
+            self.mids.append(mid)
 
     def record_trade_price(self, price: float) -> None:
         self.trade_prices.append(price)
@@ -197,15 +200,26 @@ class HealthAccumulator:
 
         if self.spreads:
             sorted_s = sorted(self.spreads)
+            p95_idx = min(int(len(sorted_s) * 0.95), len(sorted_s) - 1)
             summary["spread"] = {
                 "mean": round(statistics.mean(sorted_s), 6),
                 "median": round(statistics.median(sorted_s), 6),
+                "p95": round(sorted_s[p95_idx], 6),
                 "min": round(sorted_s[0], 6),
                 "max": round(sorted_s[-1], 6),
                 "samples": len(sorted_s),
             }
         else:
             summary["spread"] = None
+
+        if self.mids:
+            summary["mid"] = {
+                "last": round(self.mids[-1], 6),
+                "mean": round(statistics.mean(self.mids), 6),
+                "samples": len(self.mids),
+            }
+        else:
+            summary["mid"] = None
 
         if self.trade_prices:
             summary["last_trade_price"] = round(self.trade_prices[-1], 6)
@@ -221,6 +235,7 @@ class HealthAccumulator:
         # Reset
         self.event_counts = {}
         self.spreads = []
+        self.mids = []
         self.trade_prices = []
         self.anomaly_count = 0
         self.total_events = 0
@@ -431,11 +446,13 @@ class CLOBMarketClient:
             record["timestamp"] = timestamp
             if bid is not None and ask is not None:
                 spread = round(ask - bid, 6)
+                mid = round((bid + ask) / 2, 6)
                 record["spread"] = spread
+                record["mid"] = mid
                 self._best_bid[asset_id] = bid
                 self._best_ask[asset_id] = ask
                 self._last_spread[asset_id] = spread
-                self.health.record_spread(spread)
+                self.health.record_spread(spread, mid=mid)
 
         # ----- last_trade_price -----
         elif event_type == "last_trade_price":
@@ -557,10 +574,11 @@ class CLOBMarketClient:
             # Update internal state from price_change best_bid/best_ask
             if bid is not None and ask is not None:
                 spread = round(ask - bid, 6)
+                mid = round((bid + ask) / 2, 6)
                 self._best_bid[asset_id] = bid
                 self._best_ask[asset_id] = ask
                 self._last_spread[asset_id] = spread
-                self.health.record_spread(spread)
+                self.health.record_spread(spread, mid=mid)
             _append_jsonl(self.market_log, record)
             results.append(record)
 
@@ -617,7 +635,7 @@ class CLOBMarketClient:
     async def _rotate_subscription(
         self, new_market: Any, ws: Any
     ) -> None:
-        """Unsubscribe from old tokens and subscribe to new ones.
+        """Subscribe to new tokens FIRST, then unsubscribe old ones.
 
         Parameters
         ----------
@@ -625,6 +643,11 @@ class CLOBMarketClient:
             A ``DiscoveredMarket`` from the discovery module.
         ws
             Active WebSocket connection.
+
+        Ordering invariant: subscribe-first eliminates any dead zone
+        where neither old nor new tokens are subscribed.  Brief overlap
+        (receiving events from both old + new) is harmless and preferred
+        over any gap.
         """
         old_ids = list(self._subscribed_ids)
         new_ids = [new_market.up_token, new_market.down_token]
@@ -634,26 +657,15 @@ class CLOBMarketClient:
             return
 
         self._rotation_count += 1
+        rotate_start_ms = int(time.time() * 1000)
 
-        # Unsubscribe old
-        if old_ids:
-            try:
-                await ws.send(self._dynamic_unsubscribe(old_ids))
-                logger.info(
-                    "[clob] unsubscribed %d old token(s) (%s)",
-                    len(old_ids),
-                    self._current_slug or "?",
-                )
-            except Exception as exc:
-                logger.warning("[clob] unsubscribe failed: %s", exc)
-
-        # Subscribe new
+        # Subscribe new FIRST — overlap is safe, gap is not
         try:
             await ws.send(self._dynamic_subscribe(new_ids))
-            self._subscribed_ids = new_ids
             old_slug = self._current_slug
             self._current_slug = new_market.slug
             self._current_market = new_market
+            self._subscribed_ids = list(set(old_ids) | set(new_ids))  # temporarily both
             logger.info(
                 "[clob] subscribed to %s — UP=%s... DOWN=%s... (%.0fm remaining)",
                 new_market.slug,
@@ -669,6 +681,22 @@ class CLOBMarketClient:
             )
             return
 
+        # Unsubscribe old (after new is already active)
+        if old_ids:
+            try:
+                await ws.send(self._dynamic_unsubscribe(old_ids))
+                logger.info(
+                    "[clob] unsubscribed %d old token(s) (%s)",
+                    len(old_ids),
+                    old_slug or "?",
+                )
+            except Exception as exc:
+                logger.warning("[clob] unsubscribe failed: %s", exc)
+
+        self._subscribed_ids = new_ids
+        rotate_end_ms = int(time.time() * 1000)
+        rotation_latency_ms = rotate_end_ms - rotate_start_ms
+
         self._log_rotation({
             "rotation_number": self._rotation_count,
             "old_slug": old_slug,
@@ -678,6 +706,7 @@ class CLOBMarketClient:
             "new_down_token": new_market.down_token,
             "remaining_s": new_market.remaining_s,
             "timeframe": new_market.timeframe,
+            "rotation_latency_ms": rotation_latency_ms,
         })
 
     async def _discovery_loop(self, ws: Any) -> None:

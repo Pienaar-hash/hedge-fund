@@ -476,6 +476,33 @@ class TestHealthAccumulator:
         assert summary["spread"]["min"] == 0.01
         assert summary["spread"]["max"] == 0.04
         assert summary["spread"]["samples"] == 4
+        assert "p95" in summary["spread"]
+
+    def test_p95_spread(self):
+        h = HealthAccumulator()
+        # 20 samples; p95 index = int(20 * 0.95) = 19
+        for i in range(20):
+            h.record_spread(float(i) * 0.001)
+        summary = h.emit_and_reset()
+        assert summary["spread"]["p95"] >= summary["spread"]["median"]
+        assert summary["spread"]["p95"] <= summary["spread"]["max"]
+
+    def test_mid_tracking(self):
+        h = HealthAccumulator()
+        h.record_spread(0.02, mid=0.54)
+        h.record_spread(0.03, mid=0.55)
+        h.record_spread(0.01)  # No mid
+        summary = h.emit_and_reset()
+        assert summary["mid"] is not None
+        assert summary["mid"]["last"] == 0.55
+        assert summary["mid"]["samples"] == 2
+        assert summary["mid"]["mean"] == pytest.approx(0.545, abs=1e-6)
+
+    def test_mid_none_when_no_mids(self):
+        h = HealthAccumulator()
+        h.record_spread(0.02)
+        summary = h.emit_and_reset()
+        assert summary["mid"] is None
 
     def test_trade_price_tracking(self):
         h = HealthAccumulator()
@@ -489,13 +516,14 @@ class TestHealthAccumulator:
     def test_reset_clears(self):
         h = HealthAccumulator()
         h.record_event("best_bid_ask")
-        h.record_spread(0.01)
+        h.record_spread(0.01, mid=0.5)
         h.record_trade_price(0.5)
         h.record_anomaly()
         h.emit_and_reset()
         summary = h.emit_and_reset()
         assert summary["total_events"] == 0
         assert summary["spread"] is None
+        assert summary["mid"] is None
         assert summary["trade_count"] == 0
         assert summary["anomaly_count"] == 0
 
