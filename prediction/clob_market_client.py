@@ -4,6 +4,13 @@ Layer 2 of the Binary Sleeve data plane.  Connects to Polymarket's CLOB
 WebSocket, subscribes to configured market asset_ids, and persists every
 event as append-only JSONL.
 
+Supports two modes:
+
+1. **Static** — fixed asset_ids (default, or from ``CLOB_ASSET_IDS`` env).
+2. **Dynamic discovery** — auto-discovers the current 15-minute BTC Up/Down
+   market on Polymarket and rotates subscriptions every cycle.  Enabled via
+   ``CLOB_DISCOVERY_MODE=1`` or by passing ``discovery_mode=True``.
+
 Design invariants
 -----------------
 * **Append-only** — never mutates ``MARKET_LOG``.
@@ -87,6 +94,13 @@ ASSET_IDS: List[str] = (
     if os.environ.get("CLOB_ASSET_IDS")
     else _DEFAULT_ASSET_IDS
 )
+
+# Discovery mode — auto-discover 15m BTC Up/Down markets
+DISCOVERY_MODE: bool = os.environ.get("CLOB_DISCOVERY_MODE", "0") == "1"
+DISCOVERY_POLL_INTERVAL_S: float = float(
+    os.environ.get("CLOB_DISCOVERY_POLL_S", "60")
+)
+DISCOVERY_TIMEFRAME: str = os.environ.get("CLOB_DISCOVERY_TIMEFRAME", "15m")
 
 PING_INTERVAL_S: float = float(os.environ.get("CLOB_PING_INTERVAL_S", "10"))
 STALE_EVENT_THRESHOLD_S: float = float(
@@ -219,7 +233,16 @@ class HealthAccumulator:
 # Core client
 # ---------------------------------------------------------------------------
 class CLOBMarketClient:
-    """Async WebSocket client for Polymarket CLOB market data stream."""
+    """Async WebSocket client for Polymarket CLOB market data stream.
+
+    Supports two modes:
+
+    * **Static** — subscribes to a fixed list of ``asset_ids`` for the
+      lifetime of the connection.
+    * **Discovery** — polls Gamma every ``discovery_poll_s`` to discover
+      the current 15-minute (or 5-minute) BTC Up/Down market and
+      dynamically rotates WS subscriptions when the market window changes.
+    """
 
     def __init__(
         self,
@@ -228,12 +251,26 @@ class CLOBMarketClient:
         market_log: Path = MARKET_LOG,
         health_log: Path = HEALTH_LOG,
         env_events_log: Path = ENV_EVENTS_LOG,
+        *,
+        discovery_mode: bool = DISCOVERY_MODE,
+        discovery_poll_s: float = DISCOVERY_POLL_INTERVAL_S,
+        discovery_timeframe: str = DISCOVERY_TIMEFRAME,
     ) -> None:
         self.ws_uri = ws_uri
         self.asset_ids = asset_ids if asset_ids is not None else list(ASSET_IDS)
         self.market_log = market_log
         self.health_log = health_log
         self.env_events_log = env_events_log
+
+        # Discovery mode fields
+        self.discovery_mode = discovery_mode
+        self.discovery_poll_s = discovery_poll_s
+        self.discovery_timeframe = discovery_timeframe
+        self._current_slug: Optional[str] = None
+        self._current_market: Optional[Any] = None  # DiscoveredMarket
+        self._subscribed_ids: List[str] = []  # Currently subscribed asset IDs
+        self._ws_ref: Optional[Any] = None  # Reference to active WS connection
+        self._rotation_count: int = 0
 
         self._last_event_time: float = 0.0
         self._consecutive_reconnects: int = 0
@@ -265,6 +302,22 @@ class CLOBMarketClient:
     def get_last_trade_price(self, asset_id: str) -> Optional[float]:
         """Latest trade price for an asset, or None."""
         return self._last_trade.get(asset_id)
+
+    def get_current_market_slug(self) -> Optional[str]:
+        """Current market slug in discovery mode, or None."""
+        return self._current_slug
+
+    def get_current_market(self) -> Optional[Any]:
+        """Current DiscoveredMarket in discovery mode, or None."""
+        return self._current_market
+
+    def get_rotation_count(self) -> int:
+        """Number of market rotations performed."""
+        return self._rotation_count
+
+    def get_subscribed_ids(self) -> List[str]:
+        """Currently subscribed asset IDs."""
+        return list(self._subscribed_ids)
 
     # ----- anomaly logging -----
 
@@ -544,6 +597,139 @@ class CLOBMarketClient:
             "operation": "unsubscribe",
         })
 
+    # ----- discovery + rotation -----
+
+    def _log_rotation(self, detail: Dict[str, Any]) -> None:
+        """Log a market rotation event to environment_events.jsonl."""
+        event = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": "clob_market_rotation",
+            "source": "clob_market_client",
+            **detail,
+        }
+        _append_jsonl(self.env_events_log, event)
+        logger.info(
+            "[clob] market rotation #%d: %s",
+            self._rotation_count,
+            detail.get("new_slug", "?"),
+        )
+
+    async def _rotate_subscription(
+        self, new_market: Any, ws: Any
+    ) -> None:
+        """Unsubscribe from old tokens and subscribe to new ones.
+
+        Parameters
+        ----------
+        new_market
+            A ``DiscoveredMarket`` from the discovery module.
+        ws
+            Active WebSocket connection.
+        """
+        old_ids = list(self._subscribed_ids)
+        new_ids = [new_market.up_token, new_market.down_token]
+
+        # Don't rotate if tokens are identical (market still current)
+        if set(old_ids) == set(new_ids):
+            return
+
+        self._rotation_count += 1
+
+        # Unsubscribe old
+        if old_ids:
+            try:
+                await ws.send(self._dynamic_unsubscribe(old_ids))
+                logger.info(
+                    "[clob] unsubscribed %d old token(s) (%s)",
+                    len(old_ids),
+                    self._current_slug or "?",
+                )
+            except Exception as exc:
+                logger.warning("[clob] unsubscribe failed: %s", exc)
+
+        # Subscribe new
+        try:
+            await ws.send(self._dynamic_subscribe(new_ids))
+            self._subscribed_ids = new_ids
+            old_slug = self._current_slug
+            self._current_slug = new_market.slug
+            self._current_market = new_market
+            logger.info(
+                "[clob] subscribed to %s — UP=%s... DOWN=%s... (%.0fm remaining)",
+                new_market.slug,
+                new_market.up_token[:16],
+                new_market.down_token[:16],
+                new_market.remaining_s / 60,
+            )
+        except Exception as exc:
+            logger.error("[clob] subscribe to new market failed: %s", exc)
+            self._log_anomaly(
+                AnomalyType.SUBSCRIBE_ERROR,
+                {"slug": new_market.slug, "error": str(exc)},
+            )
+            return
+
+        self._log_rotation({
+            "rotation_number": self._rotation_count,
+            "old_slug": old_slug,
+            "new_slug": new_market.slug,
+            "new_question": new_market.question,
+            "new_up_token": new_market.up_token,
+            "new_down_token": new_market.down_token,
+            "remaining_s": new_market.remaining_s,
+            "timeframe": new_market.timeframe,
+        })
+
+    async def _discovery_loop(self, ws: Any) -> None:
+        """Periodically poll Gamma for the current 15m market and rotate.
+
+        Runs only in discovery mode.  Polls every ``discovery_poll_s``
+        and triggers ``_rotate_subscription`` when the market window changes.
+        """
+        from prediction.market_discovery import discover_btc_updown_markets
+
+        logger.info(
+            "[clob] discovery loop started — timeframe=%s poll_interval=%.0fs",
+            self.discovery_timeframe,
+            self.discovery_poll_s,
+        )
+
+        while self._running:
+            try:
+                snap = discover_btc_updown_markets(
+                    timeframes=[self.discovery_timeframe],
+                )
+
+                target = (
+                    snap.current_15m
+                    if self.discovery_timeframe == "15m"
+                    else snap.current_5m
+                )
+
+                if target is None:
+                    logger.warning(
+                        "[clob] discovery: no active %s market found "
+                        "(raw=%d, btc_updown=%d, error=%s)",
+                        self.discovery_timeframe,
+                        snap.raw_event_count,
+                        snap.btc_updown_count,
+                        snap.error,
+                    )
+                elif target.slug != self._current_slug:
+                    # New market window — rotate
+                    await self._rotate_subscription(target, ws)
+                else:
+                    logger.debug(
+                        "[clob] discovery: market unchanged (%s, %.0fm left)",
+                        self._current_slug,
+                        target.remaining_s / 60,
+                    )
+
+            except Exception as exc:
+                logger.warning("[clob] discovery poll error: %s", exc)
+
+            await asyncio.sleep(self.discovery_poll_s)
+
     # ----- main loop -----
 
     async def _ping_loop(self, ws: Any) -> None:
@@ -579,6 +765,16 @@ class CLOBMarketClient:
         while self._running:
             await asyncio.sleep(HEALTH_EMIT_INTERVAL_S)
             summary = self.health.emit_and_reset()
+            # Enrich with discovery-mode metadata
+            if self.discovery_mode:
+                summary["discovery_mode"] = True
+                summary["current_slug"] = self._current_slug
+                summary["rotation_count"] = self._rotation_count
+                if self._current_market:
+                    summary["market_remaining_s"] = round(
+                        self._current_market.end_ts - time.time(), 1
+                    )
+            summary["subscribed_ids"] = len(self._subscribed_ids)
             _append_jsonl(self.health_log, summary)
             logger.info("[clob] health: %s", json.dumps(summary))
 
@@ -592,16 +788,62 @@ class CLOBMarketClient:
             close_timeout=10,
         ) as ws:
             self._consecutive_reconnects = 0
-            logger.info(
-                "[clob] connected — subscribing to %d asset(s)",
-                len(self.asset_ids),
-            )
+            self._ws_ref = ws
 
-            # Subscribe with custom features enabled
-            await ws.send(self._subscribe_message(self.asset_ids))
+            if self.discovery_mode:
+                # Discovery mode: do initial discovery, subscribe to current
+                # market, then start periodic re-discovery loop.
+                logger.info(
+                    "[clob] connected — discovery mode (%s)",
+                    self.discovery_timeframe,
+                )
+                from prediction.market_discovery import (
+                    discover_btc_updown_markets,
+                )
+
+                snap = discover_btc_updown_markets(
+                    timeframes=[self.discovery_timeframe],
+                )
+                target = (
+                    snap.current_15m
+                    if self.discovery_timeframe == "15m"
+                    else snap.current_5m
+                )
+                if target:
+                    initial_ids = [target.up_token, target.down_token]
+                    await ws.send(self._subscribe_message(initial_ids))
+                    self._subscribed_ids = initial_ids
+                    self._current_slug = target.slug
+                    self._current_market = target
+                    logger.info(
+                        "[clob] initial subscribe — %s (%.0fm remaining)",
+                        target.slug,
+                        target.remaining_s / 60,
+                    )
+                else:
+                    # No market available right now — subscribe empty, let
+                    # discovery loop pick up once one appears.
+                    logger.warning(
+                        "[clob] no active market at connect time — "
+                        "waiting for discovery loop"
+                    )
+                    await ws.send(self._subscribe_message([]))
+            else:
+                # Static mode: subscribe to configured asset_ids
+                logger.info(
+                    "[clob] connected — subscribing to %d asset(s)",
+                    len(self.asset_ids),
+                )
+                await ws.send(self._subscribe_message(self.asset_ids))
+                self._subscribed_ids = list(self.asset_ids)
 
             # Start ping loop
             ping_task = asyncio.create_task(self._ping_loop(ws))
+
+            # Start discovery loop if in discovery mode
+            discovery_task: Optional[asyncio.Task[None]] = None
+            if self.discovery_mode:
+                discovery_task = asyncio.create_task(self._discovery_loop(ws))
 
             try:
                 async for raw_msg in ws:
@@ -619,10 +861,16 @@ class CLOBMarketClient:
                             )
             finally:
                 ping_task.cancel()
-                try:
-                    await ping_task
-                except asyncio.CancelledError:
-                    pass
+                if discovery_task is not None:
+                    discovery_task.cancel()
+                for t in [ping_task] + (
+                    [discovery_task] if discovery_task else []
+                ):
+                    try:
+                        await t
+                    except asyncio.CancelledError:
+                        pass
+                self._ws_ref = None
 
     async def run(self) -> None:
         """Main entry — connect with exponential backoff reconnection."""
@@ -630,19 +878,30 @@ class CLOBMarketClient:
             raise ImportError(
                 "websockets is required: pip install websockets"
             )
-        if not self.asset_ids:
+        if not self.discovery_mode and not self.asset_ids:
             raise ValueError("No asset_ids configured — cannot subscribe")
 
         self._running = True
-        logger.info(
-            "[clob] CLOB Market Client starting — uri=%s assets=%d",
-            self.ws_uri,
-            len(self.asset_ids),
-        )
-        logger.info(
-            "[clob] asset_ids: %s",
-            ", ".join(a[:16] + "..." for a in self.asset_ids),
-        )
+
+        if self.discovery_mode:
+            logger.info(
+                "[clob] CLOB Market Client starting — DISCOVERY MODE "
+                "uri=%s timeframe=%s poll=%.0fs",
+                self.ws_uri,
+                self.discovery_timeframe,
+                self.discovery_poll_s,
+            )
+        else:
+            logger.info(
+                "[clob] CLOB Market Client starting — STATIC MODE "
+                "uri=%s assets=%d",
+                self.ws_uri,
+                len(self.asset_ids),
+            )
+            logger.info(
+                "[clob] asset_ids: %s",
+                ", ".join(a[:16] + "..." for a in self.asset_ids),
+            )
         logger.info(
             "[clob] logs: events=%s health=%s anomalies=%s",
             self.market_log,
@@ -742,6 +1001,13 @@ def main() -> None:
     )
 
     client = CLOBMarketClient()
+
+    if client.discovery_mode:
+        logger.info(
+            "[clob] Discovery mode ON — timeframe=%s poll=%.0fs",
+            client.discovery_timeframe,
+            client.discovery_poll_s,
+        )
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

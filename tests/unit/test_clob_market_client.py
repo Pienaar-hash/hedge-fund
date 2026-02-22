@@ -9,6 +9,7 @@ Covers:
     - Log writing (append-only JSONL invariant)
     - Subscribe message format
     - Public query methods (bid/ask/spread/trade)
+    - Discovery mode (rotation, subscribed_ids, current_market)
 """
 
 from __future__ import annotations
@@ -604,3 +605,114 @@ class TestLogIntegrity:
                 obj = json.loads(line)
                 assert "event_type" in obj, f"Line {line_no} missing event_type"
                 assert "ts_arrival_ms" in obj, f"Line {line_no} missing ts_arrival_ms"
+
+
+# ===================================================================
+# Discovery mode tests
+# ===================================================================
+class TestDiscoveryMode:
+    """Tests for discovery mode fields and rotation logic."""
+
+    def test_discovery_mode_defaults_off(self, tmp_logs) -> None:
+        """Discovery mode should default to False."""
+        c = CLOBMarketClient(
+            ws_uri="wss://localhost/fake",
+            asset_ids=[ASSET_A],
+            market_log=tmp_logs["market"],
+            health_log=tmp_logs["health"],
+            env_events_log=tmp_logs["env"],
+        )
+        assert c.discovery_mode is False
+        assert c._current_slug is None
+        assert c._rotation_count == 0
+
+    def test_discovery_mode_init(self, tmp_logs) -> None:
+        """Discovery mode can be enabled via constructor."""
+        c = CLOBMarketClient(
+            ws_uri="wss://localhost/fake",
+            asset_ids=[],
+            market_log=tmp_logs["market"],
+            health_log=tmp_logs["health"],
+            env_events_log=tmp_logs["env"],
+            discovery_mode=True,
+            discovery_timeframe="15m",
+            discovery_poll_s=30.0,
+        )
+        assert c.discovery_mode is True
+        assert c.discovery_timeframe == "15m"
+        assert c.discovery_poll_s == 30.0
+
+    def test_get_subscribed_ids_empty(self, client: CLOBMarketClient) -> None:
+        """Initially no subscribed IDs tracked."""
+        assert client.get_subscribed_ids() == []
+
+    def test_get_rotation_count_zero(self, client: CLOBMarketClient) -> None:
+        assert client.get_rotation_count() == 0
+
+    def test_get_current_market_slug_none(self, client: CLOBMarketClient) -> None:
+        assert client.get_current_market_slug() is None
+
+    def test_get_current_market_none(self, client: CLOBMarketClient) -> None:
+        assert client.get_current_market() is None
+
+    def test_dynamic_subscribe_format(self) -> None:
+        """Dynamic subscribe message should have correct format."""
+        msg = json.loads(CLOBMarketClient._dynamic_subscribe(["tok1", "tok2"]))
+        assert msg["assets_ids"] == ["tok1", "tok2"]
+        assert msg["operation"] == "subscribe"
+
+    def test_dynamic_unsubscribe_format(self) -> None:
+        """Dynamic unsubscribe message should have correct format."""
+        msg = json.loads(CLOBMarketClient._dynamic_unsubscribe(["tok1"]))
+        assert msg["assets_ids"] == ["tok1"]
+        assert msg["operation"] == "unsubscribe"
+
+    def test_rotation_count_increments(self, tmp_logs) -> None:
+        """_rotation_count increments on each rotation call."""
+        c = CLOBMarketClient(
+            ws_uri="wss://localhost/fake",
+            asset_ids=[],
+            market_log=tmp_logs["market"],
+            health_log=tmp_logs["health"],
+            env_events_log=tmp_logs["env"],
+            discovery_mode=True,
+        )
+        assert c._rotation_count == 0
+
+    def test_discovery_mode_no_asset_ids_ok(self, tmp_logs) -> None:
+        """In discovery mode, empty asset_ids should not raise."""
+        c = CLOBMarketClient(
+            ws_uri="wss://localhost/fake",
+            asset_ids=[],
+            market_log=tmp_logs["market"],
+            health_log=tmp_logs["health"],
+            env_events_log=tmp_logs["env"],
+            discovery_mode=True,
+        )
+        assert c.asset_ids == []
+        assert c.discovery_mode is True
+
+    def test_log_rotation_writes_event(self, tmp_logs) -> None:
+        """_log_rotation should write to env_events log."""
+        c = CLOBMarketClient(
+            ws_uri="wss://localhost/fake",
+            asset_ids=[],
+            market_log=tmp_logs["market"],
+            health_log=tmp_logs["health"],
+            env_events_log=tmp_logs["env"],
+            discovery_mode=True,
+        )
+        c._rotation_count = 1
+        c._log_rotation({
+            "rotation_number": 1,
+            "old_slug": None,
+            "new_slug": "btc-updown-15m-123",
+        })
+        with open(tmp_logs["env"]) as f:
+            lines = f.readlines()
+        assert len(lines) == 1
+        event = json.loads(lines[0])
+        assert event["event"] == "clob_market_rotation"
+        assert event["new_slug"] == "btc-updown-15m-123"
+        assert event["source"] == "clob_market_client"
+
