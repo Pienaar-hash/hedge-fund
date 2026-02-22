@@ -286,24 +286,21 @@ def main() -> None:
     st.divider()
     
     # =========================================================================
-    # RUNTIME HEALTH (Risk + Router side by side)
+    # RUNTIME HEALTH (Risk + Router — collapsed, operational detail)
     # =========================================================================
-    render_runtime_block(
-        risk_snapshot=state["risk_snapshot"],
-        router_health=state["router_health"],
-        nav_value=state["nav_usd"],
-        gross_exposure=state["gross_exposure"],
-    )
-    
-    st.divider()
+    with st.expander("Trading Engine", expanded=False):
+        render_runtime_block(
+            risk_snapshot=state["risk_snapshot"],
+            router_health=state["router_health"],
+            nav_value=state["nav_usd"],
+            gross_exposure=state["gross_exposure"],
+        )
     
     # =========================================================================
     # GOVERNANCE — DLE Authority Gate (collapsed — enforcement detail)
     # =========================================================================
     with st.expander("Governance — Doctrine Enforcement", expanded=False):
         render_enforcement_widget(state["enforcement_state"])
-    
-    st.divider()
     
     # =========================================================================
     # POSITIONS & EXECUTION
@@ -344,8 +341,6 @@ def main() -> None:
         render_pnl_attribution_widget(state["pnl_attribution"])
         st.divider()
         render_alpha_decay_widget(state["alpha_decay"])
-    
-    st.divider()
     
     # =========================================================================
     # DIAGNOSTICS (collapsed by default, at the bottom)

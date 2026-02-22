@@ -2,7 +2,7 @@
 Equity Curve Component — Portfolio NAV over time.
 
 Renders an SVG line chart from logs/nav_log.json.
-Single line: Portfolio NAV ($). Clean, no gradients, no overlays.
+Single line: Portfolio NAV ($). Fill gradient, grid, axis labels.
 
 Data source: logs/nav_log.json — array of {nav, t, unrealized_pnl}
 """
@@ -12,7 +12,7 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import streamlit as st
 
@@ -20,11 +20,11 @@ _NAV_LOG_PATH = Path("logs/nav_log.json")
 
 # Chart dimensions
 _CHART_W = 720
-_CHART_H = 200
+_CHART_H = 220
 _PAD_L = 70   # left padding for y-axis labels
 _PAD_R = 20
-_PAD_T = 20
-_PAD_B = 40   # bottom for x-axis labels
+_PAD_T = 24
+_PAD_B = 36   # bottom for x-axis labels
 
 
 def _load_nav_series(path: Optional[Path] = None) -> List[Dict[str, Any]]:
@@ -70,10 +70,13 @@ def _format_time_date(ts: float) -> str:
     return dt.strftime("%b %d")
 
 
-def _build_equity_svg(entries: List[Dict[str, Any]]) -> str:
+def _build_equity_svg(
+    entries: List[Dict[str, Any]],
+) -> Union[str, Tuple[str, str, float, float, float, str, str]]:
     """Build an SVG equity curve chart.
 
-    Returns empty string if insufficient data.
+    Returns empty string if insufficient data, otherwise a tuple of
+    (svg_html, span_text, end_nav, delta, delta_pct, delta_color, delta_sign).
     """
     if len(entries) < 2:
         return ""
@@ -86,27 +89,46 @@ def _build_equity_svg(entries: List[Dict[str, Any]]) -> str:
     t_min = times[0]
     t_max = times[-1]
 
-    # Avoid division by zero
+    # Pad y-range by 10% for visual breathing room on flat curves
     nav_range = nav_max - nav_min if nav_max != nav_min else 1.0
+    y_pad = nav_range * 0.10
+    nav_min_padded = nav_min - y_pad
+    nav_max_padded = nav_max + y_pad
+    nav_range_padded = nav_max_padded - nav_min_padded
+
     t_range = t_max - t_min if t_max != t_min else 1.0
 
     plot_w = _CHART_W - _PAD_L - _PAD_R
     plot_h = _CHART_H - _PAD_T - _PAD_B
 
-    # Scale helpers
+    # Scale helpers (use padded range for visual scaling)
     def sx(t: float) -> float:
         return _PAD_L + ((t - t_min) / t_range) * plot_w
 
     def sy(nav: float) -> float:
-        return _PAD_T + plot_h - ((nav - nav_min) / nav_range) * plot_h
+        return _PAD_T + plot_h - ((nav - nav_min_padded) / nav_range_padded) * plot_h
 
     # Build polyline points
-    points = " ".join(f"{sx(t):.1f},{sy(n):.1f}" for t, n in zip(times, navs))
+    pts = [(sx(t), sy(n)) for t, n in zip(times, navs)]
+    points_str = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+
+    # Fill path: line + close along bottom
+    bottom_y = _PAD_T + plot_h
+    fill_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    fill_path = (
+        f"M {pts[0][0]:.1f},{bottom_y:.1f} "
+        f"L {fill_points} "
+        f"L {pts[-1][0]:.1f},{bottom_y:.1f} Z"
+    )
 
     # Determine line color: green if up, red if down
-    color = "#10b981" if navs[-1] >= navs[0] else "#ef4444"
+    up = navs[-1] >= navs[0]
+    color = "#10b981" if up else "#ef4444"
+    fill_color = "rgba(16,185,129,0.12)" if up else "rgba(239,68,68,0.12)"
+    grad_id = "navGradUp" if up else "navGradDn"
+    grad_top = "rgba(16,185,129,0.25)" if up else "rgba(239,68,68,0.25)"
 
-    # Y-axis labels (5 ticks)
+    # Y-axis labels (5 ticks) — use real data range, not padded
     y_labels = ""
     for i in range(5):
         val = nav_min + (nav_range * i / 4)
@@ -119,7 +141,7 @@ def _build_equity_svg(entries: List[Dict[str, Any]]) -> str:
         # Grid line
         y_labels += (
             f'<line x1="{_PAD_L}" y1="{y}" x2="{_CHART_W - _PAD_R}" y2="{y}" '
-            f'stroke="#1a1d24" stroke-width="1" />\n'
+            f'stroke="#222630" stroke-width="1" stroke-dasharray="4,4" />\n'
         )
 
     # X-axis labels (5 ticks)
@@ -133,7 +155,7 @@ def _build_equity_svg(entries: List[Dict[str, Any]]) -> str:
         else:
             label = _format_time(t)
         x_labels += (
-            f'<text x="{x}" y="{_CHART_H - 5}" '
+            f'<text x="{x}" y="{_CHART_H - 6}" '
             f'text-anchor="middle" fill="#666" font-size="11" '
             f'font-family="monospace">{label}</text>\n'
         )
@@ -143,7 +165,7 @@ def _build_equity_svg(entries: List[Dict[str, Any]]) -> str:
     end_nav = navs[-1]
     delta = end_nav - start_nav
     delta_pct = (delta / start_nav * 100) if start_nav > 0 else 0
-    delta_sign = "+" if delta >= 0 else ""
+    delta_sign = "+" if delta >= 0 else "-"
     delta_color = "#10b981" if delta >= 0 else "#ef4444"
 
     # Span display
@@ -153,18 +175,28 @@ def _build_equity_svg(entries: List[Dict[str, Any]]) -> str:
         span_text = f"{span_hours / 24:.1f}d"
 
     svg = f'''
-    <svg width="100%" viewBox="0 0 {_CHART_W} {_CHART_H}" xmlns="http://www.w3.org/2000/svg"
-         style="background: transparent;">
+    <svg width="{_CHART_W}" height="{_CHART_H}" viewBox="0 0 {_CHART_W} {_CHART_H}"
+         xmlns="http://www.w3.org/2000/svg" style="display:block;max-width:100%;">
+        <defs>
+            <linearGradient id="{grad_id}" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="{grad_top}" />
+                <stop offset="100%" stop-color="rgba(0,0,0,0)" />
+            </linearGradient>
+        </defs>
+        <!-- Plot background -->
+        <rect x="{_PAD_L}" y="{_PAD_T}" width="{plot_w}" height="{plot_h}"
+              fill="#0f1218" rx="2" />
         <!-- Grid -->
         {y_labels}
         {x_labels}
-        <!-- Plot border -->
-        <rect x="{_PAD_L}" y="{_PAD_T}" width="{plot_w}" height="{plot_h}"
-              fill="none" stroke="#1a1d24" stroke-width="1" />
+        <!-- Fill area under curve -->
+        <path d="{fill_path}" fill="url(#{grad_id})" />
         <!-- NAV line -->
-        <polyline fill="none" stroke="{color}" stroke-width="1.5"
+        <polyline fill="none" stroke="{color}" stroke-width="2"
                   stroke-linejoin="round" stroke-linecap="round"
-                  points="{points}" />
+                  points="{points_str}" />
+        <!-- Current value dot -->
+        <circle cx="{pts[-1][0]:.1f}" cy="{pts[-1][1]:.1f}" r="3" fill="{color}" />
     </svg>
     '''
 
@@ -200,6 +232,9 @@ def render_equity_curve(nav_log_path: Optional[Path] = None) -> None:
 
     svg, span_text, current_nav, delta, delta_pct, delta_color, delta_sign = result
 
+    # Height for st.html iframe: header (~50px) + chart + padding
+    iframe_h = _CHART_H + 80
+
     html = f'''
     <div style="
         background: linear-gradient(135deg, #1a1d24 0%, #12141a 100%);
@@ -223,7 +258,7 @@ def render_equity_curve(nav_log_path: Optional[Path] = None) -> None:
                     ${current_nav:,.2f}
                 </span>
                 <span style="font-size: 0.85em; font-weight: 600; color: {delta_color};">
-                    {delta_sign}${abs(delta):,.2f} ({delta_sign}{delta_pct:.2f}%)
+                    {delta_sign}${abs(delta):,.2f} ({delta_sign}{abs(delta_pct):.2f}%)
                 </span>
             </div>
         </div>
@@ -232,4 +267,4 @@ def render_equity_curve(nav_log_path: Optional[Path] = None) -> None:
     </div>
     '''
 
-    st.html(html)
+    st.html(html, height=iframe_h)

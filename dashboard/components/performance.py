@@ -38,7 +38,7 @@ def render_performance_block(
     kpis: Dict[str, Any],
     equity_curve: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    """Render strategy performance with 4 KPI cards + mini equity curve."""
+    """Render strategy performance with 4 KPI cards."""
     # Section header
     st.html('''
     <div class="section-header">
@@ -59,30 +59,26 @@ def render_performance_block(
     max_dd = float(kpis.get("max_drawdown") or kpis.get("max_dd") or 0)
     trades = int(kpis.get("total_trades") or kpis.get("trades_count") or 0)
     
-    # Extract equity curve for sparkline (downsample to max 50 points)
-    sparkline_html = ""
-    if equity_curve and len(equity_curve) > 1:
-        try:
-            equity_values = [float(e.get("equity") or e.get("nav") or 0) for e in equity_curve]
-            # Downsample if too many points
-            if len(equity_values) > 80:
-                step = len(equity_values) // 80
-                equity_values = equity_values[::step]
-            sparkline_html = _sparkline_svg(equity_values, width=280, height=48)
-        except Exception:
-            pass
+    # When PnL windows are suppressed (NAV span too short), show "—" instead of $0
+    _suppressed = kpis.get("_nav_span_suppressed_windows", set())
+    _daily_suppressed = "24h" in _suppressed
+    _weekly_suppressed = "7d" in _suppressed
+    _monthly_suppressed = "30d" in _suppressed
+    _alltime_suppressed = "all-time" in _suppressed
     
     # Format helper
-    def fmt_pnl(val: float) -> tuple:
+    def fmt_pnl(val: float, suppressed: bool = False) -> tuple:
+        if suppressed and val == 0:
+            return "text-muted", "—"
         cls = "text-positive" if val >= 0 else "text-negative"
         sign = "+" if val >= 0 else "-"
         return cls, f"{sign}${abs(val):,.0f}"
     
     # Build cards
-    d_cls, d_val = fmt_pnl(daily_pnl)
-    w_cls, w_val = fmt_pnl(weekly_pnl)
-    m_cls, m_val = fmt_pnl(monthly_pnl)
-    t_cls, t_val = fmt_pnl(total_pnl)
+    d_cls, d_val = fmt_pnl(daily_pnl, _daily_suppressed)
+    w_cls, w_val = fmt_pnl(weekly_pnl, _weekly_suppressed)
+    m_cls, m_val = fmt_pnl(monthly_pnl, _monthly_suppressed)
+    t_cls, t_val = fmt_pnl(total_pnl, _alltime_suppressed)
     
     win_cls = "text-positive" if win_rate >= 50 else "text-warning"
     sharpe_cls = "text-positive" if sharpe >= 1 else ("text-warning" if sharpe >= 0 else "text-negative")
@@ -93,24 +89,30 @@ def render_performance_block(
     if span_note:
         span_html = f'<div style="color:#f59e0b;font-size:11px;margin-top:6px;text-align:center;">⚠ {span_note}</div>'
 
+    # Labels that clarify data source when suppressed
+    d_label = "24h PnL" if not _daily_suppressed else "24h PnL<br><span style='font-size:9px;color:#555'>awaiting span</span>"
+    w_label = "7d PnL" if not _weekly_suppressed else "7d PnL<br><span style='font-size:9px;color:#555'>awaiting span</span>"
+    m_label = "30d PnL" if not _monthly_suppressed else "30d PnL<br><span style='font-size:9px;color:#555'>awaiting span</span>"
+    t_label = "All-Time PnL"
+
     html = f'''
     <div class="quant-card">
         <div class="performance-grid">
             <!-- PnL cards row -->
             <div class="perf-card">
-                <div class="perf-label">24h PnL</div>
+                <div class="perf-label">{d_label}</div>
                 <div class="perf-value {d_cls}">{d_val}</div>
             </div>
             <div class="perf-card">
-                <div class="perf-label">7d PnL</div>
+                <div class="perf-label">{w_label}</div>
                 <div class="perf-value {w_cls}">{w_val}</div>
             </div>
             <div class="perf-card">
-                <div class="perf-label">30d PnL</div>
+                <div class="perf-label">{m_label}</div>
                 <div class="perf-value {m_cls}">{m_val}</div>
             </div>
             <div class="perf-card perf-card-highlight">
-                <div class="perf-label">All-Time PnL</div>
+                <div class="perf-label">{t_label}</div>
                 <div class="perf-value {t_cls}">{t_val}</div>
             </div>
             
@@ -133,12 +135,6 @@ def render_performance_block(
             </div>
         </div>
         {span_html}
-        
-        <!-- Equity sparkline -->
-        <div class="equity-sparkline-row">
-            <span class="sparkline-label">Equity Curve</span>
-            {sparkline_html if sparkline_html else '<span class="text-muted text-xs">Insufficient data</span>'}
-        </div>
     </div>
     '''
     

@@ -290,15 +290,9 @@ def render_strategy_block(
             f"NAV log span {_log_span:.1f}d — "
             f"{', '.join(_span_suppressed)} windows use ledger values"
         )
+        merged_kpis["_nav_span_suppressed_windows"] = set(_span_suppressed)
     
-    # Extract equity curve from NAV state series
-    equity_curve = None
-    if nav_state:
-        series = nav_state.get("series", [])
-        if series and len(series) > 1:
-            equity_curve = series
-    
-    render_performance_block(merged_kpis, equity_curve=equity_curve)
+    render_performance_block(merged_kpis)
 
 
 # =============================================================================

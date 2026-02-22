@@ -80,6 +80,9 @@ class TestBuildEquitySvg:
         svg, span_text, current_nav, delta, delta_pct, delta_color, delta_sign = result
         assert "<svg" in svg
         assert "<polyline" in svg
+        assert "<path" in svg  # fill gradient under line
+        assert "<circle" in svg  # endpoint dot
+        assert 'fill="#0f1218"' in svg  # plot background
         assert current_nav == 10098  # last entry
         assert delta == 98  # 10098 - 10000
         assert delta_sign == "+"
@@ -103,6 +106,7 @@ class TestBuildEquitySvg:
         assert delta < 0
         assert "#ef4444" in svg  # red line
         assert delta_color == "#ef4444"
+        assert delta_sign == "-"
 
     def test_flat_no_crash(self):
         entries = [
