@@ -27,7 +27,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from execution.true_edge import TrueEdgeResult
 
 LOG = logging.getLogger("fee_gate")
 
@@ -140,5 +143,37 @@ def check_fee_edge(
             expected_edge_usd,
             required_edge,
         )
+
+    return allowed, details
+
+
+# ── True Edge v1 integration ──────────────────────────────────────────────
+
+def check_fee_edge_v2(
+    true_edge_result: "TrueEdgeResult",
+    config: Optional[FeeGateConfig] = None,
+) -> tuple[bool, Dict[str, Any]]:
+    """Check fee gate using a TrueEdgeResult (ATR × confidence mapping).
+
+    This is the v2 entry point that accepts a pre-computed TrueEdgeResult
+    instead of a raw expected_edge_pct.  The details dict includes all
+    true_edge_v1.* diagnostic fields for structured logging.
+
+    Args:
+        true_edge_result: Pre-computed edge from ``compute_true_edge()``.
+        config: Fee gate config (loaded from runtime.yaml if None).
+
+    Returns:
+        ``(allowed, details)`` with merged fee gate + true edge diagnostics.
+    """
+    allowed, details = check_fee_edge(
+        notional_usd=true_edge_result.notional_usd,
+        expected_edge_pct=true_edge_result.expected_edge_pct,
+        config=config,
+    )
+
+    # Merge true_edge_v1.* fields into details for structured logging
+    details.update(true_edge_result.to_dict())
+    details["edge_source"] = true_edge_result.source
 
     return allowed, details

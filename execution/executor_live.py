@@ -11,6 +11,7 @@ sys.path.insert(0, repo_root)
 import argparse
 import json
 import logging
+import shutil
 import subprocess
 import time
 import socket
@@ -75,6 +76,7 @@ LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
 LOG_POSITION = get_logger("logs/execution/position_state.jsonl")
 LOG_HEART = get_logger("logs/execution/sync_heartbeats.jsonl")
 ROUTER_HEALTH_LOG = get_logger("logs/router_health.jsonl")
+LOG_FEE_GATE = get_logger("logs/execution/fee_gate_events.jsonl")
 EXEC_HEALTH_LOG = get_logger("logs/execution/execution_health.jsonl")
 _HEARTBEAT_INTERVAL = 60.0
 _LAST_HEARTBEAT = 0.0
@@ -158,6 +160,19 @@ _LAST_KPIS_V7: Dict[str, Any] | None = None
 _KPI_V7_PUBLISH_INTERVAL_S = float(os.getenv("KPI_V7_PUBLISH_INTERVAL_S", str(_HEALTH_PUBLISH_INTERVAL_S)) or _HEALTH_PUBLISH_INTERVAL_S)
 _LAST_KPI_PUBLISH = 0.0
 _SYMBOL_ERROR_COOLDOWN: Dict[str, float] = {}
+
+# Doctrine block summary — rate-limited per-cycle regime awareness
+_LAST_DOCTRINE_BLOCK_LOG = 0.0
+_DOCTRINE_BLOCK_LOG_INTERVAL_S = 120.0  # At most one summary line every 2 min
+
+# Disk pressure guard (prevents silent IO-wait death from unbounded log growth)
+_DISK_CHECK_INTERVAL_S = float(os.getenv("DISK_CHECK_INTERVAL_S", "300") or 300)
+_DISK_WARN_THRESHOLD_PCT = float(os.getenv("DISK_WARN_THRESHOLD_PCT", "80") or 80)
+_DISK_CRITICAL_THRESHOLD_PCT = float(os.getenv("DISK_CRITICAL_THRESHOLD_PCT", "90") or 90)
+_LAST_DISK_CHECK = 0.0
+_LAST_DISK_ALERT_TS = 0.0
+_DISK_ALERT_COOLDOWN_S = 600.0  # Don't spam — one alert per 10 min
+_ENV_EVENTS_PATH = Path("logs/execution/environment_events.jsonl")
 
 _ENGINE_VERSION = read_version(default="v7.6")
 
@@ -494,6 +509,124 @@ def _get_risk_engine_v6() -> Optional[RiskEngineV6]:
         _RISK_ENGINE_V6 = RiskEngineV6.from_configs(_RISK_CFG, pairs_cfg)
         _RISK_ENGINE_V6_CFG_DIGEST = digest
     return _RISK_ENGINE_V6
+
+
+def _maybe_check_disk_pressure(force: bool = False) -> None:
+    """Periodic disk usage check — emits environment event if usage exceeds thresholds.
+
+    Prevents silent IO-wait death from unbounded log growth (e.g. 10GB JSONL).
+    Checks every _DISK_CHECK_INTERVAL_S (default 5 min).  Alerts are rate-limited
+    to one per _DISK_ALERT_COOLDOWN_S (10 min) to avoid log spam.
+    """
+    global _LAST_DISK_CHECK, _LAST_DISK_ALERT_TS
+    now = time.time()
+    if not force and (now - _LAST_DISK_CHECK) < _DISK_CHECK_INTERVAL_S:
+        return
+    _LAST_DISK_CHECK = now
+    try:
+        usage = shutil.disk_usage("/")
+    except OSError as exc:
+        LOG.debug("[disk_guard] disk_usage check failed: %s", exc)
+        return
+    used_pct = (usage.used / usage.total) * 100.0 if usage.total > 0 else 0.0
+    free_gb = usage.free / (1024 ** 3)
+    level = "ok"
+    if used_pct >= _DISK_CRITICAL_THRESHOLD_PCT:
+        level = "critical"
+    elif used_pct >= _DISK_WARN_THRESHOLD_PCT:
+        level = "warning"
+    if level == "ok":
+        return
+    # Rate-limit alerts
+    if (now - _LAST_DISK_ALERT_TS) < _DISK_ALERT_COOLDOWN_S:
+        return
+    _LAST_DISK_ALERT_TS = now
+    payload = {
+        "ts": now_utc(),
+        "event_type": "disk_pressure",
+        "level": level,
+        "disk_used_pct": round(used_pct, 1),
+        "disk_free_gb": round(free_gb, 2),
+        "disk_total_gb": round(usage.total / (1024 ** 3), 2),
+        "threshold_warn_pct": _DISK_WARN_THRESHOLD_PCT,
+        "threshold_critical_pct": _DISK_CRITICAL_THRESHOLD_PCT,
+    }
+    LOG.warning(
+        "[disk_guard] DISK PRESSURE %s — used=%.1f%% free=%.2fGB",
+        level.upper(), used_pct, free_gb,
+    )
+    try:
+        append_jsonl(_ENV_EVENTS_PATH, payload)
+    except Exception as exc:
+        LOG.debug("[disk_guard] environment_event write failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# REGIME_DIRECTION_MAP mirror (avoid coupling to doctrine_kernel import order)
+# ---------------------------------------------------------------------------
+_REGIME_PERMIT_MAP: Dict[str, list] = {
+    "TREND_UP": ["BUY", "LONG"],
+    "TREND_DOWN": ["SELL", "SHORT"],
+    "MEAN_REVERT": ["BUY", "SELL", "LONG", "SHORT"],
+    "BREAKOUT": ["BUY", "SELL", "LONG", "SHORT"],
+    "CHOPPY": [],
+    "CRISIS": [],
+}
+
+
+def _maybe_emit_doctrine_block_summary(
+    intent_count: int,
+    submitted_count: int,
+) -> None:
+    """Rate-limited per-cycle summary of what Doctrine is doing.
+
+    Emits:
+      - One LOG.info line (rate-limited to every 2 min)
+      - One structured environment_event (same cadence)
+
+    Prevents misreading 'no trades' as 'broken executor'.
+    """
+    global _LAST_DOCTRINE_BLOCK_LOG
+    now = time.time()
+    if (now - _LAST_DOCTRINE_BLOCK_LOG) < _DOCTRINE_BLOCK_LOG_INTERVAL_S:
+        return
+    _LAST_DOCTRINE_BLOCK_LOG = now
+
+    blocked_count = max(0, intent_count - submitted_count)
+    if blocked_count == 0 and intent_count == 0:
+        return  # Nothing to report — no intents this cycle
+
+    try:
+        sentinel = _load_sentinel_x_state()
+        regime = sentinel.get("primary_regime", "UNKNOWN")
+        confidence = 0.0
+        probs = sentinel.get("regime_probs") or sentinel.get("smoothed_probs") or {}
+        if regime in probs:
+            confidence = float(probs[regime])
+        permits = _REGIME_PERMIT_MAP.get(regime, [])
+
+        LOG.info(
+            "[doctrine] %s %.1f%% permits=%s blocked=%d/%d intents",
+            regime,
+            confidence * 100,
+            permits or "[]",
+            blocked_count,
+            intent_count,
+        )
+
+        payload: Dict[str, Any] = {
+            "ts": _now_iso(),
+            "type": "DOCTRINE_BLOCK_ACTIVE",
+            "regime": regime,
+            "confidence": round(confidence, 4),
+            "permit_directions": permits,
+            "intent_count": intent_count,
+            "submitted_count": submitted_count,
+            "blocked_count": blocked_count,
+        }
+        append_jsonl(_ENV_EVENTS_PATH, payload)
+    except Exception as exc:
+        LOG.debug("[doctrine_block_summary] failed: %s", exc)
 
 
 def _maybe_write_v6_runtime_probe(force: bool = False) -> None:
@@ -1258,7 +1391,7 @@ def _log_startup_summary() -> Dict[str, Any]:
 
 
 def _read_dry_run_flag() -> bool:
-    return os.getenv("DRY_RUN", "1").lower() in ("1", "true", "yes")
+    return os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -1271,8 +1404,21 @@ def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
 
 DRY_RUN = _read_dry_run_flag()
 set_dry_run(DRY_RUN)
+
+# ── Prod safety: DRY_RUN must be explicitly set ──────────────────────
+if ENV.lower() == "prod" and os.getenv("DRY_RUN") is None:
+    raise RuntimeError(
+        "DRY_RUN must be explicitly set in prod (ENV=prod). "
+        "Set DRY_RUN=0 for live or DRY_RUN=1 for dry-run."
+    )
+
 INTENT_TEST = _truthy_env("INTENT_TEST", "0")
 EXTERNAL_SIGNAL = _truthy_env("EXTERNAL_SIGNAL", "0")
+
+if DRY_RUN:
+    LOG.warning("[executor] DRY_RUN=1 — orders will NOT be sent to exchange")
+else:
+    LOG.info("[executor] DRY_RUN=0 — live order send ENABLED")
 
 LOG.info(
     "[executor] starting loop ENV=%s DRY_RUN=%s commit=%s signal_source=generate_intents unified=True",
@@ -2148,6 +2294,9 @@ def _maybe_run_internal_screener() -> None:
         submitted,
     )
 
+    # v7.9_C3: Doctrine block summary — make "no trades" state explicit
+    _maybe_emit_doctrine_block_summary(len(intents), submitted)
+
 
 
 def _account_snapshot() -> None:
@@ -2728,6 +2877,26 @@ def _maybe_compute_sentinel_x() -> None:
             confidence,
             state.crisis_flag,
         )
+
+        # v7.9-W5: Distance-to-threshold for situational awareness
+        try:
+            _slope = state.features.get("trend_slope", 0.0)
+            _thresh = getattr(cfg, "trend_slope_threshold", 0.0003)
+            _hyst = getattr(cfg, "trend_hysteresis_ratio", 1.0)
+            _cur = state.primary_regime
+            # Compute effective thresholds (hysteresis-aware)
+            _eff_up = _thresh * _hyst if _cur == "TREND_UP" and 0 < _hyst < 1.0 else _thresh
+            _eff_dn = _thresh * _hyst if _cur == "TREND_DOWN" and 0 < _hyst < 1.0 else _thresh
+            # Distance to nearest trend boundary
+            _dist_up = _slope - _eff_up       # positive = inside TREND_UP
+            _dist_dn = (-_slope) - _eff_dn    # positive = inside TREND_DOWN
+            LOG.info(
+                "[sentinel_x] slope=%.6f thresh=%.4f "
+                "dist_TREND_UP=%.6f dist_TREND_DOWN=%.6f",
+                _slope, _thresh, _dist_up, _dist_dn,
+            )
+        except Exception:
+            pass  # observability-only, never block
         
         # Record regime change to cycle statistics (non-invasive)
         # prev_regime was loaded BEFORE run_sentinel_x_step to detect actual changes
@@ -2861,7 +3030,36 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
     
     # Load Sentinel-X regime state
     sentinel_state = _load_sentinel_x_state()
-    
+
+    # v7.9_C3: FORCE_REGIME testnet smoke switch — override sentinel regime
+    # for exchange-reachability proof.  Hard-guarded: only on testnet, emits
+    # an environment event, and never silently activated.
+    _force_regime = os.getenv("FORCE_REGIME", "").strip().upper()
+    if _force_regime and _force_regime in _REGIME_PERMIT_MAP:
+        if is_testnet():
+            LOG.warning(
+                "[doctrine] FORCE_REGIME=%s active (testnet override)",
+                _force_regime,
+            )
+            sentinel_state = dict(sentinel_state) if sentinel_state else {}
+            sentinel_state["primary_regime"] = _force_regime
+            sentinel_state["regime_probs"] = {_force_regime: 1.0}
+            sentinel_state["smoothed_probs"] = {_force_regime: 1.0}
+            try:
+                append_jsonl(_ENV_EVENTS_PATH, {
+                    "ts": _now_iso(),
+                    "type": "REGIME_FORCED_TESTNET",
+                    "forced_regime": _force_regime,
+                    "symbol": symbol,
+                })
+            except Exception:
+                pass
+        else:
+            LOG.error(
+                "[doctrine] FORCE_REGIME=%s IGNORED — only allowed on testnet",
+                _force_regime,
+            )
+
     # Check for error state (Sentinel-X failed but wrote error)
     if sentinel_state.get("status") == "ERROR":
         error_msg = sentinel_state.get("error", "unknown_error")
@@ -3352,8 +3550,9 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 _min_band_rank = _BAND_ORDER[_min_band_str]
                 if _intent_band_rank < _min_band_rank:
                     LOG.warning(
-                        "[conviction_gate] veto %s %s: band=%s < min_entry_band=%s",
-                        symbol, side, _intent_band or "none", _min_band_str,
+                        "[conviction_gate] veto %s %s: band=%s rank=%d < min_entry_band=%s rank=%d",
+                        symbol, side, _intent_band or "none", _intent_band_rank,
+                        _min_band_str, _min_band_rank,
                     )
                     _persist_veto(
                         "conviction_band_below_minimum",
@@ -3368,6 +3567,13 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         },
                     )
                     return None
+                else:
+                    LOG.info(
+                        "[conviction_gate] PASS %s %s: band=%s rank=%d >= min_entry_band=%s rank=%d score=%.4f",
+                        symbol, side, _intent_band, _intent_band_rank,
+                        _min_band_str, _min_band_rank,
+                        float(intent.get("conviction_score") or _intent_meta.get("conviction_score") or 0),
+                    )
         except Exception as _conv_err:
             LOG.debug("[conviction_gate] check failed (proceeding): %s", _conv_err)
 
@@ -3704,26 +3910,161 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     # Uses gross_target (= notional, not margin) computed at L2861.
     if not reduce_only:
         try:
-            from execution.fee_gate import check_fee_edge
+            from execution.fee_gate import check_fee_edge, check_fee_edge_v2
+            from execution.true_edge import compute_true_edge
 
             _fg_notional = gross_target  # notional USD = qty × price
-            # Use expectancy from signal metadata if available
+            # Priority chain for expected_edge_pct: (v7.9-W4 wiring fix)
+            # 1. intent["expected_edge"] — signal_generator confidence-0.5
+            # 2. intent["hybrid_components"]["expectancy"] — hybrid scoring factor
+            # 3. intent["metadata"]["expectancy"] — backward compat
+            # 4. intent["metadata"]["expected_edge_pct"] — backward compat
             _fg_meta = intent.get("metadata") or {}
+            _fg_hybrid = intent.get("hybrid_components") or {}
             expected_edge_pct = float(
-                _fg_meta.get("expectancy", 0)
+                intent.get("expected_edge", 0)
+                or _fg_hybrid.get("expectancy", 0)
+                or _fg_meta.get("expectancy", 0)
                 or _fg_meta.get("expected_edge_pct", 0)
                 or 0
             )
+            # Track which source provided the edge value
+            _fg_edge_source = "none"
+            if intent.get("expected_edge"):
+                _fg_edge_source = "expected_edge"
+            elif _fg_hybrid.get("expectancy"):
+                _fg_edge_source = "hybrid_expectancy"
+            elif _fg_meta.get("expectancy"):
+                _fg_edge_source = "metadata_expectancy"
+            elif _fg_meta.get("expected_edge_pct"):
+                _fg_edge_source = "metadata_expected_edge_pct"
+
             if _fg_notional > 0:
-                fg_allowed, fg_details = check_fee_edge(_fg_notional, expected_edge_pct)
+                # ── v7.9-TE1: True Edge v1 — ATR × confidence mapping ────
+                # Attempt ATR-based edge; falls back to proxy if ATR missing.
+                _te_confidence = float(intent.get("confidence", 0) or 0)
+                _te_atr_raw: float | None = None
+                _te_timeframe: str | None = None
+                try:
+                    _te_atr_raw = float(_fg_meta.get("atr", 0) or 0) or None
+                except (TypeError, ValueError):
+                    _te_atr_raw = None
+                if _te_atr_raw is None:
+                    # Try to fetch ATR from vol utils
+                    try:
+                        from execution.utils.vol import atr_pct as _vol_atr_pct
+                        _atr_pct_val = _vol_atr_pct(symbol_upper, lookback_bars=50)
+                        if _atr_pct_val and _atr_pct_val > 0:
+                            # atr_pct returns percentage (×100), convert to price
+                            _te_atr_raw = (_atr_pct_val / 100.0) * price
+                    except Exception:
+                        _te_atr_raw = None
+                try:
+                    _te_timeframe = str(
+                        intent.get("timeframe")
+                        or _fg_meta.get("timeframe")
+                        or intent.get("params", {}).get("timeframe")
+                        or ""
+                    ) or None
+                except Exception:
+                    _te_timeframe = None
+
+                # Use confidence from intent if available, else derive from edge
+                if _te_confidence <= 0 and expected_edge_pct > 0:
+                    _te_confidence = expected_edge_pct + 0.5
+
+                _te_result = compute_true_edge(
+                    confidence=_te_confidence,
+                    price=price,
+                    atr=_te_atr_raw,
+                    notional_usd=_fg_notional,
+                    timeframe=_te_timeframe,
+                )
+
+                fg_allowed, fg_details = check_fee_edge_v2(_te_result)
+
+                # v7.9-TE1.1: Emit structured anomaly if ATR unit guard fired
+                if _te_result.fallback_reason == "atr_unit_suspect":
+                    _record_structured_event(
+                        LOG_FEE_GATE,
+                        "TRUE_EDGE_ATR_UNIT_ANOMALY",
+                        {
+                            "symbol": symbol_upper,
+                            "side": side,
+                            "atr_raw": _te_atr_raw,
+                            "price": price,
+                            "atr_over_price": round(_te_atr_raw / price, 4) if _te_atr_raw and price else None,
+                            "intent_id": intent_id,
+                            "fallback_reason": "atr_unit_suspect",
+                        },
+                    )
+
+                # Enrich details for structured event
+                fg_details["edge_source"] = _te_result.source
+                fg_details["edge_components"] = {
+                    "expected_edge": float(intent.get("expected_edge", 0) or 0),
+                    "hybrid_expectancy": float(_fg_hybrid.get("expectancy", 0) or 0),
+                    "hybrid_score": float(intent.get("hybrid_score", 0) or 0),
+                    "conviction_score": float(intent.get("conviction_score", 0) or 0),
+                }
+                fg_details["symbol"] = symbol_upper
+                fg_details["side"] = side
+                # v7.9-TE1.1: Emit join keys for exact episode attribution
+                fg_details["intent_id"] = intent_id
+                fg_details["attempt_id"] = attempt_id
+
+                # v7.9-W4: Schema-drift anomaly guard.  If the resolved
+                # edge is 0 but the intent *does* carry edge sources,
+                # something in the priority chain is broken.  Emit a
+                # warning event so we catch regressions immediately.
+                if expected_edge_pct == 0.0:
+                    _raw_ee = intent.get("expected_edge")
+                    _raw_he = _fg_hybrid.get("expectancy")
+                    if (_raw_ee is not None and _raw_ee != 0 and _raw_ee != "") or \
+                       (_raw_he is not None and _raw_he != 0 and _raw_he != ""):
+                        LOG.warning(
+                            "[fee_gate] EDGE_MISSING_ANOMALY %s: resolved_edge=0 but "
+                            "expected_edge=%s hybrid_expectancy=%s — possible schema drift",
+                            symbol_upper, _raw_ee, _raw_he,
+                        )
+                        _record_structured_event(
+                            LOG_FEE_GATE,
+                            "FEE_GATE_EDGE_MISSING_ANOMALY",
+                            {
+                                "symbol": symbol_upper,
+                                "side": side,
+                                "resolved_edge_pct": expected_edge_pct,
+                                "raw_expected_edge": _raw_ee,
+                                "raw_hybrid_expectancy": _raw_he,
+                                "intent_keys": sorted(intent.keys()),
+                                "metadata_keys": sorted(_fg_meta.keys()),
+                                "hybrid_component_keys": sorted(_fg_hybrid.keys()),
+                            },
+                        )
+
                 if not fg_allowed:
                     LOG.info(
-                        "[fee_gate] ENTRY VETO %s: edge $%.4f < required $%.4f",
+                        "[fee_gate] ENTRY VETO %s: edge $%.4f < required $%.4f (source=%s, edge_pct=%.6f)",
                         symbol_upper,
                         fg_details.get("expected_edge_usd", 0),
                         fg_details.get("required_edge_usd", 0),
+                        _te_result.source,
+                        _te_result.expected_edge_pct,
+                    )
+                    _record_structured_event(
+                        LOG_FEE_GATE,
+                        "FEE_GATE_VETO_DETAIL",
+                        fg_details,
                     )
                     return
+                else:
+                    LOG.debug(
+                        "[fee_gate] PASS %s: edge $%.4f >= required $%.4f (source=%s)",
+                        symbol_upper,
+                        fg_details.get("expected_edge_usd", 0),
+                        fg_details.get("required_edge_usd", 0),
+                        _te_result.source,
+                    )
         except ImportError:
             pass
         except Exception as _fg_exc:
@@ -5496,6 +5837,9 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         
         with timed_section("runtime_probe"):
             _maybe_write_v6_runtime_probe()
+        
+        with timed_section("disk_guard"):
+            _maybe_check_disk_pressure()
         
         timing_end_loop()
         i += 1

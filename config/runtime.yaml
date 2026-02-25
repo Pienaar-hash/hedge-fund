@@ -115,6 +115,22 @@ fee_gate:
   fee_buffer_mult: 1.5       # Require 1.5x round-trip fee as edge
   enabled: true
 
+# v7.9-TE1: True Edge v1 — ATR × confidence mapping
+# Replaces proxy edge (confidence-0.5) with expected dollar edge.
+# When ATR is unavailable, falls back to proxy with edge_source=fallback_proxy.
+true_edge:
+  adv_cap: 0.25              # Max advantage clamp (25pp above 50%)
+  k_atr: 0.6                 # Default ATR scalar (conservative for m15)
+  k_atr_by_timeframe:
+    m5: 0.4
+    m15: 0.6
+    h1: 0.8
+    h4: 1.0
+    d1: 1.2
+  min_atr_pct: 0.0001        # Below 0.01% → ATR stale, use fallback
+  spread_slippage_bps: 0.0   # Optional spread+slippage deduction (bps)
+  enabled: true
+
 # v7.9-E2.2: Exit intent dedup (stops REGIME_FLIP spam)
 exit_dedup:
   ttl_seconds: 300            # 5-minute dedup window per symbol/side/reason

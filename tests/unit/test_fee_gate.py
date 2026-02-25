@@ -145,3 +145,31 @@ class TestFeeGateCheck:
         # At threshold
         allowed, _ = check_fee_edge(100.0, 0.0012, config=cfg)
         assert allowed is True  # $0.12 >= $0.12
+
+
+class TestFeeGateShortSymmetry:
+    """Fee gate must be direction-agnostic (no BUY-only bias)."""
+
+    def test_positive_and_negative_edge_equivalent(self):
+        """abs() ensures positive and negative edge_pct give identical results."""
+        cfg = FeeGateConfig(taker_fee_rate=0.0004, fee_buffer_mult=1.5)
+        allowed_pos, det_pos = check_fee_edge(500.0, 0.005, config=cfg)
+        allowed_neg, det_neg = check_fee_edge(500.0, -0.005, config=cfg)
+        assert allowed_pos == allowed_neg
+        assert det_pos["expected_edge_usd"] == det_neg["expected_edge_usd"]
+
+    def test_sell_sized_notional_passes(self):
+        """SHORT/SELL with reasonable edge passes — no directional assumption."""
+        cfg = FeeGateConfig(taker_fee_rate=0.0004, fee_buffer_mult=1.5)
+        # $300 notional, 0.5% edge — should easily pass
+        allowed, details = check_fee_edge(300.0, 0.005, config=cfg)
+        assert allowed is True
+        assert details["gate_status"] == "pass"
+
+    def test_fee_computation_is_notional_only(self):
+        """Round-trip fee depends on notional, not direction."""
+        cfg = FeeGateConfig(taker_fee_rate=0.0004, fee_buffer_mult=1.5)
+        _, det = check_fee_edge(1000.0, 0.01, config=cfg)
+        # RT fee = 1000 * 0.0004 * 2 = $0.80
+        assert det["round_trip_fee_usd"] == pytest.approx(0.80, abs=1e-4)
+
