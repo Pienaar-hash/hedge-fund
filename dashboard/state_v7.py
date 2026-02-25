@@ -276,16 +276,20 @@ def _calculate_alltime_futures_stats() -> Dict[str, Any]:
     except Exception:
         pass
     
-    # Get realized PnL from expectancy (completed round-trip trades)
+    # Get realized PnL from episode ledger (authoritative closed round-trips).
+    # Previous approach used expectancy_v6 count*avg_return which is a
+    # statistical estimate, not actual PnL — replaced for accuracy.
     try:
-        expectancy_path = PROJECT_ROOT / "logs" / "state" / "expectancy_v6.json"
-        if expectancy_path.exists():
-            exp_data = json.loads(expectancy_path.read_text())
-            for sym_data in exp_data.get("symbols", {}).values():
-                count = int(sym_data.get("count", 0))
-                avg_return = float(sym_data.get("avg_return", 0))
-                result["trade_count"] += count
-                result["realized_pnl"] += count * avg_return
+        episode_path = PROJECT_ROOT / "logs" / "state" / "episode_ledger.json"
+        if episode_path.exists():
+            ep_data = json.loads(episode_path.read_text())
+            ep_stats = ep_data.get("stats", {})
+            net_pnl = ep_stats.get("total_net_pnl")
+            if net_pnl is not None:
+                result["realized_pnl"] = float(net_pnl)
+            ep_count = ep_data.get("episode_count")
+            if ep_count is not None:
+                result["trade_count"] = int(ep_count)
     except Exception:
         pass
     

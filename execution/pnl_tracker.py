@@ -179,7 +179,46 @@ def _read_jsonl(path: Path, limit: int) -> List[Dict[str, Any]]:
 
 def _load_trades(path: Path | None = None) -> List[Dict[str, Any]]:
     target = Path(path) if path else TRADES_LOG_PATH
-    return _read_jsonl(target, READ_LIMIT)
+    rows = _read_jsonl(target, READ_LIMIT)
+    if rows:
+        return rows
+    # Fallback: adapt episode ledger episodes as trade records.
+    # trades.jsonl was never wired — episode_ledger.json is the
+    # authoritative source for closed round-trip PnL.
+    # Only use fallback for the default path (not when caller
+    # supplies an explicit trades_path).
+    if path is not None:
+        return []
+    ep_path = STATE_DIR / "episode_ledger.json"
+    try:
+        if not ep_path.exists():
+            return []
+        with ep_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        episodes = payload.get("episodes", [])
+        if not isinstance(episodes, list):
+            return []
+        adapted: List[Dict[str, Any]] = []
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            ts_raw = ep.get("exit_ts") or ep.get("entry_ts")
+            ts_val = _to_float(ts_raw)
+            adapted.append({
+                "symbol": ep.get("symbol", ""),
+                "strategy": ep.get("strategy", "unknown"),
+                "realized_pnl": ep.get("net_pnl", 0.0),
+                "fee_total": ep.get("fees", 0.0),
+                "ts": ts_val,
+                "metadata": {
+                    "strategy": ep.get("strategy", "unknown"),
+                    "exit_reason": ep.get("exit_reason"),
+                    "exit": {"reason": ep.get("exit_reason")},
+                },
+            })
+        return adapted[-READ_LIMIT:] if len(adapted) > READ_LIMIT else adapted
+    except Exception:
+        return []
 
 
 def _load_positions(path: Path | None = None) -> List[Dict[str, Any]]:

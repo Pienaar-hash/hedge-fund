@@ -281,7 +281,8 @@ def render_strategy_block(
         merged_kpis["monthly_pnl"] = _compute_windowed_pnl(_episodes_list, 720)
         merged_kpis["pnl_30d"] = merged_kpis["monthly_pnl"]
 
-    # All-time: use NAV delta if span sufficient, otherwise episode ledger
+    # All-time: NAV delta if span sufficient, otherwise episode ledger.
+    # MUST match kpi_strip.py priority so both surfaces show the same number.
     if _span_ok.get("all_time") and _nav_deltas.get("pnl_all_time"):
         merged_kpis["total_pnl"] = _nav_deltas["pnl_all_time"]
         merged_kpis["all_time_pnl"] = _nav_deltas["pnl_all_time"]

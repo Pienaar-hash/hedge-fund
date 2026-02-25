@@ -76,9 +76,13 @@ def build_kpi_cards(
     # Exposure percentage
     exp_pct = (gross_exp / nav_usd * 100) if nav_usd > 0 else 0
     
-    # All-time PnL from episode ledger (authoritative)
+    # All-time PnL: NAV-delta when span is sufficient, episode ledger fallback.
+    # MUST match render_strategy_block() priority so KPI strip and Performance
+    # block always show the same number.
     _at_pnl = 0.0
-    if episode_ledger:
+    if _span_ok.get("all_time") and _nav_deltas.get("pnl_all_time"):
+        _at_pnl = float(_nav_deltas["pnl_all_time"])
+    elif episode_ledger:
         _at_pnl = float(episode_ledger.get("stats", {}).get("total_net_pnl") or 0)
     _win_rate = 0.0
     if episode_ledger:

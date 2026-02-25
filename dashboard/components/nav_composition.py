@@ -138,7 +138,8 @@ def render_nav_composition_panel(
     
     # Cycle metrics from episode ledger (closed trades only)
     ledger_stats = episode_ledger.get("stats", {})
-    cycle_net_pnl = float(ledger_stats.get("total_net_pnl") or 0)
+    cycle_net_pnl = float(ledger_stats.get("total_net_pnl") or 0)  # already = gross - fees
+    cycle_gross_pnl = float(ledger_stats.get("total_gross_pnl") or 0)
     cycle_fees = float(ledger_stats.get("total_fees") or 0)
     episode_count = episode_ledger.get("episode_count", 0)
     
@@ -222,16 +223,20 @@ def render_nav_composition_panel(
             <div style="min-width: 200px;">
                 <div style="font-size: 0.85em; font-weight: 600; color: #888; margin-bottom: 12px;">Trading Summary</div>
                 
-                <!-- Closed PnL (Episodes) -->
+                <!-- Net PnL (Episodes) — already includes fee deduction -->
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Realized PnL</span>
+                    <span style="color: #888; font-size: 0.85em;">Net Realized PnL</span>
                     <span style="color: {cycle_pnl_color}; font-weight: 600;">${cycle_net_pnl:,.2f}</span>
                 </div>
                 
-                <!-- Fees Paid -->
-                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Fees Paid</span>
-                    <span style="color: #ef4444;">-${cycle_fees:,.2f}</span>
+                <!-- Gross + Fees breakdown (informational) -->
+                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1a1d24;">
+                    <span style="color: #555; font-size: 0.75em;">Gross PnL</span>
+                    <span style="color: #666; font-size: 0.85em;">${cycle_gross_pnl:,.2f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1a1d24;">
+                    <span style="color: #555; font-size: 0.75em;">Fees (incl. above)</span>
+                    <span style="color: #666; font-size: 0.85em;">-${cycle_fees:,.2f}</span>
                 </div>
                 
                 <!-- Episodes -->
