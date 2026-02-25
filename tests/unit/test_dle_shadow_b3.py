@@ -362,8 +362,8 @@ class TestTTLComputation:
         assert abs((dt - expected).total_seconds()) < 1.0
 
     def test_default_ttl_constants(self):
-        assert DEFAULT_ENTRY_PERMIT_TTL_S == 30.0
-        assert DEFAULT_EXIT_PERMIT_TTL_S == 60.0
+        assert DEFAULT_ENTRY_PERMIT_TTL_S == 120.0
+        assert DEFAULT_EXIT_PERMIT_TTL_S == 120.0
 
 
 # ─── Fail-open ──────────────────────────────────────────────────────────

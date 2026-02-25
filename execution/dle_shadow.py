@@ -29,8 +29,10 @@ MANIFEST_LOG_PATH = "logs/execution/dle_shadow_events.jsonl"
 
 
 # Default permit TTLs (shadow — not enforced in Phase A)
-DEFAULT_ENTRY_PERMIT_TTL_S = 30.0
-DEFAULT_EXIT_PERMIT_TTL_S = 60.0
+# v7.9.1: Increased from 30s/60s based on measured permit→order latency:
+#   same-cycle p50=80s, p90=264s.  120s covers typical cycles with headroom.
+DEFAULT_ENTRY_PERMIT_TTL_S = 120.0
+DEFAULT_EXIT_PERMIT_TTL_S = 120.0
 
 
 # -----------------------

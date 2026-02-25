@@ -936,7 +936,7 @@
       },
       "permit_behavior": {
         "deny_suppression": "When verdict=DENY, no PERMIT event is emitted. LINK.permit_id is null.",
-        "ttl_defaults": { "entry": 30.0, "exit": 60.0 },
+        "ttl_defaults": { "entry": 120.0, "exit": 120.0 },
         "ttl_enforcement": "Phase A: recorded only. Phase B: enforcement TBD."
       },
       "payload_fields_link": {
@@ -1002,6 +1002,24 @@
         "deny_reason": "str — ENTRY_DENIED_NO_PERMIT | ENTRY_DENIED_EXPIRED_PERMIT | ENTRY_DENIED_MISMATCH_SYMBOL | ENTRY_DENIED_MISMATCH_DIRECTION | ENTRY_DENIED_INDEX_UNAVAILABLE",
         "matched_permit_id": "str|null — permit that was found but invalid (e.g. expired)",
         "phase": "str — always C.1"
+      }
+    },
+    "dle_permit_expired": {
+      "path": "logs/execution/dle_permit_expired.jsonl",
+      "owner": "enforcement_rehearsal",
+      "update_frequency": "per_expired_permit_match",
+      "optional": true,
+      "description": "Structured DLE_PERMIT_EXPIRED events — emitted every time a rehearsal evaluation finds a permit that matched but had expired. Used for latency analysis and TTL calibration. Append-only.",
+      "fields": {
+        "event_type": "str — always DLE_PERMIT_EXPIRED",
+        "ts": "str — ISO 8601 timestamp of evaluation",
+        "symbol": "str — trading pair",
+        "direction": "str — BUY | SELL",
+        "order_id": "str — attempt_id or intent reference",
+        "permit_id": "str — matched expired permit ID",
+        "delta_s": "float — seconds between permit issuance and order evaluation",
+        "ttl_s": "float — permit TTL at time of issuance",
+        "overshoot_s": "float — how far past TTL the order was (delta_s - ttl_s)"
       }
     },
     "phase_c_readiness": {

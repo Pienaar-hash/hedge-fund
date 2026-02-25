@@ -144,11 +144,24 @@ def _normalize_direction(raw: str) -> str:
     return str(raw).upper().strip()
 
 
+# Maximum age for indexed permits.  Permits older than this are ignored
+# to prevent stale cross-session matching.  The shadow log is append-only
+# across restarts, so without a cutoff the evaluator matches current orders
+# against permits from hours/days ago (observed: 37 h overshoot).
+_PERMIT_INDEX_MAX_AGE_S = 7200.0   # 2 hours
+
+
 def build_permit_index(
     shadow_log_path: Optional[Path] = None,
+    max_age_s: Optional[float] = _PERMIT_INDEX_MAX_AGE_S,
 ) -> Dict[str, List[_PermitRecord]]:
     """
     Build an index of PERMIT events from the DLE shadow log.
+
+    Only permits younger than *max_age_s* are included.  This prevents
+    stale permits from prior executor sessions being matched against
+    current orders.  Pass ``max_age_s=None`` or ``0`` to disable the
+    cutoff (useful in tests).
 
     Returns: {symbol: [_PermitRecord sorted by ts_unix descending (newest first)]}
 
@@ -160,6 +173,10 @@ def build_permit_index(
     if not log_path.exists():
         logger.info("B.5: No shadow log at %s — permit index empty", log_path)
         return index
+
+    apply_cutoff = max_age_s is not None and max_age_s > 0
+    cutoff_ts = (time.time() - max_age_s) if apply_cutoff else 0.0
+    skipped_stale = 0
 
     try:
         with open(log_path, "r", encoding="utf-8") as fh:
@@ -183,6 +200,11 @@ def build_permit_index(
                 ts_iso = evt.get("ts", "")
                 ts_unix = _iso_to_unix(ts_iso)
                 if ts_unix is None:
+                    continue
+
+                # Skip stale permits from prior sessions
+                if apply_cutoff and ts_unix < cutoff_ts:
+                    skipped_stale += 1
                     continue
 
                 expires_iso = payload.get("expires_ts", "")
@@ -216,8 +238,9 @@ def build_permit_index(
     for bucket in index.values():
         bucket.sort(key=lambda r: r.ts_unix, reverse=True)
 
-    logger.info("B.5: Permit index built — %d symbols, %d total permits",
-                len(index), sum(len(v) for v in index.values()))
+    total_permits = sum(len(v) for v in index.values())
+    logger.info("B.5: Permit index built — %d symbols, %d permits (skipped %d stale)",
+                len(index), total_permits, skipped_stale)
     return index
 
 
@@ -326,6 +349,7 @@ def init_rehearsal(
     shadow_log_path: Optional[Path] = None,
     rehearsal_log_path: Optional[str] = None,
     force: bool = False,
+    max_age_s: Optional[float] = _PERMIT_INDEX_MAX_AGE_S,
 ) -> bool:
     """
     Initialize enforcement rehearsal. Called once at startup.
@@ -349,7 +373,7 @@ def init_rehearsal(
         return False
 
     try:
-        _permit_index = build_permit_index(shadow_log_path)
+        _permit_index = build_permit_index(shadow_log_path, max_age_s=max_age_s)
         _index_loaded = True
         _rehearsal_writer = RehearsalWriter(rehearsal_log_path)
         _metrics = RehearsalMetrics(enabled=True)
@@ -363,7 +387,10 @@ def init_rehearsal(
         return False
 
 
-def refresh_permit_index(shadow_log_path: Optional[Path] = None) -> int:
+def refresh_permit_index(
+    shadow_log_path: Optional[Path] = None,
+    max_age_s: Optional[float] = _PERMIT_INDEX_MAX_AGE_S,
+) -> int:
     """
     Reload the permit index from the shadow log.
 
@@ -372,7 +399,7 @@ def refresh_permit_index(shadow_log_path: Optional[Path] = None) -> int:
     """
     global _permit_index, _index_loaded
     try:
-        _permit_index = build_permit_index(shadow_log_path)
+        _permit_index = build_permit_index(shadow_log_path, max_age_s=max_age_s)
         _index_loaded = True
         return sum(len(v) for v in _permit_index.values())
     except Exception as e:
@@ -446,6 +473,18 @@ def rehearse_order(
         if _rehearsal_writer is not None:
             _rehearsal_writer.write(result)
 
+        # Emit structured DLE_PERMIT_EXPIRED event for observability
+        if reason == REASON_EXPIRED and matched_permit_id:
+            _emit_permit_expired_event(
+                symbol=symbol,
+                direction=direction,
+                order_ts_iso=ts_iso,
+                order_ts_unix=ts_unix,
+                permit_id=matched_permit_id,
+                permit_index=_permit_index,
+                order_id=order_id,
+            )
+
         return result
 
     except Exception as e:
@@ -457,6 +496,73 @@ def get_rehearsal_metrics() -> Dict[str, Any]:
     """Return current rehearsal metrics snapshot (for state surface)."""
     with _metrics_lock:
         return _metrics.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# DLE_PERMIT_EXPIRED structured event (observability)
+# ---------------------------------------------------------------------------
+
+_PERMIT_EXPIRED_LOG_PATH = Path("logs/execution/dle_permit_expired.jsonl")
+
+
+def _emit_permit_expired_event(
+    *,
+    symbol: str,
+    direction: str,
+    order_ts_iso: str,
+    order_ts_unix: float,
+    permit_id: str,
+    permit_index: Dict[str, List[_PermitRecord]],
+    order_id: str = "",
+) -> None:
+    """
+    Emit a structured DLE_PERMIT_EXPIRED event with timing diagnostics.
+
+    Appended to logs/execution/dle_permit_expired.jsonl for easy latency
+    analysis.  Fail-open: never raises.
+    """
+    try:
+        # Find the matched permit to extract issued_ts and ttl
+        permit_ts_iso = ""
+        permit_ts_unix: Optional[float] = None
+        expires_ts_iso = ""
+        ttl_s: Optional[float] = None
+        delta_s: Optional[float] = None
+
+        for bucket in permit_index.values():
+            for rec in bucket:
+                if rec.permit_id == permit_id:
+                    permit_ts_iso = rec.ts_iso
+                    permit_ts_unix = rec.ts_unix
+                    expires_ts_iso = rec.expires_ts_iso
+                    if rec.expires_ts_unix is not None and rec.ts_unix is not None:
+                        ttl_s = round(rec.expires_ts_unix - rec.ts_unix, 2)
+                    delta_s = round(order_ts_unix - rec.ts_unix, 2) if rec.ts_unix else None
+                    break
+            if permit_ts_unix is not None:
+                break
+
+        event = {
+            "event_type": "DLE_PERMIT_EXPIRED",
+            "ts": order_ts_iso,
+            "symbol": symbol,
+            "direction": direction,
+            "permit_id": permit_id,
+            "permit_issued_ts": permit_ts_iso,
+            "permit_expires_ts": expires_ts_iso,
+            "order_ts": order_ts_iso,
+            "order_id": order_id,
+            "ttl_s": ttl_s,
+            "delta_s": delta_s,
+            "overshoot_s": round(delta_s - ttl_s, 2) if delta_s is not None and ttl_s is not None else None,
+        }
+
+        os.makedirs(os.path.dirname(_PERMIT_EXPIRED_LOG_PATH), exist_ok=True)
+        line = json.dumps(event, sort_keys=True, separators=(",", ":"))
+        with open(_PERMIT_EXPIRED_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as exc:
+        logger.debug("B.5: Failed to emit DLE_PERMIT_EXPIRED event: %s", exc)
 
 
 # ---------------------------------------------------------------------------

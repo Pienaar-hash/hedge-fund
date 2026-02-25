@@ -122,7 +122,7 @@ def _setup_enforcement(tmp_path, events=None, ttl_s=60, extra_flags=None):
 
     with mock.patch("execution.v6_flags.get_flags") as mock_flags:
         mock_flags.return_value = mock.MagicMock(**flags_attrs)
-        init_rehearsal(shadow_log_path=shadow_log)
+        init_rehearsal(shadow_log_path=shadow_log, max_age_s=None)
         ok = init_enforcement(denial_log_path=denial_log)
 
     return shadow_log, denial_log, ok

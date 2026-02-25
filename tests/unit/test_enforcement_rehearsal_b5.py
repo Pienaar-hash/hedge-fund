@@ -107,7 +107,7 @@ def _write_shadow(path: Path, events: list[dict]) -> None:
 class TestBuildPermitIndex:
 
     def test_empty_when_no_file(self, tmp_path):
-        idx = build_permit_index(tmp_path / "nope.jsonl")
+        idx = build_permit_index(tmp_path / "nope.jsonl", max_age_s=None)
         assert idx == {}
 
     def test_loads_v2_permits(self, tmp_path):
@@ -118,7 +118,7 @@ class TestBuildPermitIndex:
         ]
         _write_shadow(log, events)
 
-        idx = build_permit_index(log)
+        idx = build_permit_index(log, max_age_s=None)
         assert "BTCUSDT" in idx
         assert "ETHUSDT" in idx
         assert len(idx["BTCUSDT"]) == 1
@@ -140,7 +140,7 @@ class TestBuildPermitIndex:
             },
         }
         _write_shadow(log, [v1_permit])
-        idx = build_permit_index(log)
+        idx = build_permit_index(log, max_age_s=None)
         assert idx == {}
 
     def test_sorted_newest_first(self, tmp_path):
@@ -152,7 +152,7 @@ class TestBuildPermitIndex:
         ]
         _write_shadow(log, events)
 
-        idx = build_permit_index(log)
+        idx = build_permit_index(log, max_age_s=None)
         ids = [r.permit_id for r in idx["BTCUSDT"]]
         assert ids == ["P2", "P3", "P1"]  # newest first
 
@@ -162,7 +162,7 @@ class TestBuildPermitIndex:
             f.write("not json\n")
             f.write(json.dumps(_make_permit_event(offset_s=0)) + "\n")
             f.write("{}\n")  # valid JSON but not a PERMIT
-        idx = build_permit_index(log)
+        idx = build_permit_index(log, max_age_s=None)
         assert len(idx.get("BTCUSDT", [])) == 1
 
     def test_non_permit_events_ignored(self, tmp_path):
@@ -174,7 +174,7 @@ class TestBuildPermitIndex:
             _make_permit_event(offset_s=0),
         ]
         _write_shadow(log, events)
-        idx = build_permit_index(log)
+        idx = build_permit_index(log, max_age_s=None)
         assert len(idx.get("BTCUSDT", [])) == 1
 
 
@@ -426,7 +426,7 @@ class TestRehearsalIntegration:
         with mock.patch("execution.enforcement_rehearsal.DLE_SHADOW_LOG_PATH", shadow_log):
             with mock.patch("execution.v6_flags.get_flags") as mock_flags:
                 mock_flags.return_value = mock.MagicMock(shadow_dle_enabled=True)
-                ok = init_rehearsal(shadow_log_path=shadow_log, rehearsal_log_path=rehearsal_log)
+                ok = init_rehearsal(shadow_log_path=shadow_log, rehearsal_log_path=rehearsal_log, max_age_s=None)
                 assert ok is True
 
             result = rehearse_order(
@@ -451,7 +451,7 @@ class TestRehearsalIntegration:
         with mock.patch("execution.enforcement_rehearsal.DLE_SHADOW_LOG_PATH", shadow_log):
             with mock.patch("execution.v6_flags.get_flags") as mock_flags:
                 mock_flags.return_value = mock.MagicMock(shadow_dle_enabled=True)
-                init_rehearsal(shadow_log_path=shadow_log, rehearsal_log_path=rehearsal_log)
+                init_rehearsal(shadow_log_path=shadow_log, rehearsal_log_path=rehearsal_log, max_age_s=None)
 
             result = rehearse_order(
                 symbol="BTCUSDT", direction="BUY",
@@ -474,7 +474,7 @@ class TestRehearsalIntegration:
         with mock.patch("execution.enforcement_rehearsal.DLE_SHADOW_LOG_PATH", shadow_log):
             with mock.patch("execution.v6_flags.get_flags") as mock_flags:
                 mock_flags.return_value = mock.MagicMock(shadow_dle_enabled=True)
-                init_rehearsal(shadow_log_path=shadow_log, rehearsal_log_path=rehearsal_log)
+                init_rehearsal(shadow_log_path=shadow_log, rehearsal_log_path=rehearsal_log, max_age_s=None)
 
             result = rehearse_order(
                 symbol="BTCUSDT", direction="BUY",
@@ -502,7 +502,7 @@ class TestRehearsalIntegration:
         with mock.patch("execution.enforcement_rehearsal.DLE_SHADOW_LOG_PATH", shadow_log):
             with mock.patch("execution.v6_flags.get_flags") as mock_flags:
                 mock_flags.return_value = mock.MagicMock(shadow_dle_enabled=True)
-                init_rehearsal(shadow_log_path=shadow_log)
+                init_rehearsal(shadow_log_path=shadow_log, max_age_s=None)
 
         # Force internal error by corrupting state
         import execution.enforcement_rehearsal as er
@@ -519,13 +519,13 @@ class TestRehearsalIntegration:
         with mock.patch("execution.enforcement_rehearsal.DLE_SHADOW_LOG_PATH", shadow_log):
             with mock.patch("execution.v6_flags.get_flags") as mock_flags:
                 mock_flags.return_value = mock.MagicMock(shadow_dle_enabled=True)
-                init_rehearsal(shadow_log_path=shadow_log)
+                init_rehearsal(shadow_log_path=shadow_log, max_age_s=None)
 
             # Add another permit
             with open(shadow_log, "a") as f:
                 f.write(json.dumps(_make_permit_event(offset_s=100, permit_id="P2"), sort_keys=True) + "\n")
 
-            count = refresh_permit_index(shadow_log)
+            count = refresh_permit_index(shadow_log, max_age_s=None)
             assert count == 2
 
     def test_rehearsal_log_written(self, tmp_path):
@@ -537,7 +537,7 @@ class TestRehearsalIntegration:
         with mock.patch("execution.enforcement_rehearsal.DLE_SHADOW_LOG_PATH", shadow_log):
             with mock.patch("execution.v6_flags.get_flags") as mock_flags:
                 mock_flags.return_value = mock.MagicMock(shadow_dle_enabled=True)
-                init_rehearsal(shadow_log_path=shadow_log, rehearsal_log_path=rehearsal_log)
+                init_rehearsal(shadow_log_path=shadow_log, rehearsal_log_path=rehearsal_log, max_age_s=None)
 
             rehearse_order(symbol="BTCUSDT", direction="BUY", order_id="O1", order_ts=_ts_unix(15))
             rehearse_order(symbol="BTCUSDT", direction="SELL", order_id="O2", order_ts=_ts_unix(15))
