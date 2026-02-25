@@ -75,6 +75,13 @@ ASSUMED_LATENCY_MS: int = int(os.environ.get("OBSERVER_LATENCY_MS", "250"))
 # Fee rate (bps) for net EV calculation — Polymarket taker fee
 FEE_RATE_BPS: float = float(os.environ.get("OBSERVER_FEE_BPS", "0"))
 
+# Polymarket taker fee rate (fractional).  Effective fee per contract
+# is ``fee_rate * min(price, 1 - price)``.  Default 2 % matches the
+# standard Polymarket CLOB taker schedule.
+POLYMARKET_FEE_RATE: float = float(
+    os.environ.get("OBSERVER_POLYMARKET_FEE_RATE", "0.02")
+)
+
 # Discovery timeframe
 OBSERVER_TIMEFRAME: str = os.environ.get("OBSERVER_TIMEFRAME", "15m")
 
@@ -99,12 +106,56 @@ def _append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
         f.write(json.dumps(obj, separators=(",", ":")) + "\n")
 
 
+# Hard ceiling for any single tail read — prevents regression if a caller
+# accidentally passes a huge max_bytes.  8 MB keeps peak allocation well
+# within safe bounds on a 4 GB box.
+_TAIL_MAX_BYTES: int = 8_000_000
+
+
+def _tail_lines(path: Path, max_bytes: int = 2_000_000) -> List[str]:
+    """Read the last *max_bytes* of a file and return as lines.
+
+    This avoids loading multi-GB files into memory — only the tail is
+    read.  The first (partial) line is discarded since the seek may
+    land mid-line.  Returns an empty list on any I/O error.
+
+    *max_bytes* is silently clamped to ``_TAIL_MAX_BYTES`` (8 MB) so
+    no caller can accidentally regress into full-file reads.
+    """
+    max_bytes = min(max_bytes, _TAIL_MAX_BYTES)
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(size - max_bytes, 0)
+            f.seek(start)
+            data = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+    lines = data.splitlines()
+    # Drop the first element — it is likely a partial line from mid-seek
+    if start > 0 and lines:
+        lines = lines[1:]
+    return lines
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def polymarket_taker_fee(price: float) -> float:
+    """Compute Polymarket taker fee for one contract at *price*.
+
+    Fee schedule: ``fee_rate * min(price, 1 - price)``.
+    Returns 0.0 for invalid / out-of-range prices.
+    """
+    if price <= 0.0 or price >= 1.0:
+        return 0.0
+    return POLYMARKET_FEE_RATE * min(price, 1.0 - price)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +248,11 @@ class RoundState:
     event_count: int = 0
 
     def _compute_intraround_stats(self) -> Dict[str, Any]:
-        """Compute aggregate dislocation statistics from intraround samples."""
+        """Compute aggregate dislocation statistics from intraround samples.
+
+        Includes IDCP fields: fee-adjusted bundle stats, dislocation duration
+        windows (consecutive sub-1.0 samples), and depth statistics.
+        """
         if not self.intraround_samples:
             return {"sample_count": 0}
 
@@ -209,7 +264,7 @@ class RoundState:
             return {"sample_count": len(self.intraround_samples)}
 
         sub_one = [c for c in bundle_costs if c < 1.0]
-        return {
+        stats: Dict[str, Any] = {
             "sample_count": len(bundle_costs),
             "min_bundle_cost": round(min(bundle_costs), 6),
             "max_bundle_cost": round(max(bundle_costs), 6),
@@ -217,6 +272,183 @@ class RoundState:
             "dislocation_count": len(sub_one),
             "min_dislocation": round(min(sub_one), 6) if sub_one else None,
         }
+
+        # --- IDCP: fee-adjusted bundle statistics ---
+        fee_adj = [
+            s["fee_adjusted_bundle"] for s in self.intraround_samples
+            if s.get("fee_adjusted_bundle") is not None
+        ]
+        if fee_adj:
+            fee_adj_sub_one = [c for c in fee_adj if c < 1.0]
+            stats["min_fee_adjusted_bundle"] = round(min(fee_adj), 6)
+            stats["max_fee_adjusted_bundle"] = round(max(fee_adj), 6)
+            stats["mean_fee_adjusted_bundle"] = round(
+                sum(fee_adj) / len(fee_adj), 6
+            )
+            stats["dislocation_fee_adjusted_count"] = len(fee_adj_sub_one)
+            stats["min_fee_adjusted_dislocation"] = (
+                round(min(fee_adj_sub_one), 6) if fee_adj_sub_one else None
+            )
+
+        # --- IDCP: dislocation duration windows ---
+        # Track consecutive fee-adjusted sub-1.0 samples to estimate how
+        # long dislocations persist.  Each sample is ~INTRAROUND_INTERVAL_S
+        # apart; we record window count, max window, and total duration.
+        # NOTE: uses fee_adjusted_bundle (not raw bundle_cost) — raw
+        # dislocation means nothing if fees eat the edge.
+        windows: List[float] = []  # durations in seconds
+        current_window_start_s: Optional[float] = None
+
+        for s in self.intraround_samples:
+            fab = s.get("fee_adjusted_bundle")
+            elapsed = s.get("elapsed_s")
+            if fab is not None and fab < 1.0 and elapsed is not None:
+                if current_window_start_s is None:
+                    current_window_start_s = elapsed
+            else:
+                if current_window_start_s is not None and elapsed is not None:
+                    duration = elapsed - current_window_start_s
+                    windows.append(max(duration, 0.0))
+                    current_window_start_s = None
+
+        # Close any open window at end of samples
+        if current_window_start_s is not None:
+            last_elapsed = None
+            for s in reversed(self.intraround_samples):
+                if s.get("elapsed_s") is not None:
+                    last_elapsed = s["elapsed_s"]
+                    break
+            if last_elapsed is not None:
+                windows.append(max(last_elapsed - current_window_start_s, 0.0))
+
+        stats["dislocation_window_count"] = len(windows)
+        if windows:
+            stats["max_dislocation_window_s"] = round(max(windows), 1)
+            stats["mean_dislocation_window_s"] = round(
+                sum(windows) / len(windows), 1
+            )
+            stats["total_dislocation_s"] = round(sum(windows), 1)
+
+        # --- IDCP: depth statistics ---
+        depths_up = [
+            s["depth_up"] for s in self.intraround_samples
+            if s.get("depth_up") is not None
+        ]
+        depths_down = [
+            s["depth_down"] for s in self.intraround_samples
+            if s.get("depth_down") is not None
+        ]
+        if depths_up:
+            stats["mean_depth_up"] = round(sum(depths_up) / len(depths_up), 2)
+            stats["min_depth_up"] = round(min(depths_up), 2)
+        if depths_down:
+            stats["mean_depth_down"] = round(
+                sum(depths_down) / len(depths_down), 2
+            )
+            stats["min_depth_down"] = round(min(depths_down), 2)
+
+        # --- Sync audit: leg timestamp skew statistics ---
+        skew_values = [
+            s["skew_ms"] for s in self.intraround_samples
+            if s.get("skew_ms") is not None
+        ]
+        if skew_values:
+            stats["skew_ms_min"] = min(skew_values)
+            stats["skew_ms_max"] = max(skew_values)
+            stats["skew_ms_mean"] = round(sum(skew_values) / len(skew_values), 0)
+            stats["skew_samples_gt_1s"] = sum(1 for v in skew_values if v > 1000)
+            stats["skew_samples_gt_30s"] = sum(1 for v in skew_values if v > 30000)
+
+        # --- Eligible dislocation decision rule ---
+        # A sample is "eligible" (simultaneously tradable) only if ALL:
+        #   1. fee_adjusted_bundle < 1.0
+        #   2. abs(skew_ms) <= SKEW_STRICT (1000ms) or SKEW_LENIENT (2000ms)
+        #   3. Both legs fresh: staleness_up_ms <= 2000 AND staleness_down_ms <= 2000
+        SKEW_STRICT_MS = 1000
+        SKEW_LENIENT_MS = 2000
+        FRESHNESS_MS = 2000
+
+        eligible_strict: list[dict] = []
+        eligible_lenient: list[dict] = []
+
+        for s in self.intraround_samples:
+            fab = s.get("fee_adjusted_bundle")
+            skew = s.get("skew_ms")
+            stale_up = s.get("staleness_up_ms")
+            stale_down = s.get("staleness_down_ms")
+
+            if fab is None or fab >= 1.0:
+                continue
+            if skew is None or stale_up is None or stale_down is None:
+                continue
+            if stale_up > FRESHNESS_MS or stale_down > FRESHNESS_MS:
+                continue
+
+            # Passes freshness — check skew tiers
+            if skew <= SKEW_LENIENT_MS:
+                eligible_lenient.append(s)
+            if skew <= SKEW_STRICT_MS:
+                eligible_strict.append(s)
+
+        stats["eligible_strict_count"] = len(eligible_strict)
+        stats["eligible_lenient_count"] = len(eligible_lenient)
+
+        if eligible_strict:
+            strict_skews = [s["skew_ms"] for s in eligible_strict]
+            strict_fabs = [s["fee_adjusted_bundle"] for s in eligible_strict]
+            stats["eligible_strict_skew_mean"] = round(
+                sum(strict_skews) / len(strict_skews), 0
+            )
+            stats["eligible_strict_skew_max"] = max(strict_skews)
+            stats["eligible_strict_min_fab"] = round(min(strict_fabs), 6)
+            # Depth during eligible dislocations
+            strict_depths_up = [s["depth_up"] for s in eligible_strict if s.get("depth_up") is not None]
+            strict_depths_down = [s["depth_down"] for s in eligible_strict if s.get("depth_down") is not None]
+            if strict_depths_up:
+                stats["eligible_strict_median_depth_up"] = round(
+                    sorted(strict_depths_up)[len(strict_depths_up) // 2], 2
+                )
+            if strict_depths_down:
+                stats["eligible_strict_median_depth_down"] = round(
+                    sorted(strict_depths_down)[len(strict_depths_down) // 2], 2
+                )
+
+        if eligible_lenient:
+            lenient_skews = [s["skew_ms"] for s in eligible_lenient]
+            lenient_fabs = [s["fee_adjusted_bundle"] for s in eligible_lenient]
+            stats["eligible_lenient_skew_mean"] = round(
+                sum(lenient_skews) / len(lenient_skews), 0
+            )
+            stats["eligible_lenient_skew_max"] = max(lenient_skews)
+            stats["eligible_lenient_min_fab"] = round(min(lenient_fabs), 6)
+
+        # Eligible window duration (strict): consecutive eligible samples
+        eligible_windows: list[float] = []
+        ew_start: Optional[float] = None
+        eligible_elapsed_set = {s.get("elapsed_s") for s in eligible_strict}
+
+        for s in self.intraround_samples:
+            elapsed = s.get("elapsed_s")
+            if elapsed in eligible_elapsed_set and elapsed is not None:
+                if ew_start is None:
+                    ew_start = elapsed
+            else:
+                if ew_start is not None and elapsed is not None:
+                    eligible_windows.append(max(elapsed - ew_start, 0.0))
+                    ew_start = None
+
+        # Close open window
+        if ew_start is not None:
+            for s in reversed(self.intraround_samples):
+                if s.get("elapsed_s") is not None:
+                    eligible_windows.append(max(s["elapsed_s"] - ew_start, 0.0))
+                    break
+
+        stats["eligible_strict_window_count"] = len(eligible_windows)
+        if eligible_windows:
+            stats["eligible_strict_max_window_s"] = round(max(eligible_windows), 1)
+
+        return stats
 
     def direction_from_oracle(self) -> Optional[str]:
         """Determine direction from oracle start/end prices."""
@@ -384,11 +616,8 @@ def read_oracle_tick_near(
     best_dist = float("inf")
 
     # Read from the end for efficiency (recent ticks are more relevant)
-    try:
-        with open(oracle_log, "r") as f:
-            # Read last N lines (tail)
-            lines = f.readlines()
-    except OSError:
+    lines = _tail_lines(oracle_log)
+    if not lines:
         return None
 
     # Scan in reverse for efficiency
@@ -426,8 +655,7 @@ def read_latest_oracle_tick(
     if not oracle_log.exists():
         return None
     try:
-        with open(oracle_log, "r") as f:
-            lines = f.readlines()
+        lines = _tail_lines(oracle_log, max_bytes=500_000)
         if not lines:
             return None
         # Last non-empty line
@@ -435,7 +663,7 @@ def read_latest_oracle_tick(
             line = line.strip()
             if line:
                 return json.loads(line)
-    except (OSError, json.JSONDecodeError):
+    except (json.JSONDecodeError, ValueError):
         pass
     return None
 
@@ -455,11 +683,7 @@ def read_clob_state_for_asset(
     if not market_log.exists():
         return None
 
-    try:
-        with open(market_log, "r") as f:
-            lines = f.readlines()
-    except OSError:
-        return None
+    lines = _tail_lines(market_log)
 
     # Scan in reverse for the latest state
     for line in reversed(lines[-5000:]):
@@ -480,6 +704,46 @@ def read_clob_state_for_asset(
                 "ts_arrival_ms": rec.get("ts_arrival_ms"),
                 "event_type": rec.get("event_type"),
             }
+    return None
+
+
+def read_clob_ask_depth(
+    asset_id: str,
+    market_log: Path = _PROJECT_ROOT / "logs" / "prediction" / "clob_market.jsonl",
+) -> Optional[float]:
+    """Return the most recent ask-side depth (size) for *asset_id*.
+
+    Scans recent ``price_change`` events where ``side == "SELL"`` and the
+    level ``price`` matches the current ``best_ask``.  Returns the ``size``
+    field (number of contracts available at best ask), or ``None`` if no
+    suitable record is found.
+    """
+    if not market_log.exists():
+        return None
+
+    lines = _tail_lines(market_log)
+
+    for line in reversed(lines[-5000:]):
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if rec.get("asset_id") != asset_id:
+            continue
+        if rec.get("event_type") != "price_change":
+            continue
+        if rec.get("side") != "SELL":
+            continue
+        # Level price should equal best_ask (this is the top-of-book ask)
+        price = rec.get("price")
+        best_ask = rec.get("best_ask")
+        if price is not None and best_ask is not None and price == best_ask:
+            size_raw = rec.get("size")
+            if size_raw is not None:
+                try:
+                    return float(size_raw)
+                except (TypeError, ValueError):
+                    pass
     return None
 
 
@@ -525,7 +789,9 @@ class RoundObserver:
     def _capture_intraround_sample(self, rnd: RoundState) -> Dict[str, Any]:
         """Capture a periodic intraround sample for dislocation analysis.
 
-        Returns a compact dict with ask_up, ask_down, bundle_cost, spreads.
+        Returns a compact dict with ask_up, ask_down, bundle_cost, spreads,
+        fee-adjusted bundle, ask-side depth, and per-leg timestamps for
+        synchronization audit (IDCP fields).
         """
         up_state = read_clob_state_for_asset(rnd.up_token, self.market_log)
         down_state = read_clob_state_for_asset(rnd.down_token, self.market_log)
@@ -537,9 +803,44 @@ class RoundObserver:
         mid_up = up_state["mid"] if up_state else None
         mid_down = down_state["mid"] if down_state else None
 
+        # --- Leg timestamp extraction for synchronization audit ---
+        sample_ts_ms = int(time.time() * 1000)
+        ts_up_ms = up_state.get("ts_arrival_ms") if up_state else None
+        ts_down_ms = down_state.get("ts_arrival_ms") if down_state else None
+        skew_ms: Optional[int] = None
+        staleness_up_ms: Optional[int] = None
+        staleness_down_ms: Optional[int] = None
+        if ts_up_ms is not None:
+            staleness_up_ms = sample_ts_ms - int(ts_up_ms)
+        if ts_down_ms is not None:
+            staleness_down_ms = sample_ts_ms - int(ts_down_ms)
+        if ts_up_ms is not None and ts_down_ms is not None:
+            skew_ms = abs(int(ts_up_ms) - int(ts_down_ms))
+
         bundle_cost: Optional[float] = None
         if ask_up is not None and ask_down is not None:
             bundle_cost = round(ask_up + ask_down, 6)
+
+        # --- IDCP fields (v7.9) ---
+        # Fee-adjusted bundle: bundle + Polymarket taker fees on each leg
+        fee_up: Optional[float] = None
+        fee_down: Optional[float] = None
+        fee_adjusted_bundle: Optional[float] = None
+        bundle_sub_1: Optional[bool] = None
+        fee_adjusted_sub_1: Optional[bool] = None
+
+        if ask_up is not None:
+            fee_up = round(polymarket_taker_fee(ask_up), 6)
+        if ask_down is not None:
+            fee_down = round(polymarket_taker_fee(ask_down), 6)
+        if bundle_cost is not None and fee_up is not None and fee_down is not None:
+            fee_adjusted_bundle = round(bundle_cost + fee_up + fee_down, 6)
+            bundle_sub_1 = bundle_cost < 1.0
+            fee_adjusted_sub_1 = fee_adjusted_bundle < 1.0
+
+        # Ask-side depth (contracts available at best ask)
+        depth_up = read_clob_ask_depth(rnd.up_token, self.market_log)
+        depth_down = read_clob_ask_depth(rnd.down_token, self.market_log)
 
         return {
             "ts": _now_iso(),
@@ -551,6 +852,21 @@ class RoundObserver:
             "spread_down": spread_down,
             "mid_up": mid_up,
             "mid_down": mid_down,
+            # IDCP fields
+            "fee_up": fee_up,
+            "fee_down": fee_down,
+            "fee_adjusted_bundle": fee_adjusted_bundle,
+            "bundle_sub_1": bundle_sub_1,
+            "fee_adjusted_sub_1": fee_adjusted_sub_1,
+            "depth_up": depth_up,
+            "depth_down": depth_down,
+            # Sync audit fields (v7.9-W6)
+            "sample_ts_ms": sample_ts_ms,
+            "ts_up_ms": ts_up_ms,
+            "ts_down_ms": ts_down_ms,
+            "skew_ms": skew_ms,
+            "staleness_up_ms": staleness_up_ms,
+            "staleness_down_ms": staleness_down_ms,
         }
 
     def _capture_book_state(self, up_token: str, down_token: str) -> Dict[str, Any]:
@@ -650,11 +966,7 @@ class RoundObserver:
         start_ms = int(rnd.round_start_ts * 1000)
         end_ms = int(rnd.round_end_ts * 1000)
 
-        try:
-            with open(self.market_log, "r") as f:
-                lines = f.readlines()
-        except OSError:
-            return
+        lines = _tail_lines(self.market_log, max_bytes=4_000_000)
 
         for line in reversed(lines[-10000:]):
             try:
@@ -695,11 +1007,7 @@ class RoundObserver:
 
         end_ms = int(rnd.round_end_ts * 1000)
 
-        try:
-            with open(self.market_log, "r") as f:
-                lines = f.readlines()
-        except OSError:
-            return
+        lines = _tail_lines(self.market_log)
 
         for line in reversed(lines[-2000:]):
             try:

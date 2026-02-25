@@ -27,6 +27,7 @@ import pytest
 from prediction.round_observer import (
     INTRAROUND_INTERVAL_S,
     ORACLE_STALE_MS,
+    POLYMARKET_FEE_RATE,
     SNAPSHOT_OFFSETS_S,
     RoundObserver,
     RoundState,
@@ -35,6 +36,9 @@ from prediction.round_observer import (
     _ensure_parent,
     _now_iso,
     _now_ms,
+    _tail_lines,
+    polymarket_taker_fee,
+    read_clob_ask_depth,
     read_clob_state_for_asset,
     read_latest_oracle_tick,
     read_oracle_tick_near,
@@ -1054,4 +1058,558 @@ class TestCaptureIntraaroundSample:
         sample = obs._capture_intraround_sample(rnd)
 
         assert sample["bundle_cost"] == pytest.approx(0.99, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Tests — IDCP: polymarket_taker_fee
+# ---------------------------------------------------------------------------
+class TestPolymarketTakerFee:
+    def test_midpoint_price(self) -> None:
+        # At 0.50: fee = 0.02 * min(0.50, 0.50) = 0.01
+        assert polymarket_taker_fee(0.50) == pytest.approx(0.01, abs=1e-6)
+
+    def test_high_price(self) -> None:
+        # At 0.90: fee = 0.02 * min(0.90, 0.10) = 0.002
+        assert polymarket_taker_fee(0.90) == pytest.approx(0.002, abs=1e-6)
+
+    def test_low_price(self) -> None:
+        # At 0.10: fee = 0.02 * min(0.10, 0.90) = 0.002
+        assert polymarket_taker_fee(0.10) == pytest.approx(0.002, abs=1e-6)
+
+    def test_zero_price(self) -> None:
+        assert polymarket_taker_fee(0.0) == 0.0
+
+    def test_one_price(self) -> None:
+        assert polymarket_taker_fee(1.0) == 0.0
+
+    def test_negative_price(self) -> None:
+        assert polymarket_taker_fee(-0.5) == 0.0
+
+    def test_symmetric(self) -> None:
+        # fee(p) == fee(1-p)
+        assert polymarket_taker_fee(0.3) == pytest.approx(
+            polymarket_taker_fee(0.7), abs=1e-10
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests — IDCP: read_clob_ask_depth
+# ---------------------------------------------------------------------------
+class TestReadClobAskDepth:
+    def test_returns_depth_from_price_change(self, tmp_path: Path) -> None:
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {
+                "asset_id": "UP_TOKEN",
+                "event_type": "price_change",
+                "side": "SELL",
+                "price": 0.52,
+                "best_ask": 0.52,
+                "best_bid": 0.50,
+                "size": "150.0",
+                "ts_arrival_ms": 1000,
+            },
+        ])
+        depth = read_clob_ask_depth("UP_TOKEN", market_log)
+        assert depth == pytest.approx(150.0, abs=1e-6)
+
+    def test_ignores_buy_side(self, tmp_path: Path) -> None:
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {
+                "asset_id": "UP_TOKEN",
+                "event_type": "price_change",
+                "side": "BUY",
+                "price": 0.50,
+                "best_ask": 0.52,
+                "best_bid": 0.50,
+                "size": "200.0",
+                "ts_arrival_ms": 1000,
+            },
+        ])
+        depth = read_clob_ask_depth("UP_TOKEN", market_log)
+        assert depth is None
+
+    def test_ignores_non_top_of_book(self, tmp_path: Path) -> None:
+        """Depth should only come from levels matching best_ask."""
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {
+                "asset_id": "UP_TOKEN",
+                "event_type": "price_change",
+                "side": "SELL",
+                "price": 0.55,  # Above best_ask — not top of book
+                "best_ask": 0.52,
+                "best_bid": 0.50,
+                "size": "100.0",
+                "ts_arrival_ms": 1000,
+            },
+        ])
+        depth = read_clob_ask_depth("UP_TOKEN", market_log)
+        assert depth is None
+
+    def test_missing_file(self, tmp_path: Path) -> None:
+        depth = read_clob_ask_depth("UP_TOKEN", tmp_path / "nope.jsonl")
+        assert depth is None
+
+    def test_prefers_most_recent(self, tmp_path: Path) -> None:
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {
+                "asset_id": "UP_TOKEN",
+                "event_type": "price_change",
+                "side": "SELL",
+                "price": 0.52,
+                "best_ask": 0.52,
+                "best_bid": 0.50,
+                "size": "50.0",
+                "ts_arrival_ms": 500,
+            },
+            {
+                "asset_id": "UP_TOKEN",
+                "event_type": "price_change",
+                "side": "SELL",
+                "price": 0.52,
+                "best_ask": 0.52,
+                "best_bid": 0.50,
+                "size": "300.0",
+                "ts_arrival_ms": 1000,
+            },
+        ])
+        depth = read_clob_ask_depth("UP_TOKEN", market_log)
+        assert depth == pytest.approx(300.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Tests — IDCP: _capture_intraround_sample fee + depth fields
+# ---------------------------------------------------------------------------
+class TestCaptureIntraaroundSampleIDCP:
+    def test_fee_adjusted_bundle(self, tmp_path: Path) -> None:
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {"asset_id": "UP_TOKEN", "best_bid": 0.50, "best_ask": 0.52,
+             "ts_arrival_ms": 1000},
+            {"asset_id": "DOWN_TOKEN", "best_bid": 0.47, "best_ask": 0.49,
+             "ts_arrival_ms": 1000},
+        ])
+
+        obs = RoundObserver(market_log=market_log)
+        rnd = _make_round_state()
+        rnd.round_start_ts = time.time() - 120
+
+        sample = obs._capture_intraround_sample(rnd)
+
+        # bundle = 0.52 + 0.49 = 1.01
+        assert sample["bundle_cost"] == pytest.approx(1.01, abs=1e-6)
+
+        # fee_up = 0.02 * min(0.52, 0.48) = 0.02 * 0.48 = 0.0096
+        assert sample["fee_up"] == pytest.approx(0.0096, abs=1e-4)
+        # fee_down = 0.02 * min(0.49, 0.51) = 0.02 * 0.49 = 0.0098
+        assert sample["fee_down"] == pytest.approx(0.0098, abs=1e-4)
+
+        # fee_adjusted = 1.01 + 0.0096 + 0.0098 = 1.0294
+        assert sample["fee_adjusted_bundle"] == pytest.approx(1.0294, abs=1e-3)
+        assert sample["bundle_sub_1"] is False
+        assert sample["fee_adjusted_sub_1"] is False
+
+    def test_fee_adjusted_sub_one(self, tmp_path: Path) -> None:
+        """When raw bundle < 1.0, verify both flags."""
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {"asset_id": "UP_TOKEN", "best_bid": 0.40, "best_ask": 0.42,
+             "ts_arrival_ms": 1000},
+            {"asset_id": "DOWN_TOKEN", "best_bid": 0.48, "best_ask": 0.50,
+             "ts_arrival_ms": 1000},
+        ])
+
+        obs = RoundObserver(market_log=market_log)
+        rnd = _make_round_state()
+        rnd.round_start_ts = time.time() - 60
+
+        sample = obs._capture_intraround_sample(rnd)
+
+        # bundle = 0.42 + 0.50 = 0.92
+        assert sample["bundle_cost"] == pytest.approx(0.92, abs=1e-6)
+        assert sample["bundle_sub_1"] is True
+
+        # fee_up = 0.02 * min(0.42, 0.58) = 0.0084
+        # fee_down = 0.02 * min(0.50, 0.50) = 0.01
+        # fee_adj = 0.92 + 0.0084 + 0.01 = 0.9384 (still < 1.0)
+        assert sample["fee_adjusted_bundle"] == pytest.approx(0.9384, abs=1e-3)
+        assert sample["fee_adjusted_sub_1"] is True
+
+    def test_depth_fields_present(self, tmp_path: Path) -> None:
+        market_log = tmp_path / "clob.jsonl"
+        _write_jsonl(market_log, [
+            {"asset_id": "UP_TOKEN", "best_bid": 0.50, "best_ask": 0.52,
+             "ts_arrival_ms": 1000},
+            {"asset_id": "DOWN_TOKEN", "best_bid": 0.47, "best_ask": 0.49,
+             "ts_arrival_ms": 1000},
+            # price_change with depth at best_ask for UP
+            {"asset_id": "UP_TOKEN", "event_type": "price_change",
+             "side": "SELL", "price": 0.52, "best_ask": 0.52,
+             "best_bid": 0.50, "size": "200.0", "ts_arrival_ms": 1100},
+        ])
+
+        obs = RoundObserver(market_log=market_log)
+        rnd = _make_round_state()
+        rnd.round_start_ts = time.time() - 60
+
+        sample = obs._capture_intraround_sample(rnd)
+
+        assert sample["depth_up"] == pytest.approx(200.0, abs=1e-6)
+        assert sample["depth_down"] is None  # No SELL price_change for DOWN
+
+    def test_missing_data_has_none_idcp_fields(self, tmp_path: Path) -> None:
+        obs = RoundObserver(market_log=tmp_path / "clob.jsonl")
+        rnd = _make_round_state()
+        rnd.round_start_ts = time.time() - 60
+
+        sample = obs._capture_intraround_sample(rnd)
+
+        assert sample["fee_up"] is None
+        assert sample["fee_down"] is None
+        assert sample["fee_adjusted_bundle"] is None
+        assert sample["bundle_sub_1"] is None
+        assert sample["fee_adjusted_sub_1"] is None
+        assert sample["depth_up"] is None
+        assert sample["depth_down"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests — IDCP: _compute_intraround_stats duration + fee-adjusted
+# ---------------------------------------------------------------------------
+class TestComputeIntraaroundStatsIDCP:
+    def test_fee_adjusted_stats(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "fee_adjusted_bundle": 1.03,
+             "elapsed_s": 60, "ts": "t1"},
+            {"bundle_cost": 0.99, "fee_adjusted_bundle": 1.01,
+             "elapsed_s": 120, "ts": "t2"},
+            {"bundle_cost": 0.98, "fee_adjusted_bundle": 0.995,
+             "elapsed_s": 180, "ts": "t3"},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["min_fee_adjusted_bundle"] == pytest.approx(0.995, abs=1e-3)
+        assert stats["max_fee_adjusted_bundle"] == pytest.approx(1.03, abs=1e-3)
+        assert stats["dislocation_fee_adjusted_count"] == 1
+        assert stats["min_fee_adjusted_dislocation"] == pytest.approx(
+            0.995, abs=1e-3
+        )
+
+    def test_no_fee_adjusted_sub_one(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 0.99, "fee_adjusted_bundle": 1.005,
+             "elapsed_s": 60, "ts": "t1"},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["dislocation_fee_adjusted_count"] == 0
+        assert stats["min_fee_adjusted_dislocation"] is None
+
+    def test_dislocation_duration_single_window(self) -> None:
+        """Window is based on fee_adjusted_bundle < 1.0 (not raw bundle)."""
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "fee_adjusted_bundle": 1.02, "elapsed_s": 60, "ts": "t1"},
+            {"bundle_cost": 0.99, "fee_adjusted_bundle": 0.99, "elapsed_s": 120, "ts": "t2"},
+            {"bundle_cost": 0.98, "fee_adjusted_bundle": 0.98, "elapsed_s": 180, "ts": "t3"},
+            {"bundle_cost": 1.02, "fee_adjusted_bundle": 1.03, "elapsed_s": 240, "ts": "t4"},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["dislocation_window_count"] == 1
+        assert stats["max_dislocation_window_s"] == pytest.approx(120.0, abs=0.1)
+        assert stats["total_dislocation_s"] == pytest.approx(120.0, abs=0.1)
+
+    def test_dislocation_duration_two_windows(self) -> None:
+        """Windows use fee_adjusted_bundle — raw sub-1 with fee >= 1 are not counted."""
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 0.99, "fee_adjusted_bundle": 0.99, "elapsed_s": 60, "ts": "t1"},
+            {"bundle_cost": 0.98, "fee_adjusted_bundle": 0.98, "elapsed_s": 120, "ts": "t2"},
+            {"bundle_cost": 1.01, "fee_adjusted_bundle": 1.02, "elapsed_s": 180, "ts": "t3"},
+            {"bundle_cost": 0.97, "fee_adjusted_bundle": 0.97, "elapsed_s": 240, "ts": "t4"},
+            {"bundle_cost": 1.02, "fee_adjusted_bundle": 1.03, "elapsed_s": 300, "ts": "t5"},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["dislocation_window_count"] == 2
+        # Window 1: 60→180 = 120s  Window 2: 240→300 = 60s
+        assert stats["max_dislocation_window_s"] == pytest.approx(120.0, abs=0.1)
+        assert stats["total_dislocation_s"] == pytest.approx(180.0, abs=0.1)
+        assert stats["mean_dislocation_window_s"] == pytest.approx(90.0, abs=0.1)
+
+    def test_dislocation_window_open_at_end(self) -> None:
+        """Dislocation running through end of round (fee-adjusted) is counted."""
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "fee_adjusted_bundle": 1.02, "elapsed_s": 60, "ts": "t1"},
+            {"bundle_cost": 0.99, "fee_adjusted_bundle": 0.99, "elapsed_s": 120, "ts": "t2"},
+            {"bundle_cost": 0.98, "fee_adjusted_bundle": 0.98, "elapsed_s": 180, "ts": "t3"},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["dislocation_window_count"] == 1
+        # Open window from 120→180 = 60s
+        assert stats["max_dislocation_window_s"] == pytest.approx(60.0, abs=0.1)
+
+    def test_no_dislocation_no_windows(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "elapsed_s": 60, "ts": "t1"},
+            {"bundle_cost": 1.005, "elapsed_s": 120, "ts": "t2"},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["dislocation_window_count"] == 0
+        assert "max_dislocation_window_s" not in stats
+
+    def test_raw_sub_1_but_fee_adjusted_above_1_not_counted(self) -> None:
+        """Raw bundle < 1.0 but fee-adjusted >= 1.0 must NOT count as window."""
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 0.99, "fee_adjusted_bundle": 1.005, "elapsed_s": 60, "ts": "t1"},
+            {"bundle_cost": 0.98, "fee_adjusted_bundle": 1.002, "elapsed_s": 120, "ts": "t2"},
+            {"bundle_cost": 0.97, "fee_adjusted_bundle": 1.001, "elapsed_s": 180, "ts": "t3"},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["dislocation_window_count"] == 0
+        assert "max_dislocation_window_s" not in stats
+
+    def test_skew_stats_in_intraround(self) -> None:
+        """Sync audit skew stats are computed from skew_ms field."""
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "elapsed_s": 60, "ts": "t1", "skew_ms": 500},
+            {"bundle_cost": 0.99, "fee_adjusted_bundle": 0.99, "elapsed_s": 120, "ts": "t2", "skew_ms": 45000},
+            {"bundle_cost": 1.01, "elapsed_s": 180, "ts": "t3", "skew_ms": 200},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["skew_ms_min"] == 200
+        assert stats["skew_ms_max"] == 45000
+        assert stats["skew_samples_gt_1s"] == 1
+        assert stats["skew_samples_gt_30s"] == 1
+
+    def test_depth_stats(self) -> None:
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "elapsed_s": 60, "ts": "t1",
+             "depth_up": 100.0, "depth_down": 200.0},
+            {"bundle_cost": 1.005, "elapsed_s": 120, "ts": "t2",
+             "depth_up": 150.0, "depth_down": 300.0},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["mean_depth_up"] == pytest.approx(125.0, abs=0.1)
+        assert stats["min_depth_up"] == pytest.approx(100.0, abs=0.1)
+        assert stats["mean_depth_down"] == pytest.approx(250.0, abs=0.1)
+        assert stats["min_depth_down"] == pytest.approx(200.0, abs=0.1)
+
+    def test_missing_fee_adjusted_skipped(self) -> None:
+        """Samples without fee_adjusted_bundle are gracefully excluded."""
+        rnd = _make_round_state()
+        rnd.intraround_samples = [
+            {"bundle_cost": 1.01, "elapsed_s": 60, "ts": "t1"},
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert "min_fee_adjusted_bundle" not in stats
+        assert "dislocation_fee_adjusted_count" not in stats
+
+    def test_eligible_strict_all_pass(self) -> None:
+        """Sample with fee_adj<1, skew<=1000, fresh legs → eligible strict."""
+        rnd = _make_round_state()
+        now_ms = 1700000000000
+        rnd.intraround_samples = [
+            {
+                "bundle_cost": 0.96, "fee_adjusted_bundle": 0.98,
+                "elapsed_s": 60, "ts": "t1",
+                "skew_ms": 200,
+                "sample_ts_ms": now_ms,
+                "ts_up_ms": now_ms - 500,
+                "ts_down_ms": now_ms - 700,
+                "staleness_up_ms": 500,
+                "staleness_down_ms": 700,
+                "depth_up": 100.0, "depth_down": 200.0,
+            },
+            {
+                "bundle_cost": 0.97, "fee_adjusted_bundle": 0.99,
+                "elapsed_s": 120, "ts": "t2",
+                "skew_ms": 800,
+                "sample_ts_ms": now_ms + 60000,
+                "ts_up_ms": now_ms + 60000 - 400,
+                "ts_down_ms": now_ms + 60000 - 1200,
+                "staleness_up_ms": 400,
+                "staleness_down_ms": 1200,
+                "depth_up": 150.0, "depth_down": 250.0,
+            },
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["eligible_strict_count"] == 2
+        assert stats["eligible_lenient_count"] == 2
+        assert stats["eligible_strict_min_fab"] == pytest.approx(0.98, abs=1e-4)
+        assert stats["eligible_strict_skew_max"] == 800
+        assert stats["eligible_strict_median_depth_up"] == pytest.approx(150.0, abs=0.1)
+        assert stats["eligible_strict_window_count"] >= 1
+
+    def test_eligible_skew_too_high_rejects(self) -> None:
+        """Sample with skew > 2000 is not eligible even lenient."""
+        rnd = _make_round_state()
+        now_ms = 1700000000000
+        rnd.intraround_samples = [
+            {
+                "bundle_cost": 0.96, "fee_adjusted_bundle": 0.98,
+                "elapsed_s": 60, "ts": "t1",
+                "skew_ms": 5000,
+                "sample_ts_ms": now_ms,
+                "ts_up_ms": now_ms - 500,
+                "ts_down_ms": now_ms - 5500,
+                "staleness_up_ms": 500,
+                "staleness_down_ms": 5500,
+            },
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        # Skew exceeds both thresholds AND staleness_down > 2000
+        assert stats["eligible_strict_count"] == 0
+        assert stats["eligible_lenient_count"] == 0
+
+    def test_eligible_stale_legs_rejected(self) -> None:
+        """Both legs aligned (skew=0) but both stale → not eligible."""
+        rnd = _make_round_state()
+        now_ms = 1700000000000
+        rnd.intraround_samples = [
+            {
+                "bundle_cost": 0.96, "fee_adjusted_bundle": 0.98,
+                "elapsed_s": 60, "ts": "t1",
+                "skew_ms": 0,
+                "sample_ts_ms": now_ms,
+                "ts_up_ms": now_ms - 10000,
+                "ts_down_ms": now_ms - 10000,
+                "staleness_up_ms": 10000,
+                "staleness_down_ms": 10000,
+            },
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        # Skew=0 but both legs 10s stale → freshness fails
+        assert stats["eligible_strict_count"] == 0
+        assert stats["eligible_lenient_count"] == 0
+
+    def test_eligible_lenient_not_strict(self) -> None:
+        """Sample with skew=1500 passes lenient but not strict."""
+        rnd = _make_round_state()
+        now_ms = 1700000000000
+        rnd.intraround_samples = [
+            {
+                "bundle_cost": 0.96, "fee_adjusted_bundle": 0.98,
+                "elapsed_s": 60, "ts": "t1",
+                "skew_ms": 1500,
+                "sample_ts_ms": now_ms,
+                "ts_up_ms": now_ms - 300,
+                "ts_down_ms": now_ms - 1800,
+                "staleness_up_ms": 300,
+                "staleness_down_ms": 1800,
+                "depth_up": 100.0, "depth_down": 200.0,
+            },
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["eligible_strict_count"] == 0
+        assert stats["eligible_lenient_count"] == 1
+        assert stats["eligible_lenient_min_fab"] == pytest.approx(0.98, abs=1e-4)
+
+    def test_eligible_fee_adjusted_above_1_excluded(self) -> None:
+        """Sample with fee_adjusted >= 1.0 is never eligible."""
+        rnd = _make_round_state()
+        now_ms = 1700000000000
+        rnd.intraround_samples = [
+            {
+                "bundle_cost": 0.99, "fee_adjusted_bundle": 1.005,
+                "elapsed_s": 60, "ts": "t1",
+                "skew_ms": 100,
+                "sample_ts_ms": now_ms,
+                "ts_up_ms": now_ms - 100,
+                "ts_down_ms": now_ms - 200,
+                "staleness_up_ms": 100,
+                "staleness_down_ms": 200,
+            },
+        ]
+        stats = rnd._compute_intraround_stats()
+
+        assert stats["eligible_strict_count"] == 0
+        assert stats["eligible_lenient_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _tail_lines helper
+# ---------------------------------------------------------------------------
+
+class TestTailLines:
+    """Tests for _tail_lines — memory-safe file tail reader."""
+
+    def test_reads_small_file_fully(self, tmp_path: Path) -> None:
+        p = tmp_path / "small.jsonl"
+        lines = [f'{{"n":{i}}}' for i in range(10)]
+        p.write_text("\n".join(lines) + "\n")
+        result = _tail_lines(p, max_bytes=10_000)
+        assert len(result) == 10
+
+    def test_reads_last_bytes_only(self, tmp_path: Path) -> None:
+        """Large file: only tail portion returned."""
+        p = tmp_path / "big.jsonl"
+        # Each line ~20 chars → 100 lines ≈ 2000 bytes
+        all_lines = [f'{{"n":{i},"pad":"x"}}' for i in range(100)]
+        p.write_text("\n".join(all_lines) + "\n")
+        # Read only last 200 bytes — should get ~10 lines
+        result = _tail_lines(p, max_bytes=200)
+        assert len(result) < 100
+        assert len(result) >= 5  # at least a handful
+
+    def test_drops_partial_first_line(self, tmp_path: Path) -> None:
+        """When seeking mid-file, the first partial line is dropped."""
+        p = tmp_path / "partial.jsonl"
+        all_lines = [f'{{"n":{i}}}' for i in range(50)]
+        content = "\n".join(all_lines) + "\n"
+        p.write_text(content)
+        # max_bytes smaller than file → seek lands mid-line
+        result = _tail_lines(p, max_bytes=100)
+        for line in result:
+            # Every returned line should be valid JSON (no partial)
+            json.loads(line)
+
+    def test_empty_file_returns_empty(self, tmp_path: Path) -> None:
+        p = tmp_path / "empty.jsonl"
+        p.write_text("")
+        assert _tail_lines(p) == []
+
+    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        p = tmp_path / "does_not_exist.jsonl"
+        assert _tail_lines(p) == []
+
+    def test_single_line_file(self, tmp_path: Path) -> None:
+        p = tmp_path / "single.jsonl"
+        p.write_text('{"key": "value"}\n')
+        result = _tail_lines(p, max_bytes=10_000)
+        assert len(result) == 1
+        assert json.loads(result[0])["key"] == "value"
+
+    def test_max_bytes_clamped_to_ceiling(self, tmp_path: Path) -> None:
+        """Passing max_bytes > _TAIL_MAX_BYTES is silently clamped."""
+        from prediction.round_observer import _TAIL_MAX_BYTES
+
+        p = tmp_path / "small.jsonl"
+        p.write_text('{"a":1}\n')
+        # Requesting 100 MB should not crash or read 100 MB
+        result = _tail_lines(p, max_bytes=100_000_000)
+        assert len(result) == 1
+        # Confirm the constant is 8 MB
+        assert _TAIL_MAX_BYTES == 8_000_000
 
