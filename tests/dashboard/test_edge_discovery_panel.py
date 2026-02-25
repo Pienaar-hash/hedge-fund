@@ -241,8 +241,10 @@ class TestRenderEdgeDiscoveryPanel:
         
         mock_col = MagicMock()
         # Return correct number of columns based on argument
+        # st.columns() accepts int or list of widths
         def columns_side_effect(n):
-            return [mock_col for _ in range(n)]
+            count = len(n) if isinstance(n, (list, tuple)) else int(n)
+            return [mock_col for _ in range(count)]
         mock_st.columns.side_effect = columns_side_effect
         
         # Should not raise

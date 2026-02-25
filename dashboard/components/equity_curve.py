@@ -266,5 +266,7 @@ def render_equity_curve(nav_log_path: Optional[Path] = None) -> None:
     </div>
     '''
 
-    iframe_h = _CHART_H + 110  # header + chart + padding
-    st_components.html(html, height=iframe_h, scrolling=False)
+    # Use st.html (inline) instead of st_components.html (iframe) so the
+    # chart inherits full container width.  The outer div constrains height;
+    # the SVG scales horizontally via width="100%" + preserveAspectRatio.
+    st.html(html)

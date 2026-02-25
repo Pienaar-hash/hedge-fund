@@ -901,6 +901,8 @@ def render_sentinel_x_panel() -> None:
 
 def load_alpha_decay_state() -> Optional[Dict[str, Any]]:
     """Load alpha decay state from state file."""
+    import json
+    from pathlib import Path
     path = Path("logs/state/alpha_decay.json")
     if not path.exists():
         return None
