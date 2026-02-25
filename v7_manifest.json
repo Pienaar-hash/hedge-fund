@@ -1104,6 +1104,35 @@
         "config_hash": "str|null — SHA-256 of binary_lab_limits.json",
         "last_checkpoint_utc_date": "str|null — last UTC date (YYYY-MM-DD) checkpoint counted"
       }
+    },
+    "binary_lab_trades": {
+      "path": "logs/execution/binary_lab_trades.jsonl",
+      "owner": "binary_lab_shadow",
+      "update_frequency": "per_round",
+      "optional": true,
+      "description": "Binary Lab S1 shadow sleeve trade log — append-only. Each round produces ENTRY + ROUND_CLOSED (or NO_TRADE) events. All events tagged execution_mode: SHADOW.",
+      "event_types": ["ENTRY", "ROUND_CLOSED", "NO_TRADE"],
+      "fields": {
+        "event_type": "str — ENTRY | ROUND_CLOSED | NO_TRADE",
+        "execution_mode": "str — always SHADOW",
+        "ts": "str — ISO 8601 timestamp",
+        "ts_ms": "int — millisecond timestamp",
+        "round_id": "str — R_YYYYMMDD_HHMM deterministic from round start",
+        "market_slug": "str — trading pair (e.g. BTCUSDT)",
+        "horizon_s": "int — always 900 (15 minutes)",
+        "side": "str — UP | DOWN",
+        "intent_direction": "str — UP | DOWN",
+        "p_fill": "float — simulated entry fill price",
+        "notional_usd": "float — always 20",
+        "conviction_band": "str — medium | high | very_high",
+        "conviction_score": "float — 0-1 conviction proxy",
+        "regime": "str — Sentinel-X regime at decision time",
+        "regime_confidence": "float — regime probability",
+        "status": "str — filled | no_fill | no_trade | resolved",
+        "resolved_outcome": "str|null — WIN | LOSS (on ROUND_CLOSED only)",
+        "pnl_usd": "float|null — net PnL after fees (on ROUND_CLOSED only)",
+        "deny_reason": "str|null — eligibility denial reason (on NO_TRADE only)"
+      }
     }
   },
   "diagnostics": {

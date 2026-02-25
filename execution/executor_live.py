@@ -1070,6 +1070,12 @@ except Exception:
     BinaryLabRuntimeWriter = None  # type: ignore[assignment]
     RuntimeLoopContext = None  # type: ignore[assignment]
     _BINARY_LAB_RUNTIME_AVAILABLE = False
+try:
+    from execution.binary_lab_shadow import BinaryLabShadowRunner
+    _BINARY_LAB_SHADOW_AVAILABLE = True
+except Exception:
+    BinaryLabShadowRunner = None  # type: ignore[assignment]
+    _BINARY_LAB_SHADOW_AVAILABLE = False
 # v7.9_P4: Execution Alpha observability hooks
 try:
     from execution.minotaur_integration import (
@@ -1100,6 +1106,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 # Binary Lab state writer globals (observational only)
 _BINARY_LAB_WRITER: Optional[Any] = None
+_BINARY_LAB_SHADOW_RUNNER: Optional[Any] = None
 _BINARY_LAB_ACTIVATION_ATTEMPTED = False
 
 
@@ -1109,6 +1116,8 @@ def _parse_binary_lab_mode(raw: str) -> Any:
     value = str(raw or "").strip().upper()
     if value == "LIVE":
         return BinaryLabMode.LIVE
+    if value == "SHADOW":
+        return BinaryLabMode.SHADOW
     return BinaryLabMode.PAPER
 
 
@@ -1132,8 +1141,11 @@ def _binary_lab_tick(now_iso: str) -> bool:
     """
     Emit binary_lab_state once per loop via deterministic context.
     This path is observational and never influences order execution.
+
+    When BINARY_LAB_MODE=SHADOW, also runs the shadow sleeve runner
+    which simulates 15-min directional rounds without placing real orders.
     """
-    global _BINARY_LAB_ACTIVATION_ATTEMPTED
+    global _BINARY_LAB_ACTIVATION_ATTEMPTED, _BINARY_LAB_SHADOW_RUNNER
     writer = _binary_lab_writer()
     if writer is None or RuntimeLoopContext is None:
         return False
@@ -1161,6 +1173,29 @@ def _binary_lab_tick(now_iso: str) -> bool:
             event_type_override=event_override,
         )
         writer.tick(ctx)
+
+        # Shadow sleeve: run 15-min directional rounds with simulated fills
+        if (
+            mode is not None
+            and mode == BinaryLabMode.SHADOW
+            and _BINARY_LAB_SHADOW_AVAILABLE
+            and BinaryLabShadowRunner is not None
+        ):
+            if _BINARY_LAB_SHADOW_RUNNER is None:
+                import json as _json
+                from pathlib import Path as _Path
+                limits_path = _Path("config/binary_lab_limits.json")
+                if limits_path.exists():
+                    with limits_path.open() as _f:
+                        _limits = _json.load(_f)
+                    _BINARY_LAB_SHADOW_RUNNER = BinaryLabShadowRunner(
+                        limits=_limits,
+                        writer=writer,
+                    )
+                    LOG.info("[binary-lab] shadow runner initialized")
+            if _BINARY_LAB_SHADOW_RUNNER is not None:
+                _BINARY_LAB_SHADOW_RUNNER.tick(now_iso)
+
         return True
     except Exception as exc:
         LOG.debug("[binary-lab] tick_failed: %s", exc)

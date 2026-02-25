@@ -34,6 +34,7 @@ class BinaryLabStatus(str, Enum):
 class BinaryLabMode(str, Enum):
     PAPER = "PAPER"
     LIVE = "LIVE"
+    SHADOW = "SHADOW"
 
 
 class BinaryLabEventType(str, Enum):
