@@ -121,49 +121,38 @@ def render_episode_ledger_summary(state: Optional[Dict[str, Any]] = None) -> Non
     
     # PnL color
     pnl_color = "#22c55e" if total_net_pnl >= 0 else "#ef4444"
-    pnl_sign = "+" if total_net_pnl >= 0 else ""
+    pnl_sign = "+" if total_net_pnl > 0 else ("-" if total_net_pnl < 0 else "")
     
-    # Exit reason breakdown
+    # Exit reason breakdown — keys are UPPERCASE from episode_ledger.json
+    # (e.g. TAKE_PROFIT, STOP_LOSS, THESIS_INVALIDATED, REGIME_CHANGE)
     exit_html = ""
-    exit_order = ["tp", "sl", "thesis", "regime_flip", "position_flip", "signal_close", "unknown"]
-    exit_labels = {
-        "tp": "TP",
-        "sl": "SL", 
-        "thesis": "Thesis",
-        "regime_flip": "Regime",
-        "position_flip": "Flip",
-        "signal_close": "Signal",
-        "unknown": "Other"
+    _EXIT_COLORS = {
+        "TAKE_PROFIT": "#22c55e",
+        "STOP_LOSS": "#ef4444",
+        "THESIS_INVALIDATED": "#9370db",
+        "REGIME_CHANGE": "#f59e0b",
+        "POSITION_FLIP": "#5dade2",
+        "SIGNAL_CLOSE": "#888",
     }
-    exit_colors = {
-        "tp": "#22c55e",
-        "sl": "#ef4444",
-        "thesis": "#9370db",
-        "regime_flip": "#f59e0b",
-        "position_flip": "#5dade2",
-        "signal_close": "#888",
-        "unknown": "#555"
-    }
-    
     total_exits = sum(exit_reasons.values()) if exit_reasons else 0
     if total_exits > 0:
-        for reason in exit_order:
-            count = exit_reasons.get(reason, 0)
-            if count > 0:
-                pct = count / total_exits * 100
-                color = exit_colors.get(reason, "#888")
-                label = exit_labels.get(reason, reason)
-                exit_html += f'''
-                <span style="
-                    display: inline-block;
-                    background: {color}22;
-                    color: {color};
-                    padding: 2px 6px;
-                    border-radius: 3px;
-                    font-size: 0.65em;
-                    margin-right: 4px;
-                ">{label}: {count}</span>
-                '''
+        for reason, count in sorted(exit_reasons.items(), key=lambda x: -x[1]):
+            if count <= 0:
+                continue
+            pct = count / total_exits * 100
+            color = _EXIT_COLORS.get(reason, "#888")
+            label = reason.replace("_", " ").title()
+            exit_html += f'''
+            <span style="
+                display: inline-block;
+                background: {color}22;
+                color: {color};
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 0.65em;
+                margin-right: 4px;
+            ">{label}: {count}</span>
+            '''
     
     # Build widget HTML
     html = f'''

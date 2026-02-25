@@ -225,7 +225,7 @@ def render_nav_composition_panel(
                 
                 <!-- Net PnL (Episodes) — already includes fee deduction -->
                 <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1d24;">
-                    <span style="color: #888; font-size: 0.85em;">Net Realized PnL</span>
+                    <span style="color: #888; font-size: 0.85em;">Closed-Trade PnL</span>
                     <span style="color: {cycle_pnl_color}; font-weight: 600;">${cycle_net_pnl:,.2f}</span>
                 </div>
                 
