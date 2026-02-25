@@ -91,6 +91,19 @@ class SentinelXConfig:
     prob_alpha: float = 0.3  # EMA alpha for probability smoothing
     label_stickiness: int = 3  # Require N consecutive hints before flipping
 
+    # Scoring thresholds (v7.9-W4: externalized from SimpleRegimeModel)
+    trend_slope_threshold: float = 0.0003  # Log-price slope per bar for trend detection
+    reversal_threshold: float = 0.40       # Mean-reversion score threshold
+    vol_spike_threshold: float = 1.5       # Z-score for vol spike
+    breakout_threshold: float = 0.02       # Breakout score threshold
+
+    # v7.9-W5: Hysteresis — once in a TREND regime, use a relaxed exit
+    # threshold to prevent churn at the boundary.  The exit threshold is
+    # trend_slope_threshold * trend_hysteresis_ratio.  E.g. 0.67 means
+    # entering TREND needs |slope| >= 0.0003 but exiting only happens
+    # when |slope| < 0.0002.  Set to 1.0 to disable hysteresis.
+    trend_hysteresis_ratio: float = 0.67
+
     # Run interval
     run_interval_cycles: int = 5
 
@@ -343,6 +356,9 @@ def load_sentinel_x_config(
     model_params = section.get("model", {})
     smoothing = section.get("smoothing", {})
 
+    # v7.9-W4: scoring thresholds (externalized from SimpleRegimeModel)
+    scoring = section.get("scoring_thresholds", {})
+
     return SentinelXConfig(
         enabled=bool(section.get("enabled", False)),
         lookback_bars=int(section.get("lookback_bars", 240)),
@@ -359,6 +375,11 @@ def load_sentinel_x_config(
         prob_alpha=float(smoothing.get("prob_alpha", 0.3)),
         label_stickiness=int(smoothing.get("label_stickiness", 3)),
         run_interval_cycles=int(section.get("run_interval_cycles", 5)),
+        trend_slope_threshold=float(scoring.get("trend_slope_threshold", 0.0003)),
+        reversal_threshold=float(scoring.get("reversal_threshold", 0.40)),
+        vol_spike_threshold=float(scoring.get("vol_spike_threshold", 1.5)),
+        breakout_threshold=float(scoring.get("breakout_threshold", 0.02)),
+        trend_hysteresis_ratio=float(scoring.get("trend_hysteresis_ratio", 0.67)),
     )
 
 
@@ -768,15 +789,20 @@ class SimpleRegimeModel:
         """Initialize model with config."""
         self.cfg = cfg
         
-        # Scoring parameters (conceptual "learned" weights)
-        # In a real ML model, these would be fitted from data
-        self.trend_slope_threshold = 0.001  # Slope threshold for trend
+        # v7.9-W4: Scoring thresholds are now config-driven.
+        # Defaults were recalibrated from 0.001 → 0.0003 for
+        # trend_slope_threshold because 0.001 per 15m bar requires
+        # ~5%/12h to register a trend, which is too extreme for
+        # normal multi-day trends.
+        self.trend_slope_threshold = cfg.trend_slope_threshold
         self.trend_r2_threshold = 0.3  # R² threshold for trend confidence
-        self.reversal_threshold = 0.45  # Reversal frequency for mean-revert
-        self.vol_spike_threshold = 1.5  # Z-score for vol spike
-        self.breakout_threshold = 0.02  # Breakout score threshold
+        self.reversal_threshold = cfg.reversal_threshold
+        self.vol_spike_threshold = cfg.vol_spike_threshold
+        self.breakout_threshold = cfg.breakout_threshold
 
-    def predict_proba(self, features: RegimeFeatures) -> RegimeProbabilities:
+    def predict_proba(
+        self, features: RegimeFeatures, *, current_regime: str = "",
+    ) -> RegimeProbabilities:
         """
         Predict regime probabilities from features.
         
@@ -784,8 +810,13 @@ class SimpleRegimeModel:
         - Each regime gets a raw score based on feature combinations
         - Scores are normalized to probabilities
         
+        v7.9-W5: When *current_regime* is a TREND label the entry
+        threshold is relaxed by ``trend_hysteresis_ratio`` so the
+        model doesn't flip back to CHOPPY on every micro-retracement.
+        
         Args:
             features: Extracted market features
+            current_regime: The currently active regime label (for hysteresis)
             
         Returns:
             RegimeProbabilities with normalized probabilities
@@ -797,11 +828,21 @@ class SimpleRegimeModel:
             return probs
         
         scores = {regime: 0.0 for regime in REGIMES}
+
+        # v7.9-W5: Hysteresis — use relaxed threshold when already in trend
+        hysteresis = getattr(self.cfg, "trend_hysteresis_ratio", 1.0)
+        cur = str(current_regime or "").upper()
+        trend_up_entry_thresh = self.trend_slope_threshold
+        trend_down_entry_thresh = self.trend_slope_threshold
+        if cur == "TREND_UP" and 0 < hysteresis < 1.0:
+            trend_up_entry_thresh = self.trend_slope_threshold * hysteresis
+        if cur == "TREND_DOWN" and 0 < hysteresis < 1.0:
+            trend_down_entry_thresh = self.trend_slope_threshold * hysteresis
         
         # --- TREND_UP Scoring ---
         # Strong positive slope + high R² + positive returns
         trend_up_score = 0.0
-        if features.trend_slope > self.trend_slope_threshold:
+        if features.trend_slope > trend_up_entry_thresh:
             slope_signal = min(1.0, features.trend_slope / (self.trend_slope_threshold * 3))
             r2_boost = features.trend_r2 ** 0.5  # Sqrt to moderate effect
             returns_boost = 1.0 if features.returns_mean > 0 else 0.5
@@ -816,7 +857,7 @@ class SimpleRegimeModel:
         # --- TREND_DOWN Scoring ---
         # Strong negative slope + high R² + negative returns
         trend_down_score = 0.0
-        if features.trend_slope < -self.trend_slope_threshold:
+        if features.trend_slope < -trend_down_entry_thresh:
             slope_signal = min(1.0, abs(features.trend_slope) / (self.trend_slope_threshold * 3))
             r2_boost = features.trend_r2 ** 0.5
             returns_boost = 1.0 if features.returns_mean < 0 else 0.5
@@ -1199,8 +1240,10 @@ def run_sentinel_x_step(
     )
     
     # Initialize model and predict
+    # v7.9-W5: Pass current regime for hysteresis
+    prev_regime = prev_state.primary_regime if prev_state else ""
     model = SimpleRegimeModel(cfg)
-    probs = model.predict_proba(features)
+    probs = model.predict_proba(features, current_regime=prev_regime)
     
     # Classify with rules
     state = classify_regime(

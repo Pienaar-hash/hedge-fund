@@ -804,6 +804,13 @@
         "logged_at": "ISO8601"
       }
     },
+    "binary_rounds_phase1": {
+      "path": "logs/prediction/binary_rounds_phase1_10rounds.jsonl",
+      "owner": "prediction",
+      "update_frequency": "per_round",
+      "optional": true,
+      "description": "Phase-1 round observer captured rounds (10-round window) — experimental subset of binary_rounds"
+    },
     "score_decomposition": {
       "path": "logs/execution/score_decomposition.jsonl",
       "owner": "signal_screener",

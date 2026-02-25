@@ -580,3 +580,386 @@ class TestRegimeProbabilities:
         assert secondary is not None
         assert secondary[0] == "CHOPPY"
         assert secondary[1] == 0.3
+
+
+# ---------------------------------------------------------------------------
+# Scoring Threshold Calibration Tests (v7.9-W4)
+# ---------------------------------------------------------------------------
+
+
+class TestScoringThresholdCalibration:
+    """Tests that externalized scoring thresholds produce correct regime
+    detection for known market conditions.
+
+    The old hardcoded threshold (0.001) made it impossible for Sentinel-X
+    to detect a TREND_DOWN even during a 9% BTC drop in 3 days because
+    the per-bar slope (0.000453) was below the threshold.
+    """
+
+    @pytest.fixture
+    def calibrated_config(self):
+        """Config with v7.9 calibrated thresholds."""
+        from execution.sentinel_x import SentinelXConfig
+        return SentinelXConfig(
+            enabled=True,
+            trend_slope_threshold=0.0003,
+            reversal_threshold=0.40,
+            vol_spike_threshold=1.5,
+            breakout_threshold=0.02,
+        )
+
+    @pytest.fixture
+    def old_config(self):
+        """Config with old hardcoded thresholds (pre-v7.9)."""
+        from execution.sentinel_x import SentinelXConfig
+        return SentinelXConfig(
+            enabled=True,
+            trend_slope_threshold=0.001,
+            reversal_threshold=0.45,
+            vol_spike_threshold=1.5,
+            breakout_threshold=0.02,
+        )
+
+    @pytest.fixture
+    def btc_crash_features(self):
+        """Features from actual BTC testnet 2025-02-24: 9% drop over 3 days."""
+        from execution.sentinel_x import RegimeFeatures
+        return RegimeFeatures(
+            returns_mean=-0.000561,
+            returns_std=0.003006,
+            returns_skew=-1.9616,
+            returns_kurtosis=3.4828,
+            atr_norm=0.002134,
+            vol_regime_z=0.0816,
+            trend_slope=-0.000453,
+            trend_r2=0.5579,
+            trend_acceleration=0.00016,
+            breakout_score=0.0,
+            range_position=0.1838,
+            mean_reversion_score=0.3913,
+            hl_spread=0.004113,
+            volume_z=-1.6088,
+            data_quality=1.0,
+        )
+
+    def test_old_threshold_misclassifies_btc_crash_as_choppy(
+        self, old_config, btc_crash_features
+    ):
+        """With old 0.001 threshold, a 9% BTC drop scores CHOPPY 100%."""
+        from execution.sentinel_x import SimpleRegimeModel
+
+        model = SimpleRegimeModel(old_config)
+        probs = model.predict_proba(btc_crash_features)
+        primary, primary_prob = probs.get_primary()
+        assert primary == "CHOPPY", (
+            f"Old threshold should classify as CHOPPY, got {primary}"
+        )
+        # Under old thresholds, TREND_DOWN gets 0.0
+        assert probs.probs["TREND_DOWN"] == pytest.approx(0.0, abs=0.01)
+
+    def test_calibrated_threshold_detects_btc_crash_as_trend_down(
+        self, calibrated_config, btc_crash_features
+    ):
+        """With 0.0003 threshold, the 9% BTC drop is correctly TREND_DOWN."""
+        from execution.sentinel_x import SimpleRegimeModel
+
+        model = SimpleRegimeModel(calibrated_config)
+        probs = model.predict_proba(btc_crash_features)
+        primary, primary_prob = probs.get_primary()
+        assert primary == "TREND_DOWN", (
+            f"Calibrated threshold should detect TREND_DOWN, got {primary}"
+        )
+        assert primary_prob > 0.55, (
+            f"TREND_DOWN should exceed primary threshold, got {primary_prob:.2f}"
+        )
+
+    def test_trend_down_score_grows_with_slope_magnitude(self, calibrated_config):
+        """Steeper slopes produce higher TREND_DOWN scores."""
+        from execution.sentinel_x import SimpleRegimeModel, RegimeFeatures
+
+        model = SimpleRegimeModel(calibrated_config)
+        prev_score = 0.0
+        for slope in [-0.0004, -0.0005, -0.0006, -0.0007]:
+            features = RegimeFeatures(
+                trend_slope=slope,
+                trend_r2=0.6,
+                returns_mean=-0.0005,
+                data_quality=1.0,
+            )
+            probs = model.predict_proba(features)
+            score = probs.probs["TREND_DOWN"]
+            assert score > prev_score, (
+                f"Slope {slope} should score higher than {prev_score}, got {score}"
+            )
+            prev_score = score
+
+    def test_trend_up_score_with_calibrated_threshold(self, calibrated_config):
+        """Moderate uptrend is detected with calibrated threshold."""
+        from execution.sentinel_x import SimpleRegimeModel, RegimeFeatures
+
+        model = SimpleRegimeModel(calibrated_config)
+        features = RegimeFeatures(
+            trend_slope=0.0004,
+            trend_r2=0.60,
+            returns_mean=0.0003,
+            data_quality=1.0,
+        )
+        probs = model.predict_proba(features)
+        primary, _ = probs.get_primary()
+        assert primary == "TREND_UP", f"Expected TREND_UP, got {primary}"
+
+    def test_choppy_requires_truly_directionless_market(self, calibrated_config):
+        """CHOPPY should only win when slope is genuinely near zero."""
+        from execution.sentinel_x import SimpleRegimeModel, RegimeFeatures
+
+        model = SimpleRegimeModel(calibrated_config)
+        # Very flat market with low R²
+        features = RegimeFeatures(
+            trend_slope=0.00005,
+            trend_r2=0.15,
+            returns_mean=0.0,
+            returns_kurtosis=4.0,
+            returns_skew=0.3,
+            data_quality=1.0,
+        )
+        probs = model.predict_proba(features)
+        primary, _ = probs.get_primary()
+        assert primary == "CHOPPY", f"Flat market should be CHOPPY, got {primary}"
+
+    def test_mean_revert_with_lowered_reversal_threshold(self, calibrated_config):
+        """Mean reversion detected with 0.40 reversal_threshold."""
+        from execution.sentinel_x import SimpleRegimeModel, RegimeFeatures
+
+        model = SimpleRegimeModel(calibrated_config)
+        features = RegimeFeatures(
+            mean_reversion_score=0.42,
+            trend_r2=0.20,
+            vol_regime_z=0.5,
+            data_quality=1.0,
+        )
+        probs = model.predict_proba(features)
+        assert probs.probs["MEAN_REVERT"] > 0, (
+            "Reversal score 0.42 with threshold 0.40 should produce non-zero MEAN_REVERT"
+        )
+
+    def test_old_threshold_blocks_mean_revert_at_042(self, old_config):
+        """Old 0.45 reversal threshold blocks mean reversion at 0.42."""
+        from execution.sentinel_x import SimpleRegimeModel, RegimeFeatures
+
+        model = SimpleRegimeModel(old_config)
+        features = RegimeFeatures(
+            mean_reversion_score=0.42,
+            trend_r2=0.20,
+            vol_regime_z=0.5,
+            data_quality=1.0,
+        )
+        probs = model.predict_proba(features)
+        assert probs.probs["MEAN_REVERT"] == pytest.approx(0.0, abs=0.01), (
+            "Old threshold=0.45 should block MR score of 0.42"
+        )
+
+    def test_config_loader_reads_scoring_thresholds(self):
+        """load_sentinel_x_config reads scoring_thresholds section."""
+        from execution.sentinel_x import load_sentinel_x_config
+
+        strategy_cfg = {
+            "sentinel_x": {
+                "enabled": True,
+                "scoring_thresholds": {
+                    "trend_slope_threshold": 0.0005,
+                    "reversal_threshold": 0.38,
+                    "vol_spike_threshold": 2.0,
+                    "breakout_threshold": 0.03,
+                },
+            }
+        }
+        cfg = load_sentinel_x_config(strategy_cfg)
+        assert cfg.trend_slope_threshold == 0.0005
+        assert cfg.reversal_threshold == 0.38
+        assert cfg.vol_spike_threshold == 2.0
+        assert cfg.breakout_threshold == 0.03
+
+    def test_config_loader_defaults_scoring_thresholds(self):
+        """Missing scoring_thresholds uses calibrated defaults."""
+        from execution.sentinel_x import load_sentinel_x_config
+
+        strategy_cfg = {"sentinel_x": {"enabled": True}}
+        cfg = load_sentinel_x_config(strategy_cfg)
+        assert cfg.trend_slope_threshold == 0.0003
+        assert cfg.reversal_threshold == 0.40
+        assert cfg.vol_spike_threshold == 1.5
+        assert cfg.breakout_threshold == 0.02
+
+    def test_model_uses_config_thresholds(self):
+        """SimpleRegimeModel inherits thresholds from config."""
+        from execution.sentinel_x import SimpleRegimeModel, SentinelXConfig
+
+        cfg = SentinelXConfig(
+            enabled=True,
+            trend_slope_threshold=0.0005,
+            reversal_threshold=0.35,
+            vol_spike_threshold=2.0,
+            breakout_threshold=0.04,
+        )
+        model = SimpleRegimeModel(cfg)
+        assert model.trend_slope_threshold == 0.0005
+        assert model.reversal_threshold == 0.35
+        assert model.vol_spike_threshold == 2.0
+        assert model.breakout_threshold == 0.04
+
+    def test_default_config_has_calibrated_thresholds(self):
+        """SentinelXConfig dataclass defaults are v7.9-calibrated."""
+        from execution.sentinel_x import SentinelXConfig
+
+        cfg = SentinelXConfig()
+        assert cfg.trend_slope_threshold == 0.0003
+        assert cfg.reversal_threshold == 0.40
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v7.9-W5: Hysteresis Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTrendHysteresis:
+    """Hysteresis prevents CHOPPY ↔ TREND thrash at the boundary."""
+
+    @pytest.fixture
+    def hyst_config(self):
+        from execution.sentinel_x import SentinelXConfig
+        return SentinelXConfig(
+            enabled=True,
+            trend_slope_threshold=0.0003,
+            trend_hysteresis_ratio=0.67,  # exit threshold = 0.0002
+        )
+
+    @pytest.fixture
+    def boundary_features(self):
+        """Features with slope at -0.00025: between entry (0.0003) and exit (0.0002)."""
+        from execution.sentinel_x import RegimeFeatures
+        return RegimeFeatures(
+            trend_slope=-0.00025,
+            trend_r2=0.5,
+            returns_mean=-0.0003,
+            returns_std=0.002,
+            returns_kurtosis=1.5,
+            atr_norm=0.002,
+            mean_reversion_score=0.1,
+            data_quality=1.0,
+        )
+
+    def test_boundary_slope_new_entry_is_choppy(self, hyst_config, boundary_features):
+        """Slope -0.00025 is NOT enough to enter TREND_DOWN from scratch."""
+        from execution.sentinel_x import SimpleRegimeModel
+        model = SimpleRegimeModel(hyst_config)
+        probs = model.predict_proba(boundary_features, current_regime="CHOPPY")
+        primary, _ = probs.get_primary()
+        # Should NOT fire TREND_DOWN since |0.00025| < entry threshold |0.0003|
+        assert primary != "TREND_DOWN"
+
+    def test_boundary_slope_stays_trend_down_with_hysteresis(self, hyst_config, boundary_features):
+        """Slope -0.00025 IS enough to STAY in TREND_DOWN (exit = 0.0002)."""
+        from execution.sentinel_x import SimpleRegimeModel
+        model = SimpleRegimeModel(hyst_config)
+        probs = model.predict_proba(boundary_features, current_regime="TREND_DOWN")
+        td_prob = probs.probs.get("TREND_DOWN", 0.0)
+        # TREND_DOWN should still have positive score since |0.00025| > exit |0.0002|
+        assert td_prob > 0.0
+
+    def test_slope_below_exit_threshold_exits_trend(self, hyst_config):
+        """Slope -0.00015 is below the exit threshold (0.0002) → loses trend score."""
+        from execution.sentinel_x import SimpleRegimeModel, RegimeFeatures
+        model = SimpleRegimeModel(hyst_config)
+        features = RegimeFeatures(
+            trend_slope=-0.00015,
+            trend_r2=0.4,
+            returns_mean=-0.0001,
+            returns_std=0.002,
+            returns_kurtosis=1.5,
+            atr_norm=0.002,
+            mean_reversion_score=0.1,
+            data_quality=1.0,
+        )
+        probs = model.predict_proba(features, current_regime="TREND_DOWN")
+        td_prob = probs.probs.get("TREND_DOWN", 0.0)
+        # |0.00015| < exit threshold 0.0002 → zero TREND_DOWN score
+        assert td_prob == 0.0
+
+    def test_hysteresis_ratio_one_disables_hysteresis(self):
+        """trend_hysteresis_ratio=1.0 means entry=exit threshold (no deadband)."""
+        from execution.sentinel_x import SimpleRegimeModel, SentinelXConfig, RegimeFeatures
+        cfg = SentinelXConfig(
+            enabled=True,
+            trend_slope_threshold=0.0003,
+            trend_hysteresis_ratio=1.0,
+        )
+        model = SimpleRegimeModel(cfg)
+        features = RegimeFeatures(
+            trend_slope=-0.00025,
+            trend_r2=0.5,
+            returns_mean=-0.0003,
+            returns_std=0.002,
+            returns_kurtosis=1.5,
+            data_quality=1.0,
+        )
+        probs = model.predict_proba(features, current_regime="TREND_DOWN")
+        td_prob = probs.probs.get("TREND_DOWN", 0.0)
+        # With ratio=1.0 exit threshold = 0.0003, |0.00025| < 0.0003 → no score
+        assert td_prob == 0.0
+
+    def test_symmetric_hysteresis_trend_up(self, hyst_config):
+        """Hysteresis works symmetrically for TREND_UP."""
+        from execution.sentinel_x import SimpleRegimeModel, RegimeFeatures
+        model = SimpleRegimeModel(hyst_config)
+        features = RegimeFeatures(
+            trend_slope=0.00025,  # Between entry (0.0003) and exit (0.0002)
+            trend_r2=0.5,
+            returns_mean=0.0003,
+            returns_std=0.002,
+            returns_kurtosis=1.5,
+            data_quality=1.0,
+        )
+        # From CHOPPY → should NOT enter TREND_UP
+        probs_cold = model.predict_proba(features, current_regime="CHOPPY")
+        tu_cold = probs_cold.probs.get("TREND_UP", 0.0)
+        # From TREND_UP → should STAY (hysteresis protects)
+        probs_warm = model.predict_proba(features, current_regime="TREND_UP")
+        tu_warm = probs_warm.probs.get("TREND_UP", 0.0)
+        assert tu_cold == 0.0
+        assert tu_warm > 0.0
+
+    def test_config_default_hysteresis_ratio(self):
+        """Default hysteresis ratio is 0.67."""
+        from execution.sentinel_x import SentinelXConfig
+        cfg = SentinelXConfig()
+        assert cfg.trend_hysteresis_ratio == 0.67
+
+    def test_config_loader_reads_hysteresis(self):
+        """Config loader picks up trend_hysteresis_ratio from scoring_thresholds."""
+        from execution.sentinel_x import load_sentinel_x_config
+        strategy_cfg = {
+            "sentinel_x": {
+                "enabled": True,
+                "scoring_thresholds": {
+                    "trend_hysteresis_ratio": 0.5,
+                },
+            },
+        }
+        cfg = load_sentinel_x_config(strategy_cfg)
+        assert cfg.trend_hysteresis_ratio == 0.5
+
+    def test_backward_compat_no_current_regime(self, hyst_config):
+        """predict_proba without current_regime works (backward compat)."""
+        from execution.sentinel_x import SimpleRegimeModel, RegimeFeatures
+        model = SimpleRegimeModel(hyst_config)
+        features = RegimeFeatures(
+            trend_slope=-0.0005,
+            trend_r2=0.6,
+            returns_mean=-0.0005,
+            returns_std=0.003,
+            returns_kurtosis=2.0,
+            data_quality=1.0,
+        )
+        probs = model.predict_proba(features)
+        td_prob = probs.probs.get("TREND_DOWN", 0.0)
+        assert td_prob > 0.0  # Strong slope always detected

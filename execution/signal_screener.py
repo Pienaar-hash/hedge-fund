@@ -82,6 +82,22 @@ try:
 except ImportError:
     _RV_MOMENTUM_AVAILABLE = False
 
+# v7.9_C1: Conviction engine integration — compute band for every ranked intent
+try:
+    from execution.conviction_engine import (
+        ConvictionContext,
+        compute_conviction,
+        load_conviction_config,
+        load_risk_snapshot as _load_conviction_risk_snapshot,
+        load_router_health as _load_conviction_router_health,
+        get_global_router_quality as _get_global_router_quality,
+        get_dd_state as _get_dd_state,
+        get_risk_mode as _get_risk_mode,
+    )
+    _CONVICTION_AVAILABLE = True
+except ImportError:
+    _CONVICTION_AVAILABLE = False
+
 try:
     from .ml.predict import score_symbol as _score_symbol
 except Exception:  # pragma: no cover - optional dependency
@@ -1095,8 +1111,20 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                     else:
                         vol_atr_value = 0.0
 
-                    # Determine trend alignment for vol_target (symmetric, defaults to BUY)
-                    vol_trend_aligned = vol_trend in ("BULL", "NEUTRAL")
+                    # v7.9: NEUTRAL is NOT bullish-aligned. Only explicit BULL
+                    # counts as trend-aligned for long bias.  BEAR is aligned
+                    # for short via the regime-consistent fallback in vol_target.
+                    vol_trend_aligned = vol_trend in ("BULL", "BEAR")
+
+                    # v7.9: Enrich regimes_snapshot with Sentinel-X primary
+                    # regime so vol_target can make regime-consistent decisions.
+                    vol_regime_snap = dict(regime_state) if regime_state else {}
+                    try:
+                        _vol_sx = _load_sentinel_x_state()
+                        if _vol_sx and isinstance(_vol_sx, dict):
+                            vol_regime_snap["sentinel_regime"] = _vol_sx.get("primary_regime", "")
+                    except Exception:
+                        pass
 
                     vol_intent = generate_vol_target_intent(
                         symbol=vol_sym_key,
@@ -1104,7 +1132,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                         price=vol_price,
                         nav=nav,
                         atr_value=vol_atr_value,
-                        regimes_snapshot=regime_state,
+                        regimes_snapshot=vol_regime_snap,
                         risk_snapshot=risk_state,
                         trend=vol_trend,
                         trend_aligned=vol_trend_aligned,
@@ -1231,6 +1259,26 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                     ranked_out = []
                     rq_filtered_count = 0
                     
+                    # v7.9_C1: Pre-load conviction config + state surfaces once per batch
+                    _conviction_cfg = None
+                    _conviction_risk_snap: Dict[str, Any] = {}
+                    _conviction_router_snap: Dict[str, Any] = {}
+                    _conviction_router_q = 1.0
+                    _conviction_dd_state = "NORMAL"
+                    _conviction_risk_mode = "OK"
+                    if _CONVICTION_AVAILABLE:
+                        try:
+                            _conviction_cfg = load_conviction_config(base_cfg)
+                            if _conviction_cfg and _conviction_cfg.enabled:
+                                _conviction_risk_snap = _load_conviction_risk_snapshot()
+                                _conviction_router_snap = _load_conviction_router_health()
+                                _conviction_router_q = _get_global_router_quality(_conviction_router_snap)
+                                _conviction_dd_state = _get_dd_state(_conviction_risk_snap)
+                                _conviction_risk_mode = _get_risk_mode(_conviction_risk_snap)
+                        except Exception as _conv_err:
+                            LOGGER.debug("conviction pre-load failed: %s", _conv_err)
+                            _conviction_cfg = None
+                    
                     for result in ranked_results:
                         # Get original intent and add hybrid_score metadata
                         intent = result.get("intent", {})
@@ -1272,6 +1320,34 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                         intent["hybrid_weights_used"] = result.get("weights_used", {})
                         intent["router_quality_score"] = rq_score
                         intent["rv_momentum_score"] = rv_score_val
+                        
+                        # v7.9_C1: Compute conviction score + band for every ranked intent
+                        # This ensures the executor's conviction gate (min_entry_band) can pass.
+                        if _CONVICTION_AVAILABLE and _conviction_cfg and _conviction_cfg.enabled:
+                            try:
+                                _components = result.get("components", {})
+                                _vol_regime_raw = str(intent.get("vol_regime", "normal")).lower()
+                                if _vol_regime_raw not in ("low", "normal", "high", "crisis"):
+                                    _vol_regime_raw = "normal"
+                                _ctx = ConvictionContext(
+                                    hybrid_score=float(intent.get("hybrid_score", 0.0)),
+                                    expectancy_alpha=float(_components.get("expectancy", 0.0)),
+                                    router_quality=_conviction_router_q,
+                                    trend_strength=float(_components.get("trend", 0.0)),
+                                    vol_regime=_vol_regime_raw,  # type: ignore[arg-type]
+                                    dd_state=_conviction_dd_state,  # type: ignore[arg-type]
+                                    risk_mode=_conviction_risk_mode,  # type: ignore[arg-type]
+                                )
+                                _conv_result = compute_conviction(_ctx, _conviction_cfg)
+                                intent["conviction_score"] = _conv_result.conviction_score
+                                intent["conviction_band"] = _conv_result.conviction_band
+                                intent["conviction_size_multiplier"] = _conv_result.size_multiplier
+                                if _conv_result.vetoed:
+                                    intent["conviction_vetoed"] = True
+                                    intent["conviction_veto_reason"] = _conv_result.veto_reason
+                            except Exception as _ce:
+                                LOGGER.debug("conviction compute failed for %s: %s", symbol, _ce)
+                        
                         ranked_out.append(intent)
                     
                     # v7.5_B2 + C1: Secondary sort by router_quality + rv_momentum for tie-breaking

@@ -657,6 +657,14 @@
       "label_stickiness": 3
     },
     "run_interval_cycles": 5,
+    "scoring_thresholds": {
+      "_comment": "v7.9-W4: Externalized from SimpleRegimeModel. trend_slope_threshold lowered from 0.001→0.0003 (per 15m bar)",
+      "trend_slope_threshold": 0.0003,
+      "reversal_threshold": 0.40,
+      "vol_spike_threshold": 1.5,
+      "breakout_threshold": 0.02,
+      "trend_hysteresis_ratio": 0.67
+    },
     "conviction_weights": {
       "TREND_UP": 1.10,
       "TREND_DOWN": 0.90,

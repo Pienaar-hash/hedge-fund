@@ -129,6 +129,8 @@ def apply_conviction_sizing(
     strategy_config: Dict[str, Any],
     min_nav_pct: float,
     max_nav_pct: float,
+    *,
+    expectancy_alpha: float | None = None,
 ) -> Tuple[float, Optional[Dict[str, Any]]]:
     """
     Apply conviction-weighted sizing if enabled.
@@ -141,6 +143,8 @@ def apply_conviction_sizing(
         strategy_config: Strategy configuration dict
         min_nav_pct: Minimum allowed NAV pct
         max_nav_pct: Maximum allowed NAV pct
+        expectancy_alpha: Per-symbol expectancy score [0, 1].
+            When None, defaults to 0.5 (neutral).
     
     Returns:
         Tuple of (final_nav_pct, conviction_metadata or None)
@@ -160,7 +164,7 @@ def apply_conviction_sizing(
     # Build conviction context
     ctx = ConvictionContext(
         hybrid_score=hybrid_score,
-        expectancy_alpha=0.5,  # Default when not available; can be enhanced later
+        expectancy_alpha=expectancy_alpha if expectancy_alpha is not None else 0.5,
         router_quality=get_global_router_quality(router_health),
         trend_strength=trend_strength,
         vol_regime=vol_regime if vol_regime in ("low", "normal", "high", "crisis") else "normal",  # type: ignore[arg-type]
@@ -397,6 +401,8 @@ def compute_trend_bias(
     htf_closes: Sequence[float],
     htf_rsi: Optional[float],
     cfg: TrendConfig,
+    *,
+    regime: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not htf_closes:
         return {"direction": "FLAT", "strength": 0.0, "ema_fast": None, "ema_slow": None, "rsi": htf_rsi}
@@ -417,10 +423,16 @@ def compute_trend_bias(
     elif diff < 0:
         direction = "SHORT"
 
+    # v7.9: RSI damping only applies to COUNTER-TREND entries.
+    # When regime confirms the EMA direction, RSI extremes are likely
+    # continuation (e.g. oversold RSI in TREND_DOWN is normal, not reversal).
+    regime_key = str(regime or "").upper()
     if cfg.use_htf_rsi_filter and htf_rsi is not None:
-        if direction == "LONG" and htf_rsi >= cfg.rsi_overbought:
+        regime_confirms_long = regime_key == "TREND_UP" and direction == "LONG"
+        regime_confirms_short = regime_key == "TREND_DOWN" and direction == "SHORT"
+        if not regime_confirms_long and direction == "LONG" and htf_rsi >= cfg.rsi_overbought:
             strength *= 0.5
-        if direction == "SHORT" and htf_rsi <= cfg.rsi_oversold:
+        if not regime_confirms_short and direction == "SHORT" and htf_rsi <= cfg.rsi_oversold:
             strength *= 0.5
 
     if strength < cfg.min_trend_strength:
@@ -547,9 +559,16 @@ def _fallback_trend(
     trend: str,
     trend_aligned: bool,
     min_strength: float,
+    *,
+    regime: Optional[str] = None,
 ) -> Tuple[Optional[str], float]:
     """
     Map legacy trend params into a LONG/SHORT/FLAT directional hint.
+
+    v7.9: Regime-consistent fallback. When the trend label is ambiguous
+    (neither BULL nor BEAR), the fallback direction follows the Sentinel-X
+    regime instead of defaulting to LONG.  In non-directional regimes
+    (CHOPPY, CRISIS, MEAN_REVERT, BREAKOUT) no artificial bias is created.
     """
     trend_key = str(trend or "").upper()
     if not trend_aligned:
@@ -558,7 +577,15 @@ def _fallback_trend(
         return "LONG", max(0.0, min_strength)
     if trend_key == "BEAR":
         return "SHORT", max(0.0, min_strength)
-    return "LONG", max(0.0, min_strength)  # default bias to long like prior behavior
+
+    # Ambiguous trend — use regime for direction
+    regime_key = str(regime or "").upper()
+    if regime_key == "TREND_UP":
+        return "LONG", max(0.0, min_strength)
+    if regime_key == "TREND_DOWN":
+        return "SHORT", max(0.0, min_strength)
+    # CHOPPY / CRISIS / MEAN_REVERT / BREAKOUT / unknown: no artificial bias
+    return None, 0.0
 
 
 def generate_vol_target_intent(
@@ -661,19 +688,29 @@ def generate_vol_target_intent(
         # Too deep in DD to allocate new risk
         return None
 
+    # v7.9: Extract Sentinel-X primary regime for regime-consistent direction
+    sentinel_regime = str(regimes_snapshot.get("sentinel_regime", "") or "").upper()
+
     # Higher timeframe trend + carry view
     htf_closes, htf_rsi = load_htf_trend_data(symbol, cfg.trend.htf_tf, cfg.trend.fast_ema, cfg.trend.slow_ema)
-    trend_info = compute_trend_bias(htf_closes=htf_closes, htf_rsi=htf_rsi, cfg=cfg.trend)
+    trend_info = compute_trend_bias(htf_closes=htf_closes, htf_rsi=htf_rsi, cfg=cfg.trend, regime=sentinel_regime)
     if trend_info["direction"] == "FLAT":
         # fall back to legacy trend hint if available
-        legacy_dir, legacy_strength = _fallback_trend(trend, trend_aligned, cfg.trend.min_trend_strength)
+        legacy_dir, legacy_strength = _fallback_trend(
+            trend, trend_aligned, cfg.trend.min_trend_strength, regime=sentinel_regime,
+        )
         if legacy_dir:
             trend_info["direction"] = legacy_dir
             trend_info["strength"] = legacy_strength
     if trend_info["direction"] == "FLAT" and not cfg.require_trend_alignment:
-        # maintain prior long-only bias when trend gating disabled
-        trend_info["direction"] = "LONG"
-        trend_info["strength"] = max(trend_info.get("strength", 0.0) or 0.0, cfg.trend.min_trend_strength)
+        # v7.9: Regime-consistent fallback when trend gating disabled
+        if sentinel_regime == "TREND_UP":
+            trend_info["direction"] = "LONG"
+            trend_info["strength"] = max(trend_info.get("strength", 0.0) or 0.0, cfg.trend.min_trend_strength)
+        elif sentinel_regime == "TREND_DOWN":
+            trend_info["direction"] = "SHORT"
+            trend_info["strength"] = max(trend_info.get("strength", 0.0) or 0.0, cfg.trend.min_trend_strength)
+        # else: no artificial direction in non-directional regimes
 
     funding_annualized, basis_pct = load_carry_inputs(symbol)
     carry_info = compute_carry_bias(funding_annualized=funding_annualized, basis_pct=basis_pct, cfg=cfg.carry)

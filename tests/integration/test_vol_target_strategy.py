@@ -386,16 +386,20 @@ class TestGenerateVolTargetIntent:
         assert intent is None
 
     def test_trend_alignment_not_required(self, base_config, base_regimes, base_risk):
-        """require_trend_alignment=False → intent allowed regardless of trend."""
+        """require_trend_alignment=False → intent allowed when regime gives direction."""
         cfg = dict(base_config)
         cfg["require_trend_alignment"] = False
+        # v7.9: Regime-consistent fallback requires a directional regime.
+        # Without sentinel_regime, ambiguous trends stay FLAT (no artificial bias).
+        regimes = dict(base_regimes)
+        regimes["sentinel_regime"] = "TREND_DOWN"
         intent = generate_vol_target_intent(
             symbol="BTCUSDT",
             timeframe="15m",
             price=100.0,
             nav=10000.0,
             atr_value=1.5,
-            regimes_snapshot=base_regimes,
+            regimes_snapshot=regimes,
             risk_snapshot=base_risk,
             trend="BEAR",
             trend_aligned=False,
