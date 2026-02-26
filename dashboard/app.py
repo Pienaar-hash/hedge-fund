@@ -68,6 +68,7 @@ from dashboard.risk_panel import (
 )
 from dashboard.regime_panel import render_regime_card, load_regimes_snapshot
 from dashboard.router_gauge import render_router_gauge
+from dashboard.components.certification import render_certification_panel
 from dashboard.trader_toys import (
     inject_trader_toys_css,
     render_liquid_gauge,
@@ -771,6 +772,13 @@ def main() -> None:
         # ===== ROUTER HEALTH GAUGE (v7) =====
         st.markdown("---")
         render_router_gauge(router_health_state or {})
+
+        # ===== SYSTEM CERTIFICATION (v8.0) =====
+        st.markdown("---")
+        try:
+            render_certification_panel()
+        except Exception as _cert_err:
+            LOG.debug("[dash] certification panel failed: %s", _cert_err)
 
         st.markdown("---")
         
