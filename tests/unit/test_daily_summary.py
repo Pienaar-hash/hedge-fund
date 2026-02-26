@@ -30,8 +30,8 @@ def _isolate_state(tmp_path, monkeypatch):
     pos_state = tmp_path / "positions_state.json"
     pos_state.write_text(json.dumps({
         "positions": [
-            {"symbol": "BTCUSDT", "unrealizedProfit": 42.50},
-            {"symbol": "ETHUSDT", "unrealizedProfit": -10.00},
+            {"symbol": "BTCUSDT", "unrealized_pnl": 42.50},
+            {"symbol": "ETHUSDT", "unrealized_pnl": -10.00},
         ],
     }))
     monkeypatch.setattr(mod, "_POSITIONS_STATE", pos_state)
@@ -63,14 +63,16 @@ def _isolate_state(tmp_path, monkeypatch):
 
     # Risk snapshot
     risk = tmp_path / "risk_snapshot.json"
-    risk.write_text(json.dumps({"max_drawdown_pct": 2.35}))
+    risk.write_text(json.dumps({"portfolio_dd_pct": 0.0235}))
     monkeypatch.setattr(mod, "_RISK_SNAPSHOT", risk)
 
     # Sentinel X
     sentinel = tmp_path / "sentinel_x.json"
     sentinel.write_text(json.dumps({
-        "regime": "TREND_UP",
-        "confidence": 0.82,
+        "primary_regime": "TREND_UP",
+        "secondary_regime": "CHOPPY",
+        "regime_probs": {"TREND_UP": 0.82, "CHOPPY": 0.18},
+        "smoothed_probs": {"TREND_UP": 0.82, "CHOPPY": 0.18},
     }))
     monkeypatch.setattr(mod, "_SENTINEL_X", sentinel)
 
@@ -87,7 +89,7 @@ def _isolate_state(tmp_path, monkeypatch):
 
     # Binary lab state (disabled)
     binary = tmp_path / "binary_lab_state.json"
-    binary.write_text(json.dumps({"enabled": False}))
+    binary.write_text(json.dumps({"status": "DISABLED", "mode": "PAPER", "capital": {"pnl_usd": 0}}))
     monkeypatch.setattr(mod, "_BINARY_LAB", binary)
 
 
@@ -129,6 +131,7 @@ class TestGenerateDailySummary:
         result = generate_daily_summary()
         assert "TREND_UP" in result
         assert "82%" in result
+        assert "2nd: CHOPPY" in result
 
     def test_contains_calibration(self):
         result = generate_daily_summary()
@@ -177,11 +180,15 @@ class TestGenerateDailySummary:
     def test_binary_enabled(self, tmp_path, monkeypatch):
         import ops.daily_summary as mod
         binary = tmp_path / "binary_on.json"
-        binary.write_text(json.dumps({"enabled": True, "pnl": 55.0}))
+        binary.write_text(json.dumps({
+            "status": "ACTIVE",
+            "mode": "LIVE",
+            "capital": {"pnl_usd": 55.0},
+        }))
         monkeypatch.setattr(mod, "_BINARY_LAB", binary)
 
         result = generate_daily_summary()
-        assert "Binary Sleeve:    ENABLED" in result
+        assert "Binary Sleeve:    ACTIVE (LIVE)" in result
         assert "$55.00" in result
 
     def test_calibration_inactive(self, tmp_path, monkeypatch):
@@ -192,3 +199,65 @@ class TestGenerateDailySummary:
 
         result = generate_daily_summary()
         assert "Calibration:      INACTIVE" in result
+
+    def test_unrealized_pnl_fallback_camelCase(self, tmp_path, monkeypatch):
+        """Legacy Binance-format unrealizedProfit should still be read."""
+        import ops.daily_summary as mod
+        pos = tmp_path / "pos_legacy.json"
+        pos.write_text(json.dumps({
+            "positions": [
+                {"symbol": "BTCUSDT", "unrealizedProfit": 7.77},
+            ],
+        }))
+        monkeypatch.setattr(mod, "_POSITIONS_STATE", pos)
+        result = generate_daily_summary()
+        assert "$7.77" in result
+
+    def test_drawdown_fractional_to_pct(self, tmp_path, monkeypatch):
+        """portfolio_dd_pct in fractional form (e.g. 0.03 = 3%) should display as %."""
+        import ops.daily_summary as mod
+        risk = tmp_path / "risk_frac.json"
+        risk.write_text(json.dumps({"portfolio_dd_pct": 0.03}))
+        monkeypatch.setattr(mod, "_RISK_SNAPSHOT", risk)
+        result = generate_daily_summary()
+        assert "3.00%" in result
+
+    def test_regime_legacy_fallback(self, tmp_path, monkeypatch):
+        """Old sentinel format with 'regime' + 'confidence' should still work."""
+        import ops.daily_summary as mod
+        sentinel = tmp_path / "sentinel_legacy.json"
+        sentinel.write_text(json.dumps({
+            "regime": "BREAKOUT",
+            "confidence": 0.65,
+        }))
+        monkeypatch.setattr(mod, "_SENTINEL_X", sentinel)
+        result = generate_daily_summary()
+        assert "BREAKOUT" in result
+        assert "65%" in result
+
+    def test_binary_shadow_mode(self, tmp_path, monkeypatch):
+        """Shadow mode should display as SHADOW with PnL."""
+        import ops.daily_summary as mod
+        binary = tmp_path / "binary_shadow.json"
+        binary.write_text(json.dumps({
+            "status": "SHADOW",
+            "mode": "SHADOW",
+            "capital": {"pnl_usd": -12.50},
+        }))
+        monkeypatch.setattr(mod, "_BINARY_LAB", binary)
+        result = generate_daily_summary()
+        assert "Binary Sleeve:    SHADOW" in result
+        assert "$-12.50" in result
+
+    def test_binary_disabled_with_reason(self, tmp_path, monkeypatch):
+        """DISABLED status should show termination_reason if present."""
+        import ops.daily_summary as mod
+        binary = tmp_path / "binary_off.json"
+        binary.write_text(json.dumps({
+            "status": "DISABLED",
+            "termination_reason": "kill_line_breached",
+            "capital": {"pnl_usd": 0},
+        }))
+        monkeypatch.setattr(mod, "_BINARY_LAB", binary)
+        result = generate_daily_summary()
+        assert "DISABLED (kill_line_breached)" in result

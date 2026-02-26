@@ -124,7 +124,15 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
     pos_state = _safe_json(_POSITIONS_STATE)
     positions = pos_state.get("positions", [])
     open_count = len(positions)
-    unrealized = sum(float(p.get("unrealizedProfit", 0) or 0) for p in positions)
+    unrealized = sum(
+        float(
+            p.get("unrealized_pnl")
+            or p.get("unrealizedProfit")
+            or p.get("unRealizedProfit")
+            or 0
+        )
+        for p in positions
+    )
     lines.append(f"Open Positions:   {open_count}")
     if open_count > 0:
         lines.append(f"Unrealized PnL:   ${unrealized:,.2f}")
@@ -145,14 +153,40 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
 
     # ── Risk / Drawdown ────────────────────────────────────────
     risk = _safe_json(_RISK_SNAPSHOT)
-    max_dd = float(risk.get("max_drawdown_pct", 0) or risk.get("drawdown_pct", 0) or 0)
+    # portfolio_dd_pct is fractional (0.0003 = 0.03%); convert to %
+    dd_frac = float(
+        risk.get("portfolio_dd_pct")
+        or risk.get("dd_frac")
+        or risk.get("max_drawdown_pct")
+        or risk.get("drawdown_pct")
+        or 0
+    )
+    # If value looks fractional (<1), convert to percentage display
+    max_dd = dd_frac * 100 if dd_frac < 1 else dd_frac
     lines.append(f"Max Drawdown:     {max_dd:.2f}%")
 
     # ── Regime ─────────────────────────────────────────────────
     sentinel = _safe_json(_SENTINEL_X)
-    regime = sentinel.get("regime") or sentinel.get("current_regime") or "UNKNOWN"
-    confidence = float(sentinel.get("confidence", 0) or 0)
-    lines.append(f"Regime:           {regime}  (conf: {confidence:.0%})")
+    regime = (
+        sentinel.get("primary_regime")
+        or sentinel.get("regime")
+        or sentinel.get("current_regime")
+        or "UNKNOWN"
+    )
+    # Confidence from regime_probs or smoothed_probs for the primary regime
+    confidence = 0.0
+    for prob_key in ("smoothed_probs", "regime_probs"):
+        probs = sentinel.get(prob_key, {})
+        if regime in probs:
+            confidence = float(probs[regime])
+            break
+    if confidence == 0.0:
+        confidence = float(sentinel.get("confidence", 0) or 0)
+    secondary = sentinel.get("secondary_regime", "")
+    regime_line = f"Regime:           {regime}  (conf: {confidence:.0%})"
+    if secondary and secondary != regime:
+        regime_line += f"  2nd: {secondary}"
+    lines.append(regime_line)
     lines.append("")
 
     # ── Calibration Window ─────────────────────────────────────
@@ -173,12 +207,20 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
 
     # ── Binary Sleeve ──────────────────────────────────────────
     binary = _safe_json(_BINARY_LAB)
-    binary_enabled = binary.get("enabled", False)
-    binary_pnl = float(binary.get("pnl", 0) or 0)
-    if binary_enabled:
-        lines.append(f"Binary Sleeve:    ENABLED — PnL ${binary_pnl:,.2f}")
+    binary_status = binary.get("status", "UNKNOWN")
+    binary_mode = binary.get("mode", "")
+    capital = binary.get("capital", {})
+    binary_pnl = float(capital.get("pnl_usd", 0) or binary.get("pnl", 0) or 0)
+    if binary_status in ("ACTIVE", "RUNNING"):
+        lines.append(f"Binary Sleeve:    {binary_status} ({binary_mode}) — PnL ${binary_pnl:,.2f}")
+    elif binary_status == "SHADOW":
+        lines.append(f"Binary Sleeve:    SHADOW — PnL ${binary_pnl:,.2f}")
+    elif binary_status == "DISABLED":
+        reason = binary.get("termination_reason", "")
+        suffix = f" ({reason})" if reason else ""
+        lines.append(f"Binary Sleeve:    DISABLED{suffix}")
     else:
-        lines.append("Binary Sleeve:    DISABLED")
+        lines.append(f"Binary Sleeve:    {binary_status}")
 
     lines.append("")
     lines.append("═══════════════════════════════════════════════")
