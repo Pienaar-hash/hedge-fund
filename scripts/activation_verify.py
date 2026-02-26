@@ -131,6 +131,82 @@ def _count_dle_mismatches(path: Path, start_ts: str) -> int:
 # ---------------------------------------------------------------------------
 # Verification gates
 # ---------------------------------------------------------------------------
+def _build_preflight_state(
+    manifest_path: Path = MANIFEST_PATH,
+) -> Dict[str, Any]:
+    """Build live state snapshot for preflight verification.
+
+    Used when the activation window is not yet active to validate
+    that the GO path is real before starting the 14-day run.
+    Reads NAV, DD, manifest hash, and config hash directly from
+    live sources.
+    """
+    import hashlib
+    import yaml as _yaml
+
+    runtime_path = Path("config/runtime.yaml")
+
+    # NAV from state file
+    nav_data = _read_json(Path("logs/state/nav_state.json")) or {}
+    nav_usd = float(
+        nav_data.get("total_equity")
+        or nav_data.get("nav_usd")
+        or nav_data.get("nav")
+        or 0.0
+    )
+
+    # Drawdown from nav_state or risk_snapshot
+    dd_pct = float(nav_data.get("drawdown_pct", 0.0) or 0.0)
+    if dd_pct == 0.0:
+        risk_snap = _read_json(Path("logs/state/risk_snapshot.json")) or {}
+        dd_pct = float(risk_snap.get("dd_frac", 0.0) or 0.0)
+
+    # Drawdown kill threshold from config
+    dd_kill = 0.05
+    try:
+        with open(runtime_path) as f:
+            cfg = _yaml.safe_load(f) or {}
+        aw = cfg.get("activation_window", {})
+        dd_kill = float(aw.get("drawdown_kill_pct", 0.05))
+    except Exception:
+        pass
+
+    # Compute hashes live
+    def _hash(p: Path) -> Optional[str]:
+        try:
+            return hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+        except Exception:
+            return None
+
+    manifest_hash = _hash(manifest_path)
+    config_hash = _hash(runtime_path)
+
+    # Binary lab freeze (DISABLED lab cannot violate a freeze)
+    bl_data = _read_json(Path("logs/state/binary_lab_state.json"))
+    binary_lab_freeze_ok = True
+    if bl_data is not None:
+        bl_status = str(bl_data.get("status", "")).upper()
+        if bl_status in ("DISABLED", "TERMINATED", ""):
+            binary_lab_freeze_ok = True  # Lab not running
+        else:
+            binary_lab_freeze_ok = bl_data.get("freeze_intact", True)
+
+    return {
+        "start_ts": "",
+        "nav_usd": nav_usd,
+        "drawdown_pct": dd_pct,
+        "drawdown_kill_pct": dd_kill,
+        "manifest_intact": manifest_hash is not None,
+        "config_intact": config_hash is not None,
+        "binary_lab_freeze_ok": binary_lab_freeze_ok,
+        "dle_mismatches": 0,
+        "elapsed_days": 0.0,
+        "current_manifest_hash": manifest_hash,
+        "boot_manifest_hash": manifest_hash,  # same at preflight
+        "preflight": True,
+    }
+
+
 def run_verification(
     *,
     activation_state_path: Path = ACTIVATION_STATE,
@@ -138,9 +214,18 @@ def run_verification(
     binary_lab_trades_log: Path = BINARY_LAB_TRADES_LOG,
     risk_vetoes_log: Path = RISK_VETOES_LOG,
     dle_shadow_log: Path = DLE_SHADOW_LOG,
+    preflight: bool = False,
 ) -> Dict[str, Any]:
-    """Execute 7-gate verification.  Returns full verdict dict."""
-    state = _read_json(activation_state_path) or {}
+    """Execute 7-gate verification.  Returns full verdict dict.
+
+    When ``preflight=True``, reads live state directly instead of
+    relying on ``activation_window_state.json``.  This validates
+    the GO path is real before starting the 14-day window.
+    """
+    if preflight:
+        state = _build_preflight_state(manifest_path)
+    else:
+        state = _read_json(activation_state_path) or {}
 
     start_ts = state.get("start_ts", "")
     nav_usd = float(state.get("nav_usd", 0.0))
@@ -301,9 +386,13 @@ def main() -> None:
         "--json", action="store_true",
         help="Output machine-readable JSON",
     )
+    parser.add_argument(
+        "--preflight", action="store_true",
+        help="Preflight mode: read live state directly (no active window required)",
+    )
     args = parser.parse_args()
 
-    result = run_verification()
+    result = run_verification(preflight=args.preflight)
 
     # Record verdict for production scale gating + DLE lifecycle event
     try:

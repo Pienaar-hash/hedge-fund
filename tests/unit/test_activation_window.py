@@ -417,7 +417,7 @@ class TestBinaryLabFreeze:
         doctrine = tmp_path / "doctrine.jsonl"
         bl_state = tmp_path / "bl.json"
         with bl_state.open("w") as f:
-            json.dump({"freeze_intact": False}, f)
+            json.dump({"freeze_intact": False, "status": "SHADOW"}, f)
 
         os.environ["ACTIVATION_WINDOW_ACK"] = "1"
 
@@ -770,7 +770,7 @@ class TestCounting:
     def test_binary_lab_freeze_violated(self, tmp_path):
         bl = tmp_path / "bl.json"
         with bl.open("w") as f:
-            json.dump({"freeze_intact": False}, f)
+            json.dump({"freeze_intact": False, "status": "SHADOW"}, f)
         with mock.patch.object(aw, "BINARY_LAB_STATE_PATH", bl):
             assert aw._check_binary_lab_freeze() is False
 

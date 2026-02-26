@@ -39,3 +39,15 @@ lint-docs:
 .PHONY: pretag-v7.6
 pretag-v7.6:
 	@PYTHONPATH=. $(PYTHON) scripts/preflight_v7_6.py
+
+.PHONY: aw-status
+aw-status:
+	@PYTHONPATH=. $(PYTHON) scripts/aw_status.py
+
+.PHONY: aw-verify
+aw-verify:
+	@PYTHONPATH=. $(PYTHON) scripts/activation_verify.py
+
+.PHONY: aw-preflight
+aw-preflight:
+	@PYTHONPATH=. $(PYTHON) scripts/activation_verify.py --preflight

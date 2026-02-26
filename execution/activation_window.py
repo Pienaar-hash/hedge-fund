@@ -185,10 +185,20 @@ def _get_portfolio_dd_pct() -> float:
 
 
 def _get_nav_usd() -> float:
-    """Read current NAV from state file."""
+    """Read current NAV from state file.
+
+    nav_state.json uses ``total_equity`` as the canonical NAV field.
+    Falls back to ``nav_usd`` / ``nav`` for forward compatibility.
+    """
     data = _read_json(NAV_STATE_PATH)
     if data:
-        return float(data.get("nav_usd", 0.0) or 0.0)
+        nav = (
+            data.get("total_equity")
+            or data.get("nav_usd")
+            or data.get("nav")
+            or 0.0
+        )
+        return float(nav)
     return 0.0
 
 
@@ -231,10 +241,17 @@ def _count_episodes_since(start_ts: str) -> int:
 
 
 def _check_binary_lab_freeze() -> bool:
-    """Check if Binary Lab freeze is intact.  Returns True if OK."""
+    """Check if Binary Lab freeze is intact.  Returns True if OK.
+
+    A DISABLED lab cannot violate a freeze — treat as OK.
+    Only active/SHADOW labs have a meaningful freeze check.
+    """
     data = _read_json(BINARY_LAB_STATE_PATH)
     if data is None:
         return True  # No binary lab state → no violation
+    status = str(data.get("status", "")).upper()
+    if status in ("DISABLED", "TERMINATED", ""):
+        return True  # Lab not running → no freeze to violate
     return data.get("freeze_intact", True)
 
 
