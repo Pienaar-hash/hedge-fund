@@ -74,10 +74,17 @@ DEFAULT_DURATION_DAYS = 14
 DEFAULT_DD_KILL_PCT = 0.05
 DEFAULT_PER_TRADE_NAV_PCT = 0.005
 
+# DLE governance constants
+STRUCTURAL_GUARD_EVENT_TYPE = "STRUCTURAL_GUARD"
+GUARD_TYPE = "ACTIVATION_WINDOW"
+PHASE_ID = "PHASE_C"
+VERIFICATION_VERDICT_PATH = Path("logs/state/activation_verification_verdict.json")
+
 # In-memory sentinels
 _kill_switch_fired: bool = False
 _boot_manifest_hash: Optional[str] = None
 _boot_config_hash: Optional[str] = None
+_dle_started_emitted: bool = False
 _status_log_counter: int = 0
 _STATUS_LOG_INTERVAL: int = 60
 
@@ -268,6 +275,48 @@ def _log_doctrine_event(
 
 
 # ---------------------------------------------------------------------------
+# DLE lifecycle event emission (STRUCTURAL_GUARD)
+# ---------------------------------------------------------------------------
+def _emit_dle_lifecycle_event(
+    action: str,
+    details: Dict[str, Any],
+) -> None:
+    """Emit STRUCTURAL_GUARD event to DLE shadow log.
+
+    Binds the activation window into DLE episode observability as a
+    constitutional governance artifact.  Emitted unconditionally
+    (not gated by SHADOW_DLE_ENABLED) — structural guards are
+    governance, not trade-gating.
+
+    Fail-open: never crashes executor.
+    """
+    try:
+        from execution.dle_shadow import (
+            DLEShadowEvent,
+            DLEShadowWriter,
+            SCHEMA_VERSION_V2,
+            DEFAULT_LOG_PATH,
+        )
+
+        event = DLEShadowEvent(
+            schema_version=SCHEMA_VERSION_V2,
+            event_type=STRUCTURAL_GUARD_EVENT_TYPE,
+            ts=_utc_now().isoformat(),
+            payload={
+                "guard_type": GUARD_TYPE,
+                "action": action,
+                "phase_id": PHASE_ID,
+                **details,
+            },
+        )
+
+        writer = DLEShadowWriter(DEFAULT_LOG_PATH)
+        writer.write(event)
+    except Exception as exc:
+        logger.debug("[activation_window] DLE lifecycle event failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # State file writer
 # ---------------------------------------------------------------------------
 def _write_state(
@@ -415,6 +464,10 @@ def check_activation_window(
         os.environ["KILL_SWITCH"] = "1"
         _kill_switch_fired = True
 
+        # Distinguish completion from structural kill for DLE events
+        is_completion = halt_reason is not None and halt_reason.startswith("window_complete:")
+        dle_action = "COMPLETED" if is_completion else "HALTED"
+
         _log_doctrine_event({
             "ts": now.isoformat(),
             "event": "ACTIVATION_WINDOW_HALT",
@@ -429,6 +482,20 @@ def check_activation_window(
             "dle_mismatches": dle_mismatches,
             "action": f"KILL_SWITCH activated — {halt_reason}",
         }, doctrine_log)
+
+        # Emit DLE STRUCTURAL_GUARD lifecycle event
+        _emit_dle_lifecycle_event(dle_action, {
+            "window_start_ts": start_ts,
+            "duration_days": duration_days,
+            "elapsed_days": round(elapsed_days, 2),
+            "manifest_hash": current_manifest_hash,
+            "config_hash": current_config_hash,
+            "halt_reason": halt_reason,
+            "episodes_completed": episodes_completed,
+            "dd_pct": round(dd_pct, 6),
+            "dle_mismatches": dle_mismatches,
+            "provenance": {"source": "activation_window", "version": "v8.0"},
+        })
 
         logger.info(
             "[activation_window] HALT — %s. KILL_SWITCH=1.",
@@ -511,6 +578,20 @@ def log_activation_boot_status(
         os.environ.get(ACTIVATION_ACK_ENV, "0"),
     )
 
+    # Emit DLE STRUCTURAL_GUARD STARTED event (once per boot)
+    global _dle_started_emitted
+    if not _dle_started_emitted:
+        _dle_started_emitted = True
+        _emit_dle_lifecycle_event("STARTED", {
+            "window_start_ts": start_ts,
+            "duration_days": duration,
+            "manifest_hash": _boot_manifest_hash,
+            "config_hash": _boot_config_hash,
+            "nav_usd": round(nav, 2),
+            "sizing_cap": sizing,
+            "provenance": {"source": "activation_window", "version": "v8.0"},
+        })
+
 
 # ---------------------------------------------------------------------------
 # Sizing override
@@ -573,13 +654,167 @@ def collect_stack_health(
 
 
 # ---------------------------------------------------------------------------
+# Production scale gate (Phase C constitutional binding)
+# ---------------------------------------------------------------------------
+def get_scale_gate_cap(
+    *,
+    runtime_yaml: Path = RUNTIME_YAML,
+    verdict_path: Path = VERIFICATION_VERDICT_PATH,
+    manifest_path: Path = MANIFEST_PATH,
+) -> Optional[float]:
+    """Return sizing cap if production scale is not yet authorized.
+
+    Returns ``per_trade_nav_pct`` if the scale gate is active (no valid
+    7/7 GO verdict with matching manifest hash), or ``None`` if
+    production scale is authorized.
+
+    The gate stays active even after the activation window is disabled.
+    Only a 7/7 GO verdict with matching manifest hash clears it.
+
+    This implements Phase C Amendment §2.1 — mandatory pre-scale gate.
+    """
+    try:
+        with open(runtime_yaml) as f:
+            cfg = yaml.safe_load(f) or {}
+        aw = cfg.get("activation_window")
+        if not isinstance(aw, dict):
+            return None  # No activation window config → no gate
+        if not aw.get("require_go_for_scale", True):
+            return None  # Gate explicitly disabled
+        cap = float(aw.get("per_trade_nav_pct", DEFAULT_PER_TRADE_NAV_PCT))
+    except Exception:
+        return None
+
+    # Check if GO verdict exists with matching manifest
+    verdict = _read_json(verdict_path)
+    if verdict is None:
+        return cap  # No verdict → cap active
+
+    if verdict.get("verdict") != "GO":
+        return cap
+    if verdict.get("passed") != verdict.get("total_gates"):
+        return cap
+
+    # Check manifest hash integrity
+    verdict_manifest = verdict.get("manifest_hash")
+    current_manifest = _compute_manifest_hash(manifest_path)
+    if (
+        verdict_manifest
+        and current_manifest
+        and verdict_manifest == current_manifest
+    ):
+        return None  # Scale authorized — 7/7 GO + manifest match
+
+    return cap  # Manifest drift since verification → cap stays
+
+
+def verify_production_scale_eligible(
+    *,
+    manifest_path: Path = MANIFEST_PATH,
+    verdict_path: Path = VERIFICATION_VERDICT_PATH,
+) -> Dict[str, Any]:
+    """Check if production scale is authorized post-activation.
+
+    Returns dict with ``eligible`` bool and details.
+    Used by ops tooling and dashboard for visibility.
+    """
+    result: Dict[str, Any] = {
+        "eligible": False,
+        "reason": "unknown",
+        "verdict": None,
+        "manifest_match": False,
+    }
+
+    verdict_data = _read_json(verdict_path)
+    if verdict_data is None:
+        result["reason"] = "no_verification_verdict"
+        return result
+
+    verdict = verdict_data.get("verdict")
+    passed = verdict_data.get("passed", 0)
+    total = verdict_data.get("total_gates", 7)
+
+    if verdict != "GO":
+        result["reason"] = f"verdict_{verdict}_not_GO"
+        result["verdict"] = verdict
+        return result
+
+    if passed != total:
+        result["reason"] = f"gates_{passed}/{total}_incomplete"
+        result["verdict"] = verdict
+        return result
+
+    # Check manifest hash integrity
+    verdict_manifest = verdict_data.get("manifest_hash")
+    current_manifest = _compute_manifest_hash(manifest_path)
+
+    manifest_match = (
+        verdict_manifest is not None
+        and current_manifest is not None
+        and verdict_manifest == current_manifest
+    )
+    result["manifest_match"] = manifest_match
+    result["verdict"] = verdict
+
+    if not manifest_match:
+        result["reason"] = (
+            f"manifest_drift:verdict={verdict_manifest},"
+            f"current={current_manifest}"
+        )
+        return result
+
+    result["eligible"] = True
+    result["reason"] = "production_scale_authorized"
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Verdict recording (called by activation_verify.py)
+# ---------------------------------------------------------------------------
+def record_verification_verdict(
+    verdict_result: Dict[str, Any],
+    *,
+    verdict_path: Path = VERIFICATION_VERDICT_PATH,
+    manifest_path: Path = MANIFEST_PATH,
+) -> None:
+    """Persist verification verdict for production scale gating.
+
+    Called by ``scripts/activation_verify.py`` after 7-gate evaluation.
+    Writes verdict to state file and emits ACTIVATION_WINDOW_VERIFIED
+    DLE lifecycle event.
+    """
+    verdict_result["manifest_hash"] = _compute_manifest_hash(manifest_path)
+    verdict_result["recorded_at"] = _utc_now().isoformat()
+
+    try:
+        verdict_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = verdict_path.with_suffix(".tmp")
+        with tmp.open("w") as f:
+            json.dump(verdict_result, f, indent=2, default=str)
+        tmp.replace(verdict_path)
+    except Exception as exc:
+        logger.error("[activation_window] verdict write failed: %s", exc)
+
+    # Emit DLE lifecycle event for governance observability
+    _emit_dle_lifecycle_event("VERIFIED", {
+        "verdict": verdict_result.get("verdict"),
+        "passed": verdict_result.get("passed"),
+        "total_gates": verdict_result.get("total_gates"),
+        "manifest_hash": verdict_result.get("manifest_hash"),
+        "action_text": verdict_result.get("action"),
+        "provenance": {"source": "activation_verify", "version": "v8.0"},
+    })
+
+
+# ---------------------------------------------------------------------------
 # Module reset (for testing)
 # ---------------------------------------------------------------------------
 def _reset_globals() -> None:
     """Reset module-level sentinels.  For testing only."""
     global _kill_switch_fired, _boot_manifest_hash, _boot_config_hash
-    global _status_log_counter
+    global _status_log_counter, _dle_started_emitted
     _kill_switch_fired = False
     _boot_manifest_hash = None
     _boot_config_hash = None
     _status_log_counter = 0
+    _dle_started_emitted = False

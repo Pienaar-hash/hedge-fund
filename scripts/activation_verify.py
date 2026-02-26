@@ -305,6 +305,13 @@ def main() -> None:
 
     result = run_verification()
 
+    # Record verdict for production scale gating + DLE lifecycle event
+    try:
+        from execution.activation_window import record_verification_verdict
+        record_verification_verdict(result)
+    except Exception as exc:
+        print(f"Warning: could not record verdict: {exc}", file=sys.stderr)
+
     if args.json:
         print(json.dumps(result, indent=2, default=str))
     else:

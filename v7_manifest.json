@@ -1167,6 +1167,24 @@
         "binary_lab_freeze_ok": "bool — Binary Lab config freeze intact",
         "per_trade_nav_pct": "float — sizing cap during window"
       }
+    },
+    "activation_verification_verdict": {
+      "path": "logs/state/activation_verification_verdict.json",
+      "owner": "activation_verify",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "One-time verification verdict from 7-gate GO/NO-GO evaluation. Written by scripts/activation_verify.py. Used by production scale gate to authorize sizing increases.",
+      "fields": {
+        "verdict": "str — GO|EXTEND|NO-GO",
+        "passed": "int — number of gates passed",
+        "total_gates": "int — total gates evaluated (7)",
+        "action": "str — recommended action text",
+        "gates": "dict — per-gate results with pass/value/note",
+        "window": "dict — window metadata (start_ts, elapsed_days, episodes)",
+        "evaluated_at": "str — verification timestamp (ISO 8601)",
+        "manifest_hash": "str — SHA-256 of v7_manifest.json at evaluation time",
+        "recorded_at": "str — when verdict was persisted (ISO 8601)"
+      }
     }
   },
   "diagnostics": {

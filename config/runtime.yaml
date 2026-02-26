@@ -161,5 +161,6 @@ activation_window:
   start_ts: ""                          # set to UTC time at activation
   drawdown_kill_pct: 0.05              # 5% NAV drawdown → immediate halt
   per_trade_nav_pct: 0.005             # 0.5% NAV per trade (unchanged)
+  require_go_for_scale: true           # sizing cap persists until 7/7 GO verdict
   # Scope: executor, risk, DLE veto, Binary Lab SHADOW, episode ledger,
   #        NAV accounting, manifest surface integrity

@@ -3540,6 +3540,23 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     gross_target = _aw_cap
         except Exception as _aw_err:
             LOG.debug("[activation_window] sizing check failed: %s", _aw_err)
+    # --- Production scale gate (Phase C constitutional binding) ---
+    # Caps sizing at certification level until 7/7 GO verdict exists.
+    # Survives even after activation_window.enabled is set to false.
+    if not reduce_only:
+        try:
+            from execution.activation_window import get_scale_gate_cap
+            _sg_cap_pct = get_scale_gate_cap()
+            if _sg_cap_pct is not None and nav_usd > 0:
+                _sg_cap = float(_sg_cap_pct) * nav_usd
+                if _sg_cap > 0 and gross_target > _sg_cap:
+                    LOG.info(
+                        "[scale_gate] sizing cap: %.2f → %.2f (%.3f%% NAV, no GO verdict)",
+                        gross_target, _sg_cap, float(_sg_cap_pct) * 100,
+                    )
+                    gross_target = _sg_cap
+        except Exception as _sg_err:
+            LOG.debug("[scale_gate] sizing check failed: %s", _sg_err)
     margin_target = gross_target / max(lev, 1.0)
     attempt_start_monotonic = time.monotonic()
     attempt_payload = {
