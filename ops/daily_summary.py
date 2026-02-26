@@ -106,12 +106,19 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
     # ── NAV ─────────────────────────────────────────────────────
     nav_state = _safe_json(_NAV_STATE)
     nav_usd = float(
-        nav_state.get("nav_usd")
+        nav_state.get("total_equity")
+        or nav_state.get("nav_usd")
         or nav_state.get("nav")
         or 0
     )
-    nav_mode = nav_state.get("nav_mode", "unknown")
-    lines.append(f"Portfolio NAV:    ${nav_usd:,.2f}  ({nav_mode})")
+    # Derive mode from what's available in the state
+    if nav_state.get("total_equity"):
+        nav_label = "futures"
+    elif nav_state.get("nav_mode"):
+        nav_label = nav_state["nav_mode"]
+    else:
+        nav_label = "unknown"
+    lines.append(f"Portfolio NAV:    ${nav_usd:,.2f}  ({nav_label})")
 
     # ── 24h PnL (NAV delta) ────────────────────────────────────
     pnl_24h = _nav_pnl_24h()

@@ -20,9 +20,9 @@ def _isolate_state(tmp_path, monkeypatch):
     # NAV state
     nav_state = tmp_path / "nav_state.json"
     nav_state.write_text(json.dumps({
-        "nav_usd": 10000.00,
-        "nav": 10000.00,
-        "nav_mode": "live_wallet",
+        "total_equity": 10000.00,
+        "peak_equity": 10050.00,
+        "drawdown_pct": 0.0,
     }))
     monkeypatch.setattr(mod, "_NAV_STATE", nav_state)
 
@@ -103,7 +103,7 @@ class TestGenerateDailySummary:
     def test_contains_nav(self):
         result = generate_daily_summary()
         assert "$10,000.00" in result
-        assert "live_wallet" in result
+        assert "futures" in result
 
     def test_contains_24h_pnl(self):
         result = generate_daily_summary()
@@ -261,3 +261,13 @@ class TestGenerateDailySummary:
         monkeypatch.setattr(mod, "_BINARY_LAB", binary)
         result = generate_daily_summary()
         assert "DISABLED (kill_line_breached)" in result
+
+    def test_nav_legacy_fallback(self, tmp_path, monkeypatch):
+        """Legacy nav_usd field should still be read correctly."""
+        import ops.daily_summary as mod
+        nav = tmp_path / "nav_legacy.json"
+        nav.write_text(json.dumps({"nav_usd": 5000.0, "nav_mode": "live_wallet"}))
+        monkeypatch.setattr(mod, "_NAV_STATE", nav)
+        result = generate_daily_summary()
+        assert "$5,000.00" in result
+        assert "live_wallet" in result
