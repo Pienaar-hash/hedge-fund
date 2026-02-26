@@ -51,3 +51,15 @@ aw-verify:
 .PHONY: aw-preflight
 aw-preflight:
 	@PYTHONPATH=. $(PYTHON) scripts/activation_verify.py --preflight
+
+.PHONY: heartbeat
+heartbeat:
+	@PYTHONPATH=. $(PYTHON) scripts/telegram_daily_heartbeat.py --dry-run
+
+.PHONY: heartbeat-send
+heartbeat-send:
+	@PYTHONPATH=. TELEGRAM_ENABLED=1 $(PYTHON) scripts/telegram_daily_heartbeat.py
+
+.PHONY: heartbeat-test
+heartbeat-test:
+	@PYTHONPATH=. TELEGRAM_ENABLED=1 $(PYTHON) scripts/telegram_daily_heartbeat.py --test

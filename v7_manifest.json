@@ -561,6 +561,12 @@
       "owner": "executor",
       "description": "Sync heartbeat events for liveness monitoring"
     },
+    "telegram_heartbeat": {
+      "path": "logs/telegram_heartbeat.jsonl",
+      "owner": "telegram_daily_heartbeat",
+      "description": "Daily Telegram heartbeat send log — append-only, tracks every attempt",
+      "optional": true
+    },
     "twap_events": {
       "path": "logs/execution/twap_events.jsonl",
       "owner": "order_router",
