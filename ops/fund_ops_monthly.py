@@ -101,6 +101,33 @@ def _nav_at_offset(entries: List[Dict], offset_seconds: float) -> Optional[float
     return float(best["nav"]) if best and "nav" in best else None
 
 
+def _running_max_drawdown(nav_entries: List[Dict], days: int = 30) -> float:
+    """Compute running max drawdown (%) from nav_log within the period.
+
+    Uses peak-to-trough method over the lookback window.
+    Returns percentage (e.g., 9.55 means 9.55%).
+    """
+    if not nav_entries:
+        return 0.0
+    cutoff = time.time() - days * 86400
+    period_navs = []
+    for e in nav_entries:
+        t = e.get("t", 0)
+        nav = e.get("nav")
+        if t >= cutoff and nav is not None:
+            period_navs.append(float(nav))
+    if len(period_navs) < 2:
+        return 0.0
+    running_peak = 0.0
+    max_dd = 0.0
+    for nav in period_navs:
+        running_peak = max(running_peak, nav)
+        if running_peak > 0:
+            dd = (running_peak - nav) / running_peak
+            max_dd = max(max_dd, dd)
+    return round(max_dd * 100, 2)
+
+
 # ── Section builders ────────────────────────────────────────────────
 
 
@@ -123,9 +150,14 @@ def section_1_capital_state(days: int = 30) -> str:
 
     nav_start = _nav_at_offset(nav_entries, days * 86400)
 
-    risk = _safe_json(_RISK_SNAPSHOT)
-    dd_frac = float(risk.get("portfolio_dd_pct") or risk.get("dd_frac") or 0)
-    max_dd = dd_frac * 100 if dd_frac < 1 else dd_frac
+    # Max drawdown from nav_log (running peak-to-trough), NOT daily snapshot.
+    # risk_snapshot.portfolio_dd_pct resets daily — useless for period reporting.
+    max_dd = _running_max_drawdown(nav_entries, days)
+
+    # Fallback: episode ledger max_drawdown_pct (already in %)
+    if max_dd == 0.0:
+        ledger = _safe_json(_EPISODE_LEDGER)
+        max_dd = float(ledger.get("stats", {}).get("max_drawdown_pct", 0) or 0)
 
     # Risk cap breach counts from vetoes
     vetoes = _safe_jsonl(_RISK_VETOES)
@@ -185,19 +217,27 @@ def section_2_trade_activity(days: int = 30) -> str:
     total_signals = episode_count + total_vetoes
     acceptance_rate = (episode_count / total_signals * 100) if total_signals > 0 else 0
 
-    # Conviction distribution
+    # Conviction distribution — split scored vs pre-scoring eras.
+    # Episodes with hybrid_score=0.0 and conviction_band="" are from
+    # before the conviction engine existed (pre-v6). Reporting them
+    # as "untagged" misrepresents scoring architecture health.
+    scored_episodes = [e for e in episodes if e.get("conviction_band")]
+    pre_scoring = len(episodes) - len(scored_episodes)
+
     conviction_counter: Counter[str] = Counter()
-    for ep in episodes:
-        c = ep.get("conviction") or ep.get("conviction_band") or "untagged"
+    for ep in scored_episodes:
+        c = ep.get("conviction_band") or "untagged"
         conviction_counter[str(c)] += 1
 
-    # Hybrid score dispersion
+    # Hybrid score dispersion — only from scored episodes (non-zero)
     hybrid_scores = []
-    for ep in episodes:
+    for ep in scored_episodes:
         hs = ep.get("hybrid_score") or ep.get("score")
         if hs is not None:
             try:
-                hybrid_scores.append(float(hs))
+                val = float(hs)
+                if val > 0:  # 0.0 = not computed
+                    hybrid_scores.append(val)
             except (ValueError, TypeError):
                 pass
 
@@ -208,11 +248,14 @@ def section_2_trade_activity(days: int = 30) -> str:
     lines.append(f"Avg Trades/Day:     {avg_trades_day:.1f}")
     lines.append(f"Acceptance Rate:    {acceptance_rate:.1f}% ({episode_count} accepted / {total_vetoes} vetoed)")
 
-    lines.append("Conviction Distribution:")
-    for band, count in conviction_counter.most_common():
-        pct = count / episode_count * 100 if episode_count > 0 else 0
-        label = band if band else "untagged"
-        lines.append(f"  {label}: {count} ({pct:.1f}%)")
+    lines.append("Conviction Distribution (scored episodes only):")
+    if scored_episodes:
+        for band, count in conviction_counter.most_common():
+            pct = count / len(scored_episodes) * 100
+            lines.append(f"  {band}: {count} ({pct:.1f}%)")
+        lines.append(f"  (pre-scoring era: {pre_scoring} episodes excluded)")
+    else:
+        lines.append("  No scored episodes in period (conviction engine not yet active)")
 
     if hybrid_scores:
         import statistics

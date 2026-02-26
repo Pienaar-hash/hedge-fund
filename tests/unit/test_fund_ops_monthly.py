@@ -49,9 +49,12 @@ def isolate_state(tmp_path, monkeypatch):
     nav_log = tmp_path / "nav_log.json"
     import time
     now = time.time()
+    # Create entries with a visible drawdown: peak at 10200, trough at 9700
     nav_log.write_text(json.dumps([
         {"t": now - 35 * 86400, "nav": 9500.0},
         {"t": now - 30 * 86400, "nav": 9800.0},
+        {"t": now - 20 * 86400, "nav": 10200.0},
+        {"t": now - 15 * 86400, "nav": 9700.0},
         {"t": now - 1 * 86400, "nav": 9950.0},
         {"t": now, "nav": 10000.0},
     ]))
@@ -63,7 +66,7 @@ def isolate_state(tmp_path, monkeypatch):
             {
                 "entry_ts": f"2026-02-{i:02d}T10:00:00+00:00",
                 "exit_ts": f"2026-02-{i:02d}T12:00:00+00:00",
-                "conviction": "medium" if i % 3 == 0 else "low",
+                "conviction_band": "medium" if i % 3 == 0 else "low",
                 "hybrid_score": 0.45 + (i % 10) * 0.01,
             }
             for i in range(1, 51)
@@ -186,6 +189,8 @@ class TestSectionContent:
         assert "$10,000.00" in result
         assert "Net Return:" in result
         assert "Max Drawdown:" in result
+        # Drawdown should reflect the 10200->9700 trough (4.9%)
+        assert "4.9" in result
         assert "Risk Cap Breaches:" in result
 
     def test_section_2_has_trade_fields(self, isolate_state):
@@ -195,7 +200,8 @@ class TestSectionContent:
         assert "Realised PnL:" in result
         assert "Avg Trades/Day:" in result
         assert "Acceptance Rate:" in result
-        assert "Conviction Distribution:" in result
+        assert "Conviction Distribution" in result
+        assert "scored episodes" in result
 
     def test_section_3_has_regime_dist(self, isolate_state):
         result = section_3_regime_context()
