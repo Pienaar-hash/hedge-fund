@@ -29,6 +29,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
+# ── Hard limits — prevents newsletter creep ─────────────────────────
+_MAX_LINES = 24
+_MAX_CHARS = 1200
+
+
 # ── Paths ───────────────────────────────────────────────────────────
 _ROOT = Path(__file__).resolve().parent.parent
 _HEARTBEAT_LOG = _ROOT / "logs" / "telegram_heartbeat.jsonl"
@@ -95,10 +100,41 @@ def build_heartbeat_message(now: Optional[datetime] = None) -> str:
         if lines[i].startswith("═"):
             close_idx = i
             break
+    # Only add a blank separator if the preceding line is non-empty
+    # (daily_summary already ends sections with a blank line)
+    if close_idx > 0 and lines[close_idx - 1] != "":
+        lines.insert(close_idx, "")
+        close_idx += 1
     lines.insert(close_idx, aw_block)
-    lines.insert(close_idx, "")  # blank separator
 
-    return "\n".join(lines)
+    message = "\n".join(lines)
+    return _enforce_message_limits(message)
+
+
+def _enforce_message_limits(message: str) -> str:
+    """Truncate message if it exceeds hard limits.
+
+    Contract: max _MAX_LINES lines, max _MAX_CHARS chars.
+    If either limit is exceeded, truncate and append TRUNCATED=1.
+    This prevents the heartbeat from becoming a newsletter.
+    """
+    lines = message.split("\n")
+    truncated = False
+
+    if len(lines) > _MAX_LINES:
+        lines = lines[:_MAX_LINES - 1]  # leave room for marker
+        truncated = True
+
+    result = "\n".join(lines)
+
+    if len(result) > _MAX_CHARS:
+        result = result[:_MAX_CHARS - 20]  # leave room for marker
+        truncated = True
+
+    if truncated:
+        result = result.rstrip("\n") + "\nTRUNCATED=1"
+
+    return result
 
 
 def _log_attempt(ok: bool, dry_run: bool, message_len: int, error: str = "") -> None:
@@ -191,7 +227,9 @@ def main() -> None:
         sys.exit(0 if ok else 1)
 
     ok = send_heartbeat(dry_run=args.dry_run)
-    sys.exit(0 if ok else 1)
+    # Silence-is-safe: send failures log to JSONL and exit 0.
+    # No retries, no noise cascade. Cron runs once per day.
+    sys.exit(0)
 
 
 if __name__ == "__main__":

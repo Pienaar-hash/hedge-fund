@@ -28,11 +28,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from scripts.telegram_daily_heartbeat import (
     _activation_window_block,
+    _enforce_message_limits,
     _safe_json,
     build_heartbeat_message,
     send_heartbeat,
     send_test_ping,
     _log_attempt,
+    _MAX_LINES,
+    _MAX_CHARS,
 )
 
 
@@ -325,3 +328,86 @@ class TestSendTestPing:
     def test_ping_failure(self, mock_send: mock.MagicMock) -> None:
         result = send_test_ping()
         assert result is False
+
+
+# ── Message size guardrails ─────────────────────────────────────────
+
+
+class TestMessageLimits:
+    def test_short_message_unchanged(self) -> None:
+        msg = "line1\nline2\nline3"
+        assert _enforce_message_limits(msg) == msg
+        assert "TRUNCATED" not in _enforce_message_limits(msg)
+
+    def test_exceeds_line_limit_truncated(self) -> None:
+        lines = [f"line {i}" for i in range(_MAX_LINES + 5)]
+        msg = "\n".join(lines)
+        result = _enforce_message_limits(msg)
+        result_lines = result.split("\n")
+        assert len(result_lines) <= _MAX_LINES
+        assert result_lines[-1] == "TRUNCATED=1"
+
+    def test_exceeds_char_limit_truncated(self) -> None:
+        msg = "x" * (_MAX_CHARS + 100)
+        result = _enforce_message_limits(msg)
+        assert len(result) <= _MAX_CHARS
+        assert "TRUNCATED=1" in result
+
+    def test_current_heartbeat_within_limits(self) -> None:
+        """The actual heartbeat message must stay within hard limits."""
+        msg = build_heartbeat_message()
+        lines = msg.split("\n")
+        assert len(lines) <= _MAX_LINES, f"Heartbeat has {len(lines)} lines (max {_MAX_LINES})"
+        assert len(msg) <= _MAX_CHARS, f"Heartbeat has {len(msg)} chars (max {_MAX_CHARS})"
+        assert "TRUNCATED" not in msg
+
+    def test_limits_are_sane(self) -> None:
+        """Hard limits must be positive and reasonable."""
+        assert _MAX_LINES >= 20
+        assert _MAX_LINES <= 30
+        assert _MAX_CHARS >= 600
+        assert _MAX_CHARS <= 2000
+
+
+# ── Silence-is-safe behavior ───────────────────────────────────────
+
+
+class TestSilenceIsSafe:
+    @mock.patch(
+        "execution.telegram_utils.send_telegram",
+        return_value=False,
+    )
+    def test_send_failure_logs_and_returns_false(
+        self, mock_send: mock.MagicMock, tmp_path: Path
+    ) -> None:
+        """Send failure logs send_ok=false, returns False (cron exits 0)."""
+        import scripts.telegram_daily_heartbeat as mod
+        log_path = tmp_path / "heartbeat.jsonl"
+        with mock.patch.object(mod, "_HEARTBEAT_LOG", log_path):
+            result = send_heartbeat(dry_run=False)
+        assert result is False
+        entries = [json.loads(line) for line in log_path.read_text().strip().split("\n")]
+        assert entries[0]["sent"] is False
+
+    @mock.patch(
+        "execution.telegram_utils.send_telegram",
+        side_effect=ConnectionError("timeout"),
+    )
+    def test_exception_logs_error_no_crash(
+        self, mock_send: mock.MagicMock, tmp_path: Path
+    ) -> None:
+        """Exceptions are caught, logged, no crash (cron stays clean)."""
+        import scripts.telegram_daily_heartbeat as mod
+        log_path = tmp_path / "heartbeat.jsonl"
+        with mock.patch.object(mod, "_HEARTBEAT_LOG", log_path):
+            result = send_heartbeat(dry_run=False)
+        assert result is False
+        entries = [json.loads(line) for line in log_path.read_text().strip().split("\n")]
+        assert entries[0]["sent"] is False
+        assert "timeout" in entries[0]["error"]
+
+    @mock.patch("execution.telegram_utils.send_telegram", return_value=True)
+    def test_single_send_call(self, mock_send: mock.MagicMock) -> None:
+        """Heartbeat calls send exactly once — no retries."""
+        send_heartbeat(dry_run=False)
+        assert mock_send.call_count == 1
