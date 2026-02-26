@@ -148,3 +148,18 @@ calibration_window:
   start_ts: "2026-02-22T07:53:26Z"  # activation timestamp
   drawdown_kill_pct: 0.05       # 5% NAV drawdown → immediate halt
   per_trade_nav_pct: 0.005      # 0.5% NAV per trade (reduced from 1.5%)
+
+# v8.0: Activation Window — Full-Stack System Certification Protocol
+# 14-day time-bounded window covering futures + DLE + Binary Lab + telemetry.
+# Proves full-stack integrity before capital scale.
+# DUAL-KEY: requires BOTH enabled=true AND env ACTIVATION_WINDOW_ACK=1
+# Structural integrity kills: manifest drift, config hash mismatch, DLE bypass,
+# binary lab freeze violation, drawdown breach — not just sizing.
+activation_window:
+  enabled: false                        # flip to true when ready to start
+  duration_days: 14                     # 14 consecutive calendar days
+  start_ts: ""                          # set to UTC time at activation
+  drawdown_kill_pct: 0.05              # 5% NAV drawdown → immediate halt
+  per_trade_nav_pct: 0.005             # 0.5% NAV per trade (unchanged)
+  # Scope: executor, risk, DLE veto, Binary Lab SHADOW, episode ledger,
+  #        NAV accounting, manifest surface integrity

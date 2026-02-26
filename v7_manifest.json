@@ -1133,6 +1133,40 @@
         "pnl_usd": "float|null — net PnL after fees (on ROUND_CLOSED only)",
         "deny_reason": "str|null — eligibility denial reason (on NO_TRADE only)"
       }
+    },
+    "activation_window_state": {
+      "path": "logs/state/activation_window_state.json",
+      "owner": "activation_window",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Full-stack activation window state (v8.0). 14-day time-bounded system certification protocol covering futures + DLE + Binary Lab + telemetry.",
+      "fields": {
+        "active": "bool — whether activation window is active (dual-key confirmed)",
+        "ts": "str — last check timestamp (ISO 8601)",
+        "start_ts": "str — window start timestamp",
+        "end_ts": "str — computed window end timestamp",
+        "duration_days": "int — window duration (default 14)",
+        "elapsed_days": "float — days since start",
+        "remaining_days": "float — days until window end",
+        "window_expired": "bool — true if 14 days elapsed",
+        "halted": "bool — KILL_SWITCH triggered",
+        "halt_reason": "str|null — reason for halt (drawdown_kill, manifest_drift, config_drift, etc.)",
+        "manifest_intact": "bool — v7_manifest.json unchanged since boot",
+        "config_intact": "bool — runtime.yaml unchanged since boot",
+        "boot_manifest_hash": "str — SHA-256 captured at boot",
+        "current_manifest_hash": "str — current SHA-256",
+        "boot_config_hash": "str — SHA-256 captured at boot",
+        "current_config_hash": "str — current SHA-256",
+        "drawdown_pct": "float — current portfolio drawdown",
+        "drawdown_kill_pct": "float — kill threshold",
+        "dd_breached": "bool — drawdown >= kill threshold",
+        "nav_usd": "float — current NAV",
+        "episodes_completed": "int — episodes since start_ts",
+        "risk_veto_count": "int — risk vetoes since start_ts",
+        "dle_mismatches": "int — DLE shadow mismatches since start_ts",
+        "binary_lab_freeze_ok": "bool — Binary Lab config freeze intact",
+        "per_trade_nav_pct": "float — sizing cap during window"
+      }
     }
   },
   "diagnostics": {

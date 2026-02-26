@@ -1536,6 +1536,19 @@ def _sync_dry_run() -> None:
             )
     except Exception:
         pass  # fail-open: calibration check must never block executor
+    # v8.0: Activation Window — full-stack integrity check
+    try:
+        from execution.activation_window import check_activation_window
+        _aw_status = check_activation_window()
+        if _aw_status.get("halted"):
+            LOG.info(
+                "[activation_window] HALT — %s (day %.1f/%d)",
+                _aw_status.get("halt_reason", "unknown"),
+                _aw_status.get("elapsed_days", 0),
+                _aw_status.get("duration_days", 14),
+            )
+    except Exception:
+        pass  # fail-open: activation check must never block executor
 
 
 def _clean_testnet_caches() -> None:
@@ -3510,6 +3523,23 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     gross_target = _cal_cap
         except Exception as _cal_err:
             LOG.debug("[calibration_window] sizing check failed: %s", _cal_err)
+    # --- Activation window sizing cap (v8.0) ---
+    # When active, further caps gross_target.  Takes the tighter of
+    # calibration window and activation window.
+    if not reduce_only:
+        try:
+            from execution.activation_window import get_activation_sizing_override
+            _aw_pct = get_activation_sizing_override()
+            if _aw_pct is not None and nav_usd > 0:
+                _aw_cap = float(_aw_pct) * nav_usd
+                if _aw_cap > 0 and gross_target > _aw_cap:
+                    LOG.info(
+                        "[activation_window] sizing cap: %.2f → %.2f (%.3f%% NAV)",
+                        gross_target, _aw_cap, float(_aw_pct) * 100,
+                    )
+                    gross_target = _aw_cap
+        except Exception as _aw_err:
+            LOG.debug("[activation_window] sizing check failed: %s", _aw_err)
     margin_target = gross_target / max(lev, 1.0)
     attempt_start_monotonic = time.monotonic()
     attempt_payload = {
@@ -5794,6 +5824,12 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         log_calibration_boot_status()
     except Exception as _cw_boot_err:
         LOG.debug("[startup] calibration boot status failed: %s", _cw_boot_err)
+    # v8.0: Activation Window — full-stack boot status + hash capture
+    try:
+        from execution.activation_window import log_activation_boot_status
+        log_activation_boot_status()
+    except Exception as _aw_boot_err:
+        LOG.debug("[startup] activation window boot status failed: %s", _aw_boot_err)
     _clean_testnet_caches()
     
     # Refresh exchange precision cache at startup
