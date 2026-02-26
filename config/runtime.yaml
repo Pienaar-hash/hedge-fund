@@ -156,9 +156,9 @@ calibration_window:
 # Structural integrity kills: manifest drift, config hash mismatch, DLE bypass,
 # binary lab freeze violation, drawdown breach — not just sizing.
 activation_window:
-  enabled: false                        # flip to true when ready to start
+  enabled: true                         # ACTIVATED 2026-02-26T09:36:00Z
   duration_days: 14                     # 14 consecutive calendar days
-  start_ts: ""                          # set to UTC time at activation
+  start_ts: "2026-02-26T09:36:00.378799+00:00"  # window start
   drawdown_kill_pct: 0.05              # 5% NAV drawdown → immediate halt
   per_trade_nav_pct: 0.005             # 0.5% NAV per trade (unchanged)
   require_go_for_scale: true           # sizing cap persists until 7/7 GO verdict
