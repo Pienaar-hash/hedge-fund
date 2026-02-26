@@ -63,3 +63,6 @@ heartbeat-send:
 .PHONY: heartbeat-test
 heartbeat-test:
 	@PYTHONPATH=. TELEGRAM_ENABLED=1 $(PYTHON) scripts/telegram_daily_heartbeat.py --test
+.PHONY: fund-ops
+fund-ops:
+	@PYTHONPATH=. $(PYTHON) ops/fund_ops_monthly.py
