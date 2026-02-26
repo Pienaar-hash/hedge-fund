@@ -1155,7 +1155,12 @@ def _binary_lab_tick(now_iso: str) -> bool:
         if activate_now:
             _BINARY_LAB_ACTIVATION_ATTEMPTED = True
 
-        event_override = BinaryLabEventType.DAILY_CHECKPOINT if BinaryLabEventType is not None else None
+        # Only override to DAILY_CHECKPOINT when NOT activating — otherwise
+        # the override masks the ACTIVATE event and the state machine never
+        # transitions from NOT_DEPLOYED.
+        event_override: Any = None
+        if not activate_now and BinaryLabEventType is not None:
+            event_override = BinaryLabEventType.DAILY_CHECKPOINT
 
         mode = _parse_binary_lab_mode(os.getenv("BINARY_LAB_MODE", "PAPER"))
         gate_go = os.getenv("BINARY_LAB_ACTIVATION_GATE_GO", "0").strip().lower() in {"1", "true", "yes", "on"}
