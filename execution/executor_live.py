@@ -2752,6 +2752,374 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
     return True, "DOCTRINE_ALLOW", decision.to_dict()
 
 
+# ── Module-level veto persistence (promoted from _send_order closure) ──
+
+
+def _persist_veto(
+    reason: str,
+    price_hint: float,
+    extra: Dict[str, Any] | None = None,
+    *,
+    symbol: str,
+    side: str,
+    pos_side: str,
+    gross_target: float,
+) -> Dict[str, Any]:
+    """Persist a veto event to JSON file and structured log.
+
+    Previously a closure inside ``_send_order``; promoted to module-level
+    so that ``symbol``, ``side``, ``pos_side``, ``gross_target`` are
+    explicit parameters rather than captured variables.
+    """
+    payload: Dict[str, Any] = {
+        "symbol": symbol,
+        "side": side,
+        "positionSide": pos_side,
+        "reason": reason,
+        "gross_usd": gross_target,
+        "price": price_hint,
+        "ts": time.time(),
+    }
+    if extra:
+        payload.update(extra)
+    try:
+        save_json(f"logs/veto_exec_{symbol}.json", payload)
+    except Exception:
+        try:
+            import pathlib as _pl
+
+            _pl.Path("logs").mkdir(exist_ok=True)
+            _pl.Path(f"logs/veto_exec_{symbol}.json").write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    thresholds: Dict[str, Any] = {}
+    observations: Dict[str, Any] = {}
+    diag_gate = None
+    diagnostics: Dict[str, Any] = {}
+    if extra:
+        maybe_thresholds = extra.get("thresholds")
+        if isinstance(maybe_thresholds, Mapping):
+            thresholds = dict(maybe_thresholds)
+        maybe_diag = extra.get("diagnostics")
+        if isinstance(maybe_diag, Mapping):
+            diagnostics = dict(maybe_diag)
+            diag_gate = diagnostics.get("gate")
+            diag_thresholds = diagnostics.get("thresholds")
+            diag_obs = diagnostics.get("observations")
+            if isinstance(diag_thresholds, Mapping):
+                thresholds.update(diag_thresholds)
+            if isinstance(diag_obs, Mapping):
+                observations = dict(diag_obs)
+    log_payload = {
+        "symbol": symbol,
+        "side": side,
+        "position_side": pos_side,
+        "run_id": RUN_ID,
+        "hostname": HOSTNAME,
+        "veto_reason": reason,
+        "veto_detail": extra or {},
+        "thresholds": thresholds,
+        "observations": observations,
+        "gate": diag_gate or (extra or {}).get("gate"),
+        "ts": payload.get("ts"),
+    }
+    _record_structured_event(LOG_VETOES, "risk_veto", log_payload)
+    return payload
+
+
+# ── Fee-edge gate (extracted from _send_order inline block) ────────────
+
+
+def _check_fee_edge_gate(
+    *,
+    intent: Dict[str, Any],
+    symbol_upper: str,
+    side: str,
+    price: float,
+    price_hint: float,
+    gross_target: float,
+    intent_id: str,
+    attempt_id: str,
+) -> bool:
+    """Check fee-aware edge gate for entry orders.
+
+    Returns ``True`` if the order should proceed, ``False`` if vetoed.
+    Silently passes on import errors or unexpected failures.
+    """
+    try:
+        from execution.fee_gate import check_fee_edge, check_fee_edge_v2  # noqa: F811
+        from execution.true_edge import compute_true_edge
+
+        _fg_notional = gross_target
+        _fg_meta = intent.get("metadata") or {}
+        _fg_hybrid = intent.get("hybrid_components") or {}
+        expected_edge_pct = float(
+            intent.get("expected_edge", 0)
+            or _fg_hybrid.get("expectancy", 0)
+            or _fg_meta.get("expectancy", 0)
+            or _fg_meta.get("expected_edge_pct", 0)
+            or 0
+        )
+        _fg_edge_source = "none"
+        if intent.get("expected_edge"):
+            _fg_edge_source = "expected_edge"
+        elif _fg_hybrid.get("expectancy"):
+            _fg_edge_source = "hybrid_expectancy"
+        elif _fg_meta.get("expectancy"):
+            _fg_edge_source = "metadata_expectancy"
+        elif _fg_meta.get("expected_edge_pct"):
+            _fg_edge_source = "metadata_expected_edge_pct"
+
+        if _fg_notional > 0:
+            _te_confidence = float(intent.get("confidence", 0) or 0)
+            _te_atr_raw: float | None = None
+            _te_timeframe: str | None = None
+            try:
+                _te_atr_raw = float(_fg_meta.get("atr", 0) or 0) or None
+            except (TypeError, ValueError):
+                _te_atr_raw = None
+            if _te_atr_raw is None:
+                try:
+                    from execution.utils.vol import atr_pct as _vol_atr_pct
+                    _atr_pct_val = _vol_atr_pct(symbol_upper, lookback_bars=50)
+                    if _atr_pct_val and _atr_pct_val > 0:
+                        _te_atr_raw = (_atr_pct_val / 100.0) * price
+                except Exception:
+                    _te_atr_raw = None
+            try:
+                _te_timeframe = str(
+                    intent.get("timeframe")
+                    or _fg_meta.get("timeframe")
+                    or intent.get("params", {}).get("timeframe")
+                    or ""
+                ) or None
+            except Exception:
+                _te_timeframe = None
+
+            if _te_confidence <= 0 and expected_edge_pct > 0:
+                _te_confidence = expected_edge_pct + 0.5
+
+            _te_result = compute_true_edge(
+                confidence=_te_confidence,
+                price=price,
+                atr=_te_atr_raw,
+                notional_usd=_fg_notional,
+                timeframe=_te_timeframe,
+            )
+
+            fg_allowed, fg_details = check_fee_edge_v2(_te_result)
+
+            if _te_result.fallback_reason == "atr_unit_suspect":
+                _record_structured_event(
+                    LOG_FEE_GATE,
+                    "TRUE_EDGE_ATR_UNIT_ANOMALY",
+                    {
+                        "symbol": symbol_upper,
+                        "side": side,
+                        "atr_raw": _te_atr_raw,
+                        "price": price,
+                        "atr_over_price": (
+                            round(_te_atr_raw / price, 4)
+                            if _te_atr_raw and price
+                            else None
+                        ),
+                        "intent_id": intent_id,
+                        "fallback_reason": "atr_unit_suspect",
+                    },
+                )
+
+            fg_details["edge_source"] = _te_result.source
+            fg_details["edge_components"] = {
+                "expected_edge": float(
+                    intent.get("expected_edge", 0) or 0
+                ),
+                "hybrid_expectancy": float(
+                    _fg_hybrid.get("expectancy", 0) or 0
+                ),
+                "hybrid_score": float(
+                    intent.get("hybrid_score", 0) or 0
+                ),
+                "conviction_score": float(
+                    intent.get("conviction_score", 0) or 0
+                ),
+            }
+            fg_details["symbol"] = symbol_upper
+            fg_details["side"] = side
+            fg_details["intent_id"] = intent_id
+            fg_details["attempt_id"] = attempt_id
+
+            if expected_edge_pct == 0.0:
+                _raw_ee = intent.get("expected_edge")
+                _raw_he = _fg_hybrid.get("expectancy")
+                if (
+                    (_raw_ee is not None and _raw_ee != 0 and _raw_ee != "")
+                    or (_raw_he is not None and _raw_he != 0 and _raw_he != "")
+                ):
+                    LOG.warning(
+                        "[fee_gate] EDGE_MISSING_ANOMALY %s: "
+                        "resolved_edge=0 but expected_edge=%s "
+                        "hybrid_expectancy=%s — possible schema drift",
+                        symbol_upper, _raw_ee, _raw_he,
+                    )
+                    _record_structured_event(
+                        LOG_FEE_GATE,
+                        "FEE_GATE_EDGE_MISSING_ANOMALY",
+                        {
+                            "symbol": symbol_upper,
+                            "side": side,
+                            "resolved_edge_pct": expected_edge_pct,
+                            "raw_expected_edge": _raw_ee,
+                            "raw_hybrid_expectancy": _raw_he,
+                            "intent_keys": sorted(intent.keys()),
+                            "metadata_keys": sorted(_fg_meta.keys()),
+                            "hybrid_component_keys": sorted(
+                                _fg_hybrid.keys()
+                            ),
+                        },
+                    )
+
+            if not fg_allowed:
+                LOG.info(
+                    "[fee_gate] ENTRY VETO %s: edge $%.4f < "
+                    "required $%.4f (source=%s, edge_pct=%.6f)",
+                    symbol_upper,
+                    fg_details.get("expected_edge_usd", 0),
+                    fg_details.get("required_edge_usd", 0),
+                    _te_result.source,
+                    _te_result.expected_edge_pct,
+                )
+                _record_structured_event(
+                    LOG_FEE_GATE,
+                    "FEE_GATE_VETO_DETAIL",
+                    fg_details,
+                )
+                return False
+            else:
+                LOG.debug(
+                    "[fee_gate] PASS %s: edge $%.4f >= "
+                    "required $%.4f (source=%s)",
+                    symbol_upper,
+                    fg_details.get("expected_edge_usd", 0),
+                    fg_details.get("required_edge_usd", 0),
+                    _te_result.source,
+                )
+    except ImportError:
+        pass
+    except Exception as _fg_exc:
+        LOG.debug("[fee_gate] check failed: %s", _fg_exc)
+
+    return True
+
+
+# ── Notional inflation guard (extracted from _send_order) ──────────────
+
+
+def _check_notional_inflation_guard(
+    *,
+    payload: Dict[str, Any],
+    symbol: str,
+    symbol_upper: str,
+    side: str,
+    pos_side: str,
+    price_hint: float,
+    gross_target: float,
+    meta: Dict[str, Any],
+    intent: Dict[str, Any],
+    nav_snapshot: Any,
+) -> bool:
+    """Check post-sizing notional inflation guard.
+
+    Returns ``True`` if the order should proceed, ``False`` if vetoed.
+    On unexpected failure, logs a warning and returns ``True`` (proceed).
+    """
+    try:
+        _actual_qty = float(payload.get("quantity", 0) or 0)
+        _actual_notional = (
+            _actual_qty * price_hint if price_hint > 0 else 0.0
+        )
+        _per_sym = (
+            (_RISK_CFG.get("per_symbol") or {}).get(symbol_upper) or {}
+        )
+        _max_order_notional = float(
+            _per_sym.get("max_order_notional", 0) or 0
+        )
+        _inflation_ratio = (
+            (_actual_notional / gross_target) if gross_target > 0 else 0.0
+        )
+
+        _notional_breach = False
+        _breach_reason = ""
+        if _max_order_notional > 0 and _actual_notional > _max_order_notional:
+            _notional_breach = True
+            _breach_reason = (
+                f"actual_notional={_actual_notional:.2f} > "
+                f"max_order_notional={_max_order_notional:.2f}"
+            )
+        elif gross_target > 0 and _inflation_ratio > 3.0:
+            _notional_breach = True
+            _breach_reason = (
+                f"inflation_ratio={_inflation_ratio:.1f}x "
+                f"(actual={_actual_notional:.2f} "
+                f"vs target={gross_target:.2f})"
+            )
+
+        if _notional_breach:
+            LOG.error(
+                "[sizing] NOTIONAL_INFLATION_GUARD %s side=%s "
+                "qty=%s price=%.2f actual_notional=%.2f "
+                "gross_target=%.2f reason=%s",
+                symbol, side, payload.get("quantity"), price_hint,
+                _actual_notional, gross_target, _breach_reason,
+            )
+            _persist_veto(
+                "notional_inflation_guard",
+                price_hint,
+                {
+                    "intent": intent,
+                    "nav_snapshot": nav_snapshot,
+                    "thresholds": {
+                        "actual_notional": _actual_notional,
+                        "gross_target": gross_target,
+                        "max_order_notional": _max_order_notional,
+                        "inflation_ratio": _inflation_ratio,
+                        "payload_qty": str(payload.get("quantity")),
+                        "meta": dict(meta),
+                    },
+                },
+                symbol=symbol,
+                side=side,
+                pos_side=pos_side,
+                gross_target=gross_target,
+            )
+            try:
+                publish_order_audit(
+                    symbol,
+                    {
+                        "phase": "blocked",
+                        "side": side,
+                        "positionSide": pos_side,
+                        "reason": "notional_inflation_guard",
+                        "actual_notional": _actual_notional,
+                        "gross_target": gross_target,
+                        "max_order_notional": _max_order_notional,
+                        "payload_qty": str(payload.get("quantity")),
+                    },
+                )
+            except Exception:
+                pass
+            return False
+    except Exception as _nig_exc:
+        LOG.warning(
+            "[sizing] notional_inflation_guard check failed: %s",
+            _nig_exc,
+        )
+
+    return True
+
+
 # NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     # DOCTRINE GATE — Supreme Authority Check
@@ -2972,65 +3340,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     sym_max_order = 0.0
     sym_max_nav_pct = 0.0
 
-    def _persist_veto(reason: str, price_hint: float, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "symbol": symbol,
-            "side": side,
-            "positionSide": pos_side,
-            "reason": reason,
-            "gross_usd": gross_target,
-            "price": price_hint,
-            "ts": time.time(),
-        }
-        if extra:
-            payload.update(extra)
-        try:
-            save_json(f"logs/veto_exec_{symbol}.json", payload)
-        except Exception:
-            try:
-                import pathlib as _pl
-
-                _pl.Path("logs").mkdir(exist_ok=True)
-                _pl.Path(f"logs/veto_exec_{symbol}.json").write_text(
-                    json.dumps(payload),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-        thresholds: Dict[str, Any] = {}
-        observations: Dict[str, Any] = {}
-        diag_gate = None
-        diagnostics: Dict[str, Any] = {}
-        if extra:
-            maybe_thresholds = extra.get("thresholds")
-            if isinstance(maybe_thresholds, Mapping):
-                thresholds = dict(maybe_thresholds)
-            maybe_diag = extra.get("diagnostics")
-            if isinstance(maybe_diag, Mapping):
-                diagnostics = dict(maybe_diag)
-                diag_gate = diagnostics.get("gate")
-                diag_thresholds = diagnostics.get("thresholds")
-                diag_obs = diagnostics.get("observations")
-                if isinstance(diag_thresholds, Mapping):
-                    thresholds.update(diag_thresholds)
-                if isinstance(diag_obs, Mapping):
-                    observations = dict(diag_obs)
-        log_payload = {
-            "symbol": symbol,
-            "side": side,
-            "position_side": pos_side,
-            "run_id": RUN_ID,
-            "hostname": HOSTNAME,
-            "veto_reason": reason,
-            "veto_detail": extra or {},
-            "thresholds": thresholds,
-            "observations": observations,
-            "gate": diag_gate or (extra or {}).get("gate"),
-            "ts": payload.get("ts"),
-        }
-        _record_structured_event(LOG_VETOES, "risk_veto", log_payload)
-        return payload
-
     cfg = load_json("config/strategy_config.json") or {}
     sizing_cfg = (cfg.get("sizing") or {})
     floor_gross = max(
@@ -3136,6 +3445,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "nav_snapshot": nav_snapshot,
                 "thresholds": {"strategy_required": True},
             },
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side,
+            gross_target=gross_target,
         )
         return None
 
@@ -3180,6 +3493,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                                 "actual_band": _intent_band or "none",
                             },
                         },
+                        symbol=symbol,
+                        side=side,
+                        pos_side=pos_side,
+                        gross_target=gross_target,
                     )
                     return None
                 else:
@@ -3230,6 +3547,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "nav_snapshot": nav_snapshot,
                 "thresholds": {"kill_switch": True},
             },
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side,
+            gross_target=gross_target,
         )
         try:
             publish_order_audit(
@@ -3493,6 +3814,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "thresholds": thresholds,
                 "diagnostics": details if isinstance(details, Mapping) else {},
             },
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side,
+            gross_target=gross_target,
         )
         return
 
@@ -3505,168 +3830,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             return
 
     # ── v7.9-E2: Fee-Aware Edge Gate (entries only) ───────────────────────
-    # Uses gross_target (= notional, not margin) computed at L2861.
     if not reduce_only:
-        try:
-            from execution.fee_gate import check_fee_edge, check_fee_edge_v2
-            from execution.true_edge import compute_true_edge
-
-            _fg_notional = gross_target  # notional USD = qty × price
-            # Priority chain for expected_edge_pct: (v7.9-W4 wiring fix)
-            # 1. intent["expected_edge"] — signal_generator confidence-0.5
-            # 2. intent["hybrid_components"]["expectancy"] — hybrid scoring factor
-            # 3. intent["metadata"]["expectancy"] — backward compat
-            # 4. intent["metadata"]["expected_edge_pct"] — backward compat
-            _fg_meta = intent.get("metadata") or {}
-            _fg_hybrid = intent.get("hybrid_components") or {}
-            expected_edge_pct = float(
-                intent.get("expected_edge", 0)
-                or _fg_hybrid.get("expectancy", 0)
-                or _fg_meta.get("expectancy", 0)
-                or _fg_meta.get("expected_edge_pct", 0)
-                or 0
-            )
-            # Track which source provided the edge value
-            _fg_edge_source = "none"
-            if intent.get("expected_edge"):
-                _fg_edge_source = "expected_edge"
-            elif _fg_hybrid.get("expectancy"):
-                _fg_edge_source = "hybrid_expectancy"
-            elif _fg_meta.get("expectancy"):
-                _fg_edge_source = "metadata_expectancy"
-            elif _fg_meta.get("expected_edge_pct"):
-                _fg_edge_source = "metadata_expected_edge_pct"
-
-            if _fg_notional > 0:
-                # ── v7.9-TE1: True Edge v1 — ATR × confidence mapping ────
-                # Attempt ATR-based edge; falls back to proxy if ATR missing.
-                _te_confidence = float(intent.get("confidence", 0) or 0)
-                _te_atr_raw: float | None = None
-                _te_timeframe: str | None = None
-                try:
-                    _te_atr_raw = float(_fg_meta.get("atr", 0) or 0) or None
-                except (TypeError, ValueError):
-                    _te_atr_raw = None
-                if _te_atr_raw is None:
-                    # Try to fetch ATR from vol utils
-                    try:
-                        from execution.utils.vol import atr_pct as _vol_atr_pct
-                        _atr_pct_val = _vol_atr_pct(symbol_upper, lookback_bars=50)
-                        if _atr_pct_val and _atr_pct_val > 0:
-                            # atr_pct returns percentage (×100), convert to price
-                            _te_atr_raw = (_atr_pct_val / 100.0) * price
-                    except Exception:
-                        _te_atr_raw = None
-                try:
-                    _te_timeframe = str(
-                        intent.get("timeframe")
-                        or _fg_meta.get("timeframe")
-                        or intent.get("params", {}).get("timeframe")
-                        or ""
-                    ) or None
-                except Exception:
-                    _te_timeframe = None
-
-                # Use confidence from intent if available, else derive from edge
-                if _te_confidence <= 0 and expected_edge_pct > 0:
-                    _te_confidence = expected_edge_pct + 0.5
-
-                _te_result = compute_true_edge(
-                    confidence=_te_confidence,
-                    price=price,
-                    atr=_te_atr_raw,
-                    notional_usd=_fg_notional,
-                    timeframe=_te_timeframe,
-                )
-
-                fg_allowed, fg_details = check_fee_edge_v2(_te_result)
-
-                # v7.9-TE1.1: Emit structured anomaly if ATR unit guard fired
-                if _te_result.fallback_reason == "atr_unit_suspect":
-                    _record_structured_event(
-                        LOG_FEE_GATE,
-                        "TRUE_EDGE_ATR_UNIT_ANOMALY",
-                        {
-                            "symbol": symbol_upper,
-                            "side": side,
-                            "atr_raw": _te_atr_raw,
-                            "price": price,
-                            "atr_over_price": round(_te_atr_raw / price, 4) if _te_atr_raw and price else None,
-                            "intent_id": intent_id,
-                            "fallback_reason": "atr_unit_suspect",
-                        },
-                    )
-
-                # Enrich details for structured event
-                fg_details["edge_source"] = _te_result.source
-                fg_details["edge_components"] = {
-                    "expected_edge": float(intent.get("expected_edge", 0) or 0),
-                    "hybrid_expectancy": float(_fg_hybrid.get("expectancy", 0) or 0),
-                    "hybrid_score": float(intent.get("hybrid_score", 0) or 0),
-                    "conviction_score": float(intent.get("conviction_score", 0) or 0),
-                }
-                fg_details["symbol"] = symbol_upper
-                fg_details["side"] = side
-                # v7.9-TE1.1: Emit join keys for exact episode attribution
-                fg_details["intent_id"] = intent_id
-                fg_details["attempt_id"] = attempt_id
-
-                # v7.9-W4: Schema-drift anomaly guard.  If the resolved
-                # edge is 0 but the intent *does* carry edge sources,
-                # something in the priority chain is broken.  Emit a
-                # warning event so we catch regressions immediately.
-                if expected_edge_pct == 0.0:
-                    _raw_ee = intent.get("expected_edge")
-                    _raw_he = _fg_hybrid.get("expectancy")
-                    if (_raw_ee is not None and _raw_ee != 0 and _raw_ee != "") or \
-                       (_raw_he is not None and _raw_he != 0 and _raw_he != ""):
-                        LOG.warning(
-                            "[fee_gate] EDGE_MISSING_ANOMALY %s: resolved_edge=0 but "
-                            "expected_edge=%s hybrid_expectancy=%s — possible schema drift",
-                            symbol_upper, _raw_ee, _raw_he,
-                        )
-                        _record_structured_event(
-                            LOG_FEE_GATE,
-                            "FEE_GATE_EDGE_MISSING_ANOMALY",
-                            {
-                                "symbol": symbol_upper,
-                                "side": side,
-                                "resolved_edge_pct": expected_edge_pct,
-                                "raw_expected_edge": _raw_ee,
-                                "raw_hybrid_expectancy": _raw_he,
-                                "intent_keys": sorted(intent.keys()),
-                                "metadata_keys": sorted(_fg_meta.keys()),
-                                "hybrid_component_keys": sorted(_fg_hybrid.keys()),
-                            },
-                        )
-
-                if not fg_allowed:
-                    LOG.info(
-                        "[fee_gate] ENTRY VETO %s: edge $%.4f < required $%.4f (source=%s, edge_pct=%.6f)",
-                        symbol_upper,
-                        fg_details.get("expected_edge_usd", 0),
-                        fg_details.get("required_edge_usd", 0),
-                        _te_result.source,
-                        _te_result.expected_edge_pct,
-                    )
-                    _record_structured_event(
-                        LOG_FEE_GATE,
-                        "FEE_GATE_VETO_DETAIL",
-                        fg_details,
-                    )
-                    return
-                else:
-                    LOG.debug(
-                        "[fee_gate] PASS %s: edge $%.4f >= required $%.4f (source=%s)",
-                        symbol_upper,
-                        fg_details.get("expected_edge_usd", 0),
-                        fg_details.get("required_edge_usd", 0),
-                        _te_result.source,
-                    )
-        except ImportError:
-            pass
-        except Exception as _fg_exc:
-            LOG.debug("[fee_gate] check failed: %s", _fg_exc)
+        if not _check_fee_edge_gate(
+            intent=intent,
+            symbol_upper=symbol_upper,
+            side=side,
+            price=price,
+            price_hint=price_hint,
+            gross_target=gross_target,
+            intent_id=intent_id,
+            attempt_id=attempt_id,
+        ):
+            return
 
     # ── Sizing Snapshot: canonical pre-order audit record ──
     try:
@@ -3722,69 +3897,19 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     payload["positionSide"] = pos_side
 
     # ── v7.9-D1: Post-sizing notional inflation guard ──────────────────
-    # Root cause D1: Binance testnet MARKET_LOT_SIZE can have minQty=1 BTC
-    # (stepSize=1), causing normalize_price_qty to inflate qty from ~0.001
-    # to 1.0 — a 100x+ notional breach.  This guard compares the ACTUAL
-    # post-normalization notional against (a) gross_target with a 3× fuse
-    # and (b) per-symbol max_order_notional from risk_limits.json.
-    try:
-        _actual_qty = float(payload.get("quantity", 0) or 0)
-        _actual_notional = _actual_qty * price_hint if price_hint > 0 else 0.0
-        _per_sym = (_RISK_CFG.get("per_symbol") or {}).get(symbol_upper) or {}
-        _max_order_notional = float(_per_sym.get("max_order_notional", 0) or 0)
-        _inflation_ratio = (_actual_notional / gross_target) if gross_target > 0 else 0.0
-
-        _notional_breach = False
-        _breach_reason = ""
-        if _max_order_notional > 0 and _actual_notional > _max_order_notional:
-            _notional_breach = True
-            _breach_reason = f"actual_notional={_actual_notional:.2f} > max_order_notional={_max_order_notional:.2f}"
-        elif gross_target > 0 and _inflation_ratio > 3.0:
-            _notional_breach = True
-            _breach_reason = f"inflation_ratio={_inflation_ratio:.1f}x (actual={_actual_notional:.2f} vs target={gross_target:.2f})"
-
-        if _notional_breach:
-            LOG.error(
-                "[sizing] NOTIONAL_INFLATION_GUARD %s side=%s qty=%s price=%.2f "
-                "actual_notional=%.2f gross_target=%.2f reason=%s",
-                symbol, side, payload.get("quantity"), price_hint,
-                _actual_notional, gross_target, _breach_reason,
-            )
-            _persist_veto(
-                "notional_inflation_guard",
-                price_hint,
-                {
-                    "intent": intent,
-                    "nav_snapshot": nav_snapshot,
-                    "thresholds": {
-                        "actual_notional": _actual_notional,
-                        "gross_target": gross_target,
-                        "max_order_notional": _max_order_notional,
-                        "inflation_ratio": _inflation_ratio,
-                        "payload_qty": str(payload.get("quantity")),
-                        "meta": dict(meta),
-                    },
-                },
-            )
-            try:
-                publish_order_audit(
-                    symbol,
-                    {
-                        "phase": "blocked",
-                        "side": side,
-                        "positionSide": pos_side,
-                        "reason": "notional_inflation_guard",
-                        "actual_notional": _actual_notional,
-                        "gross_target": gross_target,
-                        "max_order_notional": _max_order_notional,
-                        "payload_qty": str(payload.get("quantity")),
-                    },
-                )
-            except Exception:
-                pass
-            return
-    except Exception as _nig_exc:
-        LOG.warning("[sizing] notional_inflation_guard check failed: %s", _nig_exc)
+    if not _check_notional_inflation_guard(
+        payload=payload,
+        symbol=symbol,
+        symbol_upper=symbol_upper,
+        side=side,
+        pos_side=pos_side,
+        price_hint=price_hint,
+        gross_target=gross_target,
+        meta=meta,
+        intent=intent,
+        nav_snapshot=nav_snapshot,
+    ):
+        return
 
     if not reduce_only:
         # Ensure the opening order never carries the reduceOnly flag
