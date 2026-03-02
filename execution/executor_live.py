@@ -37,6 +37,11 @@ from execution.helpers import (
     to_float as _to_float,
     truthy_env as _truthy_env,
 )
+from execution.sizing import (
+    estimate_intent_qty as _estimate_intent_qty,
+    nav_pct_fraction as _nav_pct_fraction,
+    size_from_nav as _size_from_nav,
+)
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 from execution.universe_resolver import (
     symbol_min_gross,
@@ -1350,27 +1355,6 @@ _RISK_STATE = RiskState()
 _PORTFOLIO_SNAPSHOT = PortfolioSnapshot(load_json("config/strategy_config.json"))
 
 
-def _nav_pct_fraction(value: Any) -> float:
-    """Interpret numeric percent inputs as fractions; 10 -> 0.10, 0.02 -> 0.02."""
-    try:
-        pct = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if pct <= 0.0:
-        return 0.0
-    if pct > 1.0:
-        return pct / 100.0
-    return pct
-
-
-def _size_from_nav(symbol: str, nav_usd: float, pct: float) -> float:
-    """Compute gross notional from NAV * pct fraction."""
-    try:
-        return float(nav_usd) * float(pct)
-    except Exception:
-        return 0.0
-
-
 # ---- knobs ----
 SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", "0") or 0)
@@ -2017,27 +2001,6 @@ def _nav_snapshot() -> Dict[str, Any]:
     snapshot["nav_age_s"] = health.get("age_s")
     snapshot["nav_sources_ok"] = health.get("sources_ok")
     return snapshot
-
-
-def _estimate_intent_qty(intent: Mapping[str, Any], gross_target: float, price_hint: float) -> float:
-    for key in ("quantity", "qty", "order_qty", "orderQty", "size", "units"):
-        if key in intent:
-            try:
-                return float(intent[key])
-            except Exception:
-                continue
-    try:
-        normalized = intent.get("normalized")
-        if isinstance(normalized, Mapping) and "qty" in normalized:
-            return float(normalized.get("qty") or 0.0)
-    except Exception:
-        pass
-    try:
-        if price_hint and price_hint > 0:
-            return float(gross_target) / float(price_hint)
-    except Exception:
-        pass
-    return float(intent.get("qty_estimate", 0.0) or 0.0)
 
 
 def _position_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
