@@ -68,76 +68,76 @@ class TestCheckExitDedup:
     CFG = ExitDedupConfig(ttl_seconds=300, qty_change_threshold=0.10)
 
     def test_first_intent_allowed(self):
-        ok, reason = check_exit_dedup("ETHUSDT", "LONG", "REGIME_FLIP", config=self.CFG)
+        ok, reason = check_exit_dedup("ETHUSDT", "LONG", "TIME_STOP", config=self.CFG)
         assert ok is True
         assert reason == ""
 
     def test_second_intent_within_ttl_suppressed(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         ok, reason = check_exit_dedup(
-            "ETHUSDT", "LONG", "REGIME_FLIP", current_qty=0.1, now=now + 60, config=self.CFG,
+            "ETHUSDT", "LONG", "TIME_STOP", current_qty=0.1, now=now + 60, config=self.CFG,
         )
         assert ok is False
         assert "exit_dedup" in reason
 
     def test_allowed_after_ttl_expires(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         ok, _ = check_exit_dedup(
-            "ETHUSDT", "LONG", "REGIME_FLIP", current_qty=0.1, now=now + 301, config=self.CFG,
+            "ETHUSDT", "LONG", "TIME_STOP", current_qty=0.1, now=now + 301, config=self.CFG,
         )
         assert ok is True
 
     def test_different_symbol_not_suppressed(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         ok, _ = check_exit_dedup(
-            "BTCUSDT", "LONG", "REGIME_FLIP", now=now + 10, config=self.CFG,
+            "BTCUSDT", "LONG", "TIME_STOP", now=now + 10, config=self.CFG,
         )
         assert ok is True
 
     def test_different_side_not_suppressed(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         ok, _ = check_exit_dedup(
-            "ETHUSDT", "SHORT", "REGIME_FLIP", now=now + 10, config=self.CFG,
+            "ETHUSDT", "SHORT", "TIME_STOP", now=now + 10, config=self.CFG,
         )
         assert ok is True
 
     def test_different_reason_not_suppressed(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         ok, _ = check_exit_dedup(
-            "ETHUSDT", "LONG", "TIME_STOP", now=now + 10, config=self.CFG,
+            "ETHUSDT", "LONG", "TREND_DECAY", now=now + 10, config=self.CFG,
         )
         assert ok is True
 
     def test_qty_growth_bypasses_dedup(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=1.0, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=1.0, now=now)
         # Position grew by 15% (>10% threshold)
         ok, _ = check_exit_dedup(
-            "ETHUSDT", "LONG", "REGIME_FLIP", current_qty=1.15, now=now + 10, config=self.CFG,
+            "ETHUSDT", "LONG", "TIME_STOP", current_qty=1.15, now=now + 10, config=self.CFG,
         )
         assert ok is True
 
     def test_qty_shrink_does_not_bypass(self):
         """Qty decreased by 15% — still within dedup window."""
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=1.0, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=1.0, now=now)
         # position shrank (already partially exited)
         ok, _ = check_exit_dedup(
-            "ETHUSDT", "LONG", "REGIME_FLIP", current_qty=0.85, now=now + 10, config=self.CFG,
+            "ETHUSDT", "LONG", "TIME_STOP", current_qty=0.85, now=now + 10, config=self.CFG,
         )
         # 15% change > 10% threshold → actually does bypass (absolute change)
         assert ok is True
 
     def test_small_qty_change_still_suppressed(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=1.0, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=1.0, now=now)
         ok, _ = check_exit_dedup(
-            "ETHUSDT", "LONG", "REGIME_FLIP", current_qty=1.05, now=now + 10, config=self.CFG,
+            "ETHUSDT", "LONG", "TIME_STOP", current_qty=1.05, now=now + 10, config=self.CFG,
         )
         assert ok is False
 
@@ -163,9 +163,24 @@ class TestBypassReasons:
         )
         assert ok is True
 
+    def test_regime_flip_always_allowed(self):
+        now = time.time()
+        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        ok, _ = check_exit_dedup(
+            "ETHUSDT", "LONG", "REGIME_FLIP", current_qty=0.1, now=now + 10, config=self.CFG,
+        )
+        assert ok is True
+
     def test_bypass_reasons_constant(self):
+        # Raw doctrine_kernel values
         assert "CRISIS_OVERRIDE" in DEDUP_BYPASS_REASONS
         assert "SEATBELT" in DEDUP_BYPASS_REASONS
+        assert "REGIME_FLIP" in DEDUP_BYPASS_REASONS
+        assert "STOP_LOSS_SEATBELT" in DEDUP_BYPASS_REASONS
+        assert "REGIME_CONFIDENCE_COLLAPSE" in DEDUP_BYPASS_REASONS
+        # Canonical exit_reason_map values
+        assert "CRISIS" in DEDUP_BYPASS_REASONS
+        assert "REGIME_CHANGE" in DEDUP_BYPASS_REASONS
 
 
 # ── Disabled mode ──────────────────────────────────────────────────────────
@@ -174,9 +189,9 @@ class TestDisabled:
     def test_disabled_allows_everything(self):
         cfg = ExitDedupConfig(enabled=False)
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         ok, _ = check_exit_dedup(
-            "ETHUSDT", "LONG", "REGIME_FLIP", current_qty=0.1, now=now + 10, config=cfg,
+            "ETHUSDT", "LONG", "TIME_STOP", current_qty=0.1, now=now + 10, config=cfg,
         )
         assert ok is True
 
@@ -186,25 +201,25 @@ class TestDisabled:
 class TestStateManagement:
     def test_clear_for_symbol(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
-        record_exit_sent("BTCUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
+        record_exit_sent("BTCUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         clear_for_symbol("ETHUSDT")
         # ETHUSDT cleared — should be allowed again
         ok1, _ = check_exit_dedup(
-            "ETHUSDT", "LONG", "REGIME_FLIP", current_qty=0.1,
+            "ETHUSDT", "LONG", "TIME_STOP", current_qty=0.1,
             now=now + 10, config=ExitDedupConfig(),
         )
         assert ok1 is True
         # BTCUSDT NOT cleared — should still be suppressed
         ok2, _ = check_exit_dedup(
-            "BTCUSDT", "LONG", "REGIME_FLIP", current_qty=0.1,
+            "BTCUSDT", "LONG", "TIME_STOP", current_qty=0.1,
             now=now + 10, config=ExitDedupConfig(),
         )
         assert ok2 is False
 
     def test_get_state_snapshot(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         snap = get_state_snapshot()
         assert "active_dedup_entries" in snap
         assert len(snap["active_dedup_entries"]) == 1
@@ -213,7 +228,7 @@ class TestStateManagement:
 
     def test_reset_state(self):
         now = time.time()
-        record_exit_sent("ETHUSDT", "LONG", "REGIME_FLIP", qty=0.1, now=now)
+        record_exit_sent("ETHUSDT", "LONG", "TIME_STOP", qty=0.1, now=now)
         reset_state()
         snap = get_state_snapshot()
         assert len(snap["active_dedup_entries"]) == 0

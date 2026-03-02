@@ -32,8 +32,19 @@ LOG = logging.getLogger("exit_dedup")
 DEFAULT_EXIT_DEDUP_TTL: float = 300.0      # 5 minutes
 DEFAULT_QTY_CHANGE_THRESHOLD: float = 0.10  # 10% position size change
 
-# Exit reasons that always bypass dedup (catastrophe protection)
-DEDUP_BYPASS_REASONS = frozenset({"CRISIS_OVERRIDE", "SEATBELT"})
+# Exit reasons that always bypass dedup (catastrophe protection + regime safety).
+# Includes BOTH raw doctrine_kernel enum values AND canonical exit_reason_map names
+# so bypass works regardless of which layer supplies the reason string.
+# See config/exit_reason_map.yaml for the raw→canonical mapping.
+DEDUP_BYPASS_REASONS = frozenset({
+    "CRISIS_OVERRIDE",     # raw (doctrine_kernel ExitReason)
+    "CRISIS",              # canonical (exit_reason_map)
+    "SEATBELT",            # raw + canonical (same in both layers)
+    "STOP_LOSS_SEATBELT",  # raw (doctrine_kernel ExitReason)
+    "REGIME_FLIP",         # raw (doctrine_kernel ExitReason)
+    "REGIME_CHANGE",       # canonical (exit_reason_map)
+    "REGIME_CONFIDENCE_COLLAPSE",  # raw (doctrine_kernel ExitReason)
+})
 
 
 @dataclass

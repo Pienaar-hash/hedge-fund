@@ -171,6 +171,7 @@ cat /proc/$(pgrep -f executor_live)/environ | tr '\0' '\n' | grep -E 'ACTIVATION
 | NAV | Within expected variance | `cat logs/state/nav_state.json \| jq '.nav_usd'` |
 | Drawdown | < 5% | `cat logs/state/activation_window_state.json \| jq '.drawdown_pct'` |
 | Risk vetoes | No unexplained spikes | `cat logs/state/activation_window_state.json \| jq '.risk_veto_count'` |
+| Plumbing vetoes | Sizing constraint health | `cat logs/state/activation_window_state.json \| jq '.plumbing_veto_count'` |
 | Doctrine events | No unexpected transitions | `tail -10 logs/doctrine_events.jsonl \| jq '{event, action}'` |
 | Binary Lab SHADOW | Trades recorded | `wc -l logs/execution/binary_lab_trades.jsonl` |
 | Manifest drift | None | `cat logs/state/activation_window_state.json \| jq '.manifest_intact'` |
@@ -182,7 +183,7 @@ cat /proc/$(pgrep -f executor_live)/environ | tr '\0' '\n' | grep -E 'ACTIVATION
 ```bash
 cat logs/state/activation_window_state.json | jq '{
   active, elapsed_days, remaining_days, halted, halt_reason,
-  drawdown_pct, episodes_completed, risk_veto_count,
+  drawdown_pct, episodes_completed, risk_veto_count, plumbing_veto_count,
   manifest_intact, config_intact, binary_lab_freeze_ok
 }'
 ```
@@ -203,6 +204,13 @@ Immediate KILL_SWITCH activation if any of:
 
 Unlike the old calibration window, this isn't just a sizing kill —
 it's **structural integrity enforcement**.
+
+> **Observability-only signals:** Risk veto count and DLE shadow
+> mismatches are *counted* for day-14 verification scoring but do
+> **not** independently trigger KILL_SWITCH during the window.
+> Plumbing vetoes (`min_notional`) are excluded from veto counts
+> entirely — they reflect exchange sizing constraints, not risk
+> instability.
 
 ---
 
@@ -250,7 +258,7 @@ PYTHONPATH=. python scripts/activation_verify.py --json > /tmp/activation_verdic
 |------|----------|
 | **nav_stable** | NAV > 0 |
 | **drawdown_within_limits** | DD < 5% kill threshold |
-| **risk_veto_consistent** | < 500 vetoes in 14 days |
+| **risk_veto_consistent** | < 5,000 governance vetoes in 14 days (excludes `min_notional`; see [Veto Threshold Calibration](#veto-threshold-calibration)) |
 | **binary_lab_shadow_valid** | Freeze intact, trades recorded |
 | **manifest_intact** | v7_manifest.json unchanged since boot |
 | **no_freeze_violations** | Config + Binary Lab hash stable |
@@ -268,6 +276,81 @@ PYTHONPATH=. python scripts/activation_verify.py --json > /tmp/activation_verdic
 
 ---
 
+## Veto Threshold Calibration
+
+`MAX_RISK_VETOES` is an **empirically calibrated parameter**, not an
+arbitrary symbolic guardrail.
+
+| Parameter | Value |
+|-----------|-------|
+| Observed baseline | ~300 governance vetoes/day |
+| Measurement period | Phase C shadow (Feb 2026) |
+| 14-day projection | ~4,200 |
+| Multiplier | ~1.2× baseline |
+| Threshold | 5,000 |
+| Detection target | >~20% sustained deviation from steady-state |
+
+**Composition at calibration** (representative, not prescriptive):
+portfolio DD circuit, symbol cap, nav stale, daily loss, correlation
+cap, kill switch, leverage cap — all structural safety gates firing
+normally.
+
+**Assumption:** ~300/day is expected steady-state behavior for the
+current risk configuration and market regime, not transitional or
+symptomatic of overly tight caps.
+
+**Recalibration obligation:** If any of the following change
+materially, `MAX_RISK_VETOES` must be re-evaluated:
+
+- Risk cap configuration (`risk_limits.json`)
+- Universe size or tier composition
+- Market regime distribution (prolonged CHOPPY/CRISIS)
+- Veto reason distribution (new dominant reason appearing)
+
+Raw veto count is a coarse signal.  Future refinement should track
+`veto_rate_per_eligible_intent` for normalized anomaly detection.
+
+---
+
+## Production Scale Gate Binding
+
+Production sizing remains capped at `per_trade_nav_pct` **even after
+the activation window is disabled** until all of:
+
+- **7/7 GO verdict** recorded by `scripts/activation_verify.py`
+- **Matching manifest hash** — `v7_manifest.json` unchanged since verification
+- **`require_go_for_scale: true`** in `activation_window` config (default)
+
+This implements Phase C Amendment §2.1 — mandatory pre-scale gate.
+The scale gate is enforced in executor sizing via
+`get_scale_gate_cap()`, which persists independently of the window
+lifecycle.  Only a valid GO verdict clears the gate.
+
+If `v7_manifest.json` changes after verification (e.g. new state
+surface added), the scale gate re-activates.  A new verification
+run is required.
+
+---
+
+## DLE Lifecycle Events
+
+Activation window state transitions emit DLE `STRUCTURAL_GUARD`
+events to `logs/execution/dle_shadow_events.jsonl`, preserving
+auditability and phase-boundary traceability:
+
+| Transition | Event Action | When |
+|------------|-------------|------|
+| Boot | `STARTED` | Executor startup with active window |
+| Kill (structural) | `HALTED` | Any kill condition triggers |
+| Window complete | `COMPLETED` | 14 days elapsed |
+| Verification run | `VERIFIED` | `activation_verify.py` records verdict |
+
+These events are emitted unconditionally (not gated by
+`SHADOW_DLE_ENABLED`).  Structural guards are governance
+artifacts, not trade-gating decisions.
+
+---
+
 ## Post-Window: Transition to Production
 
 After 7/7 GO verdict:
@@ -276,18 +359,21 @@ After 7/7 GO verdict:
 2. Remove activation window or start a new 14-day window at higher sizing
 3. Keep DD kill active (adjust threshold as needed)
 4. Keep manifest integrity checking active permanently
+5. Scale gate clears automatically (GO + manifest match)
 
 After 6/7 EXTEND:
 
 1. Fix the failing gate
 2. Start a new 7-day extension window
 3. Re-run `activation_verify.py` at end
+4. Scale gate remains active until GO achieved
 
 After ≤5 NO-GO:
 
 1. Disable the activation window
 2. Investigate structural failures
 3. Do not deploy capital until issues resolved
+4. Scale gate remains active — sizing stays capped
 
 ---
 

@@ -63,18 +63,25 @@ class TestBootstrapFromPositions:
         assert _key("ETHUSDT", "SHORT") in result["keys"]
 
     def test_min_hold_active_after_bootstrap(self):
-        """After bootstrap, exit should be blocked by min_hold."""
+        """After bootstrap, safety-critical exits bypass min_hold; normal exits are blocked."""
         positions = [
             {"symbol": "BTCUSDT", "positionSide": "LONG", "positionAmt": 0.01},
         ]
         bootstrap_from_positions(positions)
         cfg = ChurnConfig(min_hold_seconds=120, crisis_override=True)
-        # Check exit immediately — should be blocked (bootstrapped entry_time = now)
-        ok, reason = check_exit_allowed(
+
+        # REGIME_FLIP is safety-critical → bypasses min_hold (Doctrine Law #7)
+        ok, _ = check_exit_allowed(
             "BTCUSDT", "LONG", exit_reason="REGIME_FLIP", config=cfg,
         )
-        assert ok is False
-        assert "min_hold" in reason.lower()
+        assert ok is True
+
+        # Non-safety exit (e.g. TIME_STOP) should still be blocked by min_hold
+        ok2, reason2 = check_exit_allowed(
+            "BTCUSDT", "LONG", exit_reason="TIME_STOP", config=cfg,
+        )
+        assert ok2 is False
+        assert "min_hold" in reason2.lower()
 
     def test_crisis_override_bypasses_bootstrap_hold(self):
         """CRISIS_OVERRIDE should bypass min_hold even after bootstrap."""

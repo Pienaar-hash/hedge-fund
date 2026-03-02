@@ -6,6 +6,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "1000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "1000",
     "minNotional": "100"
   },
   "ETHUSDT": {
@@ -15,6 +18,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "10000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "10000",
     "minNotional": "20"
   },
   "BCHUSDT": {
@@ -24,6 +30,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "10000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "XRPUSDT": {
@@ -33,6 +42,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "LTCUSDT": {
@@ -42,6 +54,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "10000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "TRXUSDT": {
@@ -51,6 +66,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ETCUSDT": {
@@ -60,6 +78,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "100000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "LINKUSDT": {
@@ -69,6 +90,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "100000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "XLMUSDT": {
@@ -78,6 +102,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ADAUSDT": {
@@ -87,6 +114,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "DASHUSDT": {
@@ -96,6 +126,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "10000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "850000",
     "minNotional": "5"
   },
   "ZECUSDT": {
@@ -105,6 +138,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "10000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "XTZUSDT": {
@@ -114,6 +150,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BNBUSDT": {
@@ -123,6 +162,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "10000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ATOMUSDT": {
@@ -132,6 +174,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "10000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ONTUSDT": {
@@ -141,6 +186,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "IOTAUSDT": {
@@ -150,6 +198,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BATUSDT": {
@@ -159,6 +210,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "VETUSDT": {
@@ -168,6 +222,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "NEOUSDT": {
@@ -177,6 +234,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "100000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "QTUMUSDT": {
@@ -186,6 +246,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "IOSTUSDT": {
@@ -195,6 +258,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "THETAUSDT": {
@@ -204,6 +270,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ALGOUSDT": {
@@ -213,6 +282,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ZILUSDT": {
@@ -222,6 +294,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "KNCUSDT": {
@@ -231,6 +306,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ZRXUSDT": {
@@ -240,6 +318,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "COMPUSDT": {
@@ -249,6 +330,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "10000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "DOGEUSDT": {
@@ -258,6 +342,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "SXPUSDT": {
@@ -267,6 +354,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "KAVAUSDT": {
@@ -276,6 +366,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BANDUSDT": {
@@ -285,6 +378,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "RLCUSDT": {
@@ -294,6 +390,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "SNXUSDT": {
@@ -303,6 +402,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "DOTUSDT": {
@@ -312,6 +414,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "YFIUSDT": {
@@ -321,6 +426,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "500",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "500",
     "minNotional": "5"
   },
   "CRVUSDT": {
@@ -330,6 +438,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "TRBUSDT": {
@@ -339,6 +450,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "RUNEUSDT": {
@@ -348,6 +462,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "SUSHIUSDT": {
@@ -357,6 +474,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "EGLDUSDT": {
@@ -366,6 +486,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "SOLUSDT": {
@@ -375,6 +498,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "1000000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "6000",
     "minNotional": "5"
   },
   "ICXUSDT": {
@@ -384,6 +510,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "STORJUSDT": {
@@ -393,6 +522,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "UNIUSDT": {
@@ -402,6 +534,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "AVAXUSDT": {
@@ -411,6 +546,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ENJUSDT": {
@@ -420,6 +558,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "KSMUSDT": {
@@ -429,6 +570,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "NEARUSDT": {
@@ -438,6 +582,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "AAVEUSDT": {
@@ -447,6 +594,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "FILUSDT": {
@@ -456,6 +606,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "RSRUSDT": {
@@ -465,6 +618,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "LRCUSDT": {
@@ -474,6 +630,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "BELUSDT": {
@@ -483,6 +642,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "AXSUSDT": {
@@ -492,6 +654,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ZENUSDT": {
@@ -501,6 +666,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "SKLUSDT": {
@@ -510,6 +678,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "GRTUSDT": {
@@ -519,6 +690,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BNTUSDT": {
@@ -528,6 +702,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "1INCHUSDT": {
@@ -537,6 +714,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "CHZUSDT": {
@@ -546,6 +726,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "SANDUSDT": {
@@ -555,6 +738,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ANKRUSDT": {
@@ -564,6 +750,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "RVNUSDT": {
@@ -573,6 +762,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "SFPUSDT": {
@@ -582,6 +774,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "COTIUSDT": {
@@ -591,6 +786,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "CHRUSDT": {
@@ -600,6 +798,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "MANAUSDT": {
@@ -609,6 +810,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ALICEUSDT": {
@@ -618,6 +822,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "HBARUSDT": {
@@ -627,6 +834,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ONEUSDT": {
@@ -636,6 +846,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "DENTUSDT": {
@@ -645,6 +858,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "CELRUSDT": {
@@ -654,6 +870,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "HOTUSDT": {
@@ -663,6 +882,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "MTLUSDT": {
@@ -672,6 +894,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "OGNUSDT": {
@@ -681,6 +906,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "1000SHIBUSDT": {
@@ -690,6 +918,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "GTCUSDT": {
@@ -699,6 +930,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BTCDOMUSDT": {
@@ -708,6 +942,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "10000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "MASKUSDT": {
@@ -717,6 +954,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "IOTXUSDT": {
@@ -726,6 +966,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "C98USDT": {
@@ -735,6 +978,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ATAUSDT": {
@@ -744,6 +990,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "DYDXUSDT": {
@@ -753,6 +1002,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "1000XECUSDT": {
@@ -762,6 +1014,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "GALAUSDT": {
@@ -771,6 +1026,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "CELOUSDT": {
@@ -780,6 +1038,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ARUSDT": {
@@ -789,6 +1050,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ARPAUSDT": {
@@ -798,6 +1062,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "CTSIUSDT": {
@@ -807,6 +1074,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "LPTUSDT": {
@@ -816,6 +1086,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ENSUSDT": {
@@ -825,6 +1098,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "PEOPLEUSDT": {
@@ -834,6 +1110,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ROSEUSDT": {
@@ -843,6 +1122,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "DUSKUSDT": {
@@ -852,6 +1134,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "FLOWUSDT": {
@@ -861,6 +1146,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "IMXUSDT": {
@@ -870,6 +1158,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "API3USDT": {
@@ -879,6 +1170,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "GMTUSDT": {
@@ -888,6 +1182,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "APEUSDT": {
@@ -897,6 +1194,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "WOOUSDT": {
@@ -906,6 +1206,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "JASMYUSDT": {
@@ -915,6 +1218,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "OPUSDT": {
@@ -924,6 +1230,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "XMRUSDT": {
@@ -933,6 +1242,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "100000000",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "100000000",
     "minNotional": "5"
   },
   "INJUSDT": {
@@ -942,6 +1254,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "STGUSDT": {
@@ -951,6 +1266,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "SPELLUSDT": {
@@ -960,6 +1278,9 @@
     "stepSize": "1",
     "minQty": "100",
     "maxQty": "80000000",
+    "marketStepSize": "1",
+    "marketMinQty": "100",
+    "marketMaxQty": "80000000",
     "minNotional": "5"
   },
   "1000LUNCUSDT": {
@@ -969,6 +1290,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "LUNA2USDT": {
@@ -978,6 +1302,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "LDOUSDT": {
@@ -987,6 +1314,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "APTUSDT": {
@@ -996,6 +1326,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "QNTUSDT": {
@@ -1005,6 +1338,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "FXSUSDT": {
@@ -1014,6 +1350,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "HOOKUSDT": {
@@ -1023,6 +1362,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "MAGICUSDT": {
@@ -1032,6 +1374,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "TUSDT": {
@@ -1041,6 +1386,9 @@
     "stepSize": "1",
     "minQty": "0",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "0",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "HIGHUSDT": {
@@ -1050,6 +1398,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "MINAUSDT": {
@@ -1059,6 +1410,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ASTRUSDT": {
@@ -1068,6 +1422,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "PHBUSDT": {
@@ -1077,6 +1434,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "FETUSDT": {
@@ -1086,6 +1446,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "GMXUSDT": {
@@ -1095,6 +1458,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "100000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "CFXUSDT": {
@@ -1104,6 +1470,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "STXUSDT": {
@@ -1113,6 +1482,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ACHUSDT": {
@@ -1122,6 +1494,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "SSVUSDT": {
@@ -1131,6 +1506,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "100000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "CKBUSDT": {
@@ -1140,6 +1518,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "LQTYUSDT": {
@@ -1149,6 +1530,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "USDCUSDT": {
@@ -1158,6 +1542,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ARBUSDT": {
@@ -1167,6 +1554,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "IDUSDT": {
@@ -1176,6 +1566,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "JOEUSDT": {
@@ -1185,6 +1578,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "TRUUSDT": {
@@ -1194,6 +1590,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "RDNTUSDT": {
@@ -1203,6 +1602,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "HFTUSDT": {
@@ -1212,6 +1614,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "XVSUSDT": {
@@ -1221,6 +1626,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BLURUSDT": {
@@ -1230,6 +1638,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "EDUUSDT": {
@@ -1239,6 +1650,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "1000PEPEUSDT": {
@@ -1248,6 +1662,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "1000FLOKIUSDT": {
@@ -1257,6 +1674,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "UMAUSDT": {
@@ -1266,6 +1686,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "SUIUSDT": {
@@ -1275,6 +1698,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "NMRUSDT": {
@@ -1284,6 +1710,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "MAVUSDT": {
@@ -1293,6 +1722,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "XVGUSDT": {
@@ -1302,6 +1734,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "WLDUSDT": {
@@ -1311,6 +1746,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "PENDLEUSDT": {
@@ -1320,6 +1758,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ARKMUSDT": {
@@ -1329,6 +1770,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "AGLDUSDT": {
@@ -1338,6 +1782,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "YGGUSDT": {
@@ -1347,6 +1794,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "DODOXUSDT": {
@@ -1356,6 +1806,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "OXTUSDT": {
@@ -1365,6 +1818,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "SEIUSDT": {
@@ -1374,6 +1830,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "CYBERUSDT": {
@@ -1383,6 +1842,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ARKUSDT": {
@@ -1392,6 +1854,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BICOUSDT": {
@@ -1401,6 +1866,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BIGTIMEUSDT": {
@@ -1410,6 +1878,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "WAXPUSDT": {
@@ -1419,6 +1890,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BSVUSDT": {
@@ -1428,6 +1902,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "100000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000",
     "minNotional": "5"
   },
   "RIFUSDT": {
@@ -1437,6 +1914,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "POLYXUSDT": {
@@ -1446,6 +1926,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "GASUSDT": {
@@ -1455,6 +1938,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "POWRUSDT": {
@@ -1464,6 +1950,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "TIAUSDT": {
@@ -1473,6 +1962,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "CAKEUSDT": {
@@ -1482,6 +1974,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "MEMEUSDT": {
@@ -1491,6 +1986,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "TOKENUSDT": {
@@ -1500,6 +1998,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ORDIUSDT": {
@@ -1509,6 +2010,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "100000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "5000",
     "minNotional": "5"
   },
   "STEEMUSDT": {
@@ -1518,6 +2022,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "ILVUSDT": {
@@ -1527,6 +2034,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "200",
     "minNotional": "5"
   },
   "NTRNUSDT": {
@@ -1536,6 +2046,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "KASUSDT": {
@@ -1545,6 +2058,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "BEAMXUSDT": {
@@ -1554,6 +2070,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "1000BONKUSDT": {
@@ -1563,6 +2082,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "PYTHUSDT": {
@@ -1572,6 +2094,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "SUPERUSDT": {
@@ -1581,6 +2106,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "USTCUSDT": {
@@ -1590,6 +2118,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ONGUSDT": {
@@ -1599,6 +2130,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ETHWUSDT": {
@@ -1608,6 +2142,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "JTOUSDT": {
@@ -1617,6 +2154,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "1000SATSUSDT": {
@@ -1626,6 +2166,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "AUCTIONUSDT": {
@@ -1635,6 +2178,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "100000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "1000RATSUSDT": {
@@ -1644,6 +2190,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ACEUSDT": {
@@ -1653,6 +2202,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "MOVRUSDT": {
@@ -1662,6 +2214,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "100000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "TWTUSDT": {
@@ -1671,6 +2226,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "NFPUSDT": {
@@ -1680,6 +2238,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "AIUSDT": {
@@ -1689,6 +2250,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "XAIUSDT": {
@@ -1698,6 +2262,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "WIFUSDT": {
@@ -1707,6 +2274,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "MANTAUSDT": {
@@ -1716,6 +2286,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "20000",
     "minNotional": "5"
   },
   "ONDOUSDT": {
@@ -1725,6 +2298,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "250000",
     "minNotional": "5"
   },
   "LSKUSDT": {
@@ -1734,6 +2310,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "ALTUSDT": {
@@ -1743,6 +2322,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "JUPUSDT": {
@@ -1752,6 +2334,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "ZETAUSDT": {
@@ -1761,6 +2346,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "RONINUSDT": {
@@ -1770,6 +2358,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "DYMUSDT": {
@@ -1779,6 +2370,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "OMUSDT": {
@@ -1788,6 +2382,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "PIXELUSDT": {
@@ -1797,6 +2394,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "STRKUSDT": {
@@ -1806,6 +2406,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "GLMUSDT": {
@@ -1815,6 +2418,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "PORTALUSDT": {
@@ -1824,6 +2430,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "TONUSDT": {
@@ -1833,6 +2442,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "AXLUSDT": {
@@ -1842,6 +2454,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "MYROUSDT": {
@@ -1851,6 +2466,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "METISUSDT": {
@@ -1860,6 +2478,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "100000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "1000",
     "minNotional": "5"
   },
   "AEVOUSDT": {
@@ -1869,6 +2490,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "VANRYUSDT": {
@@ -1878,6 +2502,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "BOMEUSDT": {
@@ -1887,6 +2514,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "200000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "ETHFIUSDT": {
@@ -1896,6 +2526,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "ENAUSDT": {
@@ -1905,6 +2538,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "WUSDT": {
@@ -1914,6 +2550,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "TNSRUSDT": {
@@ -1923,6 +2562,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "SAGAUSDT": {
@@ -1932,6 +2574,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "TAOUSDT": {
@@ -1941,6 +2586,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "300",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "10",
     "minNotional": "5"
   },
   "REZUSDT": {
@@ -1950,6 +2598,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BBUSDT": {
@@ -1959,6 +2610,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "NOTUSDT": {
@@ -1968,6 +2622,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "3000000",
     "minNotional": "5"
   },
   "TURBOUSDT": {
@@ -1977,6 +2634,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "50000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "5000000",
     "minNotional": "5"
   },
   "IOUSDT": {
@@ -1986,6 +2646,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "ZKUSDT": {
@@ -1995,6 +2658,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "MEWUSDT": {
@@ -2004,6 +2670,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "50000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "5000000",
     "minNotional": "5"
   },
   "LISTAUSDT": {
@@ -2013,6 +2682,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ZROUSDT": {
@@ -2022,6 +2694,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "RENDERUSDT": {
@@ -2031,6 +2706,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "BANANAUSDT": {
@@ -2040,6 +2718,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "100000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1500",
     "minNotional": "5"
   },
   "RAREUSDT": {
@@ -2049,6 +2730,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "GUSDT": {
@@ -2058,6 +2742,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "SYNUSDT": {
@@ -2067,6 +2754,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "SYSUSDT": {
@@ -2076,6 +2766,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "VOXELUSDT": {
@@ -2085,6 +2778,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BRETTUSDT": {
@@ -2094,6 +2790,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "POPCATUSDT": {
@@ -2103,6 +2802,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "SUNUSDT": {
@@ -2112,6 +2814,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "50000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "DOGSUSDT": {
@@ -2121,6 +2826,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "MBOXUSDT": {
@@ -2130,6 +2838,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "CHESSUSDT": {
@@ -2139,6 +2850,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "FLUXUSDT": {
@@ -2148,6 +2862,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "QUICKUSDT": {
@@ -2157,6 +2874,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "RPLUSDT": {
@@ -2166,6 +2886,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "100000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "POLUSDT": {
@@ -2175,6 +2898,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "NEIROUSDT": {
@@ -2184,6 +2910,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000000",
     "minNotional": "5"
   },
   "1MBABYDOGEUSDT": {
@@ -2193,6 +2922,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "600000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "60000000",
     "minNotional": "5"
   },
   "FIDAUSDT": {
@@ -2202,6 +2934,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "FIOUSDT": {
@@ -2211,6 +2946,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "CATIUSDT": {
@@ -2220,6 +2958,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "GHSTUSDT": {
@@ -2229,6 +2970,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "HMSTRUSDT": {
@@ -2238,6 +2982,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "70000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "7000000",
     "minNotional": "5"
   },
   "REIUSDT": {
@@ -2247,6 +2994,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "COSUSDT": {
@@ -2256,6 +3006,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "600000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "60000000",
     "minNotional": "5"
   },
   "EIGENUSDT": {
@@ -2265,6 +3018,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "100000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "20000",
     "minNotional": "5"
   },
   "DIAUSDT": {
@@ -2274,6 +3030,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "1000CATUSDT": {
@@ -2283,6 +3042,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "40000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "4000000",
     "minNotional": "5"
   },
   "SCRUSDT": {
@@ -2292,6 +3054,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "GOATUSDT": {
@@ -2301,6 +3066,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "MOODENGUSDT": {
@@ -2310,6 +3078,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "SAFEUSDT": {
@@ -2319,6 +3090,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "600000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "60000",
     "minNotional": "5"
   },
   "SANTOSUSDT": {
@@ -2328,6 +3102,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "200000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "20000",
     "minNotional": "5"
   },
   "PONKEUSDT": {
@@ -2337,6 +3114,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "CETUSUSDT": {
@@ -2346,6 +3126,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "COWUSDT": {
@@ -2355,6 +3138,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "1000000MOGUSDT": {
@@ -2364,6 +3150,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "200000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "20000",
     "minNotional": "5"
   },
   "GRASSUSDT": {
@@ -2373,6 +3162,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "200000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "20000",
     "minNotional": "5"
   },
   "DRIFTUSDT": {
@@ -2382,6 +3174,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "SWELLUSDT": {
@@ -2391,6 +3186,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "PNUTUSDT": {
@@ -2400,6 +3198,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "ACTUSDT": {
@@ -2409,6 +3210,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "HIPPOUSDT": {
@@ -2418,6 +3222,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "50000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "5000000",
     "minNotional": "5"
   },
   "1000XUSDT": {
@@ -2427,6 +3234,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "DEGENUSDT": {
@@ -2436,6 +3246,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "40000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "4000000",
     "minNotional": "5"
   },
   "BANUSDT": {
@@ -2445,6 +3258,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "AKTUSDT": {
@@ -2454,6 +3270,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "300000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "SLERFUSDT": {
@@ -2463,6 +3282,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "SCRTUSDT": {
@@ -2472,6 +3294,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "1000WHYUSDT": {
@@ -2481,6 +3306,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000000",
     "minNotional": "5"
   },
   "1000CHEEMSUSDT": {
@@ -2490,6 +3318,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000000",
     "minNotional": "5"
   },
   "THEUSDT": {
@@ -2499,6 +3330,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "700000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "70000",
     "minNotional": "5"
   },
   "MORPHOUSDT": {
@@ -2508,6 +3342,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "800000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "80000",
     "minNotional": "5"
   },
   "CHILLGUYUSDT": {
@@ -2517,6 +3354,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "KAIAUSDT": {
@@ -2526,6 +3366,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "AEROUSDT": {
@@ -2535,6 +3378,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "600000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "60000",
     "minNotional": "5"
   },
   "ACXUSDT": {
@@ -2544,6 +3390,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "800000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "80000",
     "minNotional": "5"
   },
   "ORCAUSDT": {
@@ -2553,6 +3402,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "200000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "20000",
     "minNotional": "5"
   },
   "MOVEUSDT": {
@@ -2562,6 +3414,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000",
     "minNotional": "5"
   },
   "RAYSOLUSDT": {
@@ -2571,6 +3426,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "200000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "20000",
     "minNotional": "5"
   },
   "VIRTUALUSDT": {
@@ -2580,6 +3438,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "600000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "60000",
     "minNotional": "5"
   },
   "SPXUSDT": {
@@ -2589,6 +3450,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000",
     "minNotional": "5"
   },
   "KOMAUSDT": {
@@ -2598,6 +3462,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "MEUSDT": {
@@ -2607,6 +3474,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "200000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "20000",
     "minNotional": "5"
   },
   "AVAUSDT": {
@@ -2616,6 +3486,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "400000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "40000",
     "minNotional": "5"
   },
   "DEGOUSDT": {
@@ -2625,6 +3498,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "300000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "VELODROMEUSDT": {
@@ -2634,6 +3510,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "MOCAUSDT": {
@@ -2643,6 +3522,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "VANAUSDT": {
@@ -2652,6 +3534,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "400000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "40000",
     "minNotional": "5"
   },
   "PENGUUSDT": {
@@ -2661,6 +3546,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "LUMIAUSDT": {
@@ -2670,6 +3558,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "600000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "60000",
     "minNotional": "5"
   },
   "USUALUSDT": {
@@ -2679,6 +3570,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "KMNOUSDT": {
@@ -2688,6 +3582,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "CGPTUSDT": {
@@ -2697,6 +3594,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "AIXBTUSDT": {
@@ -2706,6 +3606,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "FARTCOINUSDT": {
@@ -2715,6 +3618,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "900000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "90000",
     "minNotional": "5"
   },
   "HIVEUSDT": {
@@ -2724,6 +3630,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "DEXEUSDT": {
@@ -2733,6 +3642,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "800000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "80000",
     "minNotional": "5"
   },
   "PHAUSDT": {
@@ -2742,6 +3654,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "DFUSDT": {
@@ -2751,6 +3666,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "GRIFFAINUSDT": {
@@ -2760,6 +3678,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "ZEREBROUSDT": {
@@ -2769,6 +3690,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "BIOUSDT": {
@@ -2778,6 +3702,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000",
     "minNotional": "5"
   },
   "COOKIEUSDT": {
@@ -2787,6 +3714,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000",
     "minNotional": "5"
   },
   "ALCHUSDT": {
@@ -2796,6 +3726,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "SWARMSUSDT": {
@@ -2805,6 +3738,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "SONICUSDT": {
@@ -2814,6 +3750,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "DUSDT": {
@@ -2823,6 +3762,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "PROMUSDT": {
@@ -2832,6 +3774,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "100000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "SUSDT": {
@@ -2841,6 +3786,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "SOLVUSDT": {
@@ -2850,6 +3798,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "650000",
     "minNotional": "5"
   },
   "ARCUSDT": {
@@ -2859,6 +3810,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "AVAAIUSDT": {
@@ -2868,6 +3822,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "TRUMPUSDT": {
@@ -2877,6 +3834,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "50000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "5000",
     "minNotional": "5"
   },
   "MELANIAUSDT": {
@@ -2886,6 +3846,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "90000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "9000",
     "minNotional": "5"
   },
   "VTHOUSDT": {
@@ -2895,6 +3858,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ANIMEUSDT": {
@@ -2904,6 +3870,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "PIPPINUSDT": {
@@ -2913,6 +3882,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "VINEUSDT": {
@@ -2922,6 +3894,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "VVVUSDT": {
@@ -2931,6 +3906,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "90000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "9000",
     "minNotional": "5"
   },
   "BERAUSDT": {
@@ -2940,6 +3918,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "150000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "15000",
     "minNotional": "5"
   },
   "TSTUSDT": {
@@ -2949,6 +3930,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "LAYERUSDT": {
@@ -2958,6 +3942,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "800000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "80000",
     "minNotional": "5"
   },
   "HEIUSDT": {
@@ -2967,6 +3954,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "B3USDT": {
@@ -2976,6 +3966,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "IPUSDT": {
@@ -2985,6 +3978,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "500000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "GPSUSDT": {
@@ -2994,6 +3990,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "7000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "700000",
     "minNotional": "5"
   },
   "SHELLUSDT": {
@@ -3003,6 +4002,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "KAITOUSDT": {
@@ -3012,6 +4014,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "500",
     "minNotional": "5"
   },
   "REDUSDT": {
@@ -3021,6 +4026,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "VICUSDT": {
@@ -3030,6 +4038,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "EPICUSDT": {
@@ -3039,6 +4050,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "500000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "BMTUSDT": {
@@ -3048,6 +4062,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "MUBARAKUSDT": {
@@ -3057,6 +4074,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "FORMUSDT": {
@@ -3066,6 +4086,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "600000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "60000",
     "minNotional": "5"
   },
   "TUTUSDT": {
@@ -3075,6 +4098,9 @@
     "stepSize": "0.1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "BIDUSDT": {
@@ -3084,6 +4110,9 @@
     "stepSize": "0.1",
     "minQty": "1",
     "maxQty": "15000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1500000",
     "minNotional": "5"
   },
   "BROCCOLI714USDT": {
@@ -3093,6 +4122,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "BROCCOLIF3BUSDT": {
@@ -3102,6 +4134,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "50000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "5000000",
     "minNotional": "5"
   },
   "BANANAS31USDT": {
@@ -3111,6 +4146,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "250000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "25000000",
     "minNotional": "5"
   },
   "SIRENUSDT": {
@@ -3120,6 +4158,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "15000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1500000",
     "minNotional": "5"
   },
   "BRUSDT": {
@@ -3129,6 +4170,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "PLUMEUSDT": {
@@ -3138,6 +4182,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "JELLYJELLYUSDT": {
@@ -3147,6 +4194,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "3000000",
     "minNotional": "5"
   },
   "PAXGUSDT": {
@@ -3156,6 +4206,9 @@
     "stepSize": "0.001",
     "minQty": "0.001",
     "maxQty": "50",
+    "marketStepSize": "0.001",
+    "marketMinQty": "0.001",
+    "marketMaxQty": "20",
     "minNotional": "5"
   },
   "WALUSDT": {
@@ -3165,6 +4218,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "FUNUSDT": {
@@ -3174,6 +4230,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "200000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "20000000",
     "minNotional": "5"
   },
   "MLNUSDT": {
@@ -3183,6 +4242,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "90000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "9000",
     "minNotional": "5"
   },
   "ATHUSDT": {
@@ -3192,6 +4254,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "BABYUSDT": {
@@ -3201,6 +4266,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "FORTHUSDT": {
@@ -3210,6 +4278,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "500000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "PROMPTUSDT": {
@@ -3219,6 +4290,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "STOUSDT": {
@@ -3228,6 +4302,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "FHEUSDT": {
@@ -3237,6 +4314,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "15000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1500000",
     "minNotional": "5"
   },
   "KERNELUSDT": {
@@ -3246,6 +4326,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "INITUSDT": {
@@ -3255,6 +4338,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "BANKUSDT": {
@@ -3264,6 +4350,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "EPTUSDT": {
@@ -3273,6 +4362,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "60000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "6000000",
     "minNotional": "5"
   },
   "DEEPUSDT": {
@@ -3282,6 +4374,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "HYPERUSDT": {
@@ -3291,6 +4386,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "FISUSDT": {
@@ -3300,6 +4398,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "JSTUSDT": {
@@ -3309,6 +4410,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "3000000",
     "minNotional": "5"
   },
   "SIGNUSDT": {
@@ -3318,6 +4422,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "WCTUSDT": {
@@ -3327,6 +4434,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "250000",
     "minNotional": "5"
   },
   "GUNUSDT": {
@@ -3336,6 +4446,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "PARTIUSDT": {
@@ -3345,6 +4458,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "NILUSDT": {
@@ -3354,6 +4470,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "PUNDIXUSDT": {
@@ -3363,6 +4482,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "AIOTUSDT": {
@@ -3372,6 +4494,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "DOLOUSDT": {
@@ -3381,6 +4506,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "HAEDALUSDT": {
@@ -3390,6 +4518,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "SXTUSDT": {
@@ -3399,6 +4530,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ALPINEUSDT": {
@@ -3408,6 +4542,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ASRUSDT": {
@@ -3417,6 +4554,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "500000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "B2USDT": {
@@ -3426,6 +4566,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000",
     "minNotional": "5"
   },
   "MILKUSDT": {
@@ -3435,6 +4578,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "SYRUPUSDT": {
@@ -3444,6 +4590,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "OBOLUSDT": {
@@ -3453,6 +4602,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "DOODUSDT": {
@@ -3462,6 +4614,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "OGUSDT": {
@@ -3471,6 +4626,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "30000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "3000",
     "minNotional": "5"
   },
   "ZKJUSDT": {
@@ -3480,6 +4638,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "500000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "SKYAIUSDT": {
@@ -3489,6 +4650,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "15000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1500000",
     "minNotional": "5"
   },
   "NXPCUSDT": {
@@ -3498,6 +4662,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000",
     "minNotional": "5"
   },
   "AGTUSDT": {
@@ -3507,6 +4674,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "3000000",
     "minNotional": "5"
   },
   "BUSDT": {
@@ -3516,6 +4686,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "AUSDT": {
@@ -3525,6 +4698,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "SOPHUSDT": {
@@ -3534,6 +4710,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "MERLUSDT": {
@@ -3543,6 +4722,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "7000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "700000",
     "minNotional": "5"
   },
   "HYPEUSDT": {
@@ -3552,6 +4734,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "30000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "3000",
     "minNotional": "5"
   },
   "TAIKOUSDT": {
@@ -3561,6 +4746,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "SQDUSDT": {
@@ -3570,6 +4758,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "PUMPBTCUSDT": {
@@ -3579,6 +4770,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "MYXUSDT": {
@@ -3588,6 +4782,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "FUSDT": {
@@ -3597,6 +4794,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "NEWTUSDT": {
@@ -3606,6 +4806,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "DMCUSDT": {
@@ -3615,6 +4818,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "HUSDT": {
@@ -3624,6 +4830,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "OLUSDT": {
@@ -3633,6 +4842,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "3000000",
     "minNotional": "5"
   },
   "SAHARAUSDT": {
@@ -3642,6 +4854,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "ICNTUSDT": {
@@ -3651,6 +4866,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "BULLAUSDT": {
@@ -3660,6 +4878,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "IDOLUSDT": {
@@ -3669,6 +4890,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "60000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "6000000",
     "minNotional": "5"
   },
   "MUSDT": {
@@ -3678,6 +4902,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "CROSSUSDT": {
@@ -3687,6 +4914,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "AINUSDT": {
@@ -3696,6 +4926,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "CUSDT": {
@@ -3705,6 +4938,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "VELVETUSDT": {
@@ -3714,6 +4950,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "15000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1500000",
     "minNotional": "5"
   },
   "TACUSDT": {
@@ -3723,6 +4962,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "25000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2500000",
     "minNotional": "5"
   },
   "ERAUSDT": {
@@ -3732,6 +4974,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "TAUSDT": {
@@ -3741,6 +4986,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "7000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "700000",
     "minNotional": "5"
   },
   "SLPUSDT": {
@@ -3750,6 +4998,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "500000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "50000000",
     "minNotional": "5"
   },
   "ZORAUSDT": {
@@ -3759,6 +5010,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "TAGUSDT": {
@@ -3768,6 +5022,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000000",
     "minNotional": "5"
   },
   "ZRCUSDT": {
@@ -3777,6 +5034,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "25000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2500000",
     "minNotional": "5"
   },
   "ESPORTSUSDT": {
@@ -3786,6 +5046,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "TREEUSDT": {
@@ -3795,6 +5058,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "A2ZUSDT": {
@@ -3804,6 +5070,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "150000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "15000000",
     "minNotional": "5"
   },
   "PLAYUSDT": {
@@ -3813,6 +5082,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "NAORISUSDT": {
@@ -3822,6 +5094,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "TOWNSUSDT": {
@@ -3831,6 +5106,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "PROVEUSDT": {
@@ -3840,6 +5118,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "ALLUSDT": {
@@ -3849,6 +5130,9 @@
     "stepSize": "1",
     "minQty": "10",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "10",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "INUSDT": {
@@ -3858,6 +5142,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "YALAUSDT": {
@@ -3867,6 +5154,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "CARVUSDT": {
@@ -3876,6 +5166,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "AIOUSDT": {
@@ -3885,6 +5178,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "XNYUSDT": {
@@ -3894,6 +5190,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "60000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "6000000",
     "minNotional": "5"
   },
   "USELESSUSDT": {
@@ -3903,6 +5202,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "DAMUSDT": {
@@ -3912,6 +5214,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "SAPIENUSDT": {
@@ -3921,6 +5226,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "CUDISUSDT": {
@@ -3930,6 +5238,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "AWEUSDT": {
@@ -3939,6 +5250,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "15000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1500000",
     "minNotional": "5"
   },
   "SOONUSDT": {
@@ -3948,6 +5262,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "HUMAUSDT": {
@@ -3957,6 +5274,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "LAUSDT": {
@@ -3966,6 +5286,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "700000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "70000",
     "minNotional": "5"
   },
   "RESOLVUSDT": {
@@ -3975,6 +5298,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "SPKUSDT": {
@@ -3984,6 +5310,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "XPLUSDT": {
@@ -3993,6 +5322,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "WLFIUSDT": {
@@ -4002,6 +5334,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "BASUSDT": {
@@ -4011,6 +5346,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "9000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "900000",
     "minNotional": "5"
   },
   "BTRUSDT": {
@@ -4020,6 +5358,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "MITOUSDT": {
@@ -4029,6 +5370,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "HEMIUSDT": {
@@ -4038,6 +5382,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "LINEAUSDT": {
@@ -4047,6 +5394,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "15000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1500000",
     "minNotional": "5"
   },
   "QUSDT": {
@@ -4056,6 +5406,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "200000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "20000000",
     "minNotional": "5"
   },
   "PTBUSDT": {
@@ -4065,6 +5418,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "ARIAUSDT": {
@@ -4074,6 +5430,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "9000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "900000",
     "minNotional": "5"
   },
   "TAKEUSDT": {
@@ -4083,6 +5442,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "BDXNUSDT": {
@@ -4092,6 +5454,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "PUFFERUSDT": {
@@ -4101,6 +5466,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "20000000",
     "minNotional": "5"
   },
   "PORT3USDT": {
@@ -4110,6 +5478,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "20000000",
     "minNotional": "5"
   },
   "1000000BOBUSDT": {
@@ -4119,6 +5490,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "9000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "9000000",
     "minNotional": "5"
   },
   "SKATEUSDT": {
@@ -4128,6 +5502,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "9000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "9000000",
     "minNotional": "5"
   },
   "HOMEUSDT": {
@@ -4137,6 +5514,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "9000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "9000000",
     "minNotional": "5"
   },
   "FLOCKUSDT": {
@@ -4146,6 +5526,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "SKYUSDT": {
@@ -4155,6 +5538,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "AVNTUSDT": {
@@ -4164,6 +5550,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "HOLOUSDT": {
@@ -4173,6 +5562,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "XPINUSDT": {
@@ -4182,6 +5574,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "200000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "20000000",
     "minNotional": "5"
   },
   "UBUSDT": {
@@ -4191,6 +5586,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "200000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "20000000",
     "minNotional": "5"
   },
   "TOSHIUSDT": {
@@ -4200,6 +5598,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000000",
     "minNotional": "5"
   },
   "STBLUSDT": {
@@ -4209,6 +5610,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "7000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "700000",
     "minNotional": "5"
   },
   "0GUSDT": {
@@ -4218,6 +5622,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000000",
     "minNotional": "5"
   },
   "BARDUSDT": {
@@ -4227,6 +5634,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "150000",
     "minNotional": "5"
   },
   "ASTERUSDT": {
@@ -4236,6 +5646,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "TRADOORUSDT": {
@@ -4245,6 +5658,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "500000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "50000",
     "minNotional": "5"
   },
   "BLESSUSDT": {
@@ -4254,6 +5670,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "100000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "10000000",
     "minNotional": "5"
   },
   "FLUIDUSDT": {
@@ -4263,6 +5682,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "150000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "15000",
     "minNotional": "5"
   },
   "COAIUSDT": {
@@ -4272,6 +5694,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "HANAUSDT": {
@@ -4281,6 +5706,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "9000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "900000",
     "minNotional": "5"
   },
   "MIRAUSDT": {
@@ -4290,6 +5718,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "AKEUSDT": {
@@ -4299,6 +5730,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "900000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "90000000",
     "minNotional": "5"
   },
   "ORDERUSDT": {
@@ -4308,6 +5742,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "LIGHTUSDT": {
@@ -4317,6 +5754,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "9000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "9000000",
     "minNotional": "5"
   },
   "XANUSDT": {
@@ -4326,6 +5766,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "4USDT": {
@@ -4335,6 +5778,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "GIGGLEUSDT": {
@@ -4344,6 +5790,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "10000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "1000",
     "minNotional": "5"
   },
   "MONUSDT": {
@@ -4353,6 +5802,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "YBUSDT": {
@@ -4362,6 +5814,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "METUSDT": {
@@ -4371,6 +5826,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "900000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "80000",
     "minNotional": "5"
   },
   "EULUSDT": {
@@ -4380,6 +5838,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "100000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "10000",
     "minNotional": "5"
   },
   "\u6d4b\u8bd5\u6d4b\u8bd5USDT": {
@@ -4389,6 +5850,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "LABUSDT": {
@@ -4398,6 +5862,9 @@
     "stepSize": "0.1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "RIVERUSDT": {
@@ -4407,6 +5874,9 @@
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "300000",
+    "marketStepSize": "0.1",
+    "marketMinQty": "0.1",
+    "marketMaxQty": "30000",
     "minNotional": "5"
   },
   "\u5e01\u5b89\u4eba\u751fUSDT": {
@@ -4416,6 +5886,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "APRUSDT": {
@@ -4425,6 +5898,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "ONUSDT": {
@@ -4434,6 +5910,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "42USDT": {
@@ -4443,6 +5922,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "COMMONUSDT": {
@@ -4452,6 +5934,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "KITEUSDT": {
@@ -4461,6 +5946,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "ATUSDT": {
@@ -4470,6 +5958,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "CCUSDT": {
@@ -4479,6 +5970,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "STABLEUSDT": {
@@ -4488,6 +5982,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "JCTUSDT": {
@@ -4497,6 +5994,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "200000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "20000000",
     "minNotional": "5"
   },
   "CLANKERUSDT": {
@@ -4506,6 +6006,9 @@
     "stepSize": "0.01",
     "minQty": "0.01",
     "maxQty": "15000",
+    "marketStepSize": "0.01",
+    "marketMinQty": "0.01",
+    "marketMaxQty": "1500",
     "minNotional": "5"
   },
   "BEATUSDT": {
@@ -4515,6 +6018,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "7000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "700000",
     "minNotional": "5"
   },
   "SENTUSDT": {
@@ -4524,6 +6030,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "2000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "200000",
     "minNotional": "5"
   },
   "BOBUSDT": {
@@ -4533,6 +6042,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "50000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "5000000",
     "minNotional": "5"
   },
   "POWERUSDT": {
@@ -4542,6 +6054,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "WETUSDT": {
@@ -4551,6 +6066,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "NIGHTUSDT": {
@@ -4560,6 +6078,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "USUSDT": {
@@ -4569,6 +6090,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "50000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "5000000",
     "minNotional": "5"
   },
   "CYSUSDT": {
@@ -4578,6 +6102,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "RAVEUSDT": {
@@ -4587,6 +6114,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "ZKPUSDT": {
@@ -4596,6 +6126,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "GUAUSDT": {
@@ -4605,6 +6138,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "IRUSDT": {
@@ -4614,6 +6150,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "4000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "400000",
     "minNotional": "5"
   },
   "BREVUSDT": {
@@ -4623,6 +6162,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "COLLECTUSDT": {
@@ -4632,6 +6174,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "20000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "2000000",
     "minNotional": "5"
   },
   "MAGMAUSDT": {
@@ -4641,6 +6186,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "ZAMAUSDT": {
@@ -4650,6 +6198,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "5000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "500000",
     "minNotional": "5"
   },
   "FOGOUSDT": {
@@ -4659,6 +6210,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "7000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "700000",
     "minNotional": "5"
   },
   "FRAXUSDT": {
@@ -4668,6 +6222,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "100000",
     "minNotional": "5"
   },
   "SPORTFUNUSDT": {
@@ -4677,6 +6234,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "AIAUSDT": {
@@ -4686,6 +6246,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "ACUUSDT": {
@@ -4695,6 +6258,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "8000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "\u6211\u8e0f\u9a6c\u6765\u4e86USDT": {
@@ -4704,6 +6270,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "70000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "7000000",
     "minNotional": "5"
   },
   "SKRUSDT": {
@@ -4713,6 +6282,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "50000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "5000",
     "minNotional": "5"
   },
   "SPACEUSDT": {
@@ -4722,6 +6294,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "40000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "4000000",
     "minNotional": "5"
   },
   "FIGHTUSDT": {
@@ -4731,6 +6306,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "40000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "4000000",
     "minNotional": "5"
   },
   "BIRBUSDT": {
@@ -4740,6 +6318,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "3000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "300000",
     "minNotional": "5"
   },
   "GWEIUSDT": {
@@ -4749,6 +6330,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "3000000",
     "minNotional": "5"
   },
   "MEGAUSDT": {
@@ -4758,6 +6342,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "6000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "600000",
     "minNotional": "5"
   },
   "INXUSDT": {
@@ -4767,6 +6354,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "30000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "3000000",
     "minNotional": "5"
   },
   "TRIAUSDT": {
@@ -4776,6 +6366,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "40000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "4000000",
     "minNotional": "5"
   },
   "ESPUSDT": {
@@ -4785,6 +6378,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "1000000",
     "minNotional": "5"
   },
   "AZTECUSDT": {
@@ -4794,6 +6390,9 @@
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "40000000",
+    "marketStepSize": "1",
+    "marketMinQty": "1",
+    "marketMaxQty": "4000000",
     "minNotional": "5"
   }
 }

@@ -271,7 +271,13 @@ def router_effectiveness_7d(symbol: Optional[str] = None, window_days: Optional[
 
         if slip_bps is not None:
             try:
-                slippages.append(float(slip_bps))
+                _sv = float(slip_bps)
+                # Cap extreme outliers — anything beyond ±50 bps
+                # is data-quality noise on futures (stale mark_px,
+                # testnet artefacts). Aligns with the "broken"
+                # quality threshold in classify_router_quality.
+                _sv = max(-50.0, min(50.0, _sv))
+                slippages.append(_sv)
             except (TypeError, ValueError):
                 pass
 

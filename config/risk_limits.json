@@ -8,7 +8,7 @@
     "max_gross_exposure_pct": 1.5,
     "max_symbol_exposure_pct": 0.4,
     "max_nav_drawdown_pct": 0.30,
-    "max_concurrent_positions": 2,
+    "max_concurrent_positions": 6,
     "max_leverage": 4,
     "min_notional_usdt": 25,
     "max_trade_nav_pct": 0.06,
@@ -38,7 +38,7 @@
     "USDC",
     "FDUSD"
   ],
-  "restricted_symbols": [],
+  "restricted_symbols": ["ETHUSDT"],
   "per_symbol": {
     "BTCUSDT": {
       "min_notional": 25,

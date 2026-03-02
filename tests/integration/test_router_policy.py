@@ -86,3 +86,20 @@ def test_compute_router_summary_normalizes_inputs():
     assert summary["fallback_rate"] == 0.5
     assert summary["slippage_p50"] == pytest.approx(6.5)
     assert summary["slippage_p95"] == pytest.approx(11.45)
+
+
+def test_compute_router_summary_caps_extreme_slippage():
+    """Extreme slippage values (e.g. 10000 bps) are capped at ±50 bps."""
+    events = [
+        {"is_maker_final": True, "slippage_bps": 5.0},
+        {"is_maker_final": True, "slippage_bps": 10.0},
+        {"is_maker_final": True, "slippage_bps": 10000.0},  # outlier
+        {"is_maker_final": True, "slippage_bps": -10000.0},  # outlier
+    ]
+    summary = compute_router_summary(events)
+    # 10000 capped to 50, -10000 capped to -50
+    # sorted: -50, 5, 10, 50 → p50 ≈ 7.5
+    assert summary["slippage_p50"] is not None
+    assert summary["slippage_p50"] < 15.0  # not poisoned
+    assert summary["slippage_p95"] is not None
+    assert summary["slippage_p95"] <= 50.0  # capped

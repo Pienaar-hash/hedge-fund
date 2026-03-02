@@ -15,7 +15,7 @@ Usage:
 Gates:
     1. nav_stable         — NAV > 0, drawdown within limits
     2. drawdown_within_limits — DD < kill threshold
-    3. risk_veto_consistent   — No unexplained veto spikes (< 500)
+    3. risk_veto_consistent   — No unexplained veto spikes (< 5000)
     4. binary_lab_shadow_valid — Freeze intact, trades recorded if SHADOW mode
     5. manifest_intact        — v7_manifest.json unchanged since boot
     6. no_freeze_violations   — Binary Lab config hash stable
@@ -47,7 +47,24 @@ DLE_SHADOW_LOG = Path("logs/execution/dle_shadow_events.jsonl")
 ACTIVATION_STATE = Path("logs/state/activation_window_state.json")
 
 # Thresholds
-MAX_RISK_VETOES = 500       # Suspicious if more than this in 14 days
+# ---------------------------------------------------------------------------
+# MAX_RISK_VETOES: calibrated to Phase C steady-state veto emission.
+#
+# Observed baseline:  ~300 governance vetoes/day (Feb 2026, Phase C shadow).
+# 14-day projection:  ~4,200.
+# Multiplier:         ~1.2× baseline projection.
+# Threshold:          5,000.
+#
+# Intent: detect >~20% sustained deviation from steady-state, NOT absolute
+# anomaly.  If baseline shifts materially, recalibrate this constant.
+#
+# Veto composition at calibration (representative, not prescriptive):
+#   portfolio_dd_circuit, symbol_cap, nav_stale, daily_loss,
+#   correlation_cap, kill_switch, leverage_cap — all structural safety gates.
+#
+# Plumbing vetoes (min_notional) are excluded from this count.
+# ---------------------------------------------------------------------------
+MAX_RISK_VETOES = 5000
 MAX_DLE_MISMATCHES = 50     # DLE shadow mismatches upper bound
 
 
@@ -89,8 +106,21 @@ def _count_binary_lab_shadow_trades(start_ts: str) -> int:
     return count
 
 
-def _count_jsonl_since(path: Path, start_ts: str) -> int:
-    """Count JSONL records with ts >= start_ts."""
+# Plumbing veto reasons excluded from governance risk counting.
+# These are exchange constraint artifacts (e.g. order too small),
+# not risk model / doctrine / regime vetoes.
+_PLUMBING_VETO_REASONS: frozenset = frozenset({
+    "min_notional",
+    "below_min_notional",
+})
+
+
+def _count_risk_vetoes_since(path: Path, start_ts: str) -> int:
+    """Count *governance-relevant* risk vetoes since start_ts.
+
+    Excludes plumbing vetoes (``min_notional``) which reflect exchange
+    sizing constraints, not risk instability.
+    """
     if not path.exists():
         return 0
     count = 0
@@ -100,7 +130,9 @@ def _count_jsonl_since(path: Path, start_ts: str) -> int:
                 try:
                     rec = json.loads(line)
                     if (rec.get("ts", "") or "") >= start_ts:
-                        count += 1
+                        reason = str(rec.get("veto_reason", "")).lower()
+                        if reason not in _PLUMBING_VETO_REASONS:
+                            count += 1
                 except json.JSONDecodeError:
                     continue
     except Exception:
@@ -239,7 +271,7 @@ def run_verification(
 
     # Additional counts from logs
     shadow_trades = _count_binary_lab_shadow_trades(start_ts) if start_ts else 0
-    risk_vetoes = _count_jsonl_since(risk_vetoes_log, start_ts) if start_ts else 0
+    risk_vetoes = _count_risk_vetoes_since(risk_vetoes_log, start_ts) if start_ts else 0
     dle_mm = _count_dle_mismatches(dle_shadow_log, start_ts) if start_ts else dle_mismatches_count
 
     gates: Dict[str, Dict[str, Any]] = {}

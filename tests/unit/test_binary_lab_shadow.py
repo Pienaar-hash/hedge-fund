@@ -85,6 +85,8 @@ def _signal(**overrides: Any) -> BinaryLabSignal:
         conviction_score=0.88,
         conviction_band="high",
         trend_slope=0.001,
+        vol_regime_z=0.5,
+        volume_z=0.3,
         hybrid_score=0.50,
         ts="2026-02-25T12:00:00+00:00",
     )

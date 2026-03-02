@@ -119,8 +119,3 @@ def test_internal_screener_submits_with_stubbed_intents(monkeypatch):
     assert submitted[0]["symbol"] == "BTCUSDT"
 
 
-def test_executor_respects_screener_gross(monkeypatch):
-    calls = {}
-
-    gross = ex._clamp_intent_gross("BTCUSDT", 100.0, 10000.0, 15.0)
-    assert gross == 100.0

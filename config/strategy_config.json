@@ -779,7 +779,7 @@
   },
   "hydra_execution": {
     "_comment": "Hydra Multi-Strategy Execution Engine — v7.9_P1",
-    "enabled": false,
+    "enabled": true,
     "heads": {
       "TREND": {
         "enabled": true,

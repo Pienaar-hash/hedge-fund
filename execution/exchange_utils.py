@@ -1055,7 +1055,13 @@ def normalize_price_qty(
     """
     filters = get_symbol_filters(symbol)
     tick = _dec((filters.get("PRICE_FILTER", {}) or {}).get("tickSize", "0.01"))
-    lot = (filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE") or {})
+    # v7.9-D1: Prefer LOT_SIZE over MARKET_LOT_SIZE.  Binance testnet can
+    # return MARKET_LOT_SIZE with inflated minQty (e.g. 1 BTC) while
+    # LOT_SIZE carries the correct contract spec (0.001).  For MARKET
+    # orders the exchange applies its own MARKET_LOT_SIZE server-side,
+    # so using LOT_SIZE for client-side sizing is safe and prevents
+    # catastrophic notional inflation.
+    lot = (filters.get("LOT_SIZE") or filters.get("MARKET_LOT_SIZE") or {})
     step = _dec(lot.get("stepSize", "0.001"))
     min_qty = _dec(lot.get("minQty", "0"))
     min_notional = _dec((filters.get("MIN_NOTIONAL", {}) or {}).get("notional", "0"))

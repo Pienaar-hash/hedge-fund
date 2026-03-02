@@ -87,6 +87,9 @@ class OpenRound:
     conviction_score: float
     regime: str
     regime_confidence: float
+    trend_slope_sign: Optional[str] = None   # "+" | "-" | None
+    vol_regime_z: Optional[float] = None
+    volume_z: Optional[float] = None
 
 
 @dataclass
@@ -108,6 +111,9 @@ class RoundOutcome:
     regime_confidence: float
     entry_ts: str
     exit_ts: str
+    trend_slope_sign: Optional[str] = None   # "+" | "-" | None
+    vol_regime_z: Optional[float] = None
+    volume_z: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +368,9 @@ class BinaryLabShadowRunner:
                 regime_confidence=rnd.regime_confidence,
                 entry_ts=rnd.entry_ts,
                 exit_ts=now_ts,
+                trend_slope_sign=rnd.trend_slope_sign,
+                vol_regime_z=rnd.vol_regime_z,
+                volume_z=rnd.volume_z,
             )
 
         entry_p = rnd.entry_fill.fill_price
@@ -396,6 +405,9 @@ class BinaryLabShadowRunner:
             regime_confidence=rnd.regime_confidence,
             entry_ts=rnd.entry_ts,
             exit_ts=exit_fill.ts,
+            trend_slope_sign=rnd.trend_slope_sign,
+            vol_regime_z=rnd.vol_regime_z,
+            volume_z=rnd.volume_z,
         )
 
     # ------------------------------------------------------------------
@@ -474,6 +486,13 @@ class BinaryLabShadowRunner:
             conviction_score=signal.conviction_score,
             regime=signal.regime,
             regime_confidence=signal.regime_confidence,
+            trend_slope_sign=(
+                "+" if signal.trend_slope is not None and signal.trend_slope > 0
+                else "-" if signal.trend_slope is not None and signal.trend_slope < 0
+                else None
+            ),
+            vol_regime_z=signal.vol_regime_z,
+            volume_z=signal.volume_z,
         )
         self._open_rounds.append(rnd)
 
@@ -494,6 +513,13 @@ class BinaryLabShadowRunner:
             "conviction_score": signal.conviction_score,
             "regime": signal.regime,
             "regime_confidence": signal.regime_confidence,
+            "trend_slope_sign": (
+                "+" if signal.trend_slope is not None and signal.trend_slope > 0
+                else "-" if signal.trend_slope is not None and signal.trend_slope < 0
+                else None
+            ),
+            "vol_regime_z": signal.vol_regime_z,
+            "volume_z": signal.volume_z,
             "status": "filled",
             "fill_snapshot": fill.to_dict(),
         })
@@ -527,6 +553,15 @@ class BinaryLabShadowRunner:
     def _emit_round_closed(self, outcome: RoundOutcome) -> None:
         """Log to trade JSONL + feed state machine via RuntimeWriter."""
         # 1. Append to binary_lab_trades.jsonl
+        #
+        # PnL field semantics (locked — do not reinterpret):
+        #   gross_pnl_usd  = price-move PnL before any fees
+        #   fee_usd        = total fees for the round (entry + exit)
+        #   pnl_usd        = net PnL after fees  (= gross_pnl_usd − fee_usd)
+        #   net_pnl_usd    = same as pnl_usd (redundant convenience alias)
+        #   implied_edge   = gross_pnl_usd / notional_usd  (signal-only, fee-excluded)
+        #                    null when notional_usd is zero (defensive)
+        #
         self._trade_writer.write({
             "event_type": "ROUND_CLOSED",
             "execution_mode": "SHADOW",
@@ -549,6 +584,11 @@ class BinaryLabShadowRunner:
             "resolved_outcome": outcome.outcome,
             "pnl_usd": outcome.pnl_usd,
             "gross_pnl_usd": outcome.gross_pnl_usd,
+            "net_pnl_usd": outcome.pnl_usd,
+            "implied_edge": round(outcome.gross_pnl_usd / outcome.notional_usd, 8) if outcome.notional_usd > 0 else None,
+            "trend_slope_sign": outcome.trend_slope_sign,
+            "vol_regime_z": outcome.vol_regime_z,
+            "volume_z": outcome.volume_z,
         })
 
         # 2. Feed the state machine (via RuntimeWriter if available)

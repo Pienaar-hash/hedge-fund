@@ -34,6 +34,7 @@ Signal → Hydra (multi-head) → Cerberus (multipliers) → Doctrine Gate → R
 4. **Refusal is first-class** — Every veto logged to `logs/doctrine_events.jsonl`
 5. **All exits are thesis-driven** — Positions die when thesis dies, not on signals
 6. **Stops are seatbelts, not strategy** — SL is catastrophe protection only
+7. **Kill switch never blocks doctrine exits** — KILL_SWITCH may only block risk-increasing orders (new entries). It must NEVER block reduceOnly exits issued under doctrine authority. Enforced via two-flag guard: `doctrine_exit=True AND reduceOnly=True`.
 
 ## Project Layout
 
