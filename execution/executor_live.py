@@ -3293,7 +3293,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     try:
         _PORTFOLIO_SNAPSHOT.refresh()
     except Exception:
-        pass
+        LOG.error("[PORTFOLIO_REFRESH] snapshot refresh failed", exc_info=True)
     nav_snapshot = _nav_snapshot()
     nav_usd = float(nav_snapshot.get("nav_usd", 0.0) or 0.0)
     using_nav_pct = False
@@ -3705,7 +3705,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     },
                 )
             except Exception:
-                pass
+                LOG.warning("[FLIP_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
             if reduce_resp:
                 reduce_latency_ms = max(
                     0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0
@@ -3748,7 +3748,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         try:
                             _RISK_STATE.note_fill(symbol, time.time())
                         except Exception:
-                            pass
+                            LOG.warning("[RISK_NOTE_FILL] note_fill failed for %s (flip)", symbol, exc_info=True)
                         _emit_position_snapshots(symbol)
 
             try:
@@ -3781,7 +3781,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     try:
         _RISK_STATE.note_attempt(time.time())
     except Exception:
-        pass
+        LOG.warning("[RISK_NOTE_ATTEMPT] note_attempt failed for %s", symbol, exc_info=True)
 
     risk_veto, details = _evaluate_order_risk(
         symbol,
@@ -3852,7 +3852,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 audit["cooldown_until"] = details.get("cooldown_until")
             publish_order_audit(symbol, audit)
         except Exception:
-            pass
+            LOG.warning("[RISK_BLOCK_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
         thresholds = {}
         if isinstance(details, Mapping):
             thresholds = dict(details.get("thresholds") or {})
@@ -4089,7 +4089,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 },
             )
         except Exception:
-            pass
+            LOG.warning("[SIZE_ERROR_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
         return
 
     payload["positionSide"] = pos_side
@@ -4246,7 +4246,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             }
         )
     except Exception:
-        pass
+        LOG.warning("[INTENT_AUDIT] publish_intent_audit failed for %s", symbol, exc_info=True)
 
     if DRY_RUN:
         LOG.info("[executor] DRY_RUN — skipping SEND_ORDER")
@@ -4263,7 +4263,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 },
             )
         except Exception:
-            pass
+            LOG.warning("[REQUEST_AUDIT] publish_order_audit failed for %s (dry_run)", symbol, exc_info=True)
         return
 
     LOG.info("[executor] SEND_ORDER %s %s payload=%s meta=%s", symbol, side, payload_view, meta)
@@ -4281,7 +4281,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             },
         )
     except Exception:
-        pass
+        LOG.warning("[REQUEST_AUDIT] publish_order_audit failed for %s (request)", symbol, exc_info=True)
 
     resp: Dict[str, Any] = {}
     router_error: Optional[str] = None
@@ -4462,7 +4462,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 try:
                     _RISK_STATE.note_error(time.time())
                 except Exception:
-                    pass
+                    LOG.warning("[RISK_NOTE_ERROR] note_error failed for %s (http)", symbol, exc_info=True)
                 err_code = None
                 try:
                     if exc.response is not None:
@@ -4521,7 +4521,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 try:
                     _RISK_STATE.note_error(time.time())
                 except Exception:
-                    pass
+                    LOG.warning("[RISK_NOTE_ERROR] note_error failed for %s (generic)", symbol, exc_info=True)
                 _log_order_error(
                     symbol=symbol,
                     side=side,
@@ -4543,7 +4543,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         },
                     )
                 except Exception:
-                    pass
+                    LOG.warning("[DISPATCH_ERROR_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
                 raise
 
     latency_ms = max(0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0)
@@ -4715,14 +4715,14 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     try:
         publish_order_audit(symbol, audit_payload)
     except Exception:
-        pass
+        LOG.error("[ORDER_ACK_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
 
     executed_qty_float = executed_qty_val or 0.0
     if executed_qty_float > 0:
         try:
             _RISK_STATE.note_fill(symbol, time.time())
         except Exception:
-            pass
+            LOG.warning("[RISK_NOTE_FILL] note_fill failed for %s (post-execute)", symbol, exc_info=True)
         _emit_position_snapshots(symbol)
 
         # ── v7.9-E2: Churn Guard fill recording ──────────────────────────
@@ -4787,7 +4787,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     },
                 )
             except Exception:
-                pass
+                LOG.error("[CLOSE_AUDIT] publish_close_audit failed for %s", symbol, exc_info=True)
             close_record = {
                 "ts": time.time(),
                 "intent_id": intent_id,
@@ -4809,7 +4809,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 from execution.position_tp_sl_registry import unregister_position_tp_sl
                 unregister_position_tp_sl(symbol, pos_side)
             except Exception:
-                pass
+                LOG.error("[TPSL_UNREGISTER] unregister_position_tp_sl failed for %s %s", symbol, pos_side, exc_info=True)
         elif not is_position_close:
             # V7.X_DOCTRINE: Register TP/SL and entry metadata for thesis-based exits
             try:
@@ -4838,7 +4838,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                                 entry_regime = regime_snap.primary_regime
                                 entry_regime_confidence = regime_snap.confidence
                     except Exception:
-                        pass
+                        LOG.error("[TPSL_REGISTER] regime snapshot fallback failed for %s", symbol, exc_info=True)
                 
                 if tp_price is not None or sl_price is not None or entry_regime is not None:
                     from execution.position_tp_sl_registry import register_position_tp_sl
@@ -4854,7 +4854,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         entry_head=entry_head,
                     )
             except Exception:
-                pass
+                LOG.error("[TPSL_REGISTER] register_position_tp_sl failed for %s %s", symbol, pos_side, exc_info=True)
 
 
 
@@ -5535,7 +5535,7 @@ def _loop_once(i: int) -> None:
                     price_map[sym] = float(get_price(sym))
                     _exit_api_calls += 1
                 except Exception:
-                    pass
+                    LOG.warning("[EXIT_PRICE_FETCH] get_price failed for %s", sym, exc_info=True)
         
         # Scan for ALL exits: doctrine-based first, then seatbelt (TP/SL)
         doctrine_exits, seatbelt_exits = scan_all_exits(baseline_positions, price_map)
@@ -5625,7 +5625,7 @@ def _loop_once(i: int) -> None:
                         qty=_exit_qty,
                     )
                 except Exception:
-                    pass
+                    LOG.warning("[EXIT_DEDUP] record_exit_sent failed for %s", candidate.symbol, exc_info=True)
             except Exception as exc:
                 LOG.error("[exit_scanner] failed to send doctrine exit %s: %s", candidate.symbol, exc)
         
