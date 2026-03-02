@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 
 import execution.executor_live as executor_live
+import execution.fill_tracker as fill_tracker
 
 
 def test_executor_ack_and_fill_event_flow(monkeypatch) -> None:
@@ -11,9 +12,9 @@ def test_executor_ack_and_fill_event_flow(monkeypatch) -> None:
     def fake_write_event(event_type: str, payload: Dict[str, Any], *, logger: Any | None = None) -> None:
         recorded.append((event_type, dict(payload)))
 
-    monkeypatch.setattr(executor_live, "write_event", fake_write_event)
-    monkeypatch.setattr(executor_live, "_POSITION_TRACKER", executor_live.PositionTracker())
-    monkeypatch.setattr(executor_live, "_fetch_order_status", lambda *args, **kwargs: {"status": "FILLED"})
+    monkeypatch.setattr(fill_tracker, "write_event", fake_write_event)
+    monkeypatch.setattr(fill_tracker, "POSITION_TRACKER", fill_tracker.PositionTracker())
+    monkeypatch.setattr(fill_tracker, "fetch_order_status", lambda *args, **kwargs: {"status": "FILLED"})
 
     trades = [
         {
@@ -33,7 +34,7 @@ def test_executor_ack_and_fill_event_flow(monkeypatch) -> None:
             "id": 2,
         },
     ]
-    monkeypatch.setattr(executor_live, "_fetch_order_trades", lambda *args, **kwargs: trades)
+    monkeypatch.setattr(fill_tracker, "fetch_order_trades", lambda *args, **kwargs: trades)
 
     ack_resp = {"status": "NEW", "orderId": 111, "clientOrderId": "cli-111"}
     ack_info = executor_live._emit_order_ack(

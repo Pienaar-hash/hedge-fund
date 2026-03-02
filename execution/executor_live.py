@@ -15,7 +15,6 @@ import shutil
 import time
 import socket
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
@@ -41,6 +40,16 @@ from execution.sizing import (
     estimate_intent_qty as _estimate_intent_qty,
     nav_pct_fraction as _nav_pct_fraction,
     size_from_nav as _size_from_nav,
+)
+from execution.fill_tracker import (
+    OrderAckInfo,
+    FillSummary,
+    POSITION_TRACKER as _FILL_TRACKER_POSITION_TRACKER,
+    fetch_order_status as _fetch_order_status,
+    fetch_order_trades as _fetch_order_trades,
+    emit_order_ack as _emit_order_ack,
+    should_emit_close as _should_emit_close,
+    confirm_order_fill as _confirm_order_fill,
 )
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 from execution.universe_resolver import (
@@ -113,10 +122,10 @@ NAV_LOG_CACHE_PATH = LOGS_ROOT / "nav_log.json"
 SPOT_STATE_CACHE_PATH = LOGS_ROOT / "spot_state.json"
 NAV_LOG_MAX_POINTS = int(os.getenv("NAV_LOG_MAX_POINTS", "259200") or 259200)  # 90d @ 30s
 _INTENT_REGISTRY: Dict[str, Dict[str, Any]] = {}
-_POSITION_TRACKER = PositionTracker()
-_FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)
-_FILL_POLL_TIMEOUT = float(os.getenv("ORDER_FILL_POLL_TIMEOUT", "8.0") or 8.0)
-_FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
+_POSITION_TRACKER = _FILL_TRACKER_POSITION_TRACKER
+_FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)  # kept for any direct refs
+_FILL_POLL_TIMEOUT = float(os.getenv("ORDER_FILL_POLL_TIMEOUT", "8.0") or 8.0)    # kept for any direct refs
+_FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}               # kept for any direct refs
 _HEALTH_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_HEALTH_PUBLISH_INTERVAL", "120") or 120)
 # Backwards compatibility: some call sites referred to EXEC_HEALTH_PUBLISH_INTERVAL_S.
 EXEC_HEALTH_PUBLISH_INTERVAL_S = _HEALTH_PUBLISH_INTERVAL_S
@@ -1624,374 +1633,10 @@ def _log_order_error(
         LOG.debug("[health] record_execution_error_failed")
 
 
-@dataclass
-class OrderAckInfo:
-    symbol: str
-    side: str
-    order_type: str
-    request_qty: Optional[float]
-    position_side: Optional[str]
-    reduce_only: bool
-    order_id: Optional[int]
-    client_order_id: Optional[str]
-    status: str
-    latency_ms: Optional[float]
-    attempt_id: Optional[str] = None
-    intent_id: Optional[str] = None
-    ts_ack: str = ""
-
-
-@dataclass
-class FillSummary:
-    executed_qty: float
-    avg_price: Optional[float]
-    status: str
-    fee_total: float
-    fee_asset: Optional[str]
-    trade_ids: List[Any]
-    ts_fill_first: Optional[str]
-    ts_fill_last: Optional[str]
-    latency_ms: Optional[float] = None
-    is_maker: bool = False
-
-
-def _normalize_status(status: Any) -> str:
-    if not status:
-        return "UNKNOWN"
-    try:
-        value = str(status).upper()
-    except Exception:
-        return "UNKNOWN"
-    if value == "CANCELLED":
-        return "CANCELED"
-    return value
-
-
-def _to_float(value: Any) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _ms_to_iso(value: Any) -> Optional[str]:
-    try:
-        if value is None:
-            return None
-        val = float(value)
-    except (TypeError, ValueError):
-        return None
-    if val <= 0:
-        return None
-    if val > 1e12:
-        val /= 1000.0
-    try:
-        return datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
-    except Exception:
-        return None
-
-
-def _iso_to_ts(value: Optional[str]) -> Optional[float]:
-    if not value:
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    try:
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        dt = datetime.fromisoformat(text)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    except Exception:
-        return None
-
-
-def _fetch_order_status(symbol: str, order_id: Optional[int], client_order_id: Optional[str]) -> Dict[str, Any]:
-    params: Dict[str, Any] = {"symbol": symbol}
-    if order_id:
-        params["orderId"] = int(order_id)
-    elif client_order_id:
-        params["origClientOrderId"] = client_order_id
-    else:
-        return {}
-    try:
-        resp = _req("GET", "/fapi/v1/order", signed=True, params=params, timeout=6.0)
-        return resp.json() or {}
-    except Exception as exc:
-        LOG.debug("[fills] order_status_fetch_failed symbol=%s order_id=%s err=%s", symbol, order_id, exc)
-        return {}
-
-
-def _fetch_order_trades(symbol: str, order_id: Optional[int]) -> List[Dict[str, Any]]:
-    params: Dict[str, Any] = {"symbol": symbol}
-    if order_id:
-        params["orderId"] = int(order_id)
-    try:
-        resp = _req("GET", "/fapi/v1/userTrades", signed=True, params=params, timeout=6.0)
-        data = resp.json() or []
-        if not isinstance(data, list):
-            return []
-        return data
-    except Exception as exc:
-        LOG.debug("[fills] order_trades_fetch_failed symbol=%s order_id=%s err=%s", symbol, order_id, exc)
-        return []
-
-
-def _emit_order_ack(
-    symbol: str,
-    side: str,
-    order_type: str,
-    request_qty: Optional[float],
-    position_side: Optional[str],
-    reduce_only: bool,
-    resp: Mapping[str, Any],
-    *,
-    latency_ms: Optional[float],
-    attempt_id: Optional[str],
-    intent_id: Optional[str],
-) -> Optional[OrderAckInfo]:
-    status = _normalize_status(resp.get("status"))
-    order_id_raw = resp.get("orderId")
-    try:
-        order_id = int(order_id_raw) if order_id_raw is not None else None
-    except (TypeError, ValueError):
-        order_id = None
-    client_order_id = resp.get("clientOrderId") or resp.get("orderId")
-    if not order_id and not client_order_id:
-        return None
-    ts_ack = now_utc()
-
-    ack = OrderAckInfo(
-        symbol=symbol,
-        side=str(side).upper(),
-        order_type=str(order_type).upper(),
-        request_qty=_to_float(request_qty),
-        position_side=position_side,
-        reduce_only=bool(reduce_only),
-        order_id=order_id,
-        client_order_id=str(client_order_id) if client_order_id is not None else None,
-        status=status,
-        latency_ms=_to_float(latency_ms),
-        attempt_id=attempt_id,
-        intent_id=intent_id,
-        ts_ack=ts_ack,
-    )
-    payload: Dict[str, Any] = {
-        "symbol": ack.symbol,
-        "side": ack.side,
-        "ts_ack": ts_ack,
-        "orderId": ack.order_id,
-        "clientOrderId": ack.client_order_id,
-        "request_qty": ack.request_qty,
-        "order_type": ack.order_type,
-        "status": ack.status,
-    }
-    if ack.position_side:
-        payload["positionSide"] = ack.position_side
-    if ack.reduce_only:
-        payload["reduceOnly"] = True
-    if ack.latency_ms is not None:
-        payload["latency_ms"] = ack.latency_ms
-    if attempt_id:
-        payload["attempt_id"] = attempt_id
-    if intent_id:
-        payload["intent_id"] = intent_id
-    try:
-        write_event("order_ack", payload)
-    except Exception as exc:
-        LOG.debug("[events] ack_write_failed %s %s", payload.get("orderId"), exc)
-    return ack
-
-
-def _should_emit_close(ack: OrderAckInfo, close_results: List[PnlCloseResult]) -> bool:
-    if not close_results:
-        return False
-    if ack.reduce_only:
-        return True
-    pos_before = close_results[0].position_before
-    pos_after = close_results[-1].position_after
-    if abs(pos_after) < 1e-8:
-        return True
-    if pos_before == 0.0:
-        return False
-    return pos_before * pos_after <= 0.0
-
-
-def _confirm_order_fill(
-    ack: OrderAckInfo,
-    metadata: Optional[Mapping[str, Any]] = None,
-    strategy: Optional[str] = None,
-) -> Optional[FillSummary]:
-    if not ack.order_id and not ack.client_order_id:
-        return None
-    start = time.time()
-    seen_trade_ids: set[str] = set()
-    executed_qty = 0.0
-    cum_quote = 0.0
-    fee_total = 0.0
-    fee_asset: Optional[str] = None
-    ts_first: Optional[str] = None
-    ts_last: Optional[str] = None
-    status = ack.status
-    last_summary: Optional[FillSummary] = None
-    fill_latency_ms: Optional[float] = None
-
-    metadata_payload: Optional[Dict[str, Any]] = None
-    if isinstance(metadata, Mapping):
-        try:
-            metadata_payload = dict(metadata)
-        except Exception:
-            metadata_payload = None
-
-    while (time.time() - start) <= _FILL_POLL_TIMEOUT:
-        status_resp = _fetch_order_status(ack.symbol, ack.order_id, ack.client_order_id)
-        if status_resp:
-            status = _normalize_status(status_resp.get("status"))
-
-        trades = _fetch_order_trades(ack.symbol, ack.order_id)
-        new_trades: List[Dict[str, Any]] = []
-        for trade in trades:
-            trade_id = trade.get("id")
-            if trade_id is None:
-                continue
-            trade_id_str = str(trade_id)
-            if trade_id_str in seen_trade_ids:
-                continue
-            seen_trade_ids.add(trade_id_str)
-            new_trades.append(trade)
-            qty = _to_float(trade.get("qty")) or 0.0
-            price = _to_float(trade.get("price")) or 0.0
-            executed_qty += qty
-            cum_quote += qty * price
-            commission = _to_float(trade.get("commission")) or 0.0
-            fee_total += commission
-            fee_asset = fee_asset or trade.get("commissionAsset") or trade.get("marginAsset") or "USDT"
-            trade_ts = _ms_to_iso(trade.get("time"))
-            now_iso = now_utc()
-            if trade_ts:
-                if ts_first is None or trade_ts < ts_first:
-                    ts_first = trade_ts
-                if ts_last is None or trade_ts > ts_last:
-                    ts_last = trade_ts
-            else:
-                if ts_first is None:
-                    ts_first = now_iso
-                ts_last = now_iso
-
-        if new_trades:
-            avg_price = (cum_quote / executed_qty) if executed_qty else None
-            fill_payload: Dict[str, Any] = {
-                "symbol": ack.symbol,
-                "side": ack.side,
-                "ts_fill_first": ts_first or now_utc(),
-                "ts_fill_last": ts_last or now_utc(),
-                "orderId": ack.order_id,
-                "clientOrderId": ack.client_order_id,
-                "executedQty": executed_qty,
-                "avgPrice": avg_price,
-                "fee_total": fee_total,
-                "feeAsset": fee_asset or "USDT",
-                "tradeIds": sorted(seen_trade_ids),
-                "status": status,
-            }
-            if strategy:
-                fill_payload["strategy"] = strategy
-            if metadata_payload:
-                fill_payload["metadata"] = metadata_payload
-            if ack.position_side:
-                fill_payload["positionSide"] = ack.position_side
-            if ack.reduce_only:
-                fill_payload["reduceOnly"] = True
-            if ack.attempt_id:
-                fill_payload["attempt_id"] = ack.attempt_id
-            if ack.intent_id:
-                fill_payload["intent_id"] = ack.intent_id
-            try:
-                write_event("order_fill", fill_payload)
-            except Exception as exc:
-                LOG.debug("[events] fill_write_failed %s %s", ack.order_id, exc)
-
-            close_results: List[PnlCloseResult] = []
-            for trade in new_trades:
-                qty = _to_float(trade.get("qty")) or 0.0
-                if qty <= 0:
-                    continue
-                price = _to_float(trade.get("price")) or 0.0
-                commission = _to_float(trade.get("commission")) or 0.0
-                fill_obj = PnlFill(
-                    symbol=ack.symbol,
-                    side=ack.side,
-                    qty=qty,
-                    price=price,
-                    fee=commission,
-                    position_side=ack.position_side,
-                    reduce_only=ack.reduce_only,
-                )
-                close_res = _POSITION_TRACKER.apply_fill(fill_obj)
-                if close_res:
-                    close_results.append(close_res)
-
-            if _should_emit_close(ack, close_results):
-                total_realized = sum(r.realized_pnl for r in close_results)
-                total_fees = sum(r.fees for r in close_results)
-                pos_before = close_results[0].position_before if close_results else 0.0
-                pos_after = close_results[-1].position_after if close_results else 0.0
-                closed_qty = sum(r.closed_qty for r in close_results)
-                close_payload: Dict[str, Any] = {
-                    "symbol": ack.symbol,
-                    "ts_close": ts_last or now_utc(),
-                    "orderId": ack.order_id,
-                    "clientOrderId": ack.client_order_id,
-                    "realizedPnlUsd": total_realized,
-                    "fees_total": total_fees,
-                    "position_size_before": pos_before,
-                    "position_size_after": pos_after,
-                }
-                if strategy:
-                    close_payload["strategy"] = strategy
-                if metadata_payload:
-                    close_payload["metadata"] = metadata_payload
-                if ack.position_side:
-                    close_payload["positionSide"] = ack.position_side
-                if closed_qty > 0:
-                    close_payload["closed_qty"] = closed_qty
-                if ack.attempt_id:
-                    close_payload["attempt_id"] = ack.attempt_id
-                if ack.intent_id:
-                    close_payload["intent_id"] = ack.intent_id
-                try:
-                    write_event("order_close", close_payload)
-                except Exception as exc:
-                    LOG.debug("[events] close_write_failed %s %s", ack.order_id, exc)
-
-            if ts_last:
-                ack_ts = _iso_to_ts(ack.ts_ack)
-                fill_ts = _iso_to_ts(ts_last)
-                if ack_ts is not None and fill_ts is not None:
-                    fill_latency_ms = max(0.0, (fill_ts - ack_ts) * 1000.0)
-
-            last_summary = FillSummary(
-                executed_qty=executed_qty,
-                avg_price=avg_price,
-                status=status,
-                fee_total=fee_total,
-                fee_asset=fee_asset,
-                trade_ids=sorted(seen_trade_ids),
-                ts_fill_first=ts_first,
-                ts_fill_last=ts_last,
-                latency_ms=fill_latency_ms,
-            )
-
-        if status in _FILL_FINAL_STATUSES:
-            break
-        if not new_trades:
-            time.sleep(_FILL_POLL_INTERVAL)
-
-    return last_summary
+# ── Fill tracker (extracted to execution/fill_tracker.py) ────────────
+# OrderAckInfo, FillSummary, _fetch_order_status, _fetch_order_trades,
+# _emit_order_ack, _should_emit_close, _confirm_order_fill
+# imported at module top; backward-compat aliases preserved for tests.
 
 
 def _nav_snapshot() -> Dict[str, Any]:
