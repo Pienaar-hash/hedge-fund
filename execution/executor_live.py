@@ -12,7 +12,6 @@ import argparse
 import json
 import logging
 import shutil
-import subprocess
 import time
 import socket
 import uuid
@@ -24,6 +23,20 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
 from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
 from execution.firestore_utils import _safe_load_json
 from execution.events import now_utc, write_event
+from execution.helpers import (
+    coerce_veto_reasons as _coerce_veto_reasons,
+    git_commit as _git_commit,
+    iso_to_ts as _iso_to_ts,
+    json_default as _json_default,
+    mk_id,
+    ms_to_iso as _ms_to_iso,
+    normalize_status as _normalize_status,
+    now_iso as _now_iso,
+    read_dry_run_flag as _read_dry_run_flag,
+    resolve_env as _resolve_env,
+    to_float as _to_float,
+    truthy_env as _truthy_env,
+)
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 from execution.universe_resolver import (
     symbol_min_gross,
@@ -274,11 +287,6 @@ def _dle_enrichment(
 
 def get_v6_flag_snapshot() -> Dict[str, bool]:
     return flags_to_dict(get_flags())
-
-
-def mk_id(prefix: str) -> str:
-    base = prefix.strip("_") or "id"
-    return f"{base}_{uuid.uuid4().hex[:10]}"
 
 
 def _append_signal_metrics(record: Mapping[str, Any]) -> None:
@@ -1216,13 +1224,6 @@ def _binary_lab_tick(now_iso: str) -> bool:
         return False
 
 # ---- Firestore publisher handle (revisions differ) ----
-def _resolve_env(default: str = "dev") -> str:
-    raw = (os.getenv("ENV") or os.getenv("ENVIRONMENT") or "").strip()
-    if not raw:
-        return default
-    return raw
-
-
 ENV = _resolve_env()
 if ENV.lower() == "prod":
     allow_prod = os.getenv("ALLOW_PROD_WRITE", "0").strip().lower()
@@ -1377,21 +1378,6 @@ SCREENER_INTERVAL = int(os.getenv("SCREENER_INTERVAL", "300") or 300)
 _LAST_SCREENER_RUN = 0.0
 
 
-def _git_commit() -> str:
-    try:
-        return (
-            subprocess.check_output(["git", "describe", "--tags", "--always"])
-            .decode()
-            .strip()
-        )
-    except Exception:
-        return "unknown"
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _startup_flags() -> Dict[str, Any]:
     testnet = is_testnet()
     dry_run = os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
@@ -1421,14 +1407,6 @@ def _log_startup_summary() -> Dict[str, Any]:
     )
     flags["prefix"] = prefix
     return flags
-
-
-def _read_dry_run_flag() -> bool:
-    return os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
-
-
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).lower() in ("1", "true", "yes")
 
 
 def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
@@ -1563,16 +1541,6 @@ def _clean_testnet_caches() -> None:
         except Exception:
             LOG.debug("[executor][testnet] cache cleanup skipped for %s", path)
     LOG.info("[executor][testnet] cleaned stale risk/nav cache for fresh start")
-
-
-def _coerce_veto_reasons(raw: Any) -> List[str]:
-    if not raw:
-        return []
-    if isinstance(raw, str):
-        return [raw]
-    if isinstance(raw, Sequence):
-        return [str(item) for item in raw if item]
-    return [str(raw)]
 
 
 def _normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
@@ -5063,15 +5031,6 @@ def _write_positions_state(positions_rows: List[Dict[str, Any]], *, updated_ts: 
         path=POSITIONS_STATE_PATH,
         updated_at=ts_value,
     )
-
-
-def _json_default(value: Any) -> str:
-    try:
-        if isinstance(value, (datetime,)):
-            return value.isoformat()
-    except Exception:
-        pass
-    return str(value)
 
 
 def _write_json_cache(path: Path, payload: Any) -> None:
