@@ -972,6 +972,7 @@ from execution.exchange_utils import (
     _req,
     _is_dual_side,
     build_order_payload,
+    classify_binance_error,
     get_balances,
     get_positions,
     get_price,
@@ -1008,6 +1009,14 @@ from execution.risk_loader import load_risk_config
 from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
 from execution.nav import compute_nav_pair, PortfolioSnapshot, nav_health_snapshot
 from execution.position_cache import POSITION_CACHE as _POSITION_CACHE
+from execution.order_dispatch import (
+    dispatch_to_exchange as _dispatch_to_exchange,
+    dispatch_with_retry as _dispatch_with_retry,
+    attempt_maker_first as _attempt_maker_first,
+    build_maker_metrics as _build_maker_metrics,
+    meta_float as _meta_float,
+    DispatchRetryContext as _DispatchRetryContext,
+)
 from execution import pipeline_v6_shadow
 # v7.X Doctrine Kernel — Supreme Trading Authority
 try:
@@ -3256,37 +3265,8 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     except Exception:
         positions = []
 
-    def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
-        request_payload = dict(payload)
-        order_type = str(request_payload.get("type") or "MARKET").upper()
-        convert_close, _close_qty = should_use_close_position(
-            request_payload.get("symbol"),
-            request_payload.get("side"),
-            request_payload.get("positionSide"),
-            request_payload.get("reduceOnly"),
-            order_type=order_type,
-            positions=positions,
-        )
-        if convert_close and order_type != "MARKET":
-            request_payload.pop("reduceOnly", None)
-            request_payload.pop("quantity", None)
-            request_payload["closePosition"] = True
-        ro_val = request_payload.get("reduceOnly")
-        if isinstance(ro_val, str):
-            ro_val = ro_val.lower() in ("1", "true", "yes", "on")
-        return send_order(
-            symbol=request_payload["symbol"],
-            side=request_payload["side"],
-            type=request_payload.get("type", "MARKET"),
-            quantity=request_payload.get("quantity"),
-            positionSide=request_payload.get("positionSide"),
-            reduceOnly=ro_val,
-            price=request_payload.get("price"),
-            closePosition=request_payload.get("closePosition"),
-            timeInForce=request_payload.get("timeInForce"),
-            newClientOrderId=request_payload.get("newClientOrderId"),
-            positions=positions,
-        )
+    def _dispatch_local(p: Dict[str, Any]) -> Dict[str, Any]:
+        return _dispatch_to_exchange(p, positions, send_order, should_use_close_position)
 
     force_direct_send = False
 
@@ -3328,7 +3308,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             )
             reduce_resp: Dict[str, Any] = {}
             try:
-                reduce_resp = _dispatch(reduce_payload)
+                reduce_resp = _dispatch_local(reduce_payload)
             except Exception as exc:
                 LOG.error("[executor] reduce_only_send_failed %s %s", symbol, exc)
                 return
@@ -3806,56 +3786,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     except Exception as _nig_exc:
         LOG.warning("[sizing] notional_inflation_guard check failed: %s", _nig_exc)
 
-    def _meta_float(val: Any, fallback: float) -> float:
-        try:
-            return float(val)
-        except (TypeError, ValueError):
-            return fallback
-
-    def _attempt_maker_first(px: float, qty: float) -> Optional[PlaceOrderResult]:
-        if submit_limit is None or effective_px is None or PlaceOrderResult is None:
-            return None
-        if px <= 0 or qty <= 0:
-            return None
-        try:
-            post_px = effective_px(px, side, is_maker=True) or px
-            return submit_limit(symbol, post_px, qty, side)
-        except Exception as exc:
-            LOG.warning("[executor] maker_first_failed symbol=%s err=%s", symbol, exc)
-            return None
-
-    def _maker_metrics(result: PlaceOrderResult) -> Dict[str, Any]:
-        avg_fill = result.price if result.price is not None else None
-        return {
-            "attempt_id": attempt_id,
-            "venue": "binance_futures",
-            "route": "maker_first",
-            "prices": {
-                "mark": price_hint,
-                "submitted": result.price,
-                "avg_fill": avg_fill,
-            },
-            "qty": {
-                "contracts": result.filled_qty or result.qty,
-                "notional_usd": (avg_fill or price_hint) * (result.filled_qty or result.qty or 0.0)
-                if (avg_fill or price_hint)
-                else None,
-            },
-            "timing_ms": {
-                "decision": decision_latency_ms,
-                "submit": None,
-                "ack": None,
-                "fill": None,
-            },
-            "result": {
-                "status": "FILLED" if (result.filled_qty or 0.0) > 0 else "NEW",
-                "retries": result.rejections,
-                "cancelled": False,
-            },
-            "fees_usd": None,
-            "slippage_bps": result.slippage_bps,
-        }
-
     if not reduce_only:
         # Ensure the opening order never carries the reduceOnly flag
         payload.pop("reduceOnly", None)
@@ -3936,7 +3866,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
 
     if force_direct_send:
         try:
-            resp = _dispatch(payload)
+            resp = _dispatch_local(payload)
             router_metrics = {
                 "attempt_id": attempt_id,
                 "venue": "binance_futures",
@@ -4087,10 +4017,16 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 component="router",
             )
         if maker_ctx_enabled:
-            maker_result = _attempt_maker_first(norm_price, norm_qty)
+            maker_result = _attempt_maker_first(
+                norm_price, norm_qty, symbol, side,
+                submit_limit_fn=submit_limit,
+                effective_px_fn=effective_px,
+            )
             if maker_result:
                 resp = maker_result.raw or {}
-                router_metrics = router_metrics or _maker_metrics(maker_result)
+                router_metrics = router_metrics or _build_maker_metrics(
+                    maker_result, attempt_id, price_hint, decision_latency_ms,
+                )
                 LOG.info(
                     "[executor] maker_first_fallback symbol=%s side=%s is_maker=%s rejections=%s",
                     symbol,
@@ -4099,99 +4035,25 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     maker_result.rejections,
                 )
     if not resp:
-        dispatch_attempt = 0
-        while True:
-            try:
-                resp = _dispatch(payload)
-                break
-            except requests.HTTPError as exc:
-                dispatch_attempt += 1
-                try:
-                    _RISK_STATE.note_error(time.time())
-                except Exception:
-                    LOG.warning("[RISK_NOTE_ERROR] note_error failed for %s (http)", symbol, exc_info=True)
-                err_code = None
-                try:
-                    if exc.response is not None:
-                        err_code = exc.response.json().get("code")
-                except Exception:
-                    err_code = None
-                classification = ex.classify_binance_error(exc, getattr(exc, "response", None))
-                LOG.error(
-                    "[executor] ORDER_ERR code=%s symbol=%s side=%s meta=%s payload=%s err=%s",
-                    err_code,
-                    symbol,
-                    side,
-                    meta,
-                    payload_view,
-                    exc,
-                )
-                retriable = bool(classification.get("retriable")) and dispatch_attempt <= _MAX_TRANSIENT_RETRIES
-                _log_order_error(
-                    symbol=symbol,
-                    side=side,
-                    notional=gross_target,
-                    reason="http_error",
-                    classification=classification,
-                    retried=retriable,
-                    exc=exc,
-                    component="exchange",
-                    context={"code": err_code, "payload": payload_view, "attempt": dispatch_attempt},
-                )
-                try:
-                    publish_order_audit(
-                        symbol,
-                        {
-                            "phase": "error",
-                            "side": side,
-                            "positionSide": pos_side,
-                            "error": str(exc),
-                            "code": err_code,
-                            "normalized": normalized_ctx,
-                            "payload": payload_view,
-                        },
-                    )
-                except Exception:
-                    pass
-                if err_code == -1111:
-                    LOG.error(
-                        "[executor] ORDER_PRECISION ctx=%s payload=%s",
-                        normalized_ctx,
-                        payload_view,
-                    )
-                    return
-                if retriable:
-                    time.sleep(_TRANSIENT_RETRY_BACKOFF_S)
-                    continue
-                raise
-            except Exception as exc:
-                try:
-                    _RISK_STATE.note_error(time.time())
-                except Exception:
-                    LOG.warning("[RISK_NOTE_ERROR] note_error failed for %s (generic)", symbol, exc_info=True)
-                _log_order_error(
-                    symbol=symbol,
-                    side=side,
-                    notional=gross_target,
-                    reason="dispatch_error",
-                    classification=None,
-                    retried=False,
-                    exc=exc,
-                    component="executor",
-                )
-                try:
-                    publish_order_audit(
-                        symbol,
-                        {
-                            "phase": "error",
-                            "side": side,
-                            "positionSide": pos_side,
-                            "error": str(exc),
-                        },
-                    )
-                except Exception:
-                    LOG.warning("[DISPATCH_ERROR_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
-                raise
+        _retry_ctx = _DispatchRetryContext(
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side,
+            gross_target=gross_target,
+            meta=meta,
+            payload_view=payload_view,
+            normalized_ctx=normalized_ctx,
+            max_retries=_MAX_TRANSIENT_RETRIES,
+            retry_backoff_s=_TRANSIENT_RETRY_BACKOFF_S,
+            note_error_fn=_RISK_STATE.note_error,
+            log_order_error_fn=_log_order_error,
+            publish_audit_fn=publish_order_audit,
+            classify_error_fn=classify_binance_error,
+        )
+        _retry_result = _dispatch_with_retry(_dispatch_local, payload, _retry_ctx)
+        if _retry_result is None:
+            return
+        resp = _retry_result
 
     latency_ms = max(0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0)
 
