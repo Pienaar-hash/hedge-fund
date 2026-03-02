@@ -1007,6 +1007,7 @@ from execution.risk_limits import (
 from execution.risk_loader import load_risk_config
 from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
 from execution.nav import compute_nav_pair, PortfolioSnapshot, nav_health_snapshot
+from execution.position_cache import POSITION_CACHE as _POSITION_CACHE
 from execution import pipeline_v6_shadow
 # v7.X Doctrine Kernel — Supreme Trading Authority
 try:
@@ -1650,7 +1651,7 @@ def _nav_snapshot() -> Dict[str, Any]:
 
 def _position_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
     try:
-        positions = list(get_positions() or [])
+        positions = list(_POSITION_CACHE.get(get_positions) or [])
     except Exception:
         positions = []
     symbol_upper = str(symbol).upper()
@@ -3251,7 +3252,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     # Risk gating handled centrally in risk_engine_v6; executor does not re-evaluate caps.
 
     try:
-        positions = list(get_positions() or [])
+        positions = list(_POSITION_CACHE.get(get_positions) or [])
     except Exception:
         positions = []
 
@@ -3395,9 +3396,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         except Exception:
                             LOG.warning("[RISK_NOTE_FILL] note_fill failed for %s (flip)", symbol, exc_info=True)
                         _emit_position_snapshots(symbol)
+                        _POSITION_CACHE.invalidate()
 
             try:
-                positions = list(get_positions() or [])
+                positions = list(_POSITION_CACHE.get(get_positions) or [])
             except Exception:
                 positions = []
             opp_after_side, opp_after_qty, _ = _opposite_position(symbol, pos_side, positions)
@@ -4369,6 +4371,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         except Exception:
             LOG.warning("[RISK_NOTE_FILL] note_fill failed for %s (post-execute)", symbol, exc_info=True)
         _emit_position_snapshots(symbol)
+        _POSITION_CACHE.invalidate()
 
         # ── v7.9-E2: Churn Guard fill recording ──────────────────────────
         try:
@@ -5097,7 +5100,7 @@ def _loop_once(i: int) -> None:
 
     with timed_section("get_positions", api_calls=1):
         try:
-            baseline_positions = list(get_positions() or [])
+            baseline_positions = list(_POSITION_CACHE.get(get_positions) or [])
         except Exception:
             baseline_positions = []
 
