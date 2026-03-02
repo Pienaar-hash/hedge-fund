@@ -17,7 +17,7 @@ Signal → Hydra (multi-head) → Cerberus (multipliers) → Doctrine Gate → R
 | Component | File | Role |
 |-----------|------|------|
 | **Doctrine** | `execution/doctrine_kernel.py` | Entry/exit gating — CANNOT be bypassed |
-| **Executor** | `execution/executor_live.py` | Main loop (~4000 lines), orchestrates all |
+| **Executor** | `execution/executor_live.py` | Main loop (~5700 lines), orchestrates all |
 | **Sentinel-X** | `execution/sentinel_x.py` | Regime detection: TREND_UP/DOWN, MEAN_REVERT, BREAKOUT, CHOPPY, CRISIS |
 | **Hydra** | `execution/hydra_engine.py` | 6 strategy heads: TREND, MEAN_REVERT, RELATIVE_VALUE, CATEGORY, VOL_HARVEST, EMERGENT_ALPHA |
 | **Cerberus** | `execution/cerberus_router.py` | Dynamic head multipliers (does NOT create signals or override doctrine) |
@@ -25,6 +25,9 @@ Signal → Hydra (multi-head) → Cerberus (multipliers) → Doctrine Gate → R
 | **Risk** | `execution/risk_limits.py` | `check_order()` secondary veto (caps, DD, correlation) |
 | **Router** | `execution/order_router.py` | Maker-first POST_ONLY with taker fallback, TWAP support |
 | **NAV** | `execution/nav.py` | `nav_health_snapshot()` — sole source of NAV truth |
+| **Helpers** | `execution/helpers.py` | Pure stateless utilities (to_float, ms_to_iso, etc.) |
+| **Sizing** | `execution/sizing.py` | Position sizing (nav_pct_fraction, size_from_nav) |
+| **Fill Tracker** | `execution/fill_tracker.py` | Order ack, fill polling, PnL close detection |
 
 ### Doctrine Laws (Hard-Coded, Not Configurable)
 
@@ -41,7 +44,10 @@ Signal → Hydra (multi-head) → Cerberus (multipliers) → Doctrine Gate → R
 ```
 execution/           # Core trading logic — DO NOT import from dashboard/
   doctrine_kernel.py # SUPREME AUTHORITY - entry/exit gates
-  executor_live.py   # Main loop (~4000 lines)
+  executor_live.py   # Main loop (~5700 lines)
+  helpers.py         # Pure stateless utilities (extracted from executor)
+  sizing.py          # Position sizing functions (extracted from executor)
+  fill_tracker.py    # Order ack, fill polling, PnL close (extracted from executor)
   sentinel_x.py      # Regime detection (6 regimes)
   hydra_engine.py    # Multi-strategy execution engine
   cerberus_router.py # Dynamic head multipliers (observation only)
@@ -50,7 +56,7 @@ execution/           # Core trading logic — DO NOT import from dashboard/
 config/              # All percentages in fractional form (0.05 = 5%)
 logs/state/          # State files — dashboard reads, executor writes
 dashboard/           # Streamlit app — READ-ONLY from logs/state/
-tests/               # ~170 pytest files (unit/, integration/, legacy/)
+tests/               # ~300 pytest files (unit/, integration/, legacy/)
 v7_manifest.json     # Canonical state file registry
 ```
 
@@ -138,7 +144,7 @@ make test-fast             # skip runtime and legacy markers
 make smoke                 # Firestore + doctor health check
 ```
 
-**⚠️ Never run individual test files** unless actively debugging. The ~170 tests catch regressions across modules.
+**⚠️ Never run individual test files** unless actively debugging. The ~300 tests catch regressions across modules.
 
 Test markers: `@pytest.mark.unit` (fast), `@pytest.mark.integration` (filesystem), `@pytest.mark.runtime` (state files)
 
