@@ -17,7 +17,7 @@ Signal → Hydra (multi-head) → Cerberus (multipliers) → Doctrine Gate → R
 | Component | File | Role |
 |-----------|------|------|
 | **Doctrine** | `execution/doctrine_kernel.py` | Entry/exit gating — CANNOT be bypassed |
-| **Executor** | `execution/executor_live.py` | Main loop (~5700 lines), orchestrates all |
+| **Executor** | `execution/executor_live.py` | Main loop (~5690 lines), orchestrates all |
 | **Sentinel-X** | `execution/sentinel_x.py` | Regime detection: TREND_UP/DOWN, MEAN_REVERT, BREAKOUT, CHOPPY, CRISIS |
 | **Hydra** | `execution/hydra_engine.py` | 6 strategy heads: TREND, MEAN_REVERT, RELATIVE_VALUE, CATEGORY, VOL_HARVEST, EMERGENT_ALPHA |
 | **Cerberus** | `execution/cerberus_router.py` | Dynamic head multipliers (does NOT create signals or override doctrine) |
@@ -28,6 +28,8 @@ Signal → Hydra (multi-head) → Cerberus (multipliers) → Doctrine Gate → R
 | **Helpers** | `execution/helpers.py` | Pure stateless utilities (to_float, ms_to_iso, etc.) |
 | **Sizing** | `execution/sizing.py` | Position sizing (nav_pct_fraction, size_from_nav) |
 | **Fill Tracker** | `execution/fill_tracker.py` | Order ack, fill polling, PnL close detection |
+| **Position Cache** | `execution/position_cache.py` | 1 s TTL position cache; `invalidate()` on confirmed fills |
+| **Order Dispatch** | `execution/order_dispatch.py` | Exchange dispatch, maker-first logic, retry loop (extracted from `_send_order`) |
 
 ### Doctrine Laws (Hard-Coded, Not Configurable)
 
