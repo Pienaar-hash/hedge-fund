@@ -22,6 +22,16 @@ Architecture:
 
 Single Source of Truth: This module defines the trading constitution.
 No other module may authorize trades. All roads lead through here.
+
+Safety Axiom — Kill Switch Exit Exemption (v7.9-KS):
+    KILL_SWITCH may only block risk-increasing orders (new entries).
+    It MUST NEVER block reduceOnly exits issued under doctrine authority.
+    Positions whose thesis has died (REGIME_FLIP, CRISIS_OVERRIDE, etc.)
+    require unconditional exit capability — blocking them converts a
+    risk-limiting mechanism into a risk-amplifying one.
+    Enforced in executor_live._send_order via the two-flag guard:
+        _is_doctrine_exit = bool(intent["doctrine_exit"]) and bool(intent["reduceOnly"])
+    Both flags must be True; spoofing doctrine_exit on entries has no effect.
 """
 
 from __future__ import annotations

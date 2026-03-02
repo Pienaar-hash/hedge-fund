@@ -749,6 +749,54 @@ class TestCounting:
             count = aw._count_episodes_since("2026-02-15T00:00:00Z")
         assert count == 2
 
+    def test_risk_veto_count_excludes_min_notional(self, tmp_path):
+        """min_notional vetoes are plumbing, not governance risk."""
+        veto_log = tmp_path / "risk_vetoes.jsonl"
+        with veto_log.open("w") as f:
+            # Governance vetoes — counted
+            f.write(json.dumps({"ts": "2026-02-20T10:00:00Z", "veto_reason": "max_concurrent"}) + "\n")
+            f.write(json.dumps({"ts": "2026-02-21T10:00:00Z", "veto_reason": "drawdown"}) + "\n")
+            # Plumbing vetoes — excluded
+            f.write(json.dumps({"ts": "2026-02-20T11:00:00Z", "veto_reason": "min_notional"}) + "\n")
+            f.write(json.dumps({"ts": "2026-02-20T12:00:00Z", "veto_reason": "below_min_notional"}) + "\n")
+            # Before start — excluded by timestamp
+            f.write(json.dumps({"ts": "2026-02-10T10:00:00Z", "veto_reason": "max_concurrent"}) + "\n")
+            # No veto_reason field — counted (empty string not in exclusion set)
+            f.write(json.dumps({"ts": "2026-02-22T10:00:00Z"}) + "\n")
+
+        with mock.patch.object(aw, "RISK_VETOES_LOG_PATH", veto_log):
+            count = aw._count_risk_vetoes_since("2026-02-15T00:00:00Z")
+        # max_concurrent + drawdown + no-reason = 3
+        assert count == 3
+
+    def test_risk_veto_count_all_min_notional_is_zero(self, tmp_path):
+        """A flood of min_notional vetoes should produce count=0."""
+        veto_log = tmp_path / "risk_vetoes.jsonl"
+        with veto_log.open("w") as f:
+            for i in range(100):
+                f.write(json.dumps({"ts": "2026-02-20T10:00:00Z", "veto_reason": "min_notional"}) + "\n")
+
+        with mock.patch.object(aw, "RISK_VETOES_LOG_PATH", veto_log):
+            count = aw._count_risk_vetoes_since("2026-02-15T00:00:00Z")
+        assert count == 0
+
+    def test_plumbing_veto_count(self, tmp_path):
+        """Plumbing counter is the complement of governance counter."""
+        veto_log = tmp_path / "risk_vetoes.jsonl"
+        with veto_log.open("w") as f:
+            f.write(json.dumps({"ts": "2026-02-20T10:00:00Z", "veto_reason": "max_concurrent"}) + "\n")
+            f.write(json.dumps({"ts": "2026-02-20T11:00:00Z", "veto_reason": "min_notional"}) + "\n")
+            f.write(json.dumps({"ts": "2026-02-20T12:00:00Z", "veto_reason": "below_min_notional"}) + "\n")
+            f.write(json.dumps({"ts": "2026-02-21T10:00:00Z", "veto_reason": "drawdown"}) + "\n")
+            f.write(json.dumps({"ts": "2026-02-10T10:00:00Z", "veto_reason": "min_notional"}) + "\n")
+
+        with mock.patch.object(aw, "RISK_VETOES_LOG_PATH", veto_log):
+            plumbing = aw._count_plumbing_vetoes_since("2026-02-15T00:00:00Z")
+            governance = aw._count_risk_vetoes_since("2026-02-15T00:00:00Z")
+        # 2 plumbing after start, 2 governance after start
+        assert plumbing == 2
+        assert governance == 2
+
     def test_dle_mismatch_count(self, tmp_path):
         dle_log = tmp_path / "dle.jsonl"
         with dle_log.open("w") as f:

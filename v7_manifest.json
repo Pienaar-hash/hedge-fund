@@ -1168,7 +1168,8 @@
         "dd_breached": "bool — drawdown >= kill threshold",
         "nav_usd": "float — current NAV",
         "episodes_completed": "int — episodes since start_ts",
-        "risk_veto_count": "int — risk vetoes since start_ts",
+        "risk_veto_count": "int — governance risk vetoes since start_ts (excludes plumbing)",
+        "plumbing_veto_count": "int — exchange plumbing vetoes since start_ts (min_notional etc, observability only)",
         "dle_mismatches": "int — DLE shadow mismatches since start_ts",
         "binary_lab_freeze_ok": "bool — Binary Lab config freeze intact",
         "per_trade_nav_pct": "float — sizing cap during window"

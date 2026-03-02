@@ -36,10 +36,13 @@ Kill conditions (any one triggers KILL_SWITCH):
     1. NAV drawdown ≥ ``drawdown_kill_pct``
     2. Manifest file hash changed mid-window
     3. Config hash drifted from boot snapshot
-    4. DLE veto bypass detected
-    5. Binary Lab freeze violation
-    6. Risk limits breach
-    7. 14 days elapsed (window complete — NOT a failure)
+    4. Binary Lab freeze violation
+    5. 14 days elapsed (window complete — NOT a failure)
+
+Observability-only signals (counted for verification scoring, do NOT
+trigger KILL_SWITCH independently):
+    - Risk veto count (excluding ``min_notional`` plumbing vetoes)
+    - DLE shadow mismatches
 """
 from __future__ import annotations
 
@@ -69,6 +72,7 @@ RISK_SNAPSHOT_PATH = Path("logs/state/risk_snapshot.json")
 BINARY_LAB_STATE_PATH = Path("logs/state/binary_lab_state.json")
 DLE_SHADOW_LOG = Path("logs/execution/dle_shadow_events.jsonl")
 
+RISK_VETOES_LOG_PATH = Path("logs/execution/risk_vetoes.jsonl")
 ACTIVATION_ACK_ENV = "ACTIVATION_WINDOW_ACK"
 DEFAULT_DURATION_DAYS = 14
 DEFAULT_DD_KILL_PCT = 0.05
@@ -202,9 +206,23 @@ def _get_nav_usd() -> float:
     return 0.0
 
 
+# Plumbing veto reasons excluded from governance risk counting.
+# These are exchange constraint artifacts (e.g. order too small),
+# not risk model / doctrine / regime vetoes.
+PLUMBING_VETO_REASONS: frozenset = frozenset({
+    "min_notional",
+    "below_min_notional",
+})
+
+
 def _count_risk_vetoes_since(start_ts: str) -> int:
-    """Count risk vetoes since window start."""
-    veto_log = Path("logs/execution/risk_vetoes.jsonl")
+    """Count *governance-relevant* risk vetoes since window start.
+
+    Excludes plumbing vetoes (``min_notional``) which reflect exchange
+    sizing constraints, not risk instability.  These are logged but
+    should not pollute the certification gate metric.
+    """
+    veto_log = RISK_VETOES_LOG_PATH
     if not veto_log.exists():
         return 0
     count = 0
@@ -214,7 +232,37 @@ def _count_risk_vetoes_since(start_ts: str) -> int:
                 try:
                     rec = json.loads(line)
                     if (rec.get("ts", "") or "") >= start_ts:
-                        count += 1
+                        reason = str(rec.get("veto_reason", "")).lower()
+                        if reason not in PLUMBING_VETO_REASONS:
+                            count += 1
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        pass
+    return count
+
+
+def _count_plumbing_vetoes_since(start_ts: str) -> int:
+    """Count plumbing vetoes (``min_notional`` etc.) since window start.
+
+    Observability-only — not used for gating.  Tracks exchange
+    sizing constraint rejections separately from governance vetoes.
+    A spike may indicate sizing mismatch, precision issues, or
+    liquidity thinning.
+    """
+    veto_log = RISK_VETOES_LOG_PATH
+    if not veto_log.exists():
+        return 0
+    count = 0
+    try:
+        with veto_log.open() as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    if (rec.get("ts", "") or "") >= start_ts:
+                        reason = str(rec.get("veto_reason", "")).lower()
+                        if reason in PLUMBING_VETO_REASONS:
+                            count += 1
                 except json.JSONDecodeError:
                     continue
     except Exception:
@@ -427,6 +475,7 @@ def check_activation_window(
     dle_mismatches = _check_dle_anomalies(start_ts)
     episodes_completed = _count_episodes_since(start_ts)
     risk_veto_count = _count_risk_vetoes_since(start_ts)
+    plumbing_veto_count = _count_plumbing_vetoes_since(start_ts)
 
     # --- Determine halt condition ---
     halt_reason: Optional[str] = None
@@ -469,6 +518,7 @@ def check_activation_window(
         # Telemetry
         "episodes_completed": episodes_completed,
         "risk_veto_count": risk_veto_count,
+        "plumbing_veto_count": plumbing_veto_count,
         "dle_mismatches": dle_mismatches,
         "binary_lab_freeze_ok": binary_lab_freeze_ok,
         # Sizing

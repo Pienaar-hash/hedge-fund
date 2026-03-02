@@ -80,6 +80,8 @@ class BinaryLabSignal:
     conviction_score: float
     conviction_band: str
     trend_slope: Optional[float]
+    vol_regime_z: Optional[float]
+    volume_z: Optional[float]
     hybrid_score: Optional[float]
     ts: str                       # ISO 8601 from sentinel_x updated_ts
 
@@ -192,6 +194,11 @@ def extract_signal(
     if trend_slope is not None:
         trend_slope = float(trend_slope)
 
+    vol_regime_z_raw = features.get("vol_regime_z")
+    vol_regime_z = float(vol_regime_z_raw) if vol_regime_z_raw is not None else None
+    volume_z_raw = features.get("volume_z")
+    volume_z = float(volume_z_raw) if volume_z_raw is not None else None
+
     direction = _regime_to_direction(regime, trend_slope)
 
     # Conviction proxy: use regime probability mapped through the standard bands.
@@ -215,6 +222,8 @@ def extract_signal(
         conviction_score=round(conviction_score, 6),
         conviction_band=conviction_band,
         trend_slope=trend_slope,
+        vol_regime_z=vol_regime_z,
+        volume_z=volume_z,
         hybrid_score=hybrid,
         ts=ts,
     )

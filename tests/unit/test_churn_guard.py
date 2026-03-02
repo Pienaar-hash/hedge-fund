@@ -148,15 +148,25 @@ class TestMinHold:
         )
         assert allowed is False
 
-    def test_regime_flip_does_not_bypass_hold(self):
-        """REGIME_FLIP is NOT a bypass reason — it must wait for hold."""
+    def test_regime_flip_bypasses_hold(self):
+        """REGIME_FLIP is a bypass reason — doctrine exits must not be blocked."""
         cfg = ChurnConfig(min_hold_seconds=120)
         record_entry("BTCUSDT", "LONG", ts=1000.0)
         allowed, _ = check_exit_allowed(
             "BTCUSDT", "LONG", exit_reason="REGIME_FLIP",
             now=1010.0, config=cfg,
         )
-        assert allowed is False
+        assert allowed is True
+
+    def test_regime_change_canonical_bypasses_hold(self):
+        """Canonical REGIME_CHANGE also bypasses hold."""
+        cfg = ChurnConfig(min_hold_seconds=120)
+        record_entry("BTCUSDT", "LONG", ts=1000.0)
+        allowed, _ = check_exit_allowed(
+            "BTCUSDT", "LONG", exit_reason="REGIME_CHANGE",
+            now=1010.0, config=cfg,
+        )
+        assert allowed is True
 
     def test_different_symbols_independent(self):
         """Entries for different symbols are tracked independently."""
@@ -288,12 +298,16 @@ class TestFullCycle:
         )
         assert allowed is True
 
-    def test_churn_scenario_all_regime_flips_vetoed(self):
-        """Simulate the Feb 12 churn: rapid REGIME_FLIP exits."""
+    def test_churn_scenario_regime_flips_bypass_hold(self):
+        """REGIME_FLIP exits bypass min_hold — they are doctrine-authority exits.
+        
+        Previously these were vetoed (Feb 12 churn scenario). After v7.9-KS,
+        regime-flip exits must NEVER be blocked by the churn guard.
+        """
         cfg = ChurnConfig(min_hold_seconds=120, cooldown_seconds=300)
         record_entry("ETHUSDT", "LONG", ts=1000.0)
 
-        # Try 10 REGIME_FLIP exits, 60s apart
+        # Try 10 REGIME_FLIP exits, 60s apart — all should be allowed
         vetoed = 0
         for i in range(10):
             t = 1060.0 + i * 60  # 1060, 1120, 1180...
@@ -304,18 +318,41 @@ class TestFullCycle:
             if not allowed:
                 vetoed += 1
 
+        assert vetoed == 0  # REGIME_FLIP always bypasses
+
+    def test_churn_scenario_non_safety_exits_still_held(self):
+        """Non-safety exit reasons (e.g. TIME_STOP) still respect min_hold."""
+        cfg = ChurnConfig(min_hold_seconds=120, cooldown_seconds=300)
+        record_entry("ETHUSDT", "LONG", ts=1000.0)
+
+        vetoed = 0
+        for i in range(10):
+            t = 1060.0 + i * 60
+            allowed, _ = check_exit_allowed(
+                "ETHUSDT", "LONG", exit_reason="TIME_STOP",
+                now=t, config=cfg,
+            )
+            if not allowed:
+                vetoed += 1
+
         # First exit at 1060 (held 60s < 120s): vetoed
         # Second at 1120 (held 120s): allowed
-        assert vetoed == 1  # Only the first one is vetoed
+        assert vetoed == 1
 
 
 # ── Bypass reason coverage ────────────────────────────────────────────────
 
 class TestBypassReasons:
     def test_bypass_reasons_frozen(self):
+        # Raw doctrine_kernel values
         assert "CRISIS_OVERRIDE" in HOLD_BYPASS_REASONS
         assert "SEATBELT" in HOLD_BYPASS_REASONS
-        assert "REGIME_FLIP" not in HOLD_BYPASS_REASONS
+        assert "REGIME_FLIP" in HOLD_BYPASS_REASONS
+        assert "STOP_LOSS_SEATBELT" in HOLD_BYPASS_REASONS
+        assert "REGIME_CONFIDENCE_COLLAPSE" in HOLD_BYPASS_REASONS
+        # Canonical exit_reason_map values
+        assert "CRISIS" in HOLD_BYPASS_REASONS
+        assert "REGIME_CHANGE" in HOLD_BYPASS_REASONS
 
     def test_case_insensitive_bypass(self):
         """Exit reason is converted to upper for matching."""

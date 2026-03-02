@@ -165,6 +165,10 @@ _SYMBOL_ERROR_COOLDOWN: Dict[str, float] = {}
 _LAST_DOCTRINE_BLOCK_LOG = 0.0
 _DOCTRINE_BLOCK_LOG_INTERVAL_S = 120.0  # At most one summary line every 2 min
 
+# Episode ledger rebuild (observability — never gates execution)
+_EPISODE_LEDGER_REBUILD_INTERVAL_S = float(os.getenv("EPISODE_LEDGER_REBUILD_INTERVAL_S", "300") or 300)
+_LAST_EPISODE_LEDGER_REBUILD_TS = 0.0
+
 # Disk pressure guard (prevents silent IO-wait death from unbounded log growth)
 _DISK_CHECK_INTERVAL_S = float(os.getenv("DISK_CHECK_INTERVAL_S", "300") or 300)
 _DISK_WARN_THRESHOLD_PCT = float(os.getenv("DISK_WARN_THRESHOLD_PCT", "80") or 80)
@@ -1007,14 +1011,12 @@ try:
     from execution.cycle_statistics import (
         record_entry_event as _record_entry_stat,
         record_regime_change as _record_regime_stat,
-        record_flag as _record_flag_stat,
     )
     _CYCLE_STATS_AVAILABLE = True
 except ImportError:
     _CYCLE_STATS_AVAILABLE = False
     def _record_entry_stat(*args, **kwargs): pass
     def _record_regime_stat(*args, **kwargs): pass
-    def _record_flag_stat(*args, **kwargs): pass
 
 # Regime pressure (observational only — never affects decisions)
 try:
@@ -1041,6 +1043,13 @@ from execution.signal_generator import (
 )
 from execution.signal_screener import generate_intents
 from execution import signal_doctor
+from execution.hydra_integration import (
+    run_hydra_pipeline,
+    convert_hydra_intents_to_execution,
+    merge_with_single_strategy_intents,
+    is_hydra_enabled,
+)
+from execution.cerberus_router import get_cerberus_all_multipliers
 from execution.state_publish import (
     build_synced_state_payload,
     write_nav_state,
@@ -1353,18 +1362,6 @@ def _nav_pct_fraction(value: Any) -> float:
     return pct
 
 
-def _normalize_pct_value(value: Any) -> float:
-    try:
-        pct = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if pct <= 0.0:
-        return 0.0
-    if pct > 1.0:
-        return pct / 100.0
-    return pct
-
-
 def _size_from_nav(symbol: str, nav_usd: float, pct: float) -> float:
     """Compute gross notional from NAV * pct fraction."""
     try:
@@ -1372,10 +1369,6 @@ def _size_from_nav(symbol: str, nav_usd: float, pct: float) -> float:
     except Exception:
         return 0.0
 
-
-def _clamp_intent_gross(symbol: str, gross: float, nav_usd: float, floor_gross: float) -> float:
-    """Pass-through clamp: honor floor only (caps enforced in risk engine)."""
-    return max(float(gross), float(floor_gross))
 
 # ---- knobs ----
 SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
@@ -2079,41 +2072,6 @@ def _estimate_intent_qty(intent: Mapping[str, Any], gross_target: float, price_h
     return float(intent.get("qty_estimate", 0.0) or 0.0)
 
 
-def compute_final_gross_for_test(
-    intent: Mapping[str, Any],
-    nav_usd: float,
-    size_risk_cfg: Mapping[str, Any],
-) -> float:
-    """Pure helper for tests to mirror the v6 sizing clamps without side effects."""
-    try:
-        symbol = str(intent.get("symbol") or intent.get("pair") or "").upper()
-    except Exception:
-        symbol = ""
-    lev = float(intent.get("leverage", 1.0) or 1.0)
-    per_trade_nav_pct = _nav_pct_fraction(intent.get("per_trade_nav_pct"))
-    intent_min_notional = _to_float(intent.get("min_notional")) or 0.0
-    try:
-        screener_gross = float(intent.get("gross_usd") or 0.0)
-    except Exception:
-        screener_gross = 0.0
-    gross_target = float(intent.get("gross_usd") or 0.0)
-    if nav_usd is None:
-        nav_usd = 0.0
-    floor_gross = max(
-        float(size_risk_cfg.get("min_notional_usd") or 0.0),
-        intent_min_notional,
-        symbol_min_gross(symbol),
-    )
-    if gross_target <= 0.0 and per_trade_nav_pct > 0.0:
-        gross_target = _size_from_nav(symbol, nav_usd, per_trade_nav_pct)
-    gross_target = max(gross_target, floor_gross)
-    if screener_gross > 0.0:
-        gross_target = min(gross_target, screener_gross)
-    if gross_target < floor_gross:
-        return 0.0
-    return float(gross_target)
-
-
 def _position_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
     try:
         positions = list(get_positions() or [])
@@ -2534,22 +2492,6 @@ def _update_risk_state_counters(
     _RISK_STATE.open_notional = float(portfolio_gross)
     _RISK_STATE.open_positions = int(open_positions)
     _RISK_STATE.daily_pnl_pct = 0.0
-
-
-def _current_bucket_gross(symbol_gross: Mapping[str, float], buckets: Mapping[str, str]) -> Dict[str, float]:
-    totals: Dict[str, float] = {}
-    for sym, gross in symbol_gross.items():
-        try:
-            bucket = buckets.get(str(sym).upper())
-        except Exception:
-            bucket = None
-        if not bucket:
-            continue
-        try:
-            totals[bucket] = totals.get(bucket, 0.0) + float(gross)
-        except Exception:
-            continue
-    return totals
 
 
 def _build_order_intent_for_executor(
@@ -3680,7 +3622,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     attempt_payload["expected_edge"] = float(intent.get("expected_edge", 0.0) or 0.0)
     _record_structured_event(LOG_ATTEMPTS, "order_attempt", attempt_payload)
 
-    if os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on"):
+    # v7.9-KS: Doctrine exits (REGIME_FLIP, CRISIS, thesis-death) must NEVER
+    # be blocked by the kill switch.  Kill switch caps new entries; it does
+    # not override the Doctrine Kernel's authority to close positions whose
+    # thesis has died (Doctrine Law #5).
+    _is_doctrine_exit = bool(intent.get("doctrine_exit")) and bool(intent.get("reduceOnly"))
+    _kill_switch_on = os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on")
+    if _kill_switch_on and _is_doctrine_exit:
+        LOG.warning(
+            "[risk] kill switch active but DOCTRINE EXIT exempt — allowing %s %s (reason=%s)",
+            symbol, side, intent.get("metadata", {}).get("exit_reason", "?"),
+        )
+    if _kill_switch_on and not _is_doctrine_exit:
         price_hint = float(intent.get("price", 0.0) or 0.0)
         LOG.warning("[risk] kill switch active; veto %s %s", symbol, side)
         _persist_veto(
@@ -4209,6 +4162,71 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         return
 
     payload["positionSide"] = pos_side
+
+    # ── v7.9-D1: Post-sizing notional inflation guard ──────────────────
+    # Root cause D1: Binance testnet MARKET_LOT_SIZE can have minQty=1 BTC
+    # (stepSize=1), causing normalize_price_qty to inflate qty from ~0.001
+    # to 1.0 — a 100x+ notional breach.  This guard compares the ACTUAL
+    # post-normalization notional against (a) gross_target with a 3× fuse
+    # and (b) per-symbol max_order_notional from risk_limits.json.
+    try:
+        _actual_qty = float(payload.get("quantity", 0) or 0)
+        _actual_notional = _actual_qty * price_hint if price_hint > 0 else 0.0
+        _per_sym = (_RISK_CFG.get("per_symbol") or {}).get(symbol_upper) or {}
+        _max_order_notional = float(_per_sym.get("max_order_notional", 0) or 0)
+        _inflation_ratio = (_actual_notional / gross_target) if gross_target > 0 else 0.0
+
+        _notional_breach = False
+        _breach_reason = ""
+        if _max_order_notional > 0 and _actual_notional > _max_order_notional:
+            _notional_breach = True
+            _breach_reason = f"actual_notional={_actual_notional:.2f} > max_order_notional={_max_order_notional:.2f}"
+        elif gross_target > 0 and _inflation_ratio > 3.0:
+            _notional_breach = True
+            _breach_reason = f"inflation_ratio={_inflation_ratio:.1f}x (actual={_actual_notional:.2f} vs target={gross_target:.2f})"
+
+        if _notional_breach:
+            LOG.error(
+                "[sizing] NOTIONAL_INFLATION_GUARD %s side=%s qty=%s price=%.2f "
+                "actual_notional=%.2f gross_target=%.2f reason=%s",
+                symbol, side, payload.get("quantity"), price_hint,
+                _actual_notional, gross_target, _breach_reason,
+            )
+            _persist_veto(
+                "notional_inflation_guard",
+                price_hint,
+                {
+                    "intent": intent,
+                    "nav_snapshot": nav_snapshot,
+                    "thresholds": {
+                        "actual_notional": _actual_notional,
+                        "gross_target": gross_target,
+                        "max_order_notional": _max_order_notional,
+                        "inflation_ratio": _inflation_ratio,
+                        "payload_qty": str(payload.get("quantity")),
+                        "meta": dict(meta),
+                    },
+                },
+            )
+            try:
+                publish_order_audit(
+                    symbol,
+                    {
+                        "phase": "blocked",
+                        "side": side,
+                        "positionSide": pos_side,
+                        "reason": "notional_inflation_guard",
+                        "actual_notional": _actual_notional,
+                        "gross_target": gross_target,
+                        "max_order_notional": _max_order_notional,
+                        "payload_qty": str(payload.get("quantity")),
+                    },
+                )
+            except Exception:
+                pass
+            return
+    except Exception as _nig_exc:
+        LOG.warning("[sizing] notional_inflation_guard check failed: %s", _nig_exc)
 
     def _meta_float(val: Any, fallback: float) -> float:
         try:
@@ -4909,29 +4927,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
 
 
 
-def _compute_nav_snapshot() -> Optional[float]:
-    try:
-        from execution.state_publish import compute_nav
-
-        return float(compute_nav())
-    except Exception as exc:
-        LOG.error("[executor] compute_nav not available: %s", exc)
-        try:
-            from execution.exchange_utils import get_account
-
-            acc = get_account()
-            return float(
-                acc.get("totalMarginBalance")
-                or (
-                    float(acc.get("totalWalletBalance", 0) or 0)
-                    + float(acc.get("totalUnrealizedProfit", 0) or 0)
-                )
-            )
-        except Exception as account_exc:
-            LOG.error("[executor] account NAV error: %s", account_exc)
-    return None
-
-
 def _collect_rows() -> List[Dict[str, Any]]:
     try:
         from execution.exchange_utils import get_positions as _get_positions_snapshot
@@ -5489,8 +5484,19 @@ def _pub_tick() -> None:
         binary_lab_written = _binary_lab_tick(now_iso)
     except Exception as exc:
         LOG.debug("[telemetry] binary_lab_state_write_failed: %s", exc)
+    # Episode ledger rebuild (observability — fail-open, throttled)
+    episode_ledger_written = False
+    global _LAST_EPISODE_LEDGER_REBUILD_TS
+    if (now_ts - _LAST_EPISODE_LEDGER_REBUILD_TS) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:
+        try:
+            from execution.episode_ledger import rebuild_and_save as _episode_rebuild
+            _episode_rebuild()
+            episode_ledger_written = True
+            _LAST_EPISODE_LEDGER_REBUILD_TS = now_ts
+        except Exception as exc:
+            LOG.debug("[telemetry] episode_ledger_rebuild_failed: %s", exc)
     LOG.info(
-        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s binary_lab=%s",
+        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s binary_lab=%s episode_ledger=%s",
         nav_written,
         positions_state_written,
         positions_ledger_written,
@@ -5502,6 +5508,7 @@ def _pub_tick() -> None:
         synced_written,
         phase_c_written,
         binary_lab_written,
+        episode_ledger_written,
     )
     _LAST_NAV_STATE = nav_payload
     _LAST_POSITIONS_STATE = positions_state_payload
@@ -5746,6 +5753,123 @@ def _loop_once(i: int) -> None:
                 LOG.error("[screener] error: %s", e)
                 intents_raw = []
             section.symbols_processed = len(intents_raw)
+
+        # --- Hydra multi-strategy injection (fail-open) ---
+        _hydra_count = 0
+        _legacy_count = len(intents_raw)
+        try:
+            _hydra_cfg = load_json("config/strategy_config.json") or {}
+            if is_hydra_enabled(_hydra_cfg):
+                _hydra_nav = _compute_nav()
+                _hydra_symbols = sorted(universe_by_symbol().keys())
+                _hydra_cerberus = get_cerberus_all_multipliers()
+                _hydra_prices: Dict[str, float] = {}
+                for _hs in _hydra_symbols:
+                    try:
+                        _hydra_prices[_hs] = float(get_price(_hs))
+                    except Exception:
+                        pass
+
+                # --- Load intel surfaces for Hydra heads ---
+                _intel_hybrid: Dict[str, float] = {}
+                _intel_zscore: Dict[str, float] = {}
+                _intel_universe: Dict[str, float] = {}
+                _intel_cat_scores: Dict[str, float] = {}
+                _intel_cat_map: Dict[str, str] = {}
+                try:
+                    _ss_data = load_json("logs/state/symbol_scores_v6.json") or {}
+                    for _entry in _ss_data.get("symbols", []):
+                        if isinstance(_entry, dict) and "symbol" in _entry:
+                            _sym = _entry["symbol"]
+                            _intel_hybrid[_sym] = float(
+                                _entry.get("score", 0.0),
+                            )
+                except Exception:
+                    pass
+                try:
+                    _rv_data = load_json("logs/state/rv_momentum.json") or {}
+                    for _sym, _rv_v in (_rv_data.get("per_symbol") or {}).items():
+                        if isinstance(_rv_v, dict):
+                            _intel_zscore[_sym] = float(_rv_v.get("raw_score", 0.0))
+                except Exception:
+                    pass
+                try:
+                    _uo_data = load_json("logs/state/universe_optimizer.json") or {}
+                    _u_scores = (
+                        _uo_data.get("symbol_scores") or {}
+                    )
+                    _intel_universe = {
+                        str(k): float(v)
+                        for k, v in _u_scores.items()
+                    }
+                    _c_scores = (
+                        _uo_data.get("category_scores") or {}
+                    )
+                    _intel_cat_scores = {
+                        str(k): float(v)
+                        for k, v in _c_scores.items()
+                    }
+                except Exception:
+                    pass
+                try:
+                    _sc_data = load_json("config/symbol_categories.json") or {}
+                    _cat_raw = (
+                        _sc_data.get("categories") or {}
+                    )
+                    _intel_cat_map = {
+                        str(k): str(v)
+                        for k, v in _cat_raw.items()
+                    }
+                except Exception:
+                    pass
+                LOG.debug(
+                    "[hydra] intel: h=%d z=%d u=%d"
+                    " cs=%d cm=%d",
+                    len(_intel_hybrid),
+                    len(_intel_zscore),
+                    len(_intel_universe),
+                    len(_intel_cat_scores),
+                    len(_intel_cat_map),
+                )
+                # --- end intel surface load ---
+
+                _hydra_merged, _hydra_state = run_hydra_pipeline(
+                    strategy_config=_hydra_cfg,
+                    cerberus_multipliers=_hydra_cerberus,
+                    symbols=_hydra_symbols,
+                    nav_usd=_hydra_nav,
+                    cycle_count=i,
+                    hybrid_scores=_intel_hybrid,
+                    zscore_map=_intel_zscore,
+                    universe_scores=_intel_universe,
+                    category_scores=_intel_cat_scores,
+                    symbol_categories=_intel_cat_map,
+                )
+                _hydra_exec = convert_hydra_intents_to_execution(
+                    _hydra_merged, _hydra_nav, _hydra_prices,
+                )
+                # Stamp provenance before merge
+                for _hi in _hydra_exec:
+                    _hi.setdefault("source", "hydra")
+                for _li in intents_raw:
+                    if isinstance(_li, dict):
+                        _li.setdefault("source", "legacy")
+                _hydra_count = len(_hydra_exec)
+                intents_raw = merge_with_single_strategy_intents(
+                    _hydra_exec, intents_raw, prefer_hydra=True,
+                )
+        except Exception as _hydra_err:
+            LOG.warning("[hydra] fail-open — error in pipeline, using legacy intents: %s", _hydra_err)
+        LOG.info(
+            "[hydra] enabled=%d hydra_intents=%d legacy_intents=%d merged=%d cycle=%d",
+            1 if _hydra_count > 0 else 0,
+            _hydra_count,
+            _legacy_count,
+            len(intents_raw),
+            i,
+        )
+        # --- end Hydra injection ---
+
         _LAST_QUEUE_DEPTH = len(intents_raw)
         attempted = getattr(intents_raw, "attempted", len(intents_raw))
         screener_emitted = getattr(intents_raw, "emitted", len(intents_raw))
@@ -5861,7 +5985,45 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         LOG.info("[executor] exchange precision cache refreshed")
     except Exception as exc:
         LOG.warning("[executor] precision cache refresh failed: %s", exc)
-    
+
+    # v7.9-D1: Filter drift detection — compare live API MARKET_LOT_SIZE
+    # against LOT_SIZE from the file-based precision cache.  Testnet can
+    # return MARKET_LOT_SIZE.minQty = 1 BTC while LOT_SIZE has 0.001,
+    # which caused the qty=1 BTC sizing breach (D1).
+    try:
+        from execution.exchange_utils import get_symbol_filters as _gsf
+        from execution.exchange_precision import load_precision_table
+
+        _pt = load_precision_table() or {}
+        _drift_warnings: list[str] = []
+        for _sym, _cached in _pt.items():
+            try:
+                _live = _gsf(_sym)
+            except Exception:
+                continue
+            _mls = _live.get("MARKET_LOT_SIZE") or {}
+            _mls_min = float(_mls.get("minQty", 0) or 0)
+            _cached_min = float(_cached.get("minQty", 0) or 0)
+            if _cached_min > 0 and _mls_min > 0 and (_mls_min / _cached_min) > 10:
+                _msg = (
+                    f"{_sym}: MARKET_LOT_SIZE.minQty={_mls_min} vs "
+                    f"LOT_SIZE.minQty={_cached_min} (ratio={_mls_min / _cached_min:.0f}x)"
+                )
+                _drift_warnings.append(_msg)
+                LOG.warning("[startup] FILTER_DRIFT %s", _msg)
+        if _drift_warnings:
+            LOG.warning(
+                "[startup] FILTER_DRIFT_SUMMARY: %d symbols with >10x MARKET_LOT_SIZE "
+                "inflation detected. Using LOT_SIZE preference (v7.9-D1 fix).",
+                len(_drift_warnings),
+            )
+        else:
+            LOG.info("[startup] FILTER_DRIFT_OK — no MARKET_LOT_SIZE inflation detected")
+    except ImportError:
+        pass
+    except Exception as _fd_exc:
+        LOG.debug("[startup] filter drift check failed: %s", _fd_exc)
+
     LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
     log_v6_flag_snapshot(LOG)
     _maybe_write_v6_runtime_probe(force=True)
@@ -5909,32 +6071,54 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         LOG.warning("[startup] churn_guard bootstrap failed (non-fatal): %s", exc)
 
     i = 0
+    _consecutive_crashes = 0
     while True:
         global _LAST_CYCLE_TS
         _LAST_CYCLE_TS = time.time()
-        timing_start_loop(i)
-        
-        # v7.X_DOCTRINE: Compute Sentinel-X regime FIRST, before any trading logic
-        # Doctrine requires regime authority; without it, all trades are vetoed.
-        with timed_section("sentinel_compute", api_calls=1):
-            _maybe_compute_sentinel_x()
-        
-        with timed_section("loop_once"):
-            _loop_once(i)
-        
-        with timed_section("heartbeat_emit"):
-            _maybe_emit_heartbeat()
-        
-        with timed_section("internal_screener"):
-            _maybe_run_internal_screener()
-        
-        with timed_section("runtime_probe"):
-            _maybe_write_v6_runtime_probe()
-        
-        with timed_section("disk_guard"):
-            _maybe_check_disk_pressure()
-        
-        timing_end_loop()
+        try:
+            timing_start_loop(i)
+            
+            # v7.X_DOCTRINE: Compute Sentinel-X regime FIRST, before any trading logic
+            # Doctrine requires regime authority; without it, all trades are vetoed.
+            with timed_section("sentinel_compute", api_calls=1):
+                _maybe_compute_sentinel_x()
+            
+            with timed_section("loop_once"):
+                _loop_once(i)
+            
+            with timed_section("heartbeat_emit"):
+                _maybe_emit_heartbeat()
+            
+            with timed_section("internal_screener"):
+                _maybe_run_internal_screener()
+            
+            with timed_section("runtime_probe"):
+                _maybe_write_v6_runtime_probe()
+            
+            with timed_section("disk_guard"):
+                _maybe_check_disk_pressure()
+            
+            timing_end_loop()
+            _consecutive_crashes = 0
+        except KeyboardInterrupt:
+            LOG.info("[executor] KeyboardInterrupt — exiting.")
+            break
+        except Exception as _loop_exc:
+            _consecutive_crashes += 1
+            LOG.exception(
+                "[executor] LOOP_CRASH cycle=%d consecutive=%d err=%s",
+                i, _consecutive_crashes, _loop_exc,
+            )
+            # v7.9-D1: Exponential backoff on consecutive crashes.
+            # Cap at 60 s to avoid silent stalls while preventing the
+            # supervisor restart-loop that amplified the qty=1 BTC bug.
+            _backoff = min(60.0, 5.0 * _consecutive_crashes)
+            time.sleep(_backoff)
+            if _consecutive_crashes >= 10:
+                LOG.error(
+                    "[executor] 10 consecutive crashes — halting to prevent damage."
+                )
+                break
         i += 1
         if MAX_LOOPS and i >= MAX_LOOPS:
             LOG.info("[executor] MAX_LOOPS reached — exiting.")
