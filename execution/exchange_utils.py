@@ -9,6 +9,7 @@ import math
 import os
 import sys
 import time
+import threading
 import random
 import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -565,8 +566,21 @@ def is_testnet() -> bool:
 _BASE = _base_url()
 _KEY = os.getenv("BINANCE_API_KEY", "")
 _SEC = os.getenv("BINANCE_API_SECRET", "").encode()
-_S = requests.Session()
-_S.headers["X-MBX-APIKEY"] = _KEY
+_TLS = threading.local()
+
+
+def _session() -> requests.Session:
+    """Return a per-thread :class:`requests.Session` with the API key header."""
+    s = getattr(_TLS, "session", None)
+    if s is None:
+        s = requests.Session()
+        s.headers["X-MBX-APIKEY"] = _KEY
+        _TLS.session = s
+    return s
+
+
+# Backward-compat alias — legacy tests may monkeypatch _S directly.
+_S = _session()
 
 _MAX_BACKOFF_ATTEMPTS = int(os.getenv("BINANCE_MAX_RETRIES", "5") or 5)
 _BACKOFF_INITIAL = float(os.getenv("BINANCE_BACKOFF_INITIAL", "0.25") or 0.25)
@@ -575,28 +589,30 @@ _BACKOFF_MAX = float(os.getenv("BINANCE_BACKOFF_MAX", "3.0") or 3.0)
 TIME_OFFSET_MS: Optional[int] = None
 LAST_TIME_SYNC: float = 0.0
 _TIME_SYNC_INTERVAL = 600  # seconds
+_TIME_SYNC_LOCK = threading.Lock()
 
 
 def _sync_server_time(force: bool = False) -> None:
-    """Refresh cached Binance server time offset."""
+    """Refresh cached Binance server time offset (thread-safe)."""
     global TIME_OFFSET_MS, LAST_TIME_SYNC
-    now = time.time()
-    if not force and TIME_OFFSET_MS is not None and (now - LAST_TIME_SYNC) < _TIME_SYNC_INTERVAL:
-        return
+    with _TIME_SYNC_LOCK:
+        now = time.time()
+        if not force and TIME_OFFSET_MS is not None and (now - LAST_TIME_SYNC) < _TIME_SYNC_INTERVAL:
+            return
 
-    try:
-        resp = requests.get(f"{_base_url()}/fapi/v1/time", timeout=5)
-        resp.raise_for_status()
-        data = resp.json() or {}
-        server_time_ms = int(data.get("serverTime"))
-        local_time_ms = int(time.time() * 1000)
-        TIME_OFFSET_MS = server_time_ms - local_time_ms
-        LAST_TIME_SYNC = now
-        _LOG.info("[binance] server_time_offset_ms=%s", TIME_OFFSET_MS)
-    except Exception as exc:  # pragma: no cover - soft failure
-        _LOG.warning("[binance] time_sync_failed: %s", exc)
-        if TIME_OFFSET_MS is None:
-            TIME_OFFSET_MS = 0
+        try:
+            resp = requests.get(f"{_base_url()}/fapi/v1/time", timeout=5)
+            resp.raise_for_status()
+            data = resp.json() or {}
+            server_time_ms = int(data.get("serverTime"))
+            local_time_ms = int(time.time() * 1000)
+            TIME_OFFSET_MS = server_time_ms - local_time_ms
+            LAST_TIME_SYNC = now
+            _LOG.info("[binance] server_time_offset_ms=%s", TIME_OFFSET_MS)
+        except Exception as exc:  # pragma: no cover - soft failure
+            _LOG.warning("[binance] time_sync_failed: %s", exc)
+            if TIME_OFFSET_MS is None:
+                TIME_OFFSET_MS = 0
 
 
 def _req(
@@ -653,7 +669,7 @@ def _req(
     while True:
         attempt += 1
         try:
-            r = _S.request(method, url, data=data, timeout=timeout, headers=headers)
+            r = _session().request(method, url, data=data, timeout=timeout, headers=headers)
             r.raise_for_status()
             return r
         except requests.HTTPError as exc:

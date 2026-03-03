@@ -52,6 +52,7 @@ from execution.fill_tracker import (
     confirm_order_fill as _confirm_order_fill,
     start_fill_task as _start_fill_task,
     wait_fill_task as _wait_fill_task,
+    poll_fill_task as _poll_fill_task,
 )
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 from execution.universe_resolver import (
@@ -3678,8 +3679,19 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         intent.get("metadata"),
                         intent.get("strategy") or intent.get("strategy_id"),
                     )
-                    reduce_fill = _wait_fill_task(_reduce_fh)
-                if reduce_ack:
+                    # ── Overlap: log ack while fill polls in background ──
+                    if reduce_ack:
+                        LOG.info(
+                            "[executor] FLIP_ACK id=%s status=%s qty=%s",
+                            reduce_ack.order_id or reduce_ack.client_order_id,
+                            reduce_ack.status,
+                            reduce_ack.request_qty,
+                        )
+                    # Try non-blocking check first, then block for remainder
+                    reduce_fill = _poll_fill_task(_reduce_fh)
+                    if reduce_fill is None:
+                        reduce_fill = _wait_fill_task(_reduce_fh)
+                elif reduce_ack:
                     LOG.info(
                         "[executor] FLIP_ACK id=%s status=%s qty=%s",
                         reduce_ack.order_id or reduce_ack.client_order_id,
@@ -4207,7 +4219,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 intent.get("metadata"),
                 intent.get("strategy") or intent.get("strategy_id"),
             )
-            fill_summary = _wait_fill_task(_fill_handle)
+            # ── Overlap safe bookkeeping while fill polls in background ──
+            if ack_info:
+                LOG.info(
+                    "[executor] ORDER_ACK id=%s status=%s qty_req=%s",
+                    ack_info.order_id or ack_info.client_order_id,
+                    ack_info.status,
+                    ack_info.request_qty,
+                )
+            # Try non-blocking check first, then block for remainder
+            fill_summary = _poll_fill_task(_fill_handle)
+            if fill_summary is None:
+                fill_summary = _wait_fill_task(_fill_handle)
 
     avg_fill_price = (
         fill_summary.avg_price if fill_summary and fill_summary.avg_price is not None else _to_float(resp.get("avgPrice"))
@@ -4313,12 +4336,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     }
 
     if ack_info:
-        LOG.info(
-            "[executor] ORDER_ACK id=%s status=%s qty_req=%s",
-            ack_info.order_id or ack_info.client_order_id,
-            ack_info.status,
-            ack_info.request_qty,
-        )
+        pass  # ACK already logged above (overlapped with fill polling)
     else:
         LOG.info("[executor] ORDER_ACK missing response symbol=%s", symbol)
     if fill_summary:
