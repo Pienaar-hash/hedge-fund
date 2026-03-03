@@ -13,6 +13,8 @@ from execution.fill_tracker import (
     a_fetch_order_status,
     a_fetch_order_trades,
     confirm_order_fill,
+    start_fill_task,
+    wait_fill_task,
 )
 from execution.pnl_tracker import PositionTracker
 
@@ -275,3 +277,69 @@ class TestErrorResilience:
         assert result is not None
         assert pytest.approx(result.executed_qty) == 1.0
         assert result.status == "NEW"  # status never updated to FILLED
+
+
+# ── FillTaskHandle lifecycle ──────────────────────────────────────────
+
+class TestFillTaskHandle:
+    @pytest.fixture(autouse=True)
+    def _patch_io(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import execution.fill_tracker as ft
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(_TWO_TRADES))
+        monkeypatch.setattr(ft, "write_event", lambda *a, **kw: None)
+
+    @pytest.mark.unit
+    def test_handle_lifecycle(self) -> None:
+        """start → wait → result matches direct confirm_order_fill."""
+        ack = _make_ack()
+        tracker = PositionTracker()
+        handle = start_fill_task(ack, position_tracker=tracker)
+        assert not handle._done
+        assert handle._result is None
+
+        result = wait_fill_task(handle)
+        assert result is not None
+        assert handle._done
+        assert pytest.approx(result.executed_qty) == 1.0
+        assert pytest.approx(result.avg_price) == 100.5
+
+    @pytest.mark.unit
+    def test_wait_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Calling wait_fill_task twice returns cached result, no re-poll."""
+        import execution.fill_tracker as ft
+        call_count = {"n": 0}
+        orig_confirm = ft.confirm_order_fill
+
+        def counting_confirm(*a: Any, **kw: Any) -> Any:
+            call_count["n"] += 1
+            return orig_confirm(*a, **kw)
+
+        monkeypatch.setattr(ft, "confirm_order_fill", counting_confirm)
+
+        handle = start_fill_task(_make_ack(), position_tracker=PositionTracker())
+        r1 = wait_fill_task(handle)
+        r2 = wait_fill_task(handle)
+        assert r1 is r2
+        assert call_count["n"] == 1
+
+    @pytest.mark.unit
+    def test_handle_stores_arguments(self) -> None:
+        ack = _make_ack()
+        handle = start_fill_task(ack, metadata={"foo": 1}, strategy="trend")
+        assert handle.ack is ack
+        assert handle.metadata == {"foo": 1}
+        assert handle.strategy == "trend"
+
+    @pytest.mark.unit
+    def test_handle_timeout_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import execution.fill_tracker as ft
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "NEW"})
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: [])
+        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.0)
+        monkeypatch.setattr(ft, "FILL_POLL_INTERVAL", 0.0)
+
+        handle = start_fill_task(_make_ack(), position_tracker=PositionTracker())
+        result = wait_fill_task(handle)
+        assert result is None
+        assert handle._done
