@@ -27,7 +27,7 @@ Signal → Hydra (multi-head) → Cerberus (multipliers) → Doctrine Gate → R
 | **NAV** | `execution/nav.py` | `nav_health_snapshot()` — sole source of NAV truth |
 | **Helpers** | `execution/helpers.py` | Pure stateless utilities (to_float, ms_to_iso, etc.) |
 | **Sizing** | `execution/sizing.py` | Position sizing (nav_pct_fraction, size_from_nav) |
-| **Fill Tracker** | `execution/fill_tracker.py` | Order ack, fill polling, PnL close detection |
+| **Fill Tracker** | `execution/fill_tracker.py` | Order ack, fill polling (async core + sync wrapper), `FillTaskHandle` API |
 | **Position Cache** | `execution/position_cache.py` | 1 s TTL position cache; `invalidate()` on confirmed fills |
 | **Order Dispatch** | `execution/order_dispatch.py` | Exchange dispatch, maker-first logic, retry loop (extracted from `_send_order`) |
 
