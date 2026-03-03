@@ -50,6 +50,8 @@ from execution.fill_tracker import (
     emit_order_ack as _emit_order_ack,
     should_emit_close as _should_emit_close,
     confirm_order_fill as _confirm_order_fill,
+    start_fill_task as _start_fill_task,
+    wait_fill_task as _wait_fill_task,
 )
 from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 from execution.universe_resolver import (
@@ -3671,11 +3673,12 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
                 reduce_fill: Optional[FillSummary] = None
                 if reduce_ack and not reduce_resp.get("dryRun"):
-                    reduce_fill = _confirm_order_fill(
+                    _reduce_fh = _start_fill_task(
                         reduce_ack,
                         intent.get("metadata"),
                         intent.get("strategy") or intent.get("strategy_id"),
                     )
+                    reduce_fill = _wait_fill_task(_reduce_fh)
                 if reduce_ack:
                     LOG.info(
                         "[executor] FLIP_ACK id=%s status=%s qty=%s",
@@ -4199,11 +4202,12 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             intent_id=intent_id,
         )
         if ack_info and not resp.get("dryRun"):
-            fill_summary = _confirm_order_fill(
+            _fill_handle = _start_fill_task(
                 ack_info,
                 intent.get("metadata"),
                 intent.get("strategy") or intent.get("strategy_id"),
             )
+            fill_summary = _wait_fill_task(_fill_handle)
 
     avg_fill_price = (
         fill_summary.avg_price if fill_summary and fill_summary.avg_price is not None else _to_float(resp.get("avgPrice"))
