@@ -7,6 +7,7 @@ Zero behavioural change — move-only refactor.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import os
 import threading
@@ -104,6 +105,18 @@ def _get_runner() -> FillTaskRunner:
         _RUNNER = FillTaskRunner()
         _RUNNER.start()
     return _RUNNER
+
+
+def _shutdown_runner() -> None:
+    """Best-effort cleanup on interpreter exit."""
+    if _RUNNER is not None:
+        try:
+            _RUNNER.stop(timeout=2.0)
+        except Exception:  # pragma: no cover
+            pass
+
+
+atexit.register(_shutdown_runner)
 
 
 # ──────────────────────────────────────────────────────────────────
