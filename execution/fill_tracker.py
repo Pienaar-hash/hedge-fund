@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -33,6 +35,75 @@ FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 
 # Singleton tracker — same instance shared with executor_live via import.
 POSITION_TRACKER = PositionTracker()
+
+
+# ──────────────────────────────────────────────────────────────────
+# FillTaskRunner — private asyncio loop in a daemon thread (Phase 4)
+# ──────────────────────────────────────────────────────────────────
+class FillTaskRunner:
+    """Owns a private asyncio event-loop running in a daemon thread.
+
+    Coroutines submitted via :meth:`submit` execute on that loop and
+    return a :class:`concurrent.futures.Future` that the caller can
+    block on (or poll) from any synchronous thread.
+    """
+
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._started = threading.Event()
+
+    # ── lifecycle ──────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """Spin up the background loop.  Idempotent if already running."""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._loop = asyncio.new_event_loop()
+        self._started.clear()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="fill-task-runner",
+        )
+        self._thread.start()
+        self._started.wait()
+
+    def _run(self) -> None:
+        assert self._loop is not None
+        asyncio.set_event_loop(self._loop)
+        self._started.set()
+        self._loop.run_forever()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """Stop the loop and join the thread."""
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        self._loop = None
+        self._thread = None
+
+    # ── public API ────────────────────────────────────────────────
+
+    def submit(self, coro) -> Future:  # type: ignore[type-arg]
+        """Schedule *coro* on the background loop, return a Future."""
+        assert self._loop is not None and self._loop.is_running()
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
+_RUNNER: Optional[FillTaskRunner] = None
+
+
+def _get_runner() -> FillTaskRunner:
+    """Lazily start and return the module-level :class:`FillTaskRunner`."""
+    global _RUNNER
+    if _RUNNER is None or not _RUNNER.running:
+        _RUNNER = FillTaskRunner()
+        _RUNNER.start()
+    return _RUNNER
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -78,9 +149,9 @@ FillResult = Optional[FillSummary]
 class FillTaskHandle:
     """Deferred-execution handle for a fill-polling task.
 
-    In Phase 3 this simply stores the arguments; work happens on
-    :func:`wait_fill_task`.  Phase 4 will launch an ``asyncio.Task``
-    on :func:`start_fill_task` and make ``wait`` non-blocking.
+    Phase 4: work begins immediately on :func:`start_fill_task` via the
+    background :class:`FillTaskRunner`.  :func:`wait_fill_task` blocks on
+    the ``Future``; :func:`poll_fill_task` checks without blocking.
     """
 
     ack: OrderAckInfo
@@ -89,6 +160,7 @@ class FillTaskHandle:
     position_tracker: Optional[PositionTracker] = None
     _result: FillResult = field(default=None, repr=False)
     _done: bool = field(default=False, repr=False)
+    _future: Optional[Future] = field(default=None, repr=False)  # type: ignore[type-arg]
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -439,17 +511,28 @@ def start_fill_task(
     *,
     position_tracker: Optional[PositionTracker] = None,
 ) -> FillTaskHandle:
-    """Create a fill-polling handle.
+    """Create a fill-polling handle and begin background polling immediately.
 
-    In Phase 3 no work starts here — the handle simply stores
-    the arguments for :func:`wait_fill_task` to execute eagerly.
+    The async core runs on the :class:`FillTaskRunner`'s event loop.
+    :func:`wait_fill_task` or :func:`poll_fill_task` retrieve the result.
     """
-    return FillTaskHandle(
+    handle = FillTaskHandle(
         ack=ack,
         metadata=metadata,
         strategy=strategy,
         position_tracker=position_tracker,
     )
+    try:
+        runner = _get_runner()
+        handle._future = runner.submit(
+            a_confirm_order_fill(
+                ack, metadata, strategy,
+                position_tracker=position_tracker,
+            )
+        )
+    except Exception:
+        LOG.warning("[fills] runner_submit_failed; will fall back on wait", exc_info=True)
+    return handle
 
 
 def wait_fill_task(handle: FillTaskHandle) -> FillResult:
@@ -460,11 +543,38 @@ def wait_fill_task(handle: FillTaskHandle) -> FillResult:
     """
     if handle._done:
         return handle._result
-    handle._result = confirm_order_fill(
-        handle.ack,
-        handle.metadata,
-        handle.strategy,
-        position_tracker=handle.position_tracker,
-    )
+    if handle._future is not None:
+        try:
+            handle._result = handle._future.result(timeout=FILL_POLL_TIMEOUT + 5.0)
+        except Exception:
+            LOG.warning("[fills] future_result_failed; falling back to sync", exc_info=True)
+            handle._result = confirm_order_fill(
+                handle.ack,
+                handle.metadata,
+                handle.strategy,
+                position_tracker=handle.position_tracker,
+            )
+    else:
+        handle._result = confirm_order_fill(
+            handle.ack,
+            handle.metadata,
+            handle.strategy,
+            position_tracker=handle.position_tracker,
+        )
     handle._done = True
     return handle._result
+
+
+def poll_fill_task(handle: FillTaskHandle) -> FillResult:
+    """Non-blocking check: return the result if ready, else ``None``."""
+    if handle._done:
+        return handle._result
+    if handle._future is not None and handle._future.done():
+        try:
+            handle._result = handle._future.result(timeout=0)
+        except Exception:
+            LOG.warning("[fills] poll_result_failed", exc_info=True)
+            handle._result = None
+        handle._done = True
+        return handle._result
+    return None
