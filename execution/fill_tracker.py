@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
 from execution.events import now_utc, write_event
@@ -67,6 +67,26 @@ class FillSummary:
     ts_fill_last: Optional[str]
     latency_ms: Optional[float] = None
     is_maker: bool = False
+
+
+# Type alias — keeps call-site signatures stable across phases.
+FillResult = Optional[FillSummary]
+
+
+@dataclass
+class FillTaskHandle:
+    """Deferred-execution handle for fill confirmation.
+
+    Phase 3: stores arguments; work executes eagerly on :func:`wait_fill_task`.
+    Phase 4: will hold an ``asyncio.Task`` and execute on :func:`start_fill_task`.
+    """
+
+    ack: OrderAckInfo
+    metadata: Optional[Mapping[str, Any]] = None
+    strategy: Optional[str] = None
+    position_tracker: Optional[PositionTracker] = None
+    _result: FillResult = field(default=None, repr=False)
+    _done: bool = field(default=False, repr=False)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -415,3 +435,45 @@ def confirm_order_fill(
             position_tracker=position_tracker,
         )
     )
+
+
+# ── Handle-based API (Phase 3: blocking; Phase 4: non-blocking) ───
+
+
+def start_fill_task(
+    ack: OrderAckInfo,
+    metadata: Optional[Mapping[str, Any]] = None,
+    strategy: Optional[str] = None,
+    *,
+    position_tracker: Optional[PositionTracker] = None,
+) -> FillTaskHandle:
+    """Create a :class:`FillTaskHandle` capturing all fill-confirm arguments.
+
+    In Phase 3 no work starts here — execution is deferred to
+    :func:`wait_fill_task`.  Phase 4 will launch an ``asyncio.Task`` at
+    this point instead.
+    """
+    return FillTaskHandle(
+        ack=ack,
+        metadata=metadata,
+        strategy=strategy,
+        position_tracker=position_tracker,
+    )
+
+
+def wait_fill_task(handle: FillTaskHandle) -> FillResult:
+    """Block until the fill task completes and return the result.
+
+    Idempotent: if the handle has already been waited on, returns the
+    cached result without re-executing.
+    """
+    if handle._done:
+        return handle._result
+    handle._result = confirm_order_fill(
+        handle.ack,
+        handle.metadata,
+        handle.strategy,
+        position_tracker=handle.position_tracker,
+    )
+    handle._done = True
+    return handle._result

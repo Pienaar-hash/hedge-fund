@@ -10,11 +10,14 @@ import pytest
 
 import execution.fill_tracker as ft
 from execution.fill_tracker import (
+    FillTaskHandle,
     OrderAckInfo,
     a_confirm_order_fill,
     a_fetch_order_status,
     a_fetch_order_trades,
     confirm_order_fill,
+    start_fill_task,
+    wait_fill_task,
 )
 from execution.pnl_tracker import PositionTracker
 
@@ -447,3 +450,102 @@ class TestFinalStatuses:
         result = await a_confirm_order_fill(_make_ack())
         assert result is None
         assert call_count["n"] == 1  # Exits after first poll
+
+
+# ── 8. FillTaskHandle Lifecycle ───────────────────────────────────
+
+
+class TestFillTaskHandle:
+    @pytest.mark.unit
+    def test_start_returns_handle(self) -> None:
+        ack = _make_ack()
+        h = start_fill_task(ack, metadata={"k": "v"}, strategy="TREND")
+        assert isinstance(h, FillTaskHandle)
+        assert h.ack is ack
+        assert h.metadata == {"k": "v"}
+        assert h.strategy == "TREND"
+        assert h._done is False
+        assert h._result is None
+
+    @pytest.mark.unit
+    def test_wait_returns_fill_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ft, "write_event", MagicMock())
+        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
+
+        h = start_fill_task(_make_ack())
+        result = wait_fill_task(h)
+        assert result is not None
+        assert pytest.approx(result.executed_qty) == 1.0
+        assert pytest.approx(result.avg_price) == 100.5
+        assert h._done is True
+        assert h._result is result
+
+    @pytest.mark.unit
+    def test_wait_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Second wait returns cached result without re-executing."""
+        monkeypatch.setattr(ft, "write_event", MagicMock())
+        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
+
+        confirm_calls = {"n": 0}
+        original_confirm = ft.confirm_order_fill
+
+        def counting_confirm(*args: Any, **kwargs: Any) -> Any:
+            confirm_calls["n"] += 1
+            return original_confirm(*args, **kwargs)
+
+        monkeypatch.setattr(ft, "confirm_order_fill", counting_confirm)
+
+        h = start_fill_task(_make_ack())
+        r1 = wait_fill_task(h)
+        r2 = wait_fill_task(h)
+        assert r1 is r2
+        assert confirm_calls["n"] == 1  # Called only once
+
+    @pytest.mark.unit
+    def test_handle_matches_direct_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Handle API produces same result as direct confirm_order_fill."""
+        monkeypatch.setattr(ft, "write_event", MagicMock())
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
+
+        # Direct call
+        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
+        direct = confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
+
+        # Handle call
+        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
+        h = start_fill_task(_make_ack(), position_tracker=PositionTracker())
+        via_handle = wait_fill_task(h)
+
+        assert direct is not None
+        assert via_handle is not None
+        assert direct.executed_qty == via_handle.executed_qty
+        assert direct.avg_price == via_handle.avg_price
+        assert direct.status == via_handle.status
+        assert direct.fee_total == via_handle.fee_total
+
+    @pytest.mark.unit
+    def test_handle_timeout_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Timeout through handle API returns None, consistent with direct call."""
+        monkeypatch.setattr(ft, "write_event", MagicMock())
+        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "NEW"})
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: [])
+        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.0)
+
+        h = start_fill_task(_make_ack())
+        result = wait_fill_task(h)
+        assert result is None
+        assert h._done is True
+
+    @pytest.mark.unit
+    def test_no_order_id_returns_none_via_handle(self) -> None:
+        ack = _make_ack(order_id=None, client_order_id=None)
+        h = start_fill_task(ack)
+        result = wait_fill_task(h)
+        assert result is None
+        assert h._done is True
