@@ -1,11 +1,12 @@
 """Fill tracking: order acknowledgement, fill polling, and PnL close detection.
 
 Extracted from executor_live.py (Commit 5/6, architecture repair sprint).
-Zero behavioural change — move-only refactor.
+Phase 3: async core added — sync API preserved as thin wrapper.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -185,14 +186,38 @@ def should_emit_close(ack: OrderAckInfo, close_results: List[PnlCloseResult]) ->
     return pos_before * pos_after <= 0.0
 
 
-def confirm_order_fill(
+# ── Async API helpers ─────────────────────────────────────────────
+
+
+async def a_fetch_order_status(
+    symbol: str, order_id: Optional[int], client_order_id: Optional[str],
+) -> Dict[str, Any]:
+    """Async wrapper around :func:`fetch_order_status` (runs in thread)."""
+    return await asyncio.to_thread(fetch_order_status, symbol, order_id, client_order_id)
+
+
+async def a_fetch_order_trades(
+    symbol: str, order_id: Optional[int],
+) -> List[Dict[str, Any]]:
+    """Async wrapper around :func:`fetch_order_trades` (runs in thread)."""
+    return await asyncio.to_thread(fetch_order_trades, symbol, order_id)
+
+
+# ── Async fill-confirm core ──────────────────────────────────────
+
+
+async def a_confirm_order_fill(
     ack: OrderAckInfo,
     metadata: Optional[Mapping[str, Any]] = None,
     strategy: Optional[str] = None,
     *,
     position_tracker: Optional[PositionTracker] = None,
 ) -> Optional[FillSummary]:
-    """Poll Binance for fills and emit order_fill / order_close events.
+    """Async core: poll Binance for fills and emit order_fill / order_close events.
+
+    Uses ``asyncio.to_thread`` for the two HTTP calls and ``asyncio.sleep``
+    for the poll interval.  All other work (event writes, PnL tracking) is
+    CPU-local and remains synchronous.
 
     Args:
         position_tracker: Injected tracker. Falls back to module-level POSITION_TRACKER.
@@ -220,11 +245,11 @@ def confirm_order_fill(
             metadata_payload = None
 
     while (time.time() - start) <= FILL_POLL_TIMEOUT:
-        status_resp = fetch_order_status(ack.symbol, ack.order_id, ack.client_order_id)
+        status_resp = await a_fetch_order_status(ack.symbol, ack.order_id, ack.client_order_id)
         if status_resp:
             status = normalize_status(status_resp.get("status"))
 
-        trades = fetch_order_trades(ack.symbol, ack.order_id)
+        trades = await a_fetch_order_trades(ack.symbol, ack.order_id)
         new_trades: List[Dict[str, Any]] = []
         for trade in trades:
             trade_id = trade.get("id")
@@ -361,6 +386,32 @@ def confirm_order_fill(
         if status in FILL_FINAL_STATUSES:
             break
         if not new_trades:
-            time.sleep(FILL_POLL_INTERVAL)
+            await asyncio.sleep(FILL_POLL_INTERVAL)
 
     return last_summary
+
+
+# ── Sync wrapper (preserves existing call-site contract) ─────────
+
+
+def confirm_order_fill(
+    ack: OrderAckInfo,
+    metadata: Optional[Mapping[str, Any]] = None,
+    strategy: Optional[str] = None,
+    *,
+    position_tracker: Optional[PositionTracker] = None,
+) -> Optional[FillSummary]:
+    """Synchronous fill-confirm — delegates to :func:`a_confirm_order_fill`.
+
+    Spins up a fresh event loop per call via ``asyncio.run()``.  This is
+    intentional for Phase 3: the executor remains fully synchronous while
+    the async core is ready for Phase 4 non-blocking adoption.
+    """
+    return asyncio.run(
+        a_confirm_order_fill(
+            ack,
+            metadata,
+            strategy,
+            position_tracker=position_tracker,
+        )
+    )
