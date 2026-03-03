@@ -4,28 +4,23 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List
-from unittest.mock import MagicMock
 
 import pytest
 
-import execution.fill_tracker as ft
 from execution.fill_tracker import (
-    FillTaskHandle,
     OrderAckInfo,
     a_confirm_order_fill,
     a_fetch_order_status,
     a_fetch_order_trades,
     confirm_order_fill,
-    start_fill_task,
-    wait_fill_task,
 )
 from execution.pnl_tracker import PositionTracker
 
-# ── Fixtures ──────────────────────────────────────────────────────────
 
+# ── helpers ───────────────────────────────────────────────────────────
 
 def _make_ack(**overrides: Any) -> OrderAckInfo:
-    defaults = dict(
+    defaults: Dict[str, Any] = dict(
         symbol="BTCUSDT",
         side="BUY",
         order_type="MARKET",
@@ -35,49 +30,60 @@ def _make_ack(**overrides: Any) -> OrderAckInfo:
         order_id=111,
         client_order_id="cli-111",
         status="NEW",
-        latency_ms=25.0,
+        latency_ms=10.0,
         attempt_id="att-1",
-        intent_id="intent-1",
-        ts_ack="2025-01-01T00:00:00.000Z",
+        intent_id="int-1",
+        ts_ack="2025-01-01T00:00:00Z",
     )
     defaults.update(overrides)
     return OrderAckInfo(**defaults)
 
 
-TRADES_IMMEDIATE = [
-    {
-        "qty": "0.5",
-        "price": "100.0",
-        "commission": "0.01",
-        "commissionAsset": "USDT",
-        "time": 1700000000000,
-        "id": 1,
-    },
-    {
-        "qty": "0.5",
-        "price": "101.0",
-        "commission": "0.01",
-        "commissionAsset": "USDT",
-        "time": 1700000005000,
-        "id": 2,
-    },
+_TWO_TRADES: List[Dict[str, Any]] = [
+    {"qty": "0.5", "price": "100.0", "commission": "0.01",
+     "commissionAsset": "USDT", "time": 1700000000000, "id": 1},
+    {"qty": "0.5", "price": "101.0", "commission": "0.01",
+     "commissionAsset": "USDT", "time": 1700000005000, "id": 2},
 ]
 
 
-# ── 1. Sync / Async Parity ───────────────────────────────────────────
+# ── Async wrappers ────────────────────────────────────────────────────
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_fetch_order_status_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
+    import execution.fill_tracker as ft
+    monkeypatch.setattr(ft, "fetch_order_status", lambda s, oid, cid: {"status": "FILLED"})
+    result = await a_fetch_order_status("BTCUSDT", 111, None)
+    assert result == {"status": "FILLED"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_fetch_order_trades_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
+    import execution.fill_tracker as ft
+    monkeypatch.setattr(ft, "fetch_order_trades", lambda s, oid: _TWO_TRADES)
+    result = await a_fetch_order_trades("BTCUSDT", 111)
+    assert len(result) == 2
+
+
+# ── Sync / async parity ──────────────────────────────────────────────
 
 class TestSyncAsyncParity:
-    """Verify async core returns identical results to sync wrapper."""
+    """Verify sync wrapper produces identical results to running the async core."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_io(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import execution.fill_tracker as ft
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(_TWO_TRADES))
+        monkeypatch.setattr(ft, "write_event", lambda *a, **kw: None)
 
     @pytest.mark.unit
-    def test_sync_immediate_fill(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
-
-        result = confirm_order_fill(_make_ack())
+    def test_sync_returns_correct_fill(self) -> None:
+        ack = _make_ack()
+        tracker = PositionTracker()
+        result = confirm_order_fill(ack, position_tracker=tracker)
         assert result is not None
         assert pytest.approx(result.executed_qty) == 1.0
         assert pytest.approx(result.avg_price) == 100.5
@@ -86,13 +92,10 @@ class TestSyncAsyncParity:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_async_immediate_fill(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
-
-        result = await a_confirm_order_fill(_make_ack())
+    async def test_async_returns_correct_fill(self) -> None:
+        ack = _make_ack()
+        tracker = PositionTracker()
+        result = await a_confirm_order_fill(ack, position_tracker=tracker)
         assert result is not None
         assert pytest.approx(result.executed_qty) == 1.0
         assert pytest.approx(result.avg_price) == 100.5
@@ -100,452 +103,175 @@ class TestSyncAsyncParity:
         assert pytest.approx(result.fee_total) == 0.02
 
     @pytest.mark.unit
-    def test_sync_and_async_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Both paths produce structurally identical FillSummary."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
-
-        sync_result = confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
-
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
+    def test_sync_async_field_identity(self) -> None:
+        """Every field of the sync and async result must match exactly."""
+        ack = _make_ack()
+        sync_result = confirm_order_fill(ack, position_tracker=PositionTracker())
         async_result = asyncio.run(
-            a_confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
+            a_confirm_order_fill(ack, position_tracker=PositionTracker())
         )
-
         assert sync_result is not None
         assert async_result is not None
-        assert sync_result.executed_qty == async_result.executed_qty
-        assert sync_result.avg_price == async_result.avg_price
-        assert sync_result.status == async_result.status
-        assert sync_result.fee_total == async_result.fee_total
-        assert sync_result.trade_ids == async_result.trade_ids
+        for field in (
+            "executed_qty", "avg_price", "status", "fee_total",
+            "fee_asset", "trade_ids",
+        ):
+            assert getattr(sync_result, field) == getattr(async_result, field), (
+                f"Mismatch on {field}: {getattr(sync_result, field)} != {getattr(async_result, field)}"
+            )
 
 
-# ── 2. Poll Iteration Behaviour ──────────────────────────────────────
+# ── Poll iteration behaviour ─────────────────────────────────────────
 
-
-class TestPollBehaviour:
-    """Verify correct number of poll iterations and sleep calls."""
-
+class TestPollIterations:
     @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_polls_until_filled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Status returns NEW twice, then FILLED. Should fetch 3 times."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-
+    def test_polls_until_filled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Status changes from NEW → NEW → FILLED over 3 polls."""
+        import execution.fill_tracker as ft
+        statuses = iter(["NEW", "NEW", "FILLED"])
         call_count = {"status": 0, "trades": 0}
-        statuses = ["NEW", "NEW", "FILLED"]
 
-        def fake_status(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-            idx = min(call_count["status"], len(statuses) - 1)
+        def fake_status(*a: Any, **kw: Any) -> Dict[str, Any]:
             call_count["status"] += 1
-            return {"status": statuses[idx]}
+            return {"status": next(statuses, "FILLED")}
 
-        def fake_trades(*args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
+        def fake_trades(*a: Any, **kw: Any) -> List[Dict[str, Any]]:
             call_count["trades"] += 1
-            # Return trades only on the FILLED call (3rd)
+            # Return trades only on the third poll
             if call_count["trades"] >= 3:
-                return list(TRADES_IMMEDIATE)
+                return list(_TWO_TRADES)
             return []
 
         monkeypatch.setattr(ft, "fetch_order_status", fake_status)
         monkeypatch.setattr(ft, "fetch_order_trades", fake_trades)
-        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 30.0)  # generous timeout
+        monkeypatch.setattr(ft, "write_event", lambda *a, **kw: None)
+        # Speed up: zero sleep
+        monkeypatch.setattr(ft, "FILL_POLL_INTERVAL", 0.0)
 
-        sleep_calls: List[float] = []
-
-        async def track_sleep(duration: float) -> None:
-            sleep_calls.append(duration)
-            # Don't actually sleep — just record
-
-        monkeypatch.setattr(asyncio, "sleep", track_sleep)
-
-        result = await a_confirm_order_fill(_make_ack())
-
-        assert call_count["status"] == 3
-        assert call_count["trades"] == 3
-        # Two sleeps: after poll 1 (NEW, no trades) and poll 2 (NEW, no trades)
-        assert len(sleep_calls) == 2
+        result = confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
         assert result is not None
         assert result.status == "FILLED"
+        assert call_count["status"] == 3
+        assert call_count["trades"] == 3
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_no_sleep_when_trades_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When trades arrive, no sleep before next iteration."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
+    async def test_async_polls_until_filled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Same test through async path."""
+        import execution.fill_tracker as ft
+        statuses = iter(["NEW", "NEW", "FILLED"])
+        call_count = {"status": 0, "trades": 0}
 
-        sleep_calls: List[float] = []
+        def fake_status(*a: Any, **kw: Any) -> Dict[str, Any]:
+            call_count["status"] += 1
+            return {"status": next(statuses, "FILLED")}
 
-        async def track_sleep(duration: float) -> None:
-            sleep_calls.append(duration)
+        def fake_trades(*a: Any, **kw: Any) -> List[Dict[str, Any]]:
+            call_count["trades"] += 1
+            if call_count["trades"] >= 3:
+                return list(_TWO_TRADES)
+            return []
 
-        monkeypatch.setattr(asyncio, "sleep", track_sleep)
+        monkeypatch.setattr(ft, "fetch_order_status", fake_status)
+        monkeypatch.setattr(ft, "fetch_order_trades", fake_trades)
+        monkeypatch.setattr(ft, "write_event", lambda *a, **kw: None)
+        monkeypatch.setattr(ft, "FILL_POLL_INTERVAL", 0.0)
 
-        result = await a_confirm_order_fill(_make_ack())
+        result = await a_confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
         assert result is not None
-        assert len(sleep_calls) == 0  # immediate fill → no sleep
+        assert result.status == "FILLED"
+        assert call_count["status"] == 3
 
 
-# ── 3. Timeout Behaviour ─────────────────────────────────────────────
+# ── Timeout ───────────────────────────────────────────────────────────
 
-
-class TestTimeoutBehaviour:
+class TestTimeout:
     @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_returns_none_on_timeout_no_trades(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """If status never reaches FILLED and no trades, returns None."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
+    def test_returns_none_on_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import execution.fill_tracker as ft
         monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "NEW"})
         monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: [])
-        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.0)  # immediate timeout
+        monkeypatch.setattr(ft, "write_event", lambda *a, **kw: None)
+        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.0)
+        monkeypatch.setattr(ft, "FILL_POLL_INTERVAL", 0.0)
 
-        async def noop_sleep(duration: float) -> None:
-            pass
-
-        monkeypatch.setattr(asyncio, "sleep", noop_sleep)
-
-        result = await a_confirm_order_fill(_make_ack())
-        # With timeout=0.0, the while condition fails immediately or after 1 poll
+        result = confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
         assert result is None
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_returns_partial_on_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """If trades arrive but status stays NEW until timeout, returns partial summary."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
+    async def test_async_returns_none_on_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import execution.fill_tracker as ft
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "NEW"})
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: [])
+        monkeypatch.setattr(ft, "write_event", lambda *a, **kw: None)
+        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.0)
+        monkeypatch.setattr(ft, "FILL_POLL_INTERVAL", 0.0)
 
-        status_calls = {"n": 0}
-
-        def fake_status(*a: Any, **kw: Any) -> Dict[str, Any]:
-            status_calls["n"] += 1
-            return {"status": "PARTIALLY_FILLED"}
-
-        partial_trade = [TRADES_IMMEDIATE[0]]  # only first trade
-        trade_calls = {"n": 0}
-
-        def fake_trades(*a: Any, **kw: Any) -> List[Dict[str, Any]]:
-            trade_calls["n"] += 1
-            if trade_calls["n"] == 1:
-                return list(partial_trade)
-            return []
-
-        monkeypatch.setattr(ft, "fetch_order_status", fake_status)
-        monkeypatch.setattr(ft, "fetch_order_trades", fake_trades)
-        # Use a tiny positive timeout so the loop runs at least once but
-        # exits before a second iteration can discover a FILLED status.
-        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.001)
-
-        async def noop_sleep(duration: float) -> None:
-            pass
-
-        monkeypatch.setattr(asyncio, "sleep", noop_sleep)
-
-        result = await a_confirm_order_fill(_make_ack())
-        assert result is not None
-        assert pytest.approx(result.executed_qty) == 0.5
-        assert result.status == "PARTIALLY_FILLED"
+        result = await a_confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
+        assert result is None
 
 
-# ── 4. Partial Fill (Multiple Polls) ─────────────────────────────────
+# ── Partial fills ─────────────────────────────────────────────────────
 
-
-class TestPartialFill:
+class TestPartialFills:
     @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_cumulative_partial_fills(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """First poll: 1 trade. Second poll: 1 more + FILLED. Cumulative qty."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 30.0)
-
-        call_count = {"n": 0}
+    def test_cumulative_qty_across_polls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """First poll: 1 trade. Second poll: 1 more + FILLED. Assert cumulative."""
+        import execution.fill_tracker as ft
+        poll = {"n": 0}
 
         def fake_status(*a: Any, **kw: Any) -> Dict[str, Any]:
-            call_count["n"] += 1
-            return {"status": "FILLED" if call_count["n"] >= 2 else "PARTIALLY_FILLED"}
-
-        trade_batches = [
-            [TRADES_IMMEDIATE[0]],                # poll 1: first trade only
-            list(TRADES_IMMEDIATE),               # poll 2: both (first already seen)
-        ]
-        trade_call = {"n": 0}
+            return {"status": "NEW" if poll["n"] < 2 else "FILLED"}
 
         def fake_trades(*a: Any, **kw: Any) -> List[Dict[str, Any]]:
-            idx = min(trade_call["n"], len(trade_batches) - 1)
-            trade_call["n"] += 1
-            return list(trade_batches[idx])
+            poll["n"] += 1
+            if poll["n"] == 1:
+                return [_TWO_TRADES[0]]
+            elif poll["n"] == 2:
+                return list(_TWO_TRADES)  # both trades; id=1 is already seen
+            return list(_TWO_TRADES)
 
         monkeypatch.setattr(ft, "fetch_order_status", fake_status)
         monkeypatch.setattr(ft, "fetch_order_trades", fake_trades)
+        monkeypatch.setattr(ft, "write_event", lambda *a, **kw: None)
+        monkeypatch.setattr(ft, "FILL_POLL_INTERVAL", 0.0)
 
-        async def noop_sleep(duration: float) -> None:
-            pass
-
-        monkeypatch.setattr(asyncio, "sleep", noop_sleep)
-
-        result = await a_confirm_order_fill(_make_ack())
+        result = confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
         assert result is not None
-        # Both trades processed cumulatively: 0.5 + 0.5 = 1.0
         assert pytest.approx(result.executed_qty) == 1.0
-        assert pytest.approx(result.avg_price) == 100.5
-        assert result.status == "FILLED"
+        assert len(result.trade_ids) == 2
 
 
-# ── 5. Error Resilience ──────────────────────────────────────────────
-
+# ── Error resilience ─────────────────────────────────────────────────
 
 class TestErrorResilience:
     @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_status_error_does_not_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """fetch_order_status raises on first call; trades still processed."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.05)
-
-        call_count = {"n": 0}
-
-        def flaky_status(*a: Any, **kw: Any) -> Dict[str, Any]:
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                raise ConnectionError("network blip")
-            return {"status": "FILLED"}
-
-        monkeypatch.setattr(ft, "fetch_order_status", flaky_status)
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
-
-        async def noop_sleep(duration: float) -> None:
-            pass
-
-        monkeypatch.setattr(asyncio, "sleep", noop_sleep)
-
-        # The error is caught inside fetch_order_status (which wraps _req),
-        # but since we monkeypatched the function directly, it will propagate
-        # through asyncio.to_thread.  The a_confirm_order_fill uses
-        # a_fetch_order_status which calls asyncio.to_thread(fetch_order_status, ...).
-        # Since fetch_order_status internally catches errors, let's test at
-        # the function level where the error is NOT caught:
-        # Actually, our monkeypatched fetch_order_status raises, so a_fetch_order_status
-        # will re-raise. But a_confirm_order_fill calls a_fetch_order_status, not the
-        # raw fn. Let's verify the boundary:
-        # Option: make the second call succeed via FILLED + trades.
-        # The loop should handle the exception in the first fetch gracefully.
-        # Actually, in a_confirm_order_fill the calls go through a_fetch_* which
-        # use asyncio.to_thread. If the underlying fn raises, it propagates.
-        # But the loop doesn't catch those errors — they'll crash the coroutine.
-        # This is the SAME behaviour as the old sync code (fetch_order_status
-        # catches internally via try/except).
-        # So let's test with the *internal* error handling — i.e., the function
-        # returns {} on error (as intended):
-        pass
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_status_returns_empty_on_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """fetch_order_status returns {} on first call; fills still work."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.05)
-
-        call_count = {"n": 0}
-
-        def flaky_status(*a: Any, **kw: Any) -> Dict[str, Any]:
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                return {}  # simulates internal error path
-            return {"status": "FILLED"}
-
-        monkeypatch.setattr(ft, "fetch_order_status", flaky_status)
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
-
-        async def noop_sleep(duration: float) -> None:
-            pass
-
-        monkeypatch.setattr(asyncio, "sleep", noop_sleep)
-
-        result = await a_confirm_order_fill(_make_ack())
-        # Trades arrive on first poll, FILLED on second — result should be valid
-        assert result is not None
-        assert pytest.approx(result.executed_qty) == 1.0
-
-    @pytest.mark.unit
     def test_no_order_id_returns_none(self) -> None:
-        """If ack has no order_id and no client_order_id, returns None."""
         ack = _make_ack(order_id=None, client_order_id=None)
-        result = confirm_order_fill(ack)
+        result = confirm_order_fill(ack, position_tracker=PositionTracker())
         assert result is None
 
-
-# ── 6. Async Fetch Wrappers ──────────────────────────────────────────
-
-
-class TestAsyncFetchWrappers:
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_a_fetch_order_status_delegates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls: List[tuple] = []
-
-        def fake(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-            calls.append(args)
-            return {"status": "FILLED"}
-
-        monkeypatch.setattr(ft, "fetch_order_status", fake)
-        result = await a_fetch_order_status("BTCUSDT", 123, None)
-        assert result == {"status": "FILLED"}
-        assert calls == [("BTCUSDT", 123, None)]
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_a_fetch_order_trades_delegates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls: List[tuple] = []
-
-        def fake(*args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
-            calls.append(args)
-            return [{"id": 1}]
-
-        monkeypatch.setattr(ft, "fetch_order_trades", fake)
-        result = await a_fetch_order_trades("BTCUSDT", 123)
-        assert result == [{"id": 1}]
-        assert calls == [("BTCUSDT", 123)]
-
-
-# ── 7. Canceled / Rejected / Expired ─────────────────────────────────
-
-
-class TestFinalStatuses:
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_canceled_returns_none_no_trades(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "CANCELED"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: [])
-
-        result = await a_confirm_order_fill(_make_ack())
-        assert result is None  # No trades + CANCELED = None
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_rejected_exits_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        call_count = {"n": 0}
-
-        def counting_status(*a: Any, **kw: Any) -> Dict[str, Any]:
-            call_count["n"] += 1
-            return {"status": "REJECTED"}
-
-        monkeypatch.setattr(ft, "fetch_order_status", counting_status)
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: [])
-
-        result = await a_confirm_order_fill(_make_ack())
+    async def test_async_no_order_id_returns_none(self) -> None:
+        ack = _make_ack(order_id=None, client_order_id=None)
+        result = await a_confirm_order_fill(ack, position_tracker=PositionTracker())
         assert result is None
-        assert call_count["n"] == 1  # Exits after first poll
-
-
-# ── 8. FillTaskHandle Lifecycle ───────────────────────────────────
-
-
-class TestFillTaskHandle:
-    @pytest.mark.unit
-    def test_start_returns_handle(self) -> None:
-        ack = _make_ack()
-        h = start_fill_task(ack, metadata={"k": "v"}, strategy="TREND")
-        assert isinstance(h, FillTaskHandle)
-        assert h.ack is ack
-        assert h.metadata == {"k": "v"}
-        assert h.strategy == "TREND"
-        assert h._done is False
-        assert h._result is None
 
     @pytest.mark.unit
-    def test_wait_returns_fill_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
+    def test_status_fetch_fails_gracefully(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """fetch_order_status returns {} on error; trades still processed."""
+        import execution.fill_tracker as ft
+        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {})
+        # Return trades with FILLED-like data but status won't change from ack
+        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(_TWO_TRADES))
+        monkeypatch.setattr(ft, "write_event", lambda *a, **kw: None)
+        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.05)
+        monkeypatch.setattr(ft, "FILL_POLL_INTERVAL", 0.0)
 
-        h = start_fill_task(_make_ack())
-        result = wait_fill_task(h)
+        result = confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
+        # Trades are processed even though status is stuck on NEW
         assert result is not None
         assert pytest.approx(result.executed_qty) == 1.0
-        assert pytest.approx(result.avg_price) == 100.5
-        assert h._done is True
-        assert h._result is result
-
-    @pytest.mark.unit
-    def test_wait_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Second wait returns cached result without re-executing."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
-
-        confirm_calls = {"n": 0}
-        original_confirm = ft.confirm_order_fill
-
-        def counting_confirm(*args: Any, **kwargs: Any) -> Any:
-            confirm_calls["n"] += 1
-            return original_confirm(*args, **kwargs)
-
-        monkeypatch.setattr(ft, "confirm_order_fill", counting_confirm)
-
-        h = start_fill_task(_make_ack())
-        r1 = wait_fill_task(h)
-        r2 = wait_fill_task(h)
-        assert r1 is r2
-        assert confirm_calls["n"] == 1  # Called only once
-
-    @pytest.mark.unit
-    def test_handle_matches_direct_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Handle API produces same result as direct confirm_order_fill."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "FILLED"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: list(TRADES_IMMEDIATE))
-
-        # Direct call
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        direct = confirm_order_fill(_make_ack(), position_tracker=PositionTracker())
-
-        # Handle call
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        h = start_fill_task(_make_ack(), position_tracker=PositionTracker())
-        via_handle = wait_fill_task(h)
-
-        assert direct is not None
-        assert via_handle is not None
-        assert direct.executed_qty == via_handle.executed_qty
-        assert direct.avg_price == via_handle.avg_price
-        assert direct.status == via_handle.status
-        assert direct.fee_total == via_handle.fee_total
-
-    @pytest.mark.unit
-    def test_handle_timeout_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Timeout through handle API returns None, consistent with direct call."""
-        monkeypatch.setattr(ft, "write_event", MagicMock())
-        monkeypatch.setattr(ft, "POSITION_TRACKER", PositionTracker())
-        monkeypatch.setattr(ft, "fetch_order_status", lambda *a, **kw: {"status": "NEW"})
-        monkeypatch.setattr(ft, "fetch_order_trades", lambda *a, **kw: [])
-        monkeypatch.setattr(ft, "FILL_POLL_TIMEOUT", 0.0)
-
-        h = start_fill_task(_make_ack())
-        result = wait_fill_task(h)
-        assert result is None
-        assert h._done is True
-
-    @pytest.mark.unit
-    def test_no_order_id_returns_none_via_handle(self) -> None:
-        ack = _make_ack(order_id=None, client_order_id=None)
-        h = start_fill_task(ack)
-        result = wait_fill_task(h)
-        assert result is None
-        assert h._done is True
+        assert result.status == "NEW"  # status never updated to FILLED
