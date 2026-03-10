@@ -935,6 +935,9 @@ class TestIntegrationHelpers:
         assert intent["notional_usd"] == 500  # 10000 * 0.05
         assert intent["qty"] == 0.01  # 500 / 50000
         assert intent["source"] == "hydra"
+        assert intent["price"] == 50000
+        assert intent["capital_per_trade"] == 500
+        assert intent["gross_usd"] == 500
 
     def test_hydra_merged_intent_flat_returns_empty(self):
         """Test that flat positions return empty dict."""

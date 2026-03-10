@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from collections import namedtuple
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -24,11 +24,11 @@ DISK_CRITICAL = DiskUsage(total=38 * 1024**3, used=35 * 1024**3, free=3 * 1024**
 def _reset_disk_guard_state():
     """Reset module-level state between tests."""
     import execution.executor_live as ex
-    ex._LAST_DISK_CHECK = 0.0
-    ex._LAST_DISK_ALERT_TS = 0.0
+    ex._STATE.last_disk_check_ts = 0.0
+    ex._STATE.last_disk_alert_ts = 0.0
     yield
-    ex._LAST_DISK_CHECK = 0.0
-    ex._LAST_DISK_ALERT_TS = 0.0
+    ex._STATE.last_disk_check_ts = 0.0
+    ex._STATE.last_disk_alert_ts = 0.0
 
 
 class TestDiskGuard:
@@ -38,7 +38,7 @@ class TestDiskGuard:
         import execution.executor_live as ex
         ex._ENV_EVENTS_PATH = tmp_path / "env_events.jsonl"
         with patch("shutil.disk_usage", return_value=DISK_OK):
-            ex._maybe_check_disk_pressure(force=True)
+            ex._maybe_check_disk_pressure(ex._STATE, force=True)
         # No file written when disk is healthy
         assert not ex._ENV_EVENTS_PATH.exists()
 
@@ -46,7 +46,7 @@ class TestDiskGuard:
         import execution.executor_live as ex
         ex._ENV_EVENTS_PATH = tmp_path / "env_events.jsonl"
         with patch("shutil.disk_usage", return_value=DISK_WARN):
-            ex._maybe_check_disk_pressure(force=True)
+            ex._maybe_check_disk_pressure(ex._STATE, force=True)
         assert ex._ENV_EVENTS_PATH.exists()
         content = ex._ENV_EVENTS_PATH.read_text()
         assert '"disk_pressure"' in content
@@ -56,7 +56,7 @@ class TestDiskGuard:
         import execution.executor_live as ex
         ex._ENV_EVENTS_PATH = tmp_path / "env_events.jsonl"
         with patch("shutil.disk_usage", return_value=DISK_CRITICAL):
-            ex._maybe_check_disk_pressure(force=True)
+            ex._maybe_check_disk_pressure(ex._STATE, force=True)
         assert ex._ENV_EVENTS_PATH.exists()
         content = ex._ENV_EVENTS_PATH.read_text()
         assert '"disk_pressure"' in content
@@ -66,9 +66,9 @@ class TestDiskGuard:
         """Without force=True, check is skipped if interval hasn't elapsed."""
         import execution.executor_live as ex
         ex._ENV_EVENTS_PATH = tmp_path / "env_events.jsonl"
-        ex._LAST_DISK_CHECK = time.time()  # Just checked
+        ex._STATE.last_disk_check_ts = time.time()  # Just checked
         with patch("shutil.disk_usage", return_value=DISK_CRITICAL) as mock_du:
-            ex._maybe_check_disk_pressure(force=False)
+            ex._maybe_check_disk_pressure(ex._STATE, force=False)
         mock_du.assert_not_called()
         assert not ex._ENV_EVENTS_PATH.exists()
 
@@ -77,13 +77,13 @@ class TestDiskGuard:
         import execution.executor_live as ex
         ex._ENV_EVENTS_PATH = tmp_path / "env_events.jsonl"
         with patch("shutil.disk_usage", return_value=DISK_WARN):
-            ex._maybe_check_disk_pressure(force=True)
+            ex._maybe_check_disk_pressure(ex._STATE, force=True)
             # First alert written
             assert ex._ENV_EVENTS_PATH.exists()
             first_size = ex._ENV_EVENTS_PATH.stat().st_size
             # Reset check interval but NOT alert cooldown
-            ex._LAST_DISK_CHECK = 0.0
-            ex._maybe_check_disk_pressure(force=True)
+            ex._STATE.last_disk_check_ts = 0.0
+            ex._maybe_check_disk_pressure(ex._STATE, force=True)
             # File size unchanged — second alert suppressed
             assert ex._ENV_EVENTS_PATH.stat().st_size == first_size
 
@@ -91,9 +91,9 @@ class TestDiskGuard:
         """force=True always runs the check regardless of interval."""
         import execution.executor_live as ex
         ex._ENV_EVENTS_PATH = tmp_path / "env_events.jsonl"
-        ex._LAST_DISK_CHECK = time.time()  # Just checked
+        ex._STATE.last_disk_check_ts = time.time()  # Just checked
         with patch("shutil.disk_usage", return_value=DISK_WARN):
-            ex._maybe_check_disk_pressure(force=True)
+            ex._maybe_check_disk_pressure(ex._STATE, force=True)
         assert ex._ENV_EVENTS_PATH.exists()
 
     def test_oserror_handled_gracefully(self, tmp_path: Path):
@@ -101,5 +101,5 @@ class TestDiskGuard:
         import execution.executor_live as ex
         ex._ENV_EVENTS_PATH = tmp_path / "env_events.jsonl"
         with patch("shutil.disk_usage", side_effect=OSError("device not found")):
-            ex._maybe_check_disk_pressure(force=True)  # Should not raise
+            ex._maybe_check_disk_pressure(ex._STATE, force=True)  # Should not raise
         assert not ex._ENV_EVENTS_PATH.exists()

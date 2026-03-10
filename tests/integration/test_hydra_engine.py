@@ -273,6 +273,8 @@ class TestExecutorIntegration:
         assert execution[0]["symbol"] == "BTCUSDT"
         assert execution[0]["side"] == "LONG"
         assert execution[0]["notional_usd"] == 500
+        assert execution[0]["price"] == 50000
+        assert execution[0]["gross_usd"] == 500
 
     def test_get_attribution_for_order(self):
         """Test getting attribution metadata for orders."""

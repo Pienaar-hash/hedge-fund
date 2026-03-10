@@ -1,0 +1,221 @@
+"""
+Hydra Score Monotonicity Panel — Does higher score → higher return?
+
+Bar chart of Hydra score buckets vs mean realized return,
+plus Spearman rank correlation summary.
+
+Data source: logs/state/hydra_monotonicity.json
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import streamlit as st
+
+_STATE_PATH = Path("logs/state/hydra_monotonicity.json")
+
+try:
+    import altair as alt
+    import pandas as pd
+    _HAS_ALTAIR = True
+except ImportError:
+    _HAS_ALTAIR = False
+
+
+def _load_monotonicity() -> Dict[str, Any]:
+    try:
+        return json.loads(_STATE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _slope_color(slope: str) -> str:
+    if slope == "upward":
+        return "#21ba45"
+    if slope == "flat":
+        return "#f2c037"
+    if slope == "inverted":
+        return "#db2828"
+    return "#666"
+
+
+def _spearman_color(v: Optional[float]) -> str:
+    if v is None:
+        return "#666"
+    if v > 0.2:
+        return "#21ba45"
+    if v >= 0:
+        return "#f2c037"
+    return "#db2828"
+
+
+def render_hydra_monotonicity_panel(
+    data: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Render Hydra score monotonicity bar chart + Spearman summary."""
+    data = data or _load_monotonicity()
+    if not data:
+        return
+
+    buckets = data.get("buckets", [])
+    spearman = data.get("spearman")
+    slope = data.get("slope", "unknown")
+    n = data.get("n", 0)
+
+    if n < 5 or not buckets:
+        return
+
+    sp_str = f"{spearman:+.3f}" if spearman is not None else "—"
+    sp_color = _spearman_color(spearman)
+    sl_color = _slope_color(slope)
+
+    st.markdown(
+        f"#### Hydra Score Monotonicity &nbsp;&nbsp;"
+        f"<span style='font-size:0.85rem; color:{sp_color};'>"
+        f"Spearman ρ = {sp_str}</span>"
+        f"&nbsp;&nbsp;<span style='font-size:0.75rem; color:{sl_color};'>"
+        f"({slope})</span>"
+        f"&nbsp;&nbsp;<span style='color:#666;font-size:0.7rem;'>(n={n})</span>",
+        unsafe_allow_html=True,
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Text table
+        rows = ""
+        for b in buckets:
+            ret = b["mean_return"]
+            pct = f"{ret * 100:+.3f}%"
+            bar_len = max(0, min(20, int(abs(ret) * 2000)))
+            bar_char = "█" if ret >= 0 else "░"
+            color = "#21ba45" if ret >= 0 else "#db2828"
+            rows += (
+                f'<div style="display:flex;gap:8px;margin-bottom:3px;">'
+                f'<span style="color:#aaa;width:100px;font-size:0.78rem;">{b["range"]}</span>'
+                f'<span style="color:{color};width:170px;font-size:0.78rem;">'
+                f'{bar_char * bar_len} {pct}</span>'
+                f'<span style="color:#666;font-size:0.68rem;">n={b["n"]}</span>'
+                f'</div>'
+            )
+
+        html = f"""
+        <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;
+                    padding:12px 16px;font-family:monospace;">
+          <div style="color:#888;font-size:0.7rem;margin-bottom:8px;">
+            Score Bucket → Average Return
+          </div>
+          {rows}
+          <div style="border-top:1px solid #333;padding-top:8px;margin-top:8px;
+                      display:flex;gap:16px;">
+            <span>
+              <span style="color:#aaa;font-size:0.75rem;">Spearman ρ</span>&nbsp;
+              <span style="color:{sp_color};font-weight:700;">{sp_str}</span>
+            </span>
+            <span>
+              <span style="color:#aaa;font-size:0.75rem;">Slope</span>&nbsp;
+              <span style="color:{sl_color};font-weight:600;">{slope}</span>
+            </span>
+          </div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
+
+    with col2:
+        if not _HAS_ALTAIR:
+            return
+
+        df = pd.DataFrame(buckets)
+        df["return_pct"] = df["mean_return"] * 100
+        df["bar_color"] = df["mean_return"].apply(
+            lambda v: "#21ba45" if v >= 0 else "#db2828"
+        )
+
+        chart = (
+            alt.Chart(df)
+            .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+            .encode(
+                x=alt.X("range:N", sort=None, title="Hydra Score Bucket"),
+                y=alt.Y("return_pct:Q", title="Avg Return (%)"),
+                color=alt.Color(
+                    "bar_color:N",
+                    scale=None,
+                ),
+                tooltip=[
+                    alt.Tooltip("range:N", title="Score Range"),
+                    alt.Tooltip("return_pct:Q", title="Avg Return %", format="+.3f"),
+                    alt.Tooltip("n:Q", title="Count"),
+                    alt.Tooltip("mean_score:Q", title="Mean Score", format=".4f"),
+                ],
+            )
+            .properties(height=250, title="Score → Return (monotonicity check)")
+        )
+
+        st.altair_chart(chart, use_container_width=True)
+
+    # Per-head monotonicity table
+    per_head = data.get("per_head", [])
+    contamination = data.get("head_contamination", False)
+    if per_head:
+        contam_badge = ""
+        if contamination:
+            contam_badge = (
+                '&nbsp;&nbsp;<span style="background:#db2828;color:#fff;'
+                'padding:1px 6px;border-radius:3px;font-weight:600;'
+                'font-size:0.7rem;">HEAD CONTAMINATION</span>'
+            )
+
+        st.markdown(
+            f"##### Per-Head Monotonicity{contam_badge}",
+            unsafe_allow_html=True,
+        )
+
+        head_rows = ""
+        for h in per_head:
+            h_sp = h.get("spearman")
+            h_slope = h.get("slope", "unknown")
+            h_n = h.get("n", 0)
+            h_color = _spearman_color(h_sp)
+            h_sl_color = _slope_color(h_slope)
+            h_sp_str = f"{h_sp:+.3f}" if h_sp is not None else "—"
+            head_rows += (
+                f'<div style="display:flex;gap:12px;margin-bottom:3px;">'
+                f'<span style="color:#ccc;width:110px;font-weight:600;'
+                f'font-size:0.78rem;">{h["head"]}</span>'
+                f'<span style="color:{h_color};width:70px;font-size:0.78rem;'
+                f'font-weight:600;">{h_sp_str}</span>'
+                f'<span style="color:{h_sl_color};width:70px;'
+                f'font-size:0.78rem;">{h_slope}</span>'
+                f'<span style="color:#666;font-size:0.68rem;">n={h_n}</span>'
+                f'</div>'
+            )
+        # Add global row for comparison
+        gl_sp_str = f"{spearman:+.3f}" if spearman is not None else "—"
+        head_rows += (
+            f'<div style="display:flex;gap:12px;margin-top:4px;'
+            f'border-top:1px solid #333;padding-top:4px;">'
+            f'<span style="color:#888;width:110px;font-weight:600;'
+            f'font-size:0.78rem;">ALL</span>'
+            f'<span style="color:{sp_color};width:70px;font-size:0.78rem;'
+            f'font-weight:600;">{gl_sp_str}</span>'
+            f'<span style="color:{sl_color};width:70px;'
+            f'font-size:0.78rem;">{slope}</span>'
+            f'<span style="color:#666;font-size:0.68rem;">n={n}</span>'
+            f'</div>'
+        )
+
+        head_html = f"""
+        <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;
+                    padding:12px 16px;font-family:monospace;">
+          <div style="display:flex;gap:12px;margin-bottom:6px;">
+            <span style="color:#666;width:110px;font-size:0.68rem;">HEAD</span>
+            <span style="color:#666;width:70px;font-size:0.68rem;">SPEARMAN</span>
+            <span style="color:#666;width:70px;font-size:0.68rem;">SLOPE</span>
+            <span style="color:#666;font-size:0.68rem;">COUNT</span>
+          </div>
+          {head_rows}
+        </div>
+        """
+        st.markdown(head_html, unsafe_allow_html=True)

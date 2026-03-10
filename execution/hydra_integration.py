@@ -163,6 +163,8 @@ def convert_hydra_intents_to_execution(
 
         intent = hydra_merged_intent_to_execution_intent(merged, nav_usd, price)
         if intent:
+            intent.setdefault("price", price)
+            intent.setdefault("gross_usd", intent.get("notional_usd", 0.0))
             execution_intents.append(intent)
 
     return execution_intents
@@ -212,6 +214,18 @@ def get_hydra_attribution_for_order(
     return {"strategy_heads": [], "head_contributions": {}, "source": "legacy"}
 
 
+def _intent_score(intent: Dict[str, Any]) -> float:
+    """Extract a comparable score from any intent (Hydra or screener)."""
+    for key in ("hybrid_score", "score"):
+        val = intent.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
 def merge_with_single_strategy_intents(
     hydra_intents: List[Dict[str, Any]],
     legacy_intents: List[Dict[str, Any]],
@@ -220,13 +234,14 @@ def merge_with_single_strategy_intents(
     """
     Merge Hydra intents with legacy single-strategy intents.
 
-    When both Hydra and legacy produce intents for the same symbol,
-    this function resolves which to use.
+    When both engines produce an intent for the same symbol the
+    **higher-scoring** intent wins.  ``prefer_hydra`` is used only as
+    a tiebreaker when scores are equal.
 
     Args:
         hydra_intents: Intents from Hydra pipeline
         legacy_intents: Intents from legacy single-strategy pipeline
-        prefer_hydra: If True, Hydra wins on conflict
+        prefer_hydra: Tiebreaker — if True, Hydra wins when scores are equal
 
     Returns:
         Merged list of intents
@@ -237,17 +252,83 @@ def merge_with_single_strategy_intents(
     if not legacy_intents:
         return hydra_intents
 
-    # Build symbol set from Hydra
-    hydra_symbols = {i.get("symbol") for i in hydra_intents}
+    # Index both sides by symbol
+    hydra_by_sym: Dict[str, Dict[str, Any]] = {}
+    for hi in hydra_intents:
+        sym = hi.get("symbol")
+        if sym:
+            hydra_by_sym[sym] = hi
 
-    # Filter legacy intents
-    if prefer_hydra:
-        filtered_legacy = [i for i in legacy_intents if i.get("symbol") not in hydra_symbols]
-        return hydra_intents + filtered_legacy
-    else:
-        legacy_symbols = {i.get("symbol") for i in legacy_intents}
-        filtered_hydra = [i for i in hydra_intents if i.get("symbol") not in legacy_symbols]
-        return legacy_intents + filtered_hydra
+    legacy_by_sym: Dict[str, Dict[str, Any]] = {}
+    for li in legacy_intents:
+        sym = li.get("symbol")
+        if sym:
+            legacy_by_sym[sym] = li
+
+    merged: List[Dict[str, Any]] = []
+
+    # Resolve conflicts: pick higher score, prefer_hydra is tiebreaker
+    _conflicts = 0
+    _hydra_won = 0
+    _legacy_won = 0
+    _hydra_lower_score_selected = 0
+    _selected_scores: List[float] = []
+    _rejected_scores: List[float] = []
+
+    all_symbols = list(dict.fromkeys(
+        [i.get("symbol") for i in hydra_intents] +
+        [i.get("symbol") for i in legacy_intents]
+    ))
+    for sym in all_symbols:
+        if not sym:
+            continue
+        h = hydra_by_sym.get(sym)
+        l = legacy_by_sym.get(sym)
+        if h and l:
+            hs = _intent_score(h)
+            ls = _intent_score(l)
+            _conflicts += 1
+            if hs > ls:
+                primary, fallback = h, l
+                _hydra_won += 1
+            elif ls > hs:
+                primary, fallback = l, h
+                _legacy_won += 1
+            else:
+                if prefer_hydra:
+                    primary, fallback = h, l
+                    _hydra_won += 1
+                else:
+                    primary, fallback = l, h
+                    _legacy_won += 1
+            primary["_fallback"] = fallback
+            primary["merge_conflict"] = True
+            primary["merge_legacy_score"] = ls
+            primary["merge_hydra_score"] = hs
+            merged.append(primary)
+            _selected_scores.append(_intent_score(primary))
+            _rejected_scores.append(_intent_score(fallback))
+            _LOG.debug(
+                "[merge_conflict] sym=%s hydra=%.4f legacy=%.4f winner=%s",
+                sym, hs, ls,
+                "hydra" if primary is h else "legacy",
+            )
+        elif h:
+            merged.append(h)
+        else:
+            merged.append(l)  # type: ignore[arg-type]
+
+    if _conflicts:
+        _avg_sel = sum(_selected_scores) / len(_selected_scores)
+        _avg_rej = sum(_rejected_scores) / len(_rejected_scores)
+        _LOG.info(
+            "[merge] conflicts=%d hydra_won=%d legacy_won=%d "
+            "avg_selected=%.4f avg_rejected=%.4f score_delta=%.4f",
+            _conflicts, _hydra_won, _legacy_won,
+            _avg_sel, _avg_rej, _avg_sel - _avg_rej,
+        )
+
+    return merged
 
 
 # ---------------------------------------------------------------------------

@@ -110,11 +110,11 @@ def test_internal_screener_submits_with_stubbed_intents(monkeypatch):
     submitted = []
     monkeypatch.setattr(ex, "run_screener_once", lambda: {"attempted": 1, "emitted": 1, "intents": [{"raw": {"symbol": "BTCUSDT", "signal": "BUY", "capital_per_trade": 10.0, "leverage": 1}}]})
     monkeypatch.setattr(ex, "_publish_intent_audit", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(ex, "_send_order", lambda intent: submitted.append(intent))
+    monkeypatch.setattr(ex, "_send_order", lambda _state, intent: submitted.append(intent))
     monkeypatch.setattr(ex, "_symbol_on_cooldown", lambda *_args, **_kwargs: False)
     ex._LAST_SCREENER_RUN = 0
     ex.EXTERNAL_SIGNAL = False
-    ex._maybe_run_internal_screener()
+    ex._maybe_run_internal_screener(ex._STATE)
     assert submitted
     assert submitted[0]["symbol"] == "BTCUSDT"
 

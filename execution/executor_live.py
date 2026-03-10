@@ -44,7 +44,6 @@ from execution.sizing import (
 from execution.fill_tracker import (
     OrderAckInfo,
     FillSummary,
-    POSITION_TRACKER as _FILL_TRACKER_POSITION_TRACKER,
     fetch_order_status as _fetch_order_status,
     fetch_order_trades as _fetch_order_trades,
     emit_order_ack as _emit_order_ack,
@@ -74,6 +73,7 @@ import requests
 from execution.intel.router_policy import router_policy
 from execution.v6_flags import get_flags, flags_to_dict, log_v6_flag_snapshot
 from execution.dle_shadow import shadow_build_chain, DLEShadowWriter, hash_snapshot as _dle_hash_snapshot, DEFAULT_ENTRY_PERMIT_TTL_S, DEFAULT_EXIT_PERMIT_TTL_S
+from execution import hydra_funnel as _hydra_funnel
 from execution.loop_timing import (
     is_enabled as timing_enabled,
     start_loop as timing_start_loop,
@@ -99,7 +99,7 @@ logging.basicConfig(
 HOSTNAME = socket.gethostname()
 RUN_ID = os.getenv("EXECUTOR_RUN_ID") or str(uuid.uuid4())
 _EXECUTOR_START_TS = time.time()
-_LAST_CYCLE_TS = _EXECUTOR_START_TS
+_LAST_CYCLE_TS = _EXECUTOR_START_TS  # Phase 6: dead bridge — use state.last_cycle_ts
 LOG_ORDERS = get_logger("logs/execution/orders_executed.jsonl")
 LOG_ATTEMPTS = get_logger("logs/execution/orders_attempted.jsonl")
 LOG_VETOES = get_logger("logs/execution/risk_vetoes.jsonl")
@@ -110,8 +110,8 @@ LOG_FEE_GATE = get_logger("logs/execution/fee_gate_events.jsonl")
 EXEC_HEALTH_LOG = get_logger("logs/execution/execution_health.jsonl")
 _HEARTBEAT_INTERVAL = 60.0
 _LAST_HEARTBEAT = 0.0
-_LAST_SIGNAL_PULL = 0.0
-_LAST_QUEUE_DEPTH = 0
+_LAST_SIGNAL_PULL = 0.0   # Phase 6: DO NOT use directly in new code; use state.last_signal_pull
+_LAST_QUEUE_DEPTH = 0       # Phase 6: DO NOT use directly in new code; use state.last_queue_depth
 SIGNAL_METRICS_PATH = Path("logs/execution/signal_metrics.jsonl")
 ORDER_METRICS_PATH = Path("logs/execution/order_metrics.jsonl")
 ROUTER_METRICS_MIRROR_PATH = Path("logs/execution/router_metrics.jsonl")
@@ -125,16 +125,13 @@ NAV_LOG_CACHE_PATH = LOGS_ROOT / "nav_log.json"
 SPOT_STATE_CACHE_PATH = LOGS_ROOT / "spot_state.json"
 NAV_LOG_MAX_POINTS = int(os.getenv("NAV_LOG_MAX_POINTS", "259200") or 259200)  # 90d @ 30s
 _INTENT_REGISTRY: Dict[str, Dict[str, Any]] = {}
-_POSITION_TRACKER = _FILL_TRACKER_POSITION_TRACKER
 _FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)  # kept for any direct refs
 _FILL_POLL_TIMEOUT = float(os.getenv("ORDER_FILL_POLL_TIMEOUT", "8.0") or 8.0)    # kept for any direct refs
 _FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}               # kept for any direct refs
 _HEALTH_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_HEALTH_PUBLISH_INTERVAL", "120") or 120)
 # Backwards compatibility: some call sites referred to EXEC_HEALTH_PUBLISH_INTERVAL_S.
 EXEC_HEALTH_PUBLISH_INTERVAL_S = _HEALTH_PUBLISH_INTERVAL_S
-_LAST_HEALTH_PUBLISH: Dict[str, float] = {}
 EXEC_ALERT_INTERVAL_S = float(os.getenv("EXEC_ALERT_INTERVAL_S", "60") or 60)
-_LAST_EXEC_ALERT_EVAL: Dict[str, float] = {}
 EXEC_INTEL_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_INTEL_PUBLISH_INTERVAL_S", "300") or 300)
 _LAST_INTEL_PUBLISH: Dict[str, float] = {}
 ROUTER_HEALTH_REFRESH_INTERVAL_S = float(os.getenv("ROUTER_HEALTH_REFRESH_INTERVAL_S", "60") or 60)
@@ -177,6 +174,9 @@ PIPELINE_V6_SHADOW_RECENT = int(os.getenv("PIPELINE_V6_SHADOW_RECENT", "50") or 
 ROUTER_AUTOTUNE_V6_APPLY_ENABLED = _V6_FLAGS.router_autotune_v6_apply_enabled
 _V6_RUNTIME_PROBE_INTERVAL = float(os.getenv("V6_RUNTIME_PROBE_INTERVAL", "300") or 300)
 _LAST_V6_RUNTIME_PROBE = 0.0
+
+from execution.fallback_telemetry import FallbackTelemetry
+_FALLBACK_TELEMETRY = FallbackTelemetry()
 _PIPELINE_V6_HEARTBEAT_INTERVAL_S = float(os.getenv("PIPELINE_V6_SHADOW_HEARTBEAT_INTERVAL_S", "600") or 600)
 _LAST_PIPELINE_V6_HEARTBEAT = 0.0
 _PIPELINE_V6_COMPARE_INTERVAL_S = float(os.getenv("PIPELINE_V6_COMPARE_INTERVAL_S", "900") or 900)
@@ -192,19 +192,18 @@ _LAST_KPI_PUBLISH = 0.0
 _SYMBOL_ERROR_COOLDOWN: Dict[str, float] = {}
 
 # Doctrine block summary — rate-limited per-cycle regime awareness
-_LAST_DOCTRINE_BLOCK_LOG = 0.0
+_LAST_DOCTRINE_BLOCK_LOG = 0.0  # Phase 6: DO NOT use directly; use state.last_doctrine_block_log_ts
 _DOCTRINE_BLOCK_LOG_INTERVAL_S = 120.0  # At most one summary line every 2 min
 
 # Episode ledger rebuild (observability — never gates execution)
 _EPISODE_LEDGER_REBUILD_INTERVAL_S = float(os.getenv("EPISODE_LEDGER_REBUILD_INTERVAL_S", "300") or 300)
-_LAST_EPISODE_LEDGER_REBUILD_TS = 0.0
+_LAST_EPISODE_LEDGER_REBUILD_TS = 0.0  # Phase 6: DO NOT use directly; use state.last_episode_ledger_rebuild_ts
 
 # Disk pressure guard (prevents silent IO-wait death from unbounded log growth)
 _DISK_CHECK_INTERVAL_S = float(os.getenv("DISK_CHECK_INTERVAL_S", "300") or 300)
 _DISK_WARN_THRESHOLD_PCT = float(os.getenv("DISK_WARN_THRESHOLD_PCT", "80") or 80)
 _DISK_CRITICAL_THRESHOLD_PCT = float(os.getenv("DISK_CRITICAL_THRESHOLD_PCT", "90") or 90)
-_LAST_DISK_CHECK = 0.0
-_LAST_DISK_ALERT_TS = 0.0
+# Phase 5: _LAST_DISK_CHECK and _LAST_DISK_ALERT_TS moved to ExecutorState
 _DISK_ALERT_COOLDOWN_S = 600.0  # Don't spam — one alert per 10 min
 _ENV_EVENTS_PATH = Path("logs/execution/environment_events.jsonl")
 
@@ -540,18 +539,109 @@ def _get_risk_engine_v6() -> Optional[RiskEngineV6]:
     return _RISK_ENGINE_V6
 
 
-def _maybe_check_disk_pressure(force: bool = False) -> None:
+def _emit_soak_telemetry(state: ExecutorState) -> None:
+    """Post-Phase-6 soak observation — debug-level, no branching, no side effects.
+
+    Safe to remove after soak window closes.
+    """
+    from execution.fill_tracker import _RUNNER
+
+    runner_alive = _RUNNER is not None and _RUNNER.running if _RUNNER is not None else False
+    cache_age = state.position_cache.age_s()
+
+    LOG.info(
+        "[soak] cycle_ts=%.3f signal_pull=%.3f queue_depth=%d "
+        "disk_check=%.3f disk_alert=%.3f episode_rebuild=%.3f "
+        "doctrine_block=%.3f runner_alive=%s cache_age=%.1f",
+        state.last_cycle_ts,
+        state.last_signal_pull,
+        state.last_queue_depth,
+        state.last_disk_check_ts,
+        state.last_disk_alert_ts,
+        state.last_episode_ledger_rebuild_ts,
+        state.last_doctrine_block_log_ts,
+        runner_alive,
+        cache_age,
+    )
+    fb = _FALLBACK_TELEMETRY.snapshot()
+    if fb["normal_count"] or fb["fallback_count"]:
+        LOG.info(
+            "[fallback_metrics] "
+            "fallback_rate=%.3f edge_delta=%.4f primary_gap=%.4f "
+            "normal=%d fallback=%d conflicts=%d window_age=%.0f",
+            fb["fallback_rate"],
+            fb["fallback_edge_delta"],
+            fb["primary_rejection_gap"],
+            fb["normal_count"],
+            fb["fallback_count"],
+            fb["conflict_count"],
+            fb["window_age_s"],
+        )
+        if fb["hydra_exec_count"] or fb["legacy_exec_count"]:
+            LOG.info(
+                "[hydra_metrics] "
+                "hqd=%.4f participation=%.3f rescue_rate=%.4f overconfidence=%.4f "
+                "hydra_exec=%d legacy_exec=%d",
+                fb["hydra_quality_diff"],
+                fb["hydra_participation"],
+                fb["hydra_rescue_rate"],
+                fb["hydra_overconfidence"],
+                fb["hydra_exec_count"],
+                fb["legacy_exec_count"],
+            )
+            rsd = fb.get("regime_rsd") or {}
+            if rsd:
+                parts = " ".join(
+                    f"{r}={d['rsd']:+.4f} (hydra={d['hydra_n']} legacy={d['legacy_n']})"
+                    for r, d in sorted(rsd.items())
+                )
+                LOG.info("[hydra_regime] %s", parts)
+        if fb["cel_count"]:
+            LOG.info(
+                "[multi_engine_edge] cel=%+.4f conflicts=%d conflict_rate=%.3f",
+                fb["conflict_edge_lift"],
+                fb["cel_count"],
+                fb["conflict_rate"],
+            )
+        if fb["sdd_count"]:
+            LOG.info(
+                "[score_scale] delta=%+.4f hydra_mean=%.4f legacy_mean=%.4f n=%d",
+                fb["score_scale_delta"],
+                fb["sdd_hydra_mean"],
+                fb["sdd_legacy_mean"],
+                fb["sdd_count"],
+            )
+        rdd = fb.get("regime_dependence_spread", 0.0)
+        rsd = fb.get("regime_rsd") or {}
+        if rdd and len(rsd) >= 2:
+            LOG.info(
+                "[regime_dependence] spread=%.4f regimes=%d",
+                rdd, len(rsd),
+            )
+        ecs_ready = fb.get("ecs_ready", False)
+        LOG.info(
+            "[architecture] ecs_ready=%s score=%.3f trades=%d fallback_rate=%.4f cel=%.4f sdd=%.4f",
+            str(ecs_ready).lower(),
+            fb.get("ecs_readiness_score", 0.0),
+            fb.get("cel_count", 0),
+            fb.get("fallback_rate", 0.0),
+            fb.get("conflict_edge_lift", 0.0),
+            fb.get("score_scale_delta", 0.0),
+        )
+        _FALLBACK_TELEMETRY.persist_snapshot()
+
+
+def _maybe_check_disk_pressure(state: ExecutorState, force: bool = False) -> None:
     """Periodic disk usage check — emits environment event if usage exceeds thresholds.
 
     Prevents silent IO-wait death from unbounded log growth (e.g. 10GB JSONL).
     Checks every _DISK_CHECK_INTERVAL_S (default 5 min).  Alerts are rate-limited
     to one per _DISK_ALERT_COOLDOWN_S (10 min) to avoid log spam.
     """
-    global _LAST_DISK_CHECK, _LAST_DISK_ALERT_TS
     now = time.time()
-    if not force and (now - _LAST_DISK_CHECK) < _DISK_CHECK_INTERVAL_S:
+    if not force and (now - state.last_disk_check_ts) < _DISK_CHECK_INTERVAL_S:
         return
-    _LAST_DISK_CHECK = now
+    state.last_disk_check_ts = now
     try:
         usage = shutil.disk_usage("/")
     except OSError as exc:
@@ -567,9 +657,9 @@ def _maybe_check_disk_pressure(force: bool = False) -> None:
     if level == "ok":
         return
     # Rate-limit alerts
-    if (now - _LAST_DISK_ALERT_TS) < _DISK_ALERT_COOLDOWN_S:
+    if (now - state.last_disk_alert_ts) < _DISK_ALERT_COOLDOWN_S:
         return
-    _LAST_DISK_ALERT_TS = now
+    state.last_disk_alert_ts = now
     payload = {
         "ts": now_utc(),
         "event_type": "disk_pressure",
@@ -604,6 +694,7 @@ _REGIME_PERMIT_MAP: Dict[str, list] = {
 
 
 def _maybe_emit_doctrine_block_summary(
+    state: ExecutorState,
     intent_count: int,
     submitted_count: int,
 ) -> None:
@@ -615,11 +706,10 @@ def _maybe_emit_doctrine_block_summary(
 
     Prevents misreading 'no trades' as 'broken executor'.
     """
-    global _LAST_DOCTRINE_BLOCK_LOG
     now = time.time()
-    if (now - _LAST_DOCTRINE_BLOCK_LOG) < _DOCTRINE_BLOCK_LOG_INTERVAL_S:
+    if (now - state.last_doctrine_block_log_ts) < _DOCTRINE_BLOCK_LOG_INTERVAL_S:
         return
-    _LAST_DOCTRINE_BLOCK_LOG = now
+    state.last_doctrine_block_log_ts = now
 
     blocked_count = max(0, intent_count - submitted_count)
     if blocked_count == 0 and intent_count == 0:
@@ -1011,6 +1101,8 @@ from execution.risk_limits import (
 from execution.risk_loader import load_risk_config
 from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
 from execution.nav import compute_nav_pair, PortfolioSnapshot, nav_health_snapshot
+# Phase 5: DO NOT use _POSITION_CACHE in new code; use state.position_cache
+# Remaining callers: _position_rows_for_symbol (L1678)
 from execution.position_cache import POSITION_CACHE as _POSITION_CACHE
 from execution.order_dispatch import (
     dispatch_to_exchange as _dispatch_to_exchange,
@@ -1084,6 +1176,7 @@ from execution.hydra_integration import (
     merge_with_single_strategy_intents,
     is_hydra_enabled,
 )
+from execution.conviction_engine import enrich_intents_with_conviction
 from execution.cerberus_router import get_cerberus_all_multipliers
 from execution.state_publish import (
     build_synced_state_payload,
@@ -1383,6 +1476,20 @@ MAX_LOOPS = int(os.getenv("MAX_LOOPS", "0") or 0)
 SCREENER_INTERVAL = int(os.getenv("SCREENER_INTERVAL", "300") or 300)
 _LAST_SCREENER_RUN = 0.0
 
+# ── Phase 5: Executor State Container ────────────────────────────────
+# Centralises mutable per-run state previously stored in module globals.
+# New code must receive ``state`` explicitly — do NOT read _STATE directly
+# from nested helpers.  See execution/executor_state.py for design rules.
+from execution.executor_state import ExecutorState as ExecutorState  # noqa: E402
+
+_STATE = ExecutorState(
+    position_cache=_POSITION_CACHE,
+    run_id=RUN_ID,
+    engine_version=_ENGINE_VERSION,
+    executor_start_ts=_EXECUTOR_START_TS,
+    last_cycle_ts=_EXECUTOR_START_TS,
+)
+
 
 def _startup_flags() -> Dict[str, Any]:
     testnet = is_testnet()
@@ -1555,6 +1662,18 @@ def _normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _intent_score_for_log(intent: Mapping[str, Any]) -> float:
+    """Extract a comparable score from an intent for attribution logging."""
+    for key in ("hybrid_score", "score"):
+        val = intent.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
 def _symbol_on_cooldown(symbol: str, now: Optional[float] = None) -> bool:
     current = _SYMBOL_ERROR_COOLDOWN.get(str(symbol).upper())
     if current is None:
@@ -1696,15 +1815,15 @@ def _emit_position_snapshots(symbol: str) -> None:
         _record_structured_event(LOG_POSITION, "position_snapshot", payload)
 
 
-def _maybe_emit_heartbeat() -> None:
+def _maybe_emit_heartbeat(state: ExecutorState) -> None:
     global _LAST_HEARTBEAT
     now = time.time()
     if (now - _LAST_HEARTBEAT) < _HEARTBEAT_INTERVAL:
         return
     _LAST_HEARTBEAT = now
     lag = None
-    if _LAST_SIGNAL_PULL > 0:
-        lag = max(0.0, now - _LAST_SIGNAL_PULL)
+    if state.last_signal_pull > 0:
+        lag = max(0.0, now - state.last_signal_pull)
     payload: Dict[str, Any] = {
         "service": "executor_live",
         "run_id": RUN_ID,
@@ -1713,8 +1832,8 @@ def _maybe_emit_heartbeat() -> None:
     }
     if lag is not None:
         payload["lag_secs"] = lag
-    if _LAST_QUEUE_DEPTH is not None:
-        payload["queue_depth"] = _LAST_QUEUE_DEPTH
+    if state.last_queue_depth is not None:
+        payload["queue_depth"] = state.last_queue_depth
     _record_structured_event(LOG_HEART, "heartbeat", payload)
 
 
@@ -1815,7 +1934,7 @@ def _startup_position_check(client: Any) -> None:
         time.sleep(retry_interval)
 
 
-def _maybe_run_internal_screener() -> None:
+def _maybe_run_internal_screener(state: ExecutorState) -> None:
     global _LAST_SCREENER_RUN
     if EXTERNAL_SIGNAL or run_screener_once is None:
         return
@@ -1871,7 +1990,7 @@ def _maybe_run_internal_screener() -> None:
             if _symbol_on_cooldown(symbol, now_ts):
                 continue
             _publish_intent_audit(symbol, intent)
-            _send_order(intent)
+            _send_order(state, intent)
             submitted += 1
         except Exception as exc:
             LOG.error("[executor] internal screener submit failed: %s", exc)
@@ -1883,9 +2002,8 @@ def _maybe_run_internal_screener() -> None:
                 )
                 intent.setdefault("cooldown_until", cooldown_until)
 
-    global _LAST_SIGNAL_PULL, _LAST_QUEUE_DEPTH
-    _LAST_SIGNAL_PULL = time.time()
-    _LAST_QUEUE_DEPTH = len(intents)
+    state.last_signal_pull = time.time()
+    state.last_queue_depth = len(intents)
 
     LOG.info(
         "[screener] attempted=%s emitted=%s submitted=%d",
@@ -1895,7 +2013,7 @@ def _maybe_run_internal_screener() -> None:
     )
 
     # v7.9_C3: Doctrine block summary — make "no trades" state explicit
-    _maybe_emit_doctrine_block_summary(len(intents), submitted)
+    _maybe_emit_doctrine_block_summary(state, len(intents), submitted)
 
 
 
@@ -2859,59 +2977,90 @@ def _check_fee_edge_gate(
         _fg_notional = gross_target
         _fg_meta = intent.get("metadata") or {}
         _fg_hybrid = intent.get("hybrid_components") or {}
-        expected_edge_pct = float(
-            intent.get("expected_edge", 0)
-            or _fg_hybrid.get("expectancy", 0)
-            or _fg_meta.get("expectancy", 0)
-            or _fg_meta.get("expected_edge_pct", 0)
-            or 0
-        )
+
+        # ── Resolve intent expected_edge (conviction-derived) ─────────
+        # Precedence: intent["expected_edge"] > hybrid expectancy > metadata
+        _intent_edge_pct = float(intent.get("expected_edge", 0) or 0)
         _fg_edge_source = "none"
-        if intent.get("expected_edge"):
-            _fg_edge_source = "expected_edge"
-        elif _fg_hybrid.get("expectancy"):
-            _fg_edge_source = "hybrid_expectancy"
-        elif _fg_meta.get("expectancy"):
-            _fg_edge_source = "metadata_expectancy"
-        elif _fg_meta.get("expected_edge_pct"):
-            _fg_edge_source = "metadata_expected_edge_pct"
+        if _intent_edge_pct > 0:
+            _fg_edge_source = "intent_expected_edge"
+        else:
+            _intent_edge_pct = float(_fg_hybrid.get("expectancy", 0) or 0)
+            if _intent_edge_pct > 0:
+                _fg_edge_source = "hybrid_expectancy"
+            else:
+                _intent_edge_pct = float(
+                    _fg_meta.get("expectancy", 0)
+                    or _fg_meta.get("expected_edge_pct", 0)
+                    or 0
+                )
+                if _intent_edge_pct > 0:
+                    _fg_edge_source = "metadata_expectancy"
 
         if _fg_notional > 0:
             _te_confidence = float(intent.get("confidence", 0) or 0)
-            _te_atr_raw: float | None = None
-            _te_timeframe: str | None = None
-            try:
-                _te_atr_raw = float(_fg_meta.get("atr", 0) or 0) or None
-            except (TypeError, ValueError):
-                _te_atr_raw = None
-            if _te_atr_raw is None:
+
+            # ── Primary path: use intent expected_edge directly ───────
+            # The strategy/conviction model already computed expected edge.
+            # Trust it (with a sanity cap) instead of recomputing from ATR.
+            _INTENT_EDGE_CAP = 0.25  # Cap at 25% to guard runaway values
+            _te_result = None
+
+            if (
+                _intent_edge_pct > 0
+                and _fg_edge_source == "intent_expected_edge"
+                and _intent_edge_pct == _intent_edge_pct  # finite check (NaN != NaN)
+            ):
+                from execution.true_edge import TrueEdgeResult
+                _capped_edge = min(_intent_edge_pct, _INTENT_EDGE_CAP)
+                _edge_usd = _fg_notional * _capped_edge
+                _te_result = TrueEdgeResult(
+                    expected_edge_pct=round(_capped_edge, 8),
+                    expected_edge_usd=round(_edge_usd, 6),
+                    atr_pct=0.0,
+                    k_atr=0.0,
+                    adv=round(_capped_edge, 6),
+                    confidence=_te_confidence,
+                    notional_usd=_fg_notional,
+                    source="intent_expected_edge",
+                )
+
+            # ── Fallback: ATR-based edge model ────────────────────────
+            if _te_result is None:
+                _te_atr_raw: float | None = None
+                _te_timeframe: str | None = None
                 try:
-                    from execution.utils.vol import atr_pct as _vol_atr_pct
-                    _atr_pct_val = _vol_atr_pct(symbol_upper, lookback_bars=50)
-                    if _atr_pct_val and _atr_pct_val > 0:
-                        _te_atr_raw = (_atr_pct_val / 100.0) * price
-                except Exception:
+                    _te_atr_raw = float(_fg_meta.get("atr", 0) or 0) or None
+                except (TypeError, ValueError):
                     _te_atr_raw = None
-            try:
-                _te_timeframe = str(
-                    intent.get("timeframe")
-                    or _fg_meta.get("timeframe")
-                    or intent.get("params", {}).get("timeframe")
-                    or ""
-                ) or None
-            except Exception:
-                _te_timeframe = None
+                if _te_atr_raw is None:
+                    try:
+                        from execution.utils.vol import atr_pct as _vol_atr_pct
+                        _atr_pct_val = _vol_atr_pct(symbol_upper, lookback_bars=50)
+                        if _atr_pct_val and _atr_pct_val > 0:
+                            _te_atr_raw = (_atr_pct_val / 100.0) * price
+                    except Exception:
+                        _te_atr_raw = None
+                try:
+                    _te_timeframe = str(
+                        intent.get("timeframe")
+                        or _fg_meta.get("timeframe")
+                        or intent.get("params", {}).get("timeframe")
+                        or ""
+                    ) or None
+                except Exception:
+                    _te_timeframe = None
 
-            if _te_confidence <= 0 and expected_edge_pct > 0:
-                _te_confidence = expected_edge_pct + 0.5
+                if _te_confidence <= 0 and _intent_edge_pct > 0:
+                    _te_confidence = _intent_edge_pct + 0.5
 
-            _te_result = compute_true_edge(
-                confidence=_te_confidence,
-                price=price,
-                atr=_te_atr_raw,
-                notional_usd=_fg_notional,
-                timeframe=_te_timeframe,
-            )
+                _te_result = compute_true_edge(
+                    confidence=_te_confidence,
+                    price=price,
+                    atr=_te_atr_raw,
+                    notional_usd=_fg_notional,
+                    timeframe=_te_timeframe,
+                )
 
             fg_allowed, fg_details = check_fee_edge_v2(_te_result)
 
@@ -2954,7 +3103,7 @@ def _check_fee_edge_gate(
             fg_details["intent_id"] = intent_id
             fg_details["attempt_id"] = attempt_id
 
-            if expected_edge_pct == 0.0:
+            if _intent_edge_pct == 0.0:
                 _raw_ee = intent.get("expected_edge")
                 _raw_he = _fg_hybrid.get("expectancy")
                 if (
@@ -2973,7 +3122,7 @@ def _check_fee_edge_gate(
                         {
                             "symbol": symbol_upper,
                             "side": side,
-                            "resolved_edge_pct": expected_edge_pct,
+                            "resolved_edge_pct": _intent_edge_pct,
                             "raw_expected_edge": _raw_ee,
                             "raw_hybrid_expectancy": _raw_he,
                             "intent_keys": sorted(intent.keys()),
@@ -2994,6 +3143,19 @@ def _check_fee_edge_gate(
                     _te_result.source,
                     _te_result.expected_edge_pct,
                 )
+                LOG.info(
+                    "[fee_gate] VETO_INPUTS %s: "
+                    "expected_edge_pct=%.6f confidence=%.4f "
+                    "required_edge=$%.4f fee_rt=$%.4f "
+                    "edge_source=%s notional=$%.2f",
+                    symbol_upper,
+                    _intent_edge_pct,
+                    _te_confidence,
+                    fg_details.get("required_edge_usd", 0),
+                    fg_details.get("round_trip_fee_usd", 0),
+                    _fg_edge_source,
+                    _fg_notional,
+                )
                 _record_structured_event(
                     LOG_FEE_GATE,
                     "FEE_GATE_VETO_DETAIL",
@@ -3001,13 +3163,17 @@ def _check_fee_edge_gate(
                 )
                 return False
             else:
-                LOG.debug(
+                LOG.info(
                     "[fee_gate] PASS %s: edge $%.4f >= "
-                    "required $%.4f (source=%s)",
+                    "required $%.4f (source=%s, edge_pct=%.6f, "
+                    "confidence=%.4f, notional=$%.2f)",
                     symbol_upper,
                     fg_details.get("expected_edge_usd", 0),
                     fg_details.get("required_edge_usd", 0),
                     _te_result.source,
+                    _te_result.expected_edge_pct,
+                    _te_confidence,
+                    _fg_notional,
                 )
     except ImportError:
         pass
@@ -3124,7 +3290,7 @@ def _check_notional_inflation_guard(
 
 
 # NOTE: _send_order must only pass canonical order fields into send_order.
-def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
+def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     # DOCTRINE GATE — Supreme Authority Check
     doctrine_allowed, doctrine_reason, doctrine_details = _doctrine_gate(intent)
     if not doctrine_allowed:
@@ -3166,7 +3332,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     },
                     phase_id="CYCLE_004",
                     action_class="ENTRY_DENY",
-                    policy_version=_ENGINE_VERSION,
+                    policy_version=state.engine_version,
                     scope={"symbol": str(intent.get("symbol", ""))},
                     constraints={"verdict": "DENY", "reason": doctrine_reason},
                     risk=doctrine_details or {},
@@ -3177,6 +3343,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 LOG.debug("[dle_shadow] entry_deny hook failed: %s", exc)
         return  # Hard stop — no further processing
     
+    # --- Hydra Funnel: stage 4 (post_doctrine) ---
+    if intent.get("source") == "hydra" and not bool(intent.get("reduceOnly", False)):
+        _hydra_funnel.record("post_doctrine", 1, regime=getattr(state, '_funnel_regime', ''))
+
     symbol = intent["symbol"]
     symbol_upper = str(symbol).upper()
     sig = str(intent.get("signal", "")).upper()
@@ -3279,7 +3449,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     },
                     phase_id="CYCLE_004",
                     action_class="ENTRY_ALLOW",
-                    policy_version=_ENGINE_VERSION,
+                    policy_version=state.engine_version,
                     scope={"symbol": symbol_upper},
                     constraints={"verdict": "ALLOW"},
                     risk=doctrine_details or {},
@@ -3430,6 +3600,11 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         "reduce_only": reduce_only,
         "price_hint": price_guess,
     }
+    # Propagate fallback provenance into attempt payload for downstream audit
+    if intent.get("fallback_used"):
+        attempt_payload["fallback_used"] = True
+        attempt_payload["merge_primary_engine"] = intent.get("merge_primary_engine")
+        attempt_payload["merge_primary_score"] = intent.get("merge_primary_score")
     # v7.9-S1: Veto unattributed entries.  If a strategy/head does not
     # provide attribution, the intent cannot be measured and is therefore
     # untradeable.  Exits (reduce_only) are exempt — they must always go
@@ -3585,7 +3760,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     # Risk gating handled centrally in risk_engine_v6; executor does not re-evaluate caps.
 
     try:
-        positions = list(_POSITION_CACHE.get(get_positions) or [])
+        positions = list(state.position_cache.get(get_positions) or [])
     except Exception:
         positions = []
 
@@ -3712,10 +3887,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         except Exception:
                             LOG.warning("[RISK_NOTE_FILL] note_fill failed for %s (flip)", symbol, exc_info=True)
                         _emit_position_snapshots(symbol)
-                        _POSITION_CACHE.invalidate()
+                        state.position_cache.invalidate()
 
             try:
-                positions = list(_POSITION_CACHE.get(get_positions) or [])
+                positions = list(state.position_cache.get(get_positions) or [])
             except Exception:
                 positions = []
             opp_after_side, opp_after_qty, _ = _opposite_position(symbol, pos_side, positions)
@@ -3850,7 +4025,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             intent=intent,
             symbol_upper=symbol_upper,
             side=side,
-            price=price,
+            price=price_hint,
             price_hint=price_hint,
             gross_target=gross_target,
             intent_id=intent_id,
@@ -4214,9 +4389,16 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             intent_id=intent_id,
         )
         if ack_info and not resp.get("dryRun"):
+            # --- Hydra Funnel: stage 5 (executed) ---
+            if intent.get("source") == "hydra" and not reduce_only:
+                _hydra_funnel.record("executed", 1, regime=getattr(state, '_funnel_regime', ''))
+            # Enrich metadata with engine source for episode attribution
+            _fill_meta = dict(intent.get("metadata") or {})
+            _fill_meta.setdefault("source", intent.get("source", ""))
+            _fill_meta.setdefault("strategy", intent.get("strategy") or intent.get("strategy_id") or "")
             _fill_handle = _start_fill_task(
                 ack_info,
-                intent.get("metadata"),
+                _fill_meta,
                 intent.get("strategy") or intent.get("strategy_id"),
             )
             # ── Overlap safe bookkeeping while fill polls in background ──
@@ -4380,7 +4562,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         except Exception:
             LOG.warning("[RISK_NOTE_FILL] note_fill failed for %s (post-execute)", symbol, exc_info=True)
         _emit_position_snapshots(symbol)
-        _POSITION_CACHE.invalidate()
+        state.position_cache.invalidate()
 
         # ── v7.9-E2: Churn Guard fill recording ──────────────────────────
         try:
@@ -4826,8 +5008,10 @@ def _persist_spot_state() -> None:
     _write_json_cache(SPOT_STATE_CACHE_PATH, payload)
 
 
-def _pub_tick() -> None:
+def _pub_tick(state: ExecutorState) -> None:
     global _LAST_NAV_STATE, _LAST_POSITIONS_STATE
+    if state.last_cycle_ts <= 0:
+        LOG.debug("[pub_tick] last_cycle_ts_uninitialized")
     nav_val, nav_detail = _compute_nav_with_detail()
     rows = _collect_rows()
     _persist_positions_cache(rows)
@@ -5011,14 +5195,14 @@ def _pub_tick() -> None:
         now_ts = time.time()
         write_engine_metadata_state(
             {
-                "engine_version": _ENGINE_VERSION,
+                "engine_version": state.engine_version,
                 "git_commit": _git_commit(),
                 "run_id": RUN_ID,
                 "hostname": HOSTNAME,
                 "env": ENV,
                 "status": "running",
                 "uptime_s": round(now_ts - _EXECUTOR_START_TS, 1),
-                "last_cycle_s": round(now_ts - _LAST_CYCLE_TS, 1),
+                "last_cycle_s": round(now_ts - state.last_cycle_ts, 1),
             }
         )
         engine_meta_written = True
@@ -5029,7 +5213,7 @@ def _pub_tick() -> None:
         synced_payload = build_synced_state_payload(
             items=rows,
             nav=nav_float,
-            engine_version=_ENGINE_VERSION,
+            engine_version=state.engine_version,
             flags=flag_snapshot,
             updated_at=now,
             nav_snapshot=nav_detail if isinstance(nav_detail, Mapping) else {},
@@ -5039,7 +5223,7 @@ def _pub_tick() -> None:
         synced_payload = {
             "items": [dict(row) for row in rows],
             "nav": nav_float,
-            "engine_version": _ENGINE_VERSION,
+            "engine_version": state.engine_version,
             "v6_flags": flag_snapshot,
             "updated_at": now,
             "nav_snapshot": nav_detail if isinstance(nav_detail, Mapping) else {},
@@ -5065,15 +5249,44 @@ def _pub_tick() -> None:
         LOG.debug("[telemetry] binary_lab_state_write_failed: %s", exc)
     # Episode ledger rebuild (observability — fail-open, throttled)
     episode_ledger_written = False
-    global _LAST_EPISODE_LEDGER_REBUILD_TS
-    if (now_ts - _LAST_EPISODE_LEDGER_REBUILD_TS) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:
+    if (now_ts - state.last_episode_ledger_rebuild_ts) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:
         try:
             from execution.episode_ledger import rebuild_and_save as _episode_rebuild
             _episode_rebuild()
             episode_ledger_written = True
-            _LAST_EPISODE_LEDGER_REBUILD_TS = now_ts
+            state.last_episode_ledger_rebuild_ts = now_ts
         except Exception as exc:
             LOG.debug("[telemetry] episode_ledger_rebuild_failed: %s", exc)
+        # Edge calibration — compute ERR from episode ledger (fail-open)
+        try:
+            from execution.edge_calibration import persist_snapshot as _persist_err
+            import json as _json
+            _ep_path = os.path.join("logs", "state", "episode_ledger.json")
+            with open(_ep_path) as _fh:
+                _ep_data = _json.load(_fh)
+            _persist_err(_ep_data.get("episodes", []))
+        except Exception as exc:
+            LOG.debug("[telemetry] edge_calibration_failed: %s", exc)
+        # Engine lift — Hydra vs Legacy outcome comparison (fail-open)
+        try:
+            from execution.engine_lift import persist_snapshot as _persist_lift
+            import json as _json2
+            _ep_path2 = os.path.join("logs", "state", "episode_ledger.json")
+            with open(_ep_path2) as _fh2:
+                _ep_data2 = _json2.load(_fh2)
+            _persist_lift(_ep_data2.get("episodes", []))
+        except Exception as exc:
+            LOG.debug("[telemetry] engine_lift_failed: %s", exc)
+        # Hydra score monotonicity (fail-open)
+        try:
+            from execution.hydra_monotonicity import persist_snapshot as _persist_mono
+            import json as _json3
+            _ep_path3 = os.path.join("logs", "state", "episode_ledger.json")
+            with open(_ep_path3) as _fh3:
+                _ep_data3 = _json3.load(_fh3)
+            _persist_mono(_ep_data3.get("episodes", []))
+        except Exception as exc:
+            LOG.debug("[telemetry] hydra_monotonicity_failed: %s", exc)
     LOG.info(
         "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s binary_lab=%s episode_ledger=%s",
         nav_written,
@@ -5094,12 +5307,10 @@ def _pub_tick() -> None:
     return None
 
 
-def _loop_once(i: int) -> None:
+def _loop_once(state: ExecutorState, i: int) -> None:
     # Signal path:
     #   runtime.yaml -> signal_screener.generate_intents() -> executor veto/doctor -> router -> exchange.
     #   generate_intents already applies local screener gates; veto=[] means risk+router should evaluate/send.
-    global _LAST_SIGNAL_PULL, _LAST_QUEUE_DEPTH
-    
     with timed_section("loop_setup"):
         _sync_dry_run()
         _refresh_risk_config()
@@ -5109,7 +5320,7 @@ def _loop_once(i: int) -> None:
 
     with timed_section("get_positions", api_calls=1):
         try:
-            baseline_positions = list(_POSITION_CACHE.get(get_positions) or [])
+            baseline_positions = list(state.position_cache.get(get_positions) or [])
         except Exception:
             baseline_positions = []
 
@@ -5239,7 +5450,7 @@ def _loop_once(i: int) -> None:
                         },
                         phase_id="CYCLE_004",
                         action_class="EXIT_ALLOW",
-                        policy_version=_ENGINE_VERSION,
+                        policy_version=state.engine_version,
                         scope={"symbol": candidate.symbol},
                         constraints={"verdict": "ALLOW", "reason": str(candidate.exit_reason)},
                         risk={},
@@ -5271,7 +5482,7 @@ def _loop_once(i: int) -> None:
             except Exception as _dd_exc:
                 LOG.debug("[exit_dedup] check failed (proceeding): %s", _dd_exc)
             try:
-                _send_order(exit_intent)
+                _send_order(state, exit_intent)
                 # Record successful send for dedup tracking
                 try:
                     from execution.exit_dedup import record_exit_sent
@@ -5297,7 +5508,7 @@ def _loop_once(i: int) -> None:
                 candidate.trigger_price,
             )
             try:
-                _send_order(exit_intent)
+                _send_order(state, exit_intent)
             except Exception as exc:
                 LOG.error("[exit_scanner] failed to send seatbelt exit %s: %s", candidate.symbol, exc)
     except ImportError:
@@ -5320,14 +5531,14 @@ def _loop_once(i: int) -> None:
             "reduceOnly": False,
         }
         LOG.info("[screener->executor] %s", intent)
-        _send_order(intent)
-        _LAST_SIGNAL_PULL = time.time()
-        _LAST_QUEUE_DEPTH = 0
+        _send_order(state, intent)
+        state.last_signal_pull = time.time()
+        state.last_queue_depth = 0
     else:
-        _LAST_SIGNAL_PULL = time.time()
+        state.last_signal_pull = time.time()
         with timed_section("generate_intents") as section:
             try:
-                intents_raw = list(generate_intents(_LAST_SIGNAL_PULL))
+                intents_raw = list(generate_intents(state.last_signal_pull))
             except Exception as e:
                 LOG.error("[screener] error: %s", e)
                 intents_raw = []
@@ -5340,7 +5551,10 @@ def _loop_once(i: int) -> None:
             _hydra_cfg = load_json("config/strategy_config.json") or {}
             if is_hydra_enabled(_hydra_cfg):
                 _hydra_nav = _compute_nav()
-                _hydra_symbols = sorted(universe_by_symbol().keys())
+                _hydra_symbols = sorted(
+                    sym for sym, cfg in universe_by_symbol().items()
+                    if cfg.get("enabled", True)
+                )
                 _hydra_cerberus = get_cerberus_all_multipliers()
                 _hydra_prices: Dict[str, float] = {}
                 for _hs in _hydra_symbols:
@@ -5427,6 +5641,11 @@ def _loop_once(i: int) -> None:
                 _hydra_exec = convert_hydra_intents_to_execution(
                     _hydra_merged, _hydra_nav, _hydra_prices,
                 )
+                # Percentile-normalize Hydra scores within this batch.
+                # Preserves ordering, widens ScoreSpread for faster
+                # monotonicity convergence without changing trade selection.
+                from execution.hydra_engine import percentile_normalize_scores
+                percentile_normalize_scores(_hydra_exec, score_key="score")
                 # Stamp provenance before merge
                 for _hi in _hydra_exec:
                     _hi.setdefault("source", "hydra")
@@ -5434,9 +5653,25 @@ def _loop_once(i: int) -> None:
                     if isinstance(_li, dict):
                         _li.setdefault("source", "legacy")
                 _hydra_count = len(_hydra_exec)
+                # --- Hydra Funnel: stage 1 (generated) ---
+                _funnel_regime = ""
+                try:
+                    _funnel_sx = _load_sentinel_x_state()
+                    _funnel_regime = str((_funnel_sx or {}).get("primary_regime", ""))
+                except Exception:
+                    pass
+                _hydra_funnel.record("generated", _hydra_count, regime=_funnel_regime)
+                # Stash regime for downstream funnel hooks
+                state._funnel_regime = _funnel_regime  # type: ignore[attr-defined]
                 intents_raw = merge_with_single_strategy_intents(
                     _hydra_exec, intents_raw, prefer_hydra=True,
                 )
+                # --- Hydra Funnel: stage 2 (post_merge) ---
+                _hydra_post_merge = sum(
+                    1 for _mi in intents_raw
+                    if isinstance(_mi, dict) and _mi.get("source") == "hydra"
+                )
+                _hydra_funnel.record("post_merge", _hydra_post_merge, regime=_funnel_regime)
         except Exception as _hydra_err:
             LOG.warning("[hydra] fail-open — error in pipeline, using legacy intents: %s", _hydra_err)
         LOG.info(
@@ -5449,7 +5684,22 @@ def _loop_once(i: int) -> None:
         )
         # --- end Hydra injection ---
 
-        _LAST_QUEUE_DEPTH = len(intents_raw)
+        # --- Post-merge conviction enrichment (v7.9_P3) ---
+        # Compute conviction on the final intent set so no merge step can
+        # drop conviction fields.  Overwrites any pre-existing values.
+        # Also enriches _fallback candidates for the fallback swap below.
+        _conviction_band_order = {"very_low": 0, "low": 1, "medium": 2, "high": 3, "very_high": 4}
+        _min_conv_band_str = ""
+        try:
+            _strat_cfg_for_conv = load_json("config/strategy_config.json") or {}
+            enrich_intents_with_conviction(intents_raw, _strat_cfg_for_conv)
+            _cc = _strat_cfg_for_conv.get("conviction") or {}
+            if str(_cc.get("mode", "off")).lower() in ("live", "shadow"):
+                _min_conv_band_str = str(_cc.get("min_entry_band", "")).lower()
+        except Exception as _conv_enrich_err:
+            LOG.warning("[conviction_enrich] fail-open: %s", _conv_enrich_err)
+
+        state.last_queue_depth = len(intents_raw)
         attempted = getattr(intents_raw, "attempted", len(intents_raw))
         screener_emitted = getattr(intents_raw, "emitted", len(intents_raw))
         submitted = 0
@@ -5462,6 +5712,57 @@ def _loop_once(i: int) -> None:
             now_ts = time.time()
             if _symbol_on_cooldown(symbol, now_ts):
                 continue
+
+            # --- Fallback swap (v7.9_P3): if primary fails conviction band
+            # and a fallback candidate passes, swap before _send_order. ---
+            _fallback_intent = intent.get("_fallback")
+            if (
+                _fallback_intent
+                and isinstance(_fallback_intent, dict)
+                and _min_conv_band_str in _conviction_band_order
+                and not intent.get("reduceOnly")
+            ):
+                _pri_band = str(intent.get("conviction_band") or "").lower()
+                _pri_rank = _conviction_band_order.get(_pri_band, -1)
+                _min_rank = _conviction_band_order[_min_conv_band_str]
+                if _pri_rank < _min_rank:
+                    _fb_band = str(_fallback_intent.get("conviction_band") or "").lower()
+                    _fb_rank = _conviction_band_order.get(_fb_band, -1)
+                    if _fb_rank >= _min_rank:
+                        _primary_engine = (
+                            intent.get("source")
+                            or intent.get("strategy")
+                            or "unknown"
+                        )
+                        _primary_score = _intent_score_for_log(intent)
+                        _fallback_engine = (
+                            _fallback_intent.get("source")
+                            or _fallback_intent.get("strategy")
+                            or "unknown"
+                        )
+                        LOG.info(
+                            "[fallback_swap] sym=%s selected_engine=%s executed_engine=%s "
+                            "primary_band=%s(%d) fallback_band=%s(%d) "
+                            "swap_reason=conviction_primary_failed",
+                            symbol, _primary_engine, _fallback_engine,
+                            _pri_band or "none", _pri_rank,
+                            _fb_band, _fb_rank,
+                        )
+                        intent = _normalize_intent(_fallback_intent)
+                        # Stamp provenance so analytics can distinguish swaps
+                        intent["fallback_used"] = True
+                        intent["merge_primary_engine"] = _primary_engine
+                        intent["merge_primary_score"] = _primary_score
+                        # Carry merge scores for CEL / SDD computation
+                        _legacy_score = raw_intent.get("merge_legacy_score")
+                        if _legacy_score is not None:
+                            intent["merge_legacy_score"] = _legacy_score
+                        _hydra_score = raw_intent.get("merge_hydra_score")
+                        if _hydra_score is not None:
+                            intent["merge_hydra_score"] = _hydra_score
+                        symbol = cast(Optional[str], intent.get("symbol"))
+                        if not symbol:
+                            continue
 
             veto_reasons = _coerce_veto_reasons(intent.get("veto"))
             if veto_reasons:
@@ -5505,11 +5806,16 @@ def _loop_once(i: int) -> None:
                 continue
 
             submitted += 1
+            # --- Hydra Funnel: stage 3 (submitted) ---
+            if intent.get("source") == "hydra":
+                _hydra_funnel.record("submitted", 1, regime=getattr(state, '_funnel_regime', ''))
             try:
                 _publish_intent_audit(symbol, intent)
                 intent_with_attempt = dict(intent)
+                intent_with_attempt.pop("_fallback", None)
                 intent_with_attempt["attempt_id"] = attempt_id
-                _send_order(intent_with_attempt)
+                _FALLBACK_TELEMETRY.record_attempt(intent_with_attempt)
+                _send_order(state, intent_with_attempt)
             except Exception as exc:
                 LOG.error("[executor] failed to send intent %s %s", symbol, exc)
                 cooldown_until = _mark_symbol_cooldown(symbol, now_ts)
@@ -5526,7 +5832,7 @@ def _loop_once(i: int) -> None:
         )
 
     try:
-        _pub_tick()
+        _pub_tick(state)
     except Exception as exc:
         LOG.exception("[loop] publish_tick_failed: %s", exc)
     _maybe_run_pipeline_v6_shadow_heartbeat()
@@ -5535,6 +5841,11 @@ def _loop_once(i: int) -> None:
     _maybe_run_telegram_alerts()
     _maybe_emit_execution_health_snapshot()
     _maybe_run_pipeline_v6_compare()
+    # --- Hydra Funnel: periodic flush ---
+    try:
+        _hydra_funnel.flush()
+    except Exception:
+        pass
 
 
 def main(argv: Optional[Sequence[str]] | None = None) -> None:
@@ -5652,8 +5963,8 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
     i = 0
     _consecutive_crashes = 0
     while True:
-        global _LAST_CYCLE_TS
-        _LAST_CYCLE_TS = time.time()
+        _STATE.touch_cycle()
+        _emit_soak_telemetry(_STATE)
         try:
             timing_start_loop(i)
             
@@ -5663,19 +5974,19 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
                 _maybe_compute_sentinel_x()
             
             with timed_section("loop_once"):
-                _loop_once(i)
+                _loop_once(_STATE, i)
             
             with timed_section("heartbeat_emit"):
-                _maybe_emit_heartbeat()
+                _maybe_emit_heartbeat(_STATE)
             
             with timed_section("internal_screener"):
-                _maybe_run_internal_screener()
+                _maybe_run_internal_screener(_STATE)
             
             with timed_section("runtime_probe"):
                 _maybe_write_v6_runtime_probe()
             
             with timed_section("disk_guard"):
-                _maybe_check_disk_pressure()
+                _maybe_check_disk_pressure(_STATE)
             
             timing_end_loop()
             _consecutive_crashes = 0

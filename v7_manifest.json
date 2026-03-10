@@ -345,6 +345,53 @@
         "meta": "Dict - lookback_days, total_realized_pnl, total_unrealized_pnl, heads_killed"
       }
     },
+    "hydra_funnel": {
+      "path": "logs/state/hydra_funnel.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Hydra intent pipeline visibility funnel - tracks survival through generation, merge, doctrine, execution",
+      "fields": {
+        "stages": "Dict[str, int] - generated, post_merge, submitted, post_doctrine, executed",
+        "visibility_rate": "float - executed / generated (0-1)",
+        "regime_visibility": "Dict[str, RegimeVis] - per-regime stage counts and visibility rates",
+        "updated_ts": "Unix timestamp"
+      }
+    },
+    "edge_calibration": {
+      "path": "logs/state/edge_calibration.json",
+      "owner": "executor",
+      "update_frequency": "on_trade_close",
+      "optional": true,
+      "description": "Edge Realization Ratio (ERR) accumulator - predicted vs realized edge",
+      "fields": {
+        "err": "float - ratio of realized returns to predicted edges",
+        "count": "int - number of recorded trades"
+      }
+    },
+    "engine_lift": {
+      "path": "logs/state/engine_lift.json",
+      "owner": "executor",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Engine lift metrics - Hydra vs legacy performance comparison",
+      "fields": {
+        "updated_ts": "Unix timestamp"
+      }
+    },
+    "hydra_monotonicity": {
+      "path": "logs/state/hydra_monotonicity.json",
+      "owner": "executor",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Hydra score monotonicity - Spearman correlation between score deciles and PnL",
+      "fields": {
+        "spearman": "float - Spearman rank correlation",
+        "n": "int - number of scored episodes",
+        "slope": "str - positive/negative/flat",
+        "head_contamination": "bool - whether mixed-head scores corrupt monotonicity"
+      }
+    },
     "execution_quality": {
       "path": "logs/state/execution_quality.json",
       "owner": "executor",
@@ -355,6 +402,22 @@
         "updated_ts": "ISO timestamp",
         "symbols": "Dict[str, QualityStats] - per-symbol avg/p95/max slippage, fill_ratio, twap_usage",
         "meta": "Dict - enabled, thin_symbols, crunch_symbols, throttling_active"
+      }
+    },
+    "fallback_metrics": {
+      "path": "logs/state/fallback_metrics.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Fallback swap and Hydra quality telemetry - 24h rolling window",
+      "fields": {
+        "fallback_rate": "float - fallback_count / conflict_count",
+        "fallback_edge_delta": "float - avg_fallback_score - avg_normal_score",
+        "primary_rejection_gap": "float - avg_primary_score - avg_fallback_score",
+        "hydra_quality_diff": "float - avg_hydra_exec_score - avg_legacy_exec_score",
+        "hydra_rescue_rate": "float - hydra_fallback_executions / conflicts",
+        "hydra_overconfidence": "float - hydra_primary_rejected / hydra_primary_count",
+        "ts": "Unix timestamp of last persist"
       }
     },
     "execution_alpha": {
@@ -577,6 +640,12 @@
       "owner": "dataset_rollback",
       "optional": true,
       "description": "Dataset rollback trigger events — temporal/replay anomalies"
+    },
+    "fee_gate_events": {
+      "path": "logs/execution/fee_gate_events.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "description": "Fee-edge gate verdicts — entry veto/pass decisions with edge details"
     }
   },
   "prediction_layer": {
