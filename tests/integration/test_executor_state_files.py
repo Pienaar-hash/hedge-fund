@@ -60,7 +60,7 @@ def test_pub_tick_writes_state(monkeypatch):
             },
         )(),
     )
-    executor_live._pub_tick()
+    executor_live._pub_tick(executor_live._STATE)
     assert nav_values and nav_values[0]["nav"] == 123.45
     assert positions_values and positions_values[0]["rows"][0]["symbol"] == "BTCUSDT"
     assert risk_values and isinstance(risk_values[0], dict)

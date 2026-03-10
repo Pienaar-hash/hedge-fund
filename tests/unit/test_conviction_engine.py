@@ -22,6 +22,7 @@ from execution.conviction_engine import (
     get_global_router_quality,
     get_dd_state,
     get_risk_mode,
+    enrich_intents_with_conviction,
 )
 
 
@@ -466,3 +467,133 @@ class TestLoadConvictionConfig:
         strategy_cfg = {"other_key": "value"}
         cfg = load_conviction_config(strategy_cfg)
         assert cfg.enabled is False  # Default to disabled for backward compatibility
+
+
+# ---------------------------------------------------------------------------
+# Test: enrich_intents_with_conviction (v7.9_P3)
+# ---------------------------------------------------------------------------
+
+class TestEnrichIntentsWithConviction:
+    """Post-merge conviction enrichment."""
+
+    _LIVE_CFG: dict = {
+        "conviction": {
+            "enabled": True,
+            "mode": "live",
+            "min_entry_band": "low",
+            "thresholds": {
+                "very_low": 0.20,
+                "low": 0.40,
+                "medium": 0.60,
+                "high": 0.80,
+                "very_high": 0.92,
+            },
+        },
+    }
+
+    def test_enriches_hydra_intent(self, tmp_path, monkeypatch):
+        """Hydra intent (no prior conviction) gets conviction fields."""
+        # Stub state file reads to return safe defaults
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_risk_snapshot",
+            lambda path=None: {"dd_state": "NORMAL", "risk_mode": "OK"},
+        )
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_router_health",
+            lambda path=None: {},
+        )
+        intent = {
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "score": 0.75,
+            "source": "hydra",
+        }
+        result = enrich_intents_with_conviction([intent], self._LIVE_CFG)
+        assert result is not None
+        assert "conviction_band" in intent
+        assert "conviction_score" in intent
+        assert intent["conviction_band"] != ""
+
+    def test_overwrites_existing_conviction(self, monkeypatch):
+        """Pre-existing (stale) conviction fields are overwritten."""
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_risk_snapshot",
+            lambda path=None: {"dd_state": "NORMAL", "risk_mode": "OK"},
+        )
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_router_health",
+            lambda path=None: {},
+        )
+        intent = {
+            "symbol": "ETHUSDT",
+            "side": "LONG",
+            "hybrid_score": 0.8,
+            "conviction_band": "stale_value",
+            "conviction_score": -999,
+            "source": "legacy",
+        }
+        enrich_intents_with_conviction([intent], self._LIVE_CFG)
+        assert intent["conviction_band"] != "stale_value"
+        assert intent["conviction_score"] != -999
+
+    def test_noop_when_disabled(self):
+        """No enrichment when conviction mode is off."""
+        intent = {"symbol": "BTCUSDT", "side": "LONG", "source": "hydra"}
+        cfg = {"conviction": {"mode": "off"}}
+        enrich_intents_with_conviction([intent], cfg)
+        assert "conviction_band" not in intent
+
+    def test_empty_intents(self, monkeypatch):
+        """Empty list is safe."""
+        result = enrich_intents_with_conviction([], self._LIVE_CFG)
+        assert result == []
+
+    def test_bad_intent_skipped(self, monkeypatch):
+        """Non-dict intent is skipped without error."""
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_risk_snapshot",
+            lambda path=None: {"dd_state": "NORMAL", "risk_mode": "OK"},
+        )
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_router_health",
+            lambda path=None: {},
+        )
+        intents = ["not_a_dict", {"symbol": "BTCUSDT", "score": 0.6, "source": "hydra"}]
+        enrich_intents_with_conviction(intents, self._LIVE_CFG)
+        assert "conviction_band" in intents[1]
+
+    def test_fallback_intent_enriched(self, monkeypatch):
+        """_fallback candidate also gets conviction fields."""
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_risk_snapshot",
+            lambda path=None: {"dd_state": "NORMAL", "risk_mode": "OK"},
+        )
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_router_health",
+            lambda path=None: {},
+        )
+        fallback = {"symbol": "BTCUSDT", "score": 0.5, "source": "legacy"}
+        intent = {
+            "symbol": "BTCUSDT",
+            "score": 0.7,
+            "source": "hydra",
+            "_fallback": fallback,
+        }
+        enrich_intents_with_conviction([intent], self._LIVE_CFG)
+        assert "conviction_band" in intent
+        assert "conviction_band" in fallback
+        assert isinstance(fallback["conviction_score"], float)
+
+    def test_fallback_none_safe(self, monkeypatch):
+        """Intent with _fallback=None doesn't crash."""
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_risk_snapshot",
+            lambda path=None: {"dd_state": "NORMAL", "risk_mode": "OK"},
+        )
+        monkeypatch.setattr(
+            "execution.conviction_engine.load_router_health",
+            lambda path=None: {},
+        )
+        intent = {"symbol": "BTCUSDT", "score": 0.6, "source": "hydra", "_fallback": None}
+        enrich_intents_with_conviction([intent], self._LIVE_CFG)
+        assert "conviction_band" in intent

@@ -1531,7 +1531,69 @@ def hydra_merged_intent_to_execution_intent(
         "strategy_heads": heads,
         "head_contributions": head_contributions,
         "source": "hydra",
+        "price": price,
+        "capital_per_trade": notional_usd,
+        "gross_usd": notional_usd,
     }
+
+
+def percentile_normalize_scores(
+    intents: List[Dict[str, Any]],
+    score_key: str = "score",
+    clamp_lo: float = 0.02,
+    clamp_hi: float = 0.98,
+) -> None:
+    """
+    In-place percentile normalization of Hydra scores within a batch.
+
+    Converts raw scores to rank-based percentiles [clamp_lo, clamp_hi].
+    Preserves ordering exactly — does not change which trades are selected.
+    Widens ScoreSpread so monotonicity diagnostics converge faster.
+
+    Args:
+        intents: List of execution intent dicts (mutated in place)
+        score_key: Field name holding the raw score
+        clamp_lo: Lower percentile clamp (avoids hard 0.0)
+        clamp_hi: Upper percentile clamp (avoids hard 1.0)
+    """
+    scores = []
+    indices = []
+    for i, intent in enumerate(intents):
+        if not isinstance(intent, dict):
+            continue
+        val = intent.get(score_key)
+        if val is not None:
+            try:
+                scores.append(float(val))
+                indices.append(i)
+            except (TypeError, ValueError):
+                pass
+
+    n = len(scores)
+    if n < 2:
+        return
+
+    # Build rank → percentile mapping (handles ties via average rank)
+    sorted_idx = sorted(range(n), key=lambda k: scores[k])
+    ranks = [0.0] * n
+    j = 0
+    while j < n:
+        # Find all tied values
+        k = j + 1
+        while k < n and scores[sorted_idx[k]] == scores[sorted_idx[j]]:
+            k += 1
+        avg_rank = (j + k - 1) / 2.0
+        for m in range(j, k):
+            ranks[sorted_idx[m]] = avg_rank
+        j = k
+
+    scale = clamp_hi - clamp_lo
+    for pos, intent_idx in enumerate(indices):
+        pct = ranks[pos] / (n - 1)  # 0..1
+        normed = clamp_lo + scale * pct
+        intents[intent_idx][score_key] = round(normed, 6)
+        # Also stamp hybrid_score so it flows through metadata to episodes
+        intents[intent_idx]["hybrid_score"] = round(normed, 6)
 
 
 def get_hydra_throttled_budgets(

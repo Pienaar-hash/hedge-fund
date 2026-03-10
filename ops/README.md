@@ -136,5 +136,5 @@ tail -50 /var/log/hedge-dashboard.err.log
 ## Version
 
 - **Runtime**: v7.6
-- **Dashboard**: layout_v7_6.py + app_v7_6.py
+- **Dashboard**: layout.py + app.py (see dashboard/DASHBOARD_POLICY.md)
 - **Engine**: Risk Engine v6, Hybrid Alpha v2, Vol Regime Model

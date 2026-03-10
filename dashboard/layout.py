@@ -1,7 +1,7 @@
 """
-Layout Engine v7.6 — Institutional Dashboard Composition
+Layout Engine — Institutional Dashboard Composition
 
-This module provides the render functions called by app_v7_6.py.
+This module provides the render functions called by app.py.
 Each function wraps the corresponding component module, providing
 a clean interface with proper state unpacking.
 

@@ -789,6 +789,135 @@ def get_sentinel_x_conviction_weight() -> tuple[float, str]:
         return 1.0, ""
 
 
+# ---------------------------------------------------------------------------
+# Post-Merge Intent Enrichment (v7.9_P3)
+# ---------------------------------------------------------------------------
+
+import logging as _logging
+
+_ENRICH_LOG = _logging.getLogger("conviction_engine.enrich")
+
+_VALID_VOL_REGIMES = frozenset(("low", "normal", "high", "crisis"))
+
+
+def enrich_intents_with_conviction(
+    intents: list[Dict[str, Any]],
+    strategy_config: Optional[Mapping[str, Any]] = None,
+) -> list[Dict[str, Any]]:
+    """Compute conviction score/band for every intent in the final merged set.
+
+    This runs **after** the Hydra/screener merge so that conviction belongs
+    to the intent itself, regardless of which engine produced it.
+
+    If conviction is disabled (mode != "live" and mode != "shadow") or the
+    config fails to load, intents are returned untouched.
+
+    Args:
+        intents: Merged intent list (mutated in-place and returned).
+        strategy_config: Full strategy_config dict (for conviction block).
+
+    Returns:
+        The same *intents* list, each enriched with conviction fields.
+    """
+    cfg = load_conviction_config(strategy_config)
+    if not cfg or not cfg.enabled:
+        return intents
+
+    # Load global state surfaces once per batch
+    risk_snap = load_risk_snapshot()
+    router_snap = load_router_health()
+    router_q = get_global_router_quality(router_snap)
+    dd_state = get_dd_state(risk_snap)
+    risk_mode = get_risk_mode(risk_snap)
+
+    for intent in intents:
+        if not isinstance(intent, dict):
+            continue
+        try:
+            # Derive inputs from whichever fields the intent carries.
+            # Screener intents have hybrid_score + hybrid_components;
+            # Hydra intents have score + head_contributions.
+            hybrid = float(
+                intent.get("hybrid_score")
+                or intent.get("score")
+                or 0.0,
+            )
+            components = intent.get("hybrid_components") or {}
+            vol_raw = str(intent.get("vol_regime", "normal")).lower()
+            if vol_raw not in _VALID_VOL_REGIMES:
+                vol_raw = "normal"
+
+            ctx = ConvictionContext(
+                hybrid_score=hybrid,
+                expectancy_alpha=float(components.get("expectancy", 0.0)),
+                router_quality=router_q,
+                trend_strength=float(components.get("trend", 0.0)),
+                vol_regime=vol_raw,  # type: ignore[arg-type]
+                dd_state=dd_state,  # type: ignore[arg-type]
+                risk_mode=risk_mode,  # type: ignore[arg-type]
+            )
+            result = compute_conviction(ctx, cfg)
+            intent["conviction_score"] = result.conviction_score
+            intent["conviction_band"] = result.conviction_band
+            intent["conviction_size_multiplier"] = result.size_multiplier
+            # Conviction is authority for confidence (sizing/ranking).
+            # For expected_edge: only overwrite when conviction-derived
+            # edge is positive.  When conviction_score < 0.5 the formula
+            # produces 0.0, which would zero-out the upstream edge from
+            # signal_generator and block all entries via the fee gate.
+            intent["confidence"] = result.conviction_score
+            _conv_edge = max(0.0, result.conviction_score - 0.5)
+            if _conv_edge > 0:
+                intent["expected_edge"] = _conv_edge
+            if result.vetoed:
+                intent["conviction_vetoed"] = True
+                intent["conviction_veto_reason"] = result.veto_reason
+        except Exception as exc:
+            _ENRICH_LOG.debug(
+                "conviction enrichment failed for %s: %s",
+                intent.get("symbol"), exc,
+            )
+
+        # Also enrich fallback candidate so the executor can evaluate it
+        _fb = intent.get("_fallback")
+        if isinstance(_fb, dict):
+            try:
+                _fb_hybrid = float(
+                    _fb.get("hybrid_score") or _fb.get("score") or 0.0,
+                )
+                _fb_comp = _fb.get("hybrid_components") or {}
+                _fb_vol = str(_fb.get("vol_regime", "normal")).lower()
+                if _fb_vol not in _VALID_VOL_REGIMES:
+                    _fb_vol = "normal"
+                _fb_ctx = ConvictionContext(
+                    hybrid_score=_fb_hybrid,
+                    expectancy_alpha=float(_fb_comp.get("expectancy", 0.0)),
+                    router_quality=router_q,
+                    trend_strength=float(_fb_comp.get("trend", 0.0)),
+                    vol_regime=_fb_vol,  # type: ignore[arg-type]
+                    dd_state=dd_state,  # type: ignore[arg-type]
+                    risk_mode=risk_mode,  # type: ignore[arg-type]
+                )
+                _fb_result = compute_conviction(_fb_ctx, cfg)
+                _fb["conviction_score"] = _fb_result.conviction_score
+                _fb["conviction_band"] = _fb_result.conviction_band
+                _fb["conviction_size_multiplier"] = _fb_result.size_multiplier
+                _fb["confidence"] = _fb_result.conviction_score
+                _fb_conv_edge = max(0.0, _fb_result.conviction_score - 0.5)
+                if _fb_conv_edge > 0:
+                    _fb["expected_edge"] = _fb_conv_edge
+                if _fb_result.vetoed:
+                    _fb["conviction_vetoed"] = True
+                    _fb["conviction_veto_reason"] = _fb_result.veto_reason
+            except Exception as _fb_exc:
+                _ENRICH_LOG.debug(
+                    "conviction enrichment failed for fallback %s: %s",
+                    _fb.get("symbol"), _fb_exc,
+                )
+
+    return intents
+
+
 __all__ = [
     # Types
     "DDState",
@@ -818,6 +947,8 @@ __all__ = [
     "compute_size_multiplier",
     "compute_conviction",
     "apply_conviction_to_nav_pct",
+    # Post-merge enrichment (v7.9_P3)
+    "enrich_intents_with_conviction",
     # Cache management
     "clear_conviction_cache",  # v7.7_P6
     # v7.8_P1: Meta-scheduler

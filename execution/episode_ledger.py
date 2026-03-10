@@ -102,6 +102,8 @@ class Episode:
     conviction_score: float = 0.0  # conviction engine output [0, 1]
     conviction_band: str = ""    # very_low / low / medium / high / very_high
     entry_regime_confidence: float = 0.0  # sentinel-X confidence at entry
+    expected_edge: float = 0.0   # predicted edge from conviction model
+    engine_source: str = ""      # hydra / legacy / unknown
     
     def to_dict(self) -> dict:
         return asdict(self)
@@ -750,6 +752,8 @@ def _extract_scoring_fields(entry_fill: dict) -> dict:
         "entry_regime_confidence": float(
             meta.get("entry_regime_confidence", 0) or 0
         ),
+        "expected_edge": float(meta.get("expected_edge", 0) or 0),
+        "engine_source": str(meta.get("source", "") or ""),
     }
 
 
