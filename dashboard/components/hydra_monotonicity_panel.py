@@ -155,6 +155,61 @@ def render_hydra_monotonicity_panel(
 
         st.altair_chart(chart, use_container_width=True)
 
+    # --- Quintile Return Spread (Q5 - Q1) ---
+    quintiles = data.get("quintiles", [])
+    q5_q1 = data.get("q5_q1_spread")
+    if quintiles and q5_q1 is not None:
+        q5_q1_pct = q5_q1 * 100
+        if q5_q1_pct > 0.40:
+            q_color = "#21ba45"
+            q_label = "strong separation"
+        elif q5_q1_pct > 0.15:
+            q_color = "#21ba45"
+            q_label = "useful signal"
+        elif q5_q1_pct >= 0:
+            q_color = "#f2c037"
+            q_label = "weak / marginal"
+        else:
+            q_color = "#db2828"
+            q_label = "inverted"
+
+        q_rows = ""
+        for q in quintiles:
+            ret_pct = q["mean_return"] * 100
+            bar_len = max(0, min(20, int(abs(ret_pct) * 40)))
+            bar_char = "\u2588" if ret_pct >= 0 else "\u2591"
+            color = "#21ba45" if ret_pct >= 0 else "#db2828"
+            q_rows += (
+                f'<div style="display:flex;gap:8px;margin-bottom:3px;">'
+                f'<span style="color:#aaa;width:30px;font-weight:600;font-size:0.78rem;">{q["label"]}</span>'
+                f'<span style="color:{color};width:180px;font-size:0.78rem;">'
+                f'{bar_char * bar_len} {ret_pct:+.3f}%</span>'
+                f'<span style="color:#666;font-size:0.68rem;">n={q["n"]}</span>'
+                f'</div>'
+            )
+
+        q_html = f"""
+        <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;
+                    padding:12px 16px;font-family:monospace;margin-top:12px;">
+          <div style="color:#888;font-size:0.7rem;margin-bottom:8px;">
+            Hydra Quintile Spread
+          </div>
+          {q_rows}
+          <div style="border-top:1px solid #333;padding-top:8px;margin-top:8px;
+                      display:flex;gap:16px;">
+            <span>
+              <span style="color:#aaa;font-size:0.75rem;">Q5 \u2212 Q1</span>&nbsp;
+              <span style="color:{q_color};font-weight:700;">{q5_q1_pct:+.2f}%</span>
+            </span>
+            <span>
+              <span style="color:#aaa;font-size:0.75rem;">Signal</span>&nbsp;
+              <span style="color:{q_color};font-weight:600;">{q_label}</span>
+            </span>
+          </div>
+        </div>
+        """
+        st.markdown(q_html, unsafe_allow_html=True)
+
     # Per-head monotonicity table
     per_head = data.get("per_head", [])
     contamination = data.get("head_contamination", False)
