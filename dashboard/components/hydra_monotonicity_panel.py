@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 import streamlit as st
 
 _STATE_PATH = Path("logs/state/hydra_monotonicity.json")
+_EPISODE_PATH = Path("logs/state/episode_ledger.json")
 
 try:
     import altair as alt
@@ -209,6 +210,57 @@ def render_hydra_monotonicity_panel(
         </div>
         """
         st.markdown(q_html, unsafe_allow_html=True)
+
+    # --- Score vs Return scatter with quintile rails ---
+    if _HAS_ALTAIR and quintiles and len(quintiles) == 5:
+        try:
+            ep_data = json.loads(_EPISODE_PATH.read_text())
+            scored = []
+            for ep in ep_data.get("episodes", []):
+                sc = float(ep.get("hybrid_score") or 0)
+                if sc <= 0:
+                    continue
+                entry = float(ep.get("avg_entry_price") or 0)
+                exit_ = float(ep.get("avg_exit_price") or 0)
+                if entry <= 0 or exit_ <= 0:
+                    continue
+                side = str(ep.get("side", "")).upper()
+                if side == "LONG":
+                    ret = (exit_ - entry) / entry * 100
+                elif side == "SHORT":
+                    ret = (entry - exit_) / entry * 100
+                else:
+                    continue
+                head = str(ep.get("regime_at_entry", "") or "").upper()
+                scored.append({"hybrid_score": sc, "realized_return": round(ret, 4), "head": head})
+            if len(scored) >= 10:
+                df_sc = pd.DataFrame(scored)
+                scatter = (
+                    alt.Chart(df_sc)
+                    .mark_circle(size=40, opacity=0.6)
+                    .encode(
+                        x=alt.X("hybrid_score:Q", title="Hydra Score"),
+                        y=alt.Y("realized_return:Q", title="Realized Return (%)"),
+                        color=alt.condition(
+                            "datum.realized_return > 0",
+                            alt.value("#2ecc71"),
+                            alt.value("#e74c3c"),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("hybrid_score:Q", title="Score", format=".4f"),
+                            alt.Tooltip("realized_return:Q", title="Return %", format="+.3f"),
+                            alt.Tooltip("head:N", title="Regime"),
+                        ],
+                    )
+                )
+                zero_rule = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#555", strokeDash=[4, 4]).encode(y="y:Q")
+                # Quintile boundary rails from bucket edges
+                q_bounds = [quintiles[i]["mean_score"] + (quintiles[i + 1]["mean_score"] - quintiles[i]["mean_score"]) / 2 for i in range(4)]
+                rails = alt.Chart(pd.DataFrame({"x": q_bounds})).mark_rule(color="#888", strokeDash=[4, 4]).encode(x="x:Q")
+                full_chart = (scatter + zero_rule + rails).properties(height=280, title="Score → Return Map")
+                st.altair_chart(full_chart, use_container_width=True)
+        except (OSError, json.JSONDecodeError, ValueError, KeyError):
+            pass
 
     # Per-head monotonicity table
     per_head = data.get("per_head", [])
