@@ -5,6 +5,7 @@ import pytest
 from execution.hydra_monotonicity import (
     compute_monotonicity,
     compute_monotonicity_by_head,
+    compute_quintile_spread,
     persist_snapshot,
 )
 
@@ -170,3 +171,59 @@ class TestPerHeadMonotonicity:
         results = compute_monotonicity_by_head(eps, n_buckets=2)
         heads = [r["head"] for r in results]
         assert heads == ["TREND"]  # single entry, both merged
+
+
+class TestQuintileSpread:
+    def test_insufficient_data(self):
+        """Fewer than 10 scored episodes returns None spread."""
+        eps = [_make_episode(0.3 + i * 0.05, 100, 100 + i * 0.1) for i in range(5)]
+        result = compute_quintile_spread(eps)
+        assert result["q5_q1_spread"] is None
+        assert result["quintiles"] == []
+
+    def test_positive_spread_monotonic(self):
+        """Higher score → higher return gives positive Q5-Q1 spread."""
+        eps = [_make_episode(0.2 + i * 0.05, 100, 99 + i * 0.5) for i in range(20)]
+        result = compute_quintile_spread(eps)
+        assert result["q5_q1_spread"] is not None
+        assert result["q5_q1_spread"] > 0
+        assert len(result["quintiles"]) == 5
+        assert result["quintiles"][0]["label"] == "Q1"
+        assert result["quintiles"][4]["label"] == "Q5"
+        assert result["n"] == 20
+
+    def test_inverted_spread(self):
+        """Higher score → lower return gives negative Q5-Q1 spread."""
+        eps = [_make_episode(0.2 + i * 0.05, 100, 110 - i * 0.5) for i in range(20)]
+        result = compute_quintile_spread(eps)
+        assert result["q5_q1_spread"] is not None
+        assert result["q5_q1_spread"] < 0
+
+    def test_zero_scores_excluded(self):
+        """Episodes with hybrid_score=0 should not count."""
+        eps = [_make_episode(0.0, 100, 101) for _ in range(15)]
+        result = compute_quintile_spread(eps)
+        assert result["n"] == 0
+        assert result["q5_q1_spread"] is None
+
+    def test_quintile_structure(self):
+        """Each quintile has label, mean_return, mean_score, n."""
+        eps = [_make_episode(0.2 + i * 0.03, 100, 100 + i * 0.1) for i in range(25)]
+        result = compute_quintile_spread(eps)
+        for q in result["quintiles"]:
+            assert "label" in q
+            assert "mean_return" in q
+            assert "mean_score" in q
+            assert "n" in q
+            assert q["n"] >= 1
+
+    def test_persist_includes_quintile_data(self, tmp_path):
+        """persist_snapshot output includes q5_q1_spread and quintiles."""
+        dest = str(tmp_path / "hydra_mono.json")
+        eps = [_make_episode(0.2 + i * 0.03, 100, 100 + i * 0.1) for i in range(20)]
+        snap = persist_snapshot(eps, path=dest)
+        assert "q5_q1_spread" in snap
+        assert "quintiles" in snap
+        data = json.loads(open(dest).read())
+        assert "q5_q1_spread" in data
+        assert "quintiles" in data

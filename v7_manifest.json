@@ -389,7 +389,9 @@
         "spearman": "float - Spearman rank correlation",
         "n": "int - number of scored episodes",
         "slope": "str - positive/negative/flat",
-        "head_contamination": "bool - whether mixed-head scores corrupt monotonicity"
+        "head_contamination": "bool - whether mixed-head scores corrupt monotonicity",
+        "q5_q1_spread": "float|null - Q5 minus Q1 mean return (quintile spread)",
+        "quintiles": "list - per-quintile mean_return, mean_score, n"
       }
     },
     "execution_quality": {

@@ -76,6 +76,9 @@ def load_architecture_health(path: Optional[Path] = None) -> Dict[str, Any]:
                 data["spearman_n"] = int(mono.get("n", 0))
                 data["spearman_slope"] = str(mono.get("slope", "unknown"))
                 data["head_contamination"] = bool(mono.get("head_contamination", False))
+            if mono.get("q5_q1_spread") is not None:
+                data["q5_q1_spread"] = float(mono["q5_q1_spread"])
+                data["q5_q1_n"] = int(mono.get("n", 0))
     except (json.JSONDecodeError, IOError, ValueError):
         pass
     # Merge Hydra visibility funnel
@@ -164,6 +167,16 @@ def _spread_color(v: Optional[float]) -> str:
     return "#db2828"
 
 
+def _q5q1_color(v: Optional[float]) -> str:
+    if v is None:
+        return "#666"
+    if v > 0.004:
+        return "#21ba45"
+    if v >= 0:
+        return "#f2c037"
+    return "#db2828"
+
+
 def _visibility_color(v: float) -> str:
     if v >= 0.50:
         return "#21ba45"
@@ -199,6 +212,8 @@ def render_architecture_strip(metrics: Dict[str, Any]) -> None:
     score_coverage = float(metrics.get("score_coverage", 0))
     score_spread = metrics.get("score_spread")  # None if <10 scored trades
     hydra_vis = float(metrics.get("hydra_visibility_rate", 0))
+    q5_q1_spread = metrics.get("q5_q1_spread")  # None if <10 scored trades
+    q5_q1_n = int(metrics.get("q5_q1_n", 0))
     hydra_funnel = metrics.get("hydra_funnel") or {}
     funnel_stages = hydra_funnel.get("stages") or {}
     regime_vis = hydra_funnel.get("regime_visibility") or {}
@@ -269,6 +284,11 @@ def render_architecture_strip(metrics: Dict[str, Any]) -> None:
         <span>
           <span style="color:#aaa;font-size:0.75rem;">HydraVis</span>&nbsp;
           <span style="color:{_visibility_color(hydra_vis)};font-weight:600;">{hydra_vis:.0%}</span>
+        </span>
+        <span>
+          <span style="color:#aaa;font-size:0.75rem;">Q5−Q1</span>&nbsp;
+          <span style="color:{_q5q1_color(q5_q1_spread)};font-weight:600;">{f'{q5_q1_spread * 100:+.2f}%' if q5_q1_spread is not None else '—'}</span>
+          <span style="color:#666;font-size:0.65rem;">&nbsp;(n={q5_q1_n})</span>
         </span>
       </div>
     </div>

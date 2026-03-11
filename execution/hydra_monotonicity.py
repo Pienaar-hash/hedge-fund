@@ -150,6 +150,61 @@ def compute_monotonicity(
     }
 
 
+def compute_quintile_spread(
+    episodes: List[Dict[str, Any]],
+    score_field: str = "hybrid_score",
+) -> Dict[str, Any]:
+    """Compute Q5-Q1 return spread (top vs bottom quintile).
+
+    Returns dict with q5_q1_spread, quintiles list, and n.
+    Requires at least 10 scored episodes to produce meaningful quintiles.
+    """
+    pairs: List[tuple] = []
+    for ep in episodes:
+        score = _safe_float(ep.get(score_field))
+        if score <= 0:
+            continue
+        ret = _realized_return(ep)
+        if ret is None:
+            continue
+        pairs.append((score, ret))
+
+    if len(pairs) < 10:
+        return {
+            "q5_q1_spread": None,
+            "quintiles": [],
+            "n": len(pairs),
+        }
+
+    pairs.sort(key=lambda p: p[0])
+    n = len(pairs)
+    bucket_size = max(1, n // 5)
+    quintiles: List[Dict[str, Any]] = []
+    for qi in range(5):
+        lo_idx = qi * bucket_size
+        hi_idx = (qi + 1) * bucket_size if qi < 4 else n
+        chunk = pairs[lo_idx:hi_idx]
+        chunk_rets = [c[1] for c in chunk]
+        chunk_scores = [c[0] for c in chunk]
+        mean_ret = sum(chunk_rets) / len(chunk_rets)
+        quintiles.append({
+            "label": f"Q{qi + 1}",
+            "mean_return": round(mean_ret, 6),
+            "mean_score": round(sum(chunk_scores) / len(chunk_scores), 5),
+            "n": len(chunk),
+        })
+
+    q1_ret = quintiles[0]["mean_return"]
+    q5_ret = quintiles[4]["mean_return"]
+    spread = round(q5_ret - q1_ret, 6)
+
+    return {
+        "q5_q1_spread": spread,
+        "quintiles": quintiles,
+        "n": len(pairs),
+    }
+
+
 # Regime → head mapping.  Sentinel-X regimes map to the Hydra head
 # that would have been active for that trade.
 _REGIME_TO_HEAD: Dict[str, str] = {
@@ -223,6 +278,11 @@ def persist_snapshot(
     global_weak = snap["slope"] in ("flat", "inverted", "insufficient_data")
     any_head_strong = any(h["slope"] == "upward" for h in per_head)
     snap["head_contamination"] = global_weak and any_head_strong
+
+    # Quintile return spread (Q5-Q1)
+    qs = compute_quintile_spread(episodes)
+    snap["q5_q1_spread"] = qs["q5_q1_spread"]
+    snap["quintiles"] = qs["quintiles"]
 
     try:
         tmp = dest + ".tmp"
