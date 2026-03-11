@@ -3175,6 +3175,11 @@ def _check_fee_edge_gate(
                     _te_confidence,
                     _fg_notional,
                 )
+                _record_structured_event(
+                    LOG_FEE_GATE,
+                    "FEE_GATE_PASS_DETAIL",
+                    fg_details,
+                )
     except ImportError:
         pass
     except Exception as _fg_exc:
@@ -5763,6 +5768,22 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                         symbol = cast(Optional[str], intent.get("symbol"))
                         if not symbol:
                             continue
+
+            # --- ECS Shadow Selector (Phase 4 Commit 2): observational only ---
+            try:
+                from execution.shadow_selector import run_shadow_comparison
+                _exec_winner_src = str(intent.get("source") or intent.get("strategy") or "unknown")
+                _exec_used_fb = bool(intent.get("fallback_used"))
+                run_shadow_comparison(
+                    symbol=symbol,
+                    raw_intent=raw_intent,
+                    executor_winner_source=_exec_winner_src,
+                    executor_used_fallback=_exec_used_fb,
+                    min_conviction_band=_min_conv_band_str,
+                    cycle=i,
+                )
+            except Exception:
+                pass  # shadow must never block execution
 
             veto_reasons = _coerce_veto_reasons(intent.get("veto"))
             if veto_reasons:
