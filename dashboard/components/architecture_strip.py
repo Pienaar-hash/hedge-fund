@@ -8,6 +8,7 @@ Data source: logs/state/fallback_metrics.json
 """
 from __future__ import annotations
 
+import html as _html
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -289,9 +290,10 @@ def render_architecture_strip(metrics: Dict[str, Any]) -> None:
             rv_rate = float(rv.get("visibility_rate", 0))
             rv_gen = (rv.get("stages") or {}).get("generated", 0)
             rv_exe = (rv.get("stages") or {}).get("executed", 0)
+            safe_regime = _html.escape(str(regime))
             regime_rows += (
                 f'<span style="margin-right:16px;">'
-                f'<span style="color:#888;font-size:0.65rem;">{regime}</span>&nbsp;'
+                f'<span style="color:#888;font-size:0.65rem;">{safe_regime}</span>&nbsp;'
                 f'<span style="color:{_visibility_color(rv_rate)};font-size:0.7rem;">{rv_rate:.0%}</span>'
                 f'<span style="color:#555;font-size:0.6rem;">&nbsp;({rv_exe}/{rv_gen})</span>'
                 f'</span>'
