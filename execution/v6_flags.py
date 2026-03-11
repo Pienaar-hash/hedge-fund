@@ -28,6 +28,8 @@ class V6Flags:
     shadow_dle_write_logs: bool
     # Phase C.1: Entry-only enforcement (block ENTRY orders missing valid permit)
     dle_enforce_entry_only: bool
+    # Phase 4: ECS shadow selector (observation-only comparison)
+    ecs_shadow_enabled: bool
 
 
 def _load_flags() -> V6Flags:
@@ -44,6 +46,8 @@ def _load_flags() -> V6Flags:
         shadow_dle_write_logs=_env_bool("SHADOW_DLE_WRITE_LOGS", "1"),
         # Phase C.1: Entry-only enforcement (default OFF — requires shadow_dle_enabled)
         dle_enforce_entry_only=_env_bool("DLE_ENFORCE_ENTRY_ONLY", "0"),
+        # Phase 4: ECS shadow selector (default OFF)
+        ecs_shadow_enabled=_env_bool("ECS_SHADOW_ENABLED", "0"),
     )
 
 
@@ -70,6 +74,7 @@ def flags_to_dict(flags: V6Flags | None = None) -> Dict[str, bool]:
         "SHADOW_DLE_ENABLED": snapshot["shadow_dle_enabled"],
         "SHADOW_DLE_WRITE_LOGS": snapshot["shadow_dle_write_logs"],
         "DLE_ENFORCE_ENTRY_ONLY": snapshot["dle_enforce_entry_only"],
+        "ECS_SHADOW_ENABLED": snapshot["ecs_shadow_enabled"],
     }
 
 
