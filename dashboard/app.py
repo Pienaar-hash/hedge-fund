@@ -106,19 +106,33 @@ from dashboard.components.architecture_strip import (
 )
 
 # Edge Calibration
-from dashboard.components.edge_calibration_panel import (
-    render_edge_calibration_panel,
-)
+try:
+    from dashboard.components.edge_calibration_panel import (
+        render_edge_calibration_panel,
+    )
+except Exception:  # pragma: no cover - defensive import fallback
+    def render_edge_calibration_panel(*_args: Any, **_kwargs: Any) -> None:
+        return
+
 
 # Engine Lift (Hydra vs Legacy)
-from dashboard.components.engine_lift_panel import (
-    render_engine_lift_panel,
-)
+try:
+    from dashboard.components.engine_lift_panel import (
+        render_engine_lift_panel,
+    )
+except Exception:  # pragma: no cover - defensive import fallback
+    def render_engine_lift_panel(*_args: Any, **_kwargs: Any) -> None:
+        return
+
 
 # Hydra Score Monotonicity
-from dashboard.components.hydra_monotonicity_panel import (
-    render_hydra_monotonicity_panel,
-)
+try:
+    from dashboard.components.hydra_monotonicity_panel import (
+        render_hydra_monotonicity_panel,
+    )
+except Exception:  # pragma: no cover - defensive import fallback
+    def render_hydra_monotonicity_panel(*_args: Any, **_kwargs: Any) -> None:
+        return
 
 # Multi-Engine Soak Panel
 from dashboard.multi_engine_panel import render_multi_engine_panel
