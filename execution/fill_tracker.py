@@ -560,11 +560,21 @@ def wait_fill_task(handle: FillTaskHandle) -> FillResult:
         try:
             handle._result = handle._future.result(timeout=FILL_POLL_TIMEOUT + 5.0)
         except Exception:
-            LOG.warning("[fills] future_result_failed; returning None (no sync re-poll)", exc_info=True)
-            handle._result = None
+            LOG.warning("[fills] future_result_failed; falling back to sync", exc_info=True)
+            handle._result = confirm_order_fill(
+                handle.ack,
+                handle.metadata,
+                handle.strategy,
+                position_tracker=handle.position_tracker,
+            )
     else:
-        LOG.warning("[fills] no future available; returning None")
-        handle._result = None
+        LOG.warning("[fills] no future available; falling back to sync")
+        handle._result = confirm_order_fill(
+            handle.ack,
+            handle.metadata,
+            handle.strategy,
+            position_tracker=handle.position_tracker,
+        )
     handle._done = True
     return handle._result
 
