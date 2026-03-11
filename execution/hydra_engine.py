@@ -1570,7 +1570,19 @@ def percentile_normalize_scores(
                 pass
 
     n = len(scores)
-    if n < 2:
+    if n == 0:
+        return
+
+    # Preserve pre-normalized score for research/analytics before overwrite.
+    for pos, intent_idx in enumerate(indices):
+        intents[intent_idx].setdefault("raw_score", round(scores[pos], 6))
+
+    if n == 1:
+        # Deterministic singleton behavior: map to midpoint percentile.
+        mid = clamp_lo + (clamp_hi - clamp_lo) * 0.5
+        intent_idx = indices[0]
+        intents[intent_idx][score_key] = round(mid, 6)
+        intents[intent_idx]["hybrid_score"] = round(mid, 6)
         return
 
     # Build rank → percentile mapping (handles ties via average rank)

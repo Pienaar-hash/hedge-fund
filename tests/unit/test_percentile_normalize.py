@@ -48,10 +48,20 @@ class TestPercentileNormalize:
         assert scores[0] == pytest.approx(0.02, abs=0.001)
         assert scores[-1] == pytest.approx(0.98, abs=0.001)
 
-    def test_single_intent_unchanged(self):
+    def test_single_intent_midpoint(self):
         intents = [{"score": 0.75}]
         percentile_normalize_scores(intents)
-        assert intents[0]["score"] == 0.75
+        assert intents[0]["score"] == pytest.approx(0.5, abs=0.001)
+        assert intents[0]["hybrid_score"] == pytest.approx(0.5, abs=0.001)
+
+    def test_raw_score_preserved_before_normalization(self):
+        intents = [
+            {"score": 0.40},
+            {"score": 0.60},
+        ]
+        percentile_normalize_scores(intents)
+        assert intents[0]["raw_score"] == pytest.approx(0.40, abs=0.001)
+        assert intents[1]["raw_score"] == pytest.approx(0.60, abs=0.001)
 
     def test_empty_list_no_crash(self):
         intents: list = []
