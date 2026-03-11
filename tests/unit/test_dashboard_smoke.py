@@ -46,6 +46,13 @@ class TestDashboardSmoke:
         ):
             assert callable(fn)
 
+    def test_optional_panel_imports_are_guarded(self):
+        from pathlib import Path
+        source = Path("dashboard/app.py").read_text()
+        assert "try:\n    from dashboard.components.edge_calibration_panel import" in source
+        assert "try:\n    from dashboard.components.engine_lift_panel import" in source
+        assert "try:\n    from dashboard.components.hydra_monotonicity_panel import" in source
+
     def test_css_file_exists(self):
         from pathlib import Path
         css = Path("dashboard/static/quant_theme.css")
