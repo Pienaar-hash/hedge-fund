@@ -5658,8 +5658,8 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                 try:
                     _funnel_sx = _load_sentinel_x_state()
                     _funnel_regime = str((_funnel_sx or {}).get("primary_regime", ""))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    LOG.debug("[hydra_funnel] regime_load_failed: %s", exc)
                 _hydra_funnel.record("generated", _hydra_count, regime=_funnel_regime)
                 # Stash regime for downstream funnel hooks
                 state._funnel_regime = _funnel_regime  # type: ignore[attr-defined]
@@ -5844,8 +5844,8 @@ def _loop_once(state: ExecutorState, i: int) -> None:
     # --- Hydra Funnel: periodic flush ---
     try:
         _hydra_funnel.flush()
-    except Exception:
-        pass
+    except Exception as exc:
+        LOG.debug("[hydra_funnel] flush_failed: %s", exc)
 
 
 def main(argv: Optional[Sequence[str]] | None = None) -> None:
