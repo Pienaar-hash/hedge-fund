@@ -21,6 +21,7 @@ def test_v6_flag_snapshot_reflects_globals(monkeypatch):
             shadow_dle_write_logs=True,
             dle_enforce_entry_only=False,
             ecs_shadow_enabled=False,
+            use_ecs_selector=False,
         ),
     )
     snapshot = executor_live.get_v6_flag_snapshot()
@@ -52,6 +53,7 @@ def test_v6_runtime_probe_writes(monkeypatch):
             shadow_dle_write_logs=True,
             dle_enforce_entry_only=False,
             ecs_shadow_enabled=False,
+            use_ecs_selector=False,
         ),
     )
     executor_live._maybe_write_v6_runtime_probe(force=True)

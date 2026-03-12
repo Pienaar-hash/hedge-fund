@@ -5718,72 +5718,167 @@ def _loop_once(state: ExecutorState, i: int) -> None:
             if _symbol_on_cooldown(symbol, now_ts):
                 continue
 
-            # --- Fallback swap (v7.9_P3): if primary fails conviction band
-            # and a fallback candidate passes, swap before _send_order. ---
-            _fallback_intent = intent.get("_fallback")
-            if (
-                _fallback_intent
-                and isinstance(_fallback_intent, dict)
-                and _min_conv_band_str in _conviction_band_order
-                and not intent.get("reduceOnly")
-            ):
-                _pri_band = str(intent.get("conviction_band") or "").lower()
-                _pri_rank = _conviction_band_order.get(_pri_band, -1)
-                _min_rank = _conviction_band_order[_min_conv_band_str]
-                if _pri_rank < _min_rank:
-                    _fb_band = str(_fallback_intent.get("conviction_band") or "").lower()
-                    _fb_rank = _conviction_band_order.get(_fb_band, -1)
-                    if _fb_rank >= _min_rank:
-                        _primary_engine = (
-                            intent.get("source")
-                            or intent.get("strategy")
-                            or "unknown"
-                        )
-                        _primary_score = _intent_score_for_log(intent)
-                        _fallback_engine = (
-                            _fallback_intent.get("source")
-                            or _fallback_intent.get("strategy")
-                            or "unknown"
-                        )
-                        LOG.info(
-                            "[fallback_swap] sym=%s selected_engine=%s executed_engine=%s "
-                            "primary_band=%s(%d) fallback_band=%s(%d) "
-                            "swap_reason=conviction_primary_failed",
-                            symbol, _primary_engine, _fallback_engine,
-                            _pri_band or "none", _pri_rank,
-                            _fb_band, _fb_rank,
-                        )
-                        intent = _normalize_intent(_fallback_intent)
-                        # Stamp provenance so analytics can distinguish swaps
-                        intent["fallback_used"] = True
-                        intent["merge_primary_engine"] = _primary_engine
-                        intent["merge_primary_score"] = _primary_score
-                        # Carry merge scores for CEL / SDD computation
+            # --- Phase 4 Commit 3: ECS Selector (flag-gated) ---
+            # When USE_ECS_SELECTOR=1, the candidate_selector boundary
+            # replaces the fallback-swap arbitration.  When OFF, the
+            # existing fallback swap + shadow telemetry path is preserved.
+            _ecs_live = False
+            try:
+                from execution.v6_flags import get_flags as _ecs_get_flags
+                _ecs_live = _ecs_get_flags().use_ecs_selector
+            except Exception:
+                pass
+
+            if _ecs_live and not intent.get("reduceOnly"):
+                try:
+                    from execution.candidate_selector import (
+                        build_candidates,
+                        select_executable_candidate,
+                    )
+                    from execution.shadow_selector import log_ecs_soak_event
+
+                    # Decompose merged intent into engine-specific candidates
+                    _ecs_primary = dict(intent)
+                    _ecs_fallback = _ecs_primary.pop("_fallback", None)
+                    _ecs_hydra, _ecs_legacy = None, None
+                    _ecs_src = str(_ecs_primary.get("source", "")).lower()
+                    if _ecs_src == "hydra":
+                        _ecs_hydra = _ecs_primary
+                        if _ecs_fallback and isinstance(_ecs_fallback, dict):
+                            _ecs_legacy = _ecs_fallback
+                    elif _ecs_src == "legacy":
+                        _ecs_legacy = _ecs_primary
+                        if _ecs_fallback and isinstance(_ecs_fallback, dict):
+                            _ecs_hydra = _ecs_fallback
+                    else:
+                        _ecs_hydra = _ecs_primary
+                        if _ecs_fallback and isinstance(_ecs_fallback, dict):
+                            _ecs_legacy = _ecs_fallback
+
+                    _ecs_candidates = build_candidates(
+                        symbol, hydra_intent=_ecs_hydra, legacy_intent=_ecs_legacy,
+                    )
+                    # Candidates already carry conviction from post-merge enrichment
+                    _ecs_result = select_executable_candidate(
+                        _ecs_candidates, _min_conv_band_str,
+                    )
+
+                    if _ecs_result["selected"] is not None:
+                        _ecs_selected = _ecs_result["selected"]
+                        # Preserve merge scores for downstream telemetry
                         _legacy_score = raw_intent.get("merge_legacy_score")
                         if _legacy_score is not None:
-                            intent["merge_legacy_score"] = _legacy_score
+                            _ecs_selected["merge_legacy_score"] = _legacy_score
                         _hydra_score = raw_intent.get("merge_hydra_score")
                         if _hydra_score is not None:
-                            intent["merge_hydra_score"] = _hydra_score
+                            _ecs_selected["merge_hydra_score"] = _hydra_score
+                        if raw_intent.get("merge_conflict"):
+                            _ecs_selected["merge_conflict"] = True
+                        intent = _normalize_intent(_ecs_selected)
                         symbol = cast(Optional[str], intent.get("symbol"))
                         if not symbol:
                             continue
+                        LOG.info(
+                            "[ecs_selector] sym=%s winner=%s reason=%s candidates=%d",
+                            symbol,
+                            _ecs_result["winner_engine"],
+                            _ecs_result["selection_reason"],
+                            len(_ecs_candidates),
+                        )
+                    else:
+                        LOG.info(
+                            "[ecs_selector] sym=%s all_rejected reason=%s candidates=%d",
+                            symbol,
+                            _ecs_result["selection_reason"],
+                            len(_ecs_candidates),
+                        )
+                        continue  # No candidate passed — skip this intent
 
-            # --- ECS Shadow Selector (Phase 4 Commit 2): observational only ---
-            try:
-                from execution.shadow_selector import run_shadow_comparison
-                _exec_winner_src = str(intent.get("source") or intent.get("strategy") or "unknown")
-                _exec_used_fb = bool(intent.get("fallback_used"))
-                run_shadow_comparison(
-                    symbol=symbol,
-                    raw_intent=raw_intent,
-                    executor_winner_source=_exec_winner_src,
-                    executor_used_fallback=_exec_used_fb,
-                    min_conviction_band=_min_conv_band_str,
-                    cycle=i,
-                )
-            except Exception:
-                pass  # shadow must never block execution
+                    # --- Soak telemetry: compare ECS decision with what
+                    # the old fallback-swap path would have produced. ---
+                    try:
+                        log_ecs_soak_event(
+                            symbol=symbol,
+                            raw_intent=raw_intent,
+                            ecs_winner=_ecs_result["winner_engine"],
+                            ecs_reason=_ecs_result["selection_reason"],
+                            candidates_count=len(_ecs_candidates),
+                            cycle=i,
+                            min_conviction_band=_min_conv_band_str,
+                        )
+                    except Exception:
+                        pass  # soak logging must never block
+                except Exception as _ecs_err:
+                    LOG.warning("[ecs_selector] fail-open, falling back to legacy path: %s", _ecs_err)
+                    _ecs_live = False  # fall through to legacy path below
+
+            if not _ecs_live or intent.get("reduceOnly"):
+                # --- Fallback swap (v7.9_P3): if primary fails conviction band
+                # and a fallback candidate passes, swap before _send_order. ---
+                _fallback_intent = intent.get("_fallback")
+                if (
+                    _fallback_intent
+                    and isinstance(_fallback_intent, dict)
+                    and _min_conv_band_str in _conviction_band_order
+                    and not intent.get("reduceOnly")
+                ):
+                    _pri_band = str(intent.get("conviction_band") or "").lower()
+                    _pri_rank = _conviction_band_order.get(_pri_band, -1)
+                    _min_rank = _conviction_band_order[_min_conv_band_str]
+                    if _pri_rank < _min_rank:
+                        _fb_band = str(_fallback_intent.get("conviction_band") or "").lower()
+                        _fb_rank = _conviction_band_order.get(_fb_band, -1)
+                        if _fb_rank >= _min_rank:
+                            _primary_engine = (
+                                intent.get("source")
+                                or intent.get("strategy")
+                                or "unknown"
+                            )
+                            _primary_score = _intent_score_for_log(intent)
+                            _fallback_engine = (
+                                _fallback_intent.get("source")
+                                or _fallback_intent.get("strategy")
+                                or "unknown"
+                            )
+                            LOG.info(
+                                "[fallback_swap] sym=%s selected_engine=%s executed_engine=%s "
+                                "primary_band=%s(%d) fallback_band=%s(%d) "
+                                "swap_reason=conviction_primary_failed",
+                                symbol, _primary_engine, _fallback_engine,
+                                _pri_band or "none", _pri_rank,
+                                _fb_band, _fb_rank,
+                            )
+                            intent = _normalize_intent(_fallback_intent)
+                            # Stamp provenance so analytics can distinguish swaps
+                            intent["fallback_used"] = True
+                            intent["merge_primary_engine"] = _primary_engine
+                            intent["merge_primary_score"] = _primary_score
+                            # Carry merge scores for CEL / SDD computation
+                            _legacy_score = raw_intent.get("merge_legacy_score")
+                            if _legacy_score is not None:
+                                intent["merge_legacy_score"] = _legacy_score
+                            _hydra_score = raw_intent.get("merge_hydra_score")
+                            if _hydra_score is not None:
+                                intent["merge_hydra_score"] = _hydra_score
+                            symbol = cast(Optional[str], intent.get("symbol"))
+                            if not symbol:
+                                continue
+
+                # --- ECS Shadow Selector (Phase 4 Commit 2): observational only ---
+                try:
+                    from execution.shadow_selector import run_shadow_comparison
+                    _exec_winner_src = str(intent.get("source") or intent.get("strategy") or "unknown")
+                    _exec_used_fb = bool(intent.get("fallback_used"))
+                    run_shadow_comparison(
+                        symbol=symbol,
+                        raw_intent=raw_intent,
+                        executor_winner_source=_exec_winner_src,
+                        executor_used_fallback=_exec_used_fb,
+                        min_conviction_band=_min_conv_band_str,
+                        cycle=i,
+                    )
+                except Exception:
+                    pass  # shadow must never block execution
 
             veto_reasons = _coerce_veto_reasons(intent.get("veto"))
             if veto_reasons:

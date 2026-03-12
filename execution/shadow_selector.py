@@ -139,3 +139,109 @@ def run_shadow_comparison(
     except Exception as exc:
         LOG.debug("[ecs_shadow] shadow_comparison_failed: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# ECS Soak Telemetry — Phase 4 Commit 3
+# ---------------------------------------------------------------------------
+# When USE_ECS_SELECTOR=1, the executor uses the candidate selector for
+# real arbitration.  This function logs what the OLD fallback-swap path
+# would have produced, enabling post-cutover comparison.
+# ---------------------------------------------------------------------------
+
+_SOAK_LOG_PATH = Path("logs/execution/ecs_soak_events.jsonl")
+
+
+def _simulate_fallback_swap(
+    raw_intent: Dict[str, Any],
+    min_conviction_band: str,
+) -> str:
+    """Simulate what the old fallback-swap path would have picked.
+
+    Returns the source tag of the engine the old path would execute.
+    """
+    _BAND_ORDER = {"very_low": 0, "low": 1, "medium": 2, "high": 3, "very_high": 4}
+    primary = dict(raw_intent)
+    fallback = primary.get("_fallback")
+    primary_source = str(primary.get("source") or primary.get("strategy") or "unknown")
+
+    if (
+        fallback
+        and isinstance(fallback, dict)
+        and min_conviction_band in _BAND_ORDER
+    ):
+        pri_band = str(primary.get("conviction_band") or "").lower()
+        pri_rank = _BAND_ORDER.get(pri_band, -1)
+        min_rank = _BAND_ORDER[min_conviction_band]
+        if pri_rank < min_rank:
+            fb_band = str(fallback.get("conviction_band") or "").lower()
+            fb_rank = _BAND_ORDER.get(fb_band, -1)
+            if fb_rank >= min_rank:
+                return str(fallback.get("source") or fallback.get("strategy") or "unknown")
+
+    return primary_source
+
+
+def log_ecs_soak_event(
+    *,
+    symbol: str,
+    raw_intent: Dict[str, Any],
+    ecs_winner: str,
+    ecs_reason: str,
+    candidates_count: int,
+    cycle: int = 0,
+    min_conviction_band: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Log a soak comparison: ECS decision vs simulated old-path decision.
+
+    Args:
+        symbol: The symbol being evaluated.
+        raw_intent: Original merged intent (with ``_fallback`` if conflict).
+        ecs_winner: Source tag the ECS selector picked.
+        ecs_reason: Selection reason from ECS.
+        candidates_count: Number of candidates ECS evaluated.
+        cycle: Current executor cycle.
+        min_conviction_band: Band gate string.
+
+    Returns:
+        Soak event dict, or None on error.
+    """
+    try:
+        old_winner = _simulate_fallback_swap(raw_intent, min_conviction_band)
+        agreement = ecs_winner == old_winner
+
+        event = {
+            "ts": time.time(),
+            "schema": "ecs_soak_v1",
+            "symbol": symbol,
+            "cycle": cycle,
+            "ecs_winner": ecs_winner,
+            "old_path_winner": old_winner,
+            "agreement": agreement,
+            "ecs_reason": ecs_reason,
+            "candidates_count": candidates_count,
+            "min_conviction_band": min_conviction_band or "none",
+        }
+        _append_soak_event(event)
+
+        if not agreement:
+            LOG.warning(
+                "[ecs_soak] DIVERGENCE sym=%s ecs=%s old_path=%s reason=%s",
+                symbol, ecs_winner, old_winner, ecs_reason,
+            )
+
+        return event
+
+    except Exception as exc:
+        LOG.debug("[ecs_soak] soak_event_failed: %s", exc)
+        return None
+
+
+def _append_soak_event(event: Dict[str, Any]) -> None:
+    """Append a soak JSONL event (fail-open)."""
+    try:
+        _SOAK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_SOAK_LOG_PATH, "a") as f:
+            f.write(json.dumps(event, default=str) + "\n")
+    except Exception as exc:
+        LOG.debug("[ecs_soak] soak_log_write_failed: %s", exc)

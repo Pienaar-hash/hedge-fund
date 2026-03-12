@@ -1081,6 +1081,48 @@
         "phase": "str — always C.1"
       }
     },
+    "ecs_shadow_events": {
+      "path": "logs/execution/ecs_shadow_events.jsonl",
+      "owner": "shadow_selector",
+      "update_frequency": "per_cycle_per_symbol",
+      "optional": true,
+      "description": "Phase 4 Commit 2: ECS shadow selector telemetry. Compares candidate_selector decisions with executor fallback-swap arbitration. Append-only.",
+      "schema_version": "ecs_shadow_v1",
+      "fields": {
+        "ts": "float — Unix timestamp",
+        "schema": "str — always ecs_shadow_v1",
+        "symbol": "str — trading pair",
+        "cycle": "int — executor cycle number",
+        "selector_winner": "str — engine source the selector picked",
+        "executor_winner": "str — engine source the executor picked",
+        "agreement": "bool — whether selector and executor agree",
+        "selector_reason": "str — band_pass | highest_score | no_candidates | all_rejected_by_band_gate",
+        "executor_used_fallback": "bool — whether executor swapped to fallback",
+        "candidates_count": "int — number of candidates evaluated",
+        "selector_loser": "str|null — engine source of losing candidate",
+        "min_conviction_band": "str — conviction band gate setting"
+      }
+    },
+    "ecs_soak_events": {
+      "path": "logs/execution/ecs_soak_events.jsonl",
+      "owner": "shadow_selector",
+      "update_frequency": "per_cycle_per_symbol",
+      "optional": true,
+      "description": "Phase 4 Commit 3: ECS soak telemetry. When USE_ECS_SELECTOR=1, compares live ECS decisions with simulated old fallback-swap path. Append-only.",
+      "schema_version": "ecs_soak_v1",
+      "fields": {
+        "ts": "float — Unix timestamp",
+        "schema": "str — always ecs_soak_v1",
+        "symbol": "str — trading pair",
+        "cycle": "int — executor cycle number",
+        "ecs_winner": "str — engine source the ECS selector picked",
+        "old_path_winner": "str — engine source the old fallback-swap path would have picked",
+        "agreement": "bool — whether ECS and old path agree",
+        "ecs_reason": "str — selection reason from ECS",
+        "candidates_count": "int — number of candidates evaluated",
+        "min_conviction_band": "str — conviction band gate setting"
+      }
+    },
     "dle_permit_expired": {
       "path": "logs/execution/dle_permit_expired.jsonl",
       "owner": "enforcement_rehearsal",
