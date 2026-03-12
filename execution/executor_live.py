@@ -5647,9 +5647,10 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                 _hydra_exec = convert_hydra_intents_to_execution(
                     _hydra_merged, _hydra_nav, _hydra_prices,
                 )
-                # Percentile-normalize Hydra scores within this batch.
-                # Preserves ordering, widens ScoreSpread for faster
-                # monotonicity convergence without changing trade selection.
+                # Compute percentile-ranked scores for diagnostics.
+                # Absolute scores preserved in score/hybrid_score for
+                # cross-engine ECS arbitration; ranked values go to
+                # score_ranked/hybrid_score_ranked for monotonicity analytics.
                 from execution.hydra_engine import percentile_normalize_scores
                 percentile_normalize_scores(_hydra_exec, score_key="score")
                 # Stamp provenance before merge

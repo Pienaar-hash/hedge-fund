@@ -1544,11 +1544,13 @@ def percentile_normalize_scores(
     clamp_hi: float = 0.98,
 ) -> None:
     """
-    In-place percentile normalization of Hydra scores within a batch.
+    Compute percentile-ranked scores for Hydra intents (diagnostic only).
 
-    Converts raw scores to rank-based percentiles [clamp_lo, clamp_hi].
-    Preserves ordering exactly — does not change which trades are selected.
-    Widens ScoreSpread so monotonicity diagnostics converge faster.
+    Writes rank-based percentiles to ``score_ranked`` and
+    ``hybrid_score_ranked`` for monotonicity diagnostics and analytics.
+    The original absolute scores in *score_key* and ``hybrid_score`` are
+    **preserved unchanged** so that cross-engine comparison (ECS selector,
+    merge arbitration) uses real signal magnitude, not batch-relative rank.
 
     Args:
         intents: List of execution intent dicts (mutated in place)
@@ -1573,7 +1575,7 @@ def percentile_normalize_scores(
     if n == 0:
         return
 
-    # Preserve pre-normalized score for research/analytics before overwrite.
+    # Preserve pre-normalized score for research/analytics.
     for pos, intent_idx in enumerate(indices):
         intents[intent_idx].setdefault("raw_score", round(scores[pos], 6))
 
@@ -1581,8 +1583,10 @@ def percentile_normalize_scores(
         # Deterministic singleton behavior: map to midpoint percentile.
         mid = clamp_lo + (clamp_hi - clamp_lo) * 0.5
         intent_idx = indices[0]
-        intents[intent_idx][score_key] = round(mid, 6)
-        intents[intent_idx]["hybrid_score"] = round(mid, 6)
+        intents[intent_idx]["score_ranked"] = round(mid, 6)
+        intents[intent_idx]["hybrid_score_ranked"] = round(mid, 6)
+        # Absolute score/hybrid_score left unchanged for ECS arbitration.
+        intents[intent_idx].setdefault("hybrid_score", round(scores[0], 6))
         return
 
     # Build rank → percentile mapping (handles ties via average rank)
@@ -1603,9 +1607,13 @@ def percentile_normalize_scores(
     for pos, intent_idx in enumerate(indices):
         pct = ranks[pos] / (n - 1)  # 0..1
         normed = clamp_lo + scale * pct
-        intents[intent_idx][score_key] = round(normed, 6)
-        # Also stamp hybrid_score so it flows through metadata to episodes
-        intents[intent_idx]["hybrid_score"] = round(normed, 6)
+        # Ranked scores go to diagnostic-only fields.
+        intents[intent_idx]["score_ranked"] = round(normed, 6)
+        intents[intent_idx]["hybrid_score_ranked"] = round(normed, 6)
+        # Absolute score/hybrid_score preserved for cross-engine comparison.
+        intents[intent_idx].setdefault(
+            "hybrid_score", round(scores[pos], 6),
+        )
 
 
 def get_hydra_throttled_budgets(
