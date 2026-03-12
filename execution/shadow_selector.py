@@ -182,6 +182,29 @@ def _simulate_fallback_swap(
     return primary_source
 
 
+def _candidate_fingerprint(candidate: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Hash key decision fields of a candidate for mutation detection.
+
+    If any downstream code mutates the selector output (hybrid_score,
+    conviction, side, qty, price, etc.) between selection and execution,
+    comparing pre/post fingerprints will reveal it.
+    """
+    if not candidate:
+        return None
+    _FIELDS = (
+        "hybrid_score", "score", "conviction", "conviction_band",
+        "side", "qty", "quantity", "price", "leverage",
+        "reduce_only", "reduceOnly", "source", "_selector_source",
+        "_selector_score",
+    )
+    parts = []
+    for f in _FIELDS:
+        v = candidate.get(f)
+        if v is not None:
+            parts.append(f"{f}={v}")
+    return "|".join(parts) if parts else "empty"
+
+
 def log_ecs_soak_event(
     *,
     symbol: str,
@@ -191,6 +214,7 @@ def log_ecs_soak_event(
     candidates_count: int,
     cycle: int = 0,
     min_conviction_band: str = "",
+    selected_candidate: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Log a soak comparison: ECS decision vs simulated old-path decision.
 
@@ -202,6 +226,8 @@ def log_ecs_soak_event(
         candidates_count: Number of candidates ECS evaluated.
         cycle: Current executor cycle.
         min_conviction_band: Band gate string.
+        selected_candidate: The original (pre-deepcopy) selected candidate
+            from the selector result.  Used for mutation fingerprinting.
 
     Returns:
         Soak event dict, or None on error.
@@ -209,6 +235,8 @@ def log_ecs_soak_event(
     try:
         old_winner = _simulate_fallback_swap(raw_intent, min_conviction_band)
         agreement = ecs_winner == old_winner
+
+        fp = _candidate_fingerprint(selected_candidate)
 
         event = {
             "ts": time.time(),
@@ -221,6 +249,7 @@ def log_ecs_soak_event(
             "ecs_reason": ecs_reason,
             "candidates_count": candidates_count,
             "min_conviction_band": min_conviction_band or "none",
+            "candidate_fingerprint": fp,
         }
         _append_soak_event(event)
 
