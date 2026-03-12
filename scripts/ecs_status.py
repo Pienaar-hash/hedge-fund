@@ -134,6 +134,11 @@ def main() -> None:
         sol_soak_pct = 100.0 * sol_legacy_soak / len(sol_soak)
         print(f"  SOL legacy rate (soak):    {sol_legacy_soak}/{len(sol_soak)}  ({sol_soak_pct:.1f}%)")
 
+    # Candidate mutation detection (fingerprint field from soak v1+)
+    fp_events = [e for e in soak if e.get("candidate_fingerprint")]
+    if fp_events:
+        print(f"\n  Candidate fingerprints:    {len(fp_events)} events tracked")
+
     print()
     print("=" * 60)
 

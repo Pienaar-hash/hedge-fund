@@ -9,6 +9,7 @@ repo_root = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, repo_root)
 
 import argparse
+import copy
 import json
 import logging
 import shutil
@@ -5764,7 +5765,10 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                     )
 
                     if _ecs_result["selected"] is not None:
-                        _ecs_selected = _ecs_result["selected"]
+                        # Deep-copy to decouple decision artifact from execution artifact.
+                        # Prevents downstream mutation (qty/price/leverage rounding)
+                        # from contaminating the candidate object in the selector result.
+                        _ecs_selected = copy.deepcopy(_ecs_result["selected"])
                         # Preserve merge scores for downstream telemetry
                         _legacy_score = raw_intent.get("merge_legacy_score")
                         if _legacy_score is not None:
@@ -5805,6 +5809,7 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                             candidates_count=len(_ecs_candidates),
                             cycle=i,
                             min_conviction_band=_min_conv_band_str,
+                            selected_candidate=_ecs_result["selected"],
                         )
                     except Exception:
                         pass  # soak logging must never block

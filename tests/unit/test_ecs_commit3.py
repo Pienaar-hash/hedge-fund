@@ -8,7 +8,10 @@ Tests:
     5. log_ecs_soak_event writes JSONL
     6. ECS path selects correct winner in executor flow
     7. ECS fail-open falls back to legacy path
+    8. Candidate fingerprinting detects mutation
+    9. Deep-copy decouples selector output from execution
 """
+import copy
 import json
 import os
 from unittest import mock
@@ -272,3 +275,120 @@ class TestEcsSelectorPath:
         result = select_executable_candidate(candidates, "high")
         assert result["selected"] is None
         assert result["selection_reason"] == "all_rejected_by_band_gate"
+
+
+# ---------------------------------------------------------------------------
+# Candidate fingerprint tests
+# ---------------------------------------------------------------------------
+
+class TestCandidateFingerprint:
+    def test_stable_for_unchanged_candidate(self):
+        from execution.shadow_selector import _candidate_fingerprint
+        c = {"hybrid_score": 0.98, "side": "BUY", "source": "hydra", "_selector_score": 0.98}
+        fp1 = _candidate_fingerprint(c)
+        fp2 = _candidate_fingerprint(c)
+        assert fp1 == fp2
+        assert fp1 is not None
+
+    def test_detects_score_mutation(self):
+        from execution.shadow_selector import _candidate_fingerprint
+        c = {"hybrid_score": 0.98, "side": "BUY", "source": "hydra"}
+        fp_before = _candidate_fingerprint(c)
+        c["hybrid_score"] = 0.50
+        fp_after = _candidate_fingerprint(c)
+        assert fp_before != fp_after
+
+    def test_detects_qty_mutation(self):
+        from execution.shadow_selector import _candidate_fingerprint
+        c = {"hybrid_score": 0.98, "qty": 1.5, "source": "hydra"}
+        fp_before = _candidate_fingerprint(c)
+        c["qty"] = 2.0
+        fp_after = _candidate_fingerprint(c)
+        assert fp_before != fp_after
+
+    def test_none_for_none_candidate(self):
+        from execution.shadow_selector import _candidate_fingerprint
+        assert _candidate_fingerprint(None) is None
+
+    def test_empty_candidate_returns_none(self):
+        from execution.shadow_selector import _candidate_fingerprint
+        assert _candidate_fingerprint({}) is None
+
+
+class TestSoakFingerprintIntegration:
+    def test_soak_event_includes_fingerprint(self, tmp_path):
+        from execution.shadow_selector import log_ecs_soak_event
+        log_path = tmp_path / "ecs_soak_events.jsonl"
+        raw = {"source": "hydra", "conviction_band": "high"}
+        candidate = {"hybrid_score": 0.98, "source": "hydra", "side": "BUY"}
+        with mock.patch("execution.shadow_selector._SOAK_LOG_PATH", log_path):
+            event = log_ecs_soak_event(
+                symbol="BTCUSDT",
+                raw_intent=raw,
+                ecs_winner="hydra",
+                ecs_reason="band_pass",
+                candidates_count=1,
+                min_conviction_band="low",
+                selected_candidate=candidate,
+            )
+        assert event is not None
+        assert event["candidate_fingerprint"] is not None
+        assert "hybrid_score=0.98" in event["candidate_fingerprint"]
+
+    def test_soak_event_no_candidate_null_fingerprint(self, tmp_path):
+        from execution.shadow_selector import log_ecs_soak_event
+        log_path = tmp_path / "ecs_soak_events.jsonl"
+        raw = {"source": "hydra", "conviction_band": "high"}
+        with mock.patch("execution.shadow_selector._SOAK_LOG_PATH", log_path):
+            event = log_ecs_soak_event(
+                symbol="BTCUSDT",
+                raw_intent=raw,
+                ecs_winner="hydra",
+                ecs_reason="band_pass",
+                candidates_count=1,
+            )
+        assert event is not None
+        assert event["candidate_fingerprint"] is None
+
+
+class TestDeepCopyProtection:
+    """Verify that deepcopy decouples selector result from execution mutations."""
+
+    def test_deepcopy_prevents_backpropagation(self):
+        from execution.candidate_selector import build_candidates, select_executable_candidate
+        h = {"symbol": "BTCUSDT", "hybrid_score": 0.98, "source": "hydra",
+             "conviction_band": "low", "qty": 1.0, "price": 50000.0}
+        candidates = build_candidates("BTCUSDT", hydra_intent=h)
+        result = select_executable_candidate(candidates, "low")
+
+        # Simulate executor: deepcopy then mutate
+        original_ref = result["selected"]
+        execution_copy = copy.deepcopy(original_ref)
+        execution_copy["qty"] = 2.5
+        execution_copy["price"] = 49999.0
+        execution_copy["attempt_id"] = "sig_abc123"
+
+        # Original in selector result must be untouched
+        assert original_ref["qty"] == 1.0
+        assert original_ref["price"] == 50000.0
+        assert "attempt_id" not in original_ref
+
+    def test_shallow_copy_would_leak_nested(self):
+        """Demonstrate why shallow copy is insufficient for nested dicts."""
+        from execution.candidate_selector import build_candidates, select_executable_candidate
+        h = {"symbol": "BTCUSDT", "hybrid_score": 0.98, "source": "hydra",
+             "conviction_band": "low", "meta": {"strategy": "trend"}}
+        candidates = build_candidates("BTCUSDT", hydra_intent=h)
+        result = select_executable_candidate(candidates, "low")
+
+        original_ref = result["selected"]
+        # Shallow copy leaks nested mutation
+        shallow = dict(original_ref)
+        shallow["meta"]["strategy"] = "MUTATED"
+        assert original_ref["meta"]["strategy"] == "MUTATED"  # shallow leaks!
+
+        # Deep copy does not leak
+        original_ref["meta"]["strategy"] = "trend"  # reset
+        deep = copy.deepcopy(original_ref)
+        deep["meta"]["strategy"] = "MUTATED"
+        assert original_ref["meta"]["strategy"] == "trend"  # deepcopy safe
