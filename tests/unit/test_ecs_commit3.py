@@ -1,15 +1,16 @@
-"""Tests for Phase 4 Commit 3 — ECS selector live enablement.
+"""Tests for Phase 4 ECS selector — Commits 3-5.
 
 Tests:
-    1. USE_ECS_SELECTOR flag defaults OFF
+    1. USE_ECS_SELECTOR flag (retained in v6_flags, now a no-op)
     2. Soak telemetry: agreement when ECS matches old path
     3. Soak telemetry: divergence detection
-    4. _simulate_fallback_swap reproduces old-path logic
-    5. log_ecs_soak_event writes JSONL
+    4. _simulate_fallback_swap reproduces old-path logic (soak comparison)
+    5. log_ecs_soak_event writes JSONL (with enriched merge scores)
     6. ECS path selects correct winner in executor flow
-    7. ECS fail-open falls back to legacy path
-    8. Candidate fingerprinting detects mutation
-    9. Deep-copy decouples selector output from execution
+    7. Candidate fingerprinting detects mutation
+    8. Deep-copy decouples selector output from execution
+    9. Selector invariant guards
+    10. Soak event enriched with merge scores
 """
 import copy
 import json
@@ -392,3 +393,119 @@ class TestDeepCopyProtection:
         deep = copy.deepcopy(original_ref)
         deep["meta"]["strategy"] = "MUTATED"
         assert original_ref["meta"]["strategy"] == "trend"  # deepcopy safe
+
+
+# ---------------------------------------------------------------------------
+# Commit 5: Invariant guard tests
+# ---------------------------------------------------------------------------
+
+class TestSelectorInvariantGuards:
+    """Commit 5 invariant guards in select_executable_candidate."""
+
+    def test_negative_score_rejected(self):
+        from execution.candidate_selector import select_executable_candidate
+        # Build a candidate with negative _selector_score
+        c = {
+            "symbol": "BTCUSDT",
+            "source": "hydra",
+            "_selector_source": "hydra",
+            "_selector_score": -0.5,
+            "hybrid_score": -0.5,
+            "conviction_band": "low",
+        }
+        result = select_executable_candidate([c], "low")
+        assert result["selected"] is None
+        assert result["selection_reason"] == "invariant_violation"
+
+    def test_normal_score_passes(self):
+        from execution.candidate_selector import select_executable_candidate
+        c = {
+            "symbol": "BTCUSDT",
+            "source": "hydra",
+            "_selector_source": "hydra",
+            "_selector_score": 0.45,
+            "hybrid_score": 0.45,
+            "conviction_band": "low",
+        }
+        result = select_executable_candidate([c], "low")
+        assert result["selected"] is not None
+        assert result["winner_engine"] == "hydra"
+
+    def test_zero_score_passes(self):
+        from execution.candidate_selector import select_executable_candidate
+        c = {
+            "symbol": "BTCUSDT",
+            "source": "hydra",
+            "_selector_source": "hydra",
+            "_selector_score": 0.0,
+            "hybrid_score": 0.0,
+            "conviction_band": "low",
+        }
+        result = select_executable_candidate([c], "low")
+        assert result["selected"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Commit 5: Enriched soak event tests
+# ---------------------------------------------------------------------------
+
+class TestEnrichedSoakEvent:
+    """Soak events carry paired merge scores for calibration analysis."""
+
+    def test_conflict_scores_logged(self, tmp_path):
+        from execution.shadow_selector import log_ecs_soak_event
+        log_path = tmp_path / "ecs_soak_events.jsonl"
+        raw = {"source": "hydra", "conviction_band": "high"}
+        with mock.patch("execution.shadow_selector._SOAK_LOG_PATH", log_path):
+            event = log_ecs_soak_event(
+                symbol="BTCUSDT",
+                raw_intent=raw,
+                ecs_winner="hydra",
+                ecs_reason="band_pass",
+                candidates_count=2,
+                merge_hydra_score=0.49,
+                merge_legacy_score=0.42,
+                merge_conflict=True,
+            )
+        assert event is not None
+        assert event["merge_hydra_score"] == 0.49
+        assert event["merge_legacy_score"] == 0.42
+        assert event["merge_conflict"] is True
+
+    def test_no_conflict_no_extra_fields(self, tmp_path):
+        from execution.shadow_selector import log_ecs_soak_event
+        log_path = tmp_path / "ecs_soak_events.jsonl"
+        raw = {"source": "hydra", "conviction_band": "high"}
+        with mock.patch("execution.shadow_selector._SOAK_LOG_PATH", log_path):
+            event = log_ecs_soak_event(
+                symbol="BTCUSDT",
+                raw_intent=raw,
+                ecs_winner="hydra",
+                ecs_reason="band_pass",
+                candidates_count=1,
+            )
+        assert event is not None
+        assert "merge_hydra_score" not in event
+        assert "merge_legacy_score" not in event
+        assert "merge_conflict" not in event
+
+    def test_enriched_event_written_to_jsonl(self, tmp_path):
+        from execution.shadow_selector import log_ecs_soak_event
+        log_path = tmp_path / "ecs_soak_events.jsonl"
+        raw = {"source": "hydra", "conviction_band": "high"}
+        with mock.patch("execution.shadow_selector._SOAK_LOG_PATH", log_path):
+            log_ecs_soak_event(
+                symbol="SOLUSDT",
+                raw_intent=raw,
+                ecs_winner="legacy",
+                ecs_reason="band_pass",
+                candidates_count=2,
+                merge_hydra_score=0.38,
+                merge_legacy_score=0.42,
+                merge_conflict=True,
+            )
+        events = [json.loads(ln) for ln in log_path.read_text().splitlines()]
+        assert len(events) == 1
+        assert events[0]["merge_hydra_score"] == 0.38
+        assert events[0]["merge_legacy_score"] == 0.42
+        assert events[0]["merge_conflict"] is True

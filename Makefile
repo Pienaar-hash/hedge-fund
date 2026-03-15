@@ -48,6 +48,10 @@ aw-status:
 ecs-status:
 	@PYTHONPATH=. $(PYTHON) scripts/ecs_status.py
 
+.PHONY: ecs-calibration
+ecs-calibration:
+	@PYTHONPATH=. $(PYTHON) scripts/ecs_calibration_audit.py
+
 .PHONY: aw-verify
 aw-verify:
 	@PYTHONPATH=. $(PYTHON) scripts/activation_verify.py

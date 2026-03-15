@@ -150,6 +150,19 @@ def select_executable_candidate(
 
     winner_engine = str(selected.get("_selector_source", "unknown")) if selected else "none"
 
+    # Invariant guards: protect against future refactors feeding malformed candidates
+    if selected is not None:
+        if selected not in candidates:
+            LOG.error("[candidate_selector] INVARIANT VIOLATION: selected not in candidates")
+            selected = None
+            winner_engine = "none"
+            selection_reason = "invariant_violation"
+        elif selected.get("_selector_score", 0) < 0:
+            LOG.error("[candidate_selector] INVARIANT VIOLATION: negative selector score")
+            selected = None
+            winner_engine = "none"
+            selection_reason = "invariant_violation"
+
     # Determine loser
     loser_engine: Optional[str] = None
     if len(candidates) >= 2:
@@ -159,7 +172,7 @@ def select_executable_candidate(
                 loser_engine = src
                 break
 
-    if not selected and candidates:
+    if not selected and candidates and selection_reason != "invariant_violation":
         selection_reason = "all_rejected_by_band_gate"
 
     return {
