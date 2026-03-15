@@ -60,6 +60,10 @@ ecs-phase-map:
 ecs-regime-pnl:
 	@PYTHONPATH=. $(PYTHON) scripts/ecs_regime_pnl.py
 
+.PHONY: ecs-regret
+ecs-regret:
+	@PYTHONPATH=. $(PYTHON) scripts/ecs_regret_curve.py
+
 .PHONY: aw-verify
 aw-verify:
 	@PYTHONPATH=. $(PYTHON) scripts/activation_verify.py
