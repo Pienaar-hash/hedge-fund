@@ -64,6 +64,10 @@ ecs-regime-pnl:
 ecs-regret:
 	@PYTHONPATH=. $(PYTHON) scripts/ecs_regret_curve.py
 
+.PHONY: ecs-v2-eval
+ecs-v2-eval:
+	@PYTHONPATH=. $(PYTHON) scripts/ecs_shadow_v2_eval.py
+
 .PHONY: aw-verify
 aw-verify:
 	@PYTHONPATH=. $(PYTHON) scripts/activation_verify.py

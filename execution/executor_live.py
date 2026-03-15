@@ -5806,6 +5806,21 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                     except Exception:
                         pass  # soak logging must never block
 
+                    # ── Shadow selector v2 (Phase 5 research) ──
+                    try:
+                        from execution.shadow_selector_v2 import evaluate_v2_shadow
+                        evaluate_v2_shadow(
+                            symbol=symbol,
+                            hydra_score=raw_intent.get("merge_hydra_score"),
+                            legacy_score=raw_intent.get("merge_legacy_score"),
+                            ecs_choice=_ecs_result["winner_engine"],
+                            score_delta=raw_intent.get("score_delta"),
+                            merge_conflict=bool(raw_intent.get("merge_conflict")),
+                            cycle=i,
+                        )
+                    except Exception:
+                        pass  # v2 shadow must never block
+
                     if _ecs_result["selected"] is None:
                         continue  # No candidate passed — skip this intent
                 except Exception as _ecs_err:
