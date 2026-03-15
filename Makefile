@@ -56,6 +56,10 @@ ecs-calibration:
 ecs-phase-map:
 	@PYTHONPATH=. $(PYTHON) scripts/ecs_phase_map.py
 
+.PHONY: ecs-regime-pnl
+ecs-regime-pnl:
+	@PYTHONPATH=. $(PYTHON) scripts/ecs_regime_pnl.py
+
 .PHONY: aw-verify
 aw-verify:
 	@PYTHONPATH=. $(PYTHON) scripts/activation_verify.py

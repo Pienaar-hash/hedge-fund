@@ -261,6 +261,8 @@ def log_ecs_soak_event(
             event["merge_hydra_score"] = merge_hydra_score
         if merge_legacy_score is not None:
             event["merge_legacy_score"] = merge_legacy_score
+        if merge_hydra_score is not None and merge_legacy_score is not None:
+            event["score_delta"] = round(merge_hydra_score - merge_legacy_score, 6)
         if merge_conflict:
             event["merge_conflict"] = True
         _append_soak_event(event)
