@@ -5785,10 +5785,10 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                             _ecs_result["selection_reason"],
                             len(_ecs_candidates),
                         )
-                        continue  # No candidate passed — skip this intent
 
-                    # --- Soak telemetry: compare ECS decision with what
-                    # the old fallback-swap path would have produced. ---
+                    # --- Soak telemetry: fires for both accepted and rejected
+                    # intents so calibration data accumulates even when band
+                    # gate vetoes the intent. ---
                     try:
                         log_ecs_soak_event(
                             symbol=symbol,
@@ -5805,6 +5805,9 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                         )
                     except Exception:
                         pass  # soak logging must never block
+
+                    if _ecs_result["selected"] is None:
+                        continue  # No candidate passed — skip this intent
                 except Exception as _ecs_err:
                     LOG.warning("[ecs_selector] fail-open, skipping intent: %s", _ecs_err)
                     continue  # No legacy fallback — skip on selector failure
