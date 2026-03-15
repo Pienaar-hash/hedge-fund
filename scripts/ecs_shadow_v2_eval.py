@@ -482,6 +482,7 @@ def _print_evaluation_metrics(scored: List[Dict[str, Any]]) -> None:
 
     # Candidate B abstention efficiency
     b_abstained = [r for r in scored if r.get("b_abstain")]
+    b_taken_pnl = [r["pnl"] for r in scored if not r.get("b_abstain")]
     if b_abstained:
         losses_avoided = sum(-r["pnl"] for r in b_abstained if r["pnl"] < 0)
         wins_missed = sum(r["pnl"] for r in b_abstained if r["pnl"] > 0)
@@ -490,6 +491,19 @@ def _print_evaluation_metrics(scored: List[Dict[str, Any]]) -> None:
         print(f"    Losses avoided:    {losses_avoided:+.2f}")
         print(f"    Wins missed:       {wins_missed:+.2f}")
         print(f"    Net benefit:       {losses_avoided - wins_missed:+.2f}")
+
+    # Capacity ratio: is v2 capturing most of Hydra's edge?
+    pnl_hydra_only = h_cum
+    pnl_b = sum(b_taken_pnl) if b_taken_pnl else 0.0
+    if abs(pnl_hydra_only) > 0.01:
+        cap_ratio = pnl_b / pnl_hydra_only
+        print(f"\n  Capacity ratio (B / Hydra-only): {cap_ratio:.3f}")
+        if cap_ratio > 0.8:
+            print(f"    → Near-optimal routing")
+        elif cap_ratio > 0.5:
+            print(f"    → Moderate edge capture")
+        else:
+            print(f"    → Routing losing too much edge")
 
 
 def _print_data_sufficiency(scored: List[Dict[str, Any]]) -> None:
