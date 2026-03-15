@@ -215,6 +215,9 @@ def log_ecs_soak_event(
     cycle: int = 0,
     min_conviction_band: str = "",
     selected_candidate: Optional[Dict[str, Any]] = None,
+    merge_hydra_score: Optional[float] = None,
+    merge_legacy_score: Optional[float] = None,
+    merge_conflict: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Log a soak comparison: ECS decision vs simulated old-path decision.
 
@@ -228,6 +231,9 @@ def log_ecs_soak_event(
         min_conviction_band: Band gate string.
         selected_candidate: The original (pre-deepcopy) selected candidate
             from the selector result.  Used for mutation fingerprinting.
+        merge_hydra_score: Hydra absolute score (for calibration analysis).
+        merge_legacy_score: Legacy absolute score (for calibration analysis).
+        merge_conflict: Whether this was a Hydra/Legacy conflict case.
 
     Returns:
         Soak event dict, or None on error.
@@ -238,7 +244,7 @@ def log_ecs_soak_event(
 
         fp = _candidate_fingerprint(selected_candidate)
 
-        event = {
+        event: Dict[str, Any] = {
             "ts": time.time(),
             "schema": "ecs_soak_v1",
             "symbol": symbol,
@@ -251,6 +257,12 @@ def log_ecs_soak_event(
             "min_conviction_band": min_conviction_band or "none",
             "candidate_fingerprint": fp,
         }
+        if merge_hydra_score is not None:
+            event["merge_hydra_score"] = merge_hydra_score
+        if merge_legacy_score is not None:
+            event["merge_legacy_score"] = merge_legacy_score
+        if merge_conflict:
+            event["merge_conflict"] = True
         _append_soak_event(event)
 
         if not agreement:
