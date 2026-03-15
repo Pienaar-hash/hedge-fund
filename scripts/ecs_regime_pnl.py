@@ -4,7 +4,13 @@
 Uses detected regime boundaries from the phase map to partition the
 episode ledger by hybrid_score, then computes PnL statistics per regime.
 
-This answers: which regimes produce alpha and which destroy it?
+Sections:
+  1. Per-symbol regime PnL
+  2. Score-bucketed PnL curve
+  3. Score vs PnL monotonicity
+  4. Regime Sharpe surface (sliding window Sharpe along score axis)
+  5. Simulated routing comparison (Hydra-only vs Legacy-only vs ECS)
+  6. Regime PnL summary
 
 Usage:
     PYTHONPATH=. python scripts/ecs_regime_pnl.py
@@ -12,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import math
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -119,6 +126,227 @@ def _pnl_stats(pnls: List[float]) -> Dict[str, Any]:
         "best": max(pnls),
         "worst": min(pnls),
     }
+
+
+def _sharpe(pnls: List[float]) -> Optional[float]:
+    """Annualized Sharpe ratio from a list of per-trade PnLs.
+
+    Uses per-trade Sharpe (mean/std) without annualization since
+    trade frequency varies.  Returns None if < 3 trades or zero std.
+    """
+    if len(pnls) < 3:
+        return None
+    mean = sum(pnls) / len(pnls)
+    var = sum((p - mean) ** 2 for p in pnls) / (len(pnls) - 1)
+    std = math.sqrt(var) if var > 0 else 0
+    if std == 0:
+        return None
+    return mean / std
+
+
+def _print_sharpe_surface(core_episodes: List[Dict[str, Any]]) -> None:
+    """Section 4: Sliding-window Sharpe ratio along the score axis."""
+    print("-" * 72)
+    print("  REGIME SHARPE SURFACE (Sharpe ratio vs hydra_score)")
+    print("-" * 72)
+    print()
+
+    for sym in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+        scored = [(ep.get("hybrid_score", 0), ep.get("net_pnl", 0))
+                  for ep in core_episodes
+                  if ep.get("symbol") == sym and ep.get("hybrid_score", 0) > 0]
+        scored.sort()
+
+        if len(scored) < 6:
+            print(f"  {sym}: insufficient scored episodes (n={len(scored)}, need >=6)")
+            print()
+            continue
+
+        # Sliding window: ~1/3 of data, clamped [5, 30]
+        window = max(5, min(30, len(scored) // 3))
+
+        print(f"  {sym}  (n={len(scored)}, window={window})")
+        print()
+
+        bounds = REGIME_BOUNDARIES.get(sym, [])
+
+        print(f"    {'score center':>13}  {'score range':>22}  {'sharpe':>7}  {'mean_pnl':>9}  {'win%':>6}  {'n':>3}  {'regime'}")
+        print(f"    {'-'*13}  {'-'*22}  {'-'*7}  {'-'*9}  {'-'*6}  {'-'*3}  {'-'*15}")
+
+        # Track for peak/trough detection
+        sharpe_points: List[Tuple[float, float]] = []  # (center_score, sharpe)
+
+        step = max(1, (len(scored) - window) // 12)  # ~12 rows per symbol
+        for i in range(0, len(scored) - window + 1, step):
+            w = scored[i: i + window]
+            scores = [s for s, _ in w]
+            pnls = [p for _, p in w]
+            center = (scores[0] + scores[-1]) / 2
+            s = _sharpe(pnls)
+            mean = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls) * 100
+
+            regime = _classify_regime(sym, center)
+
+            # Visual Sharpe bar
+            if s is not None:
+                sharpe_points.append((center, s))
+                bar_val = max(-2.0, min(2.0, s))
+                if bar_val >= 0:
+                    bar = " " * 10 + "█" * int(bar_val * 5)
+                else:
+                    neg_len = int(abs(bar_val) * 5)
+                    bar = " " * (10 - neg_len) + "░" * neg_len
+                s_str = f"{s:>+7.3f}"
+            else:
+                bar = ""
+                s_str = "    N/A"
+
+            print(f"    {center:>13.4f}  [{scores[0]:.4f}, {scores[-1]:.4f}]"
+                  f"  {s_str}  {mean:>+9.4f}  {wr:>5.1f}%  {len(pnls):>3}  {regime:<15} {bar}")
+
+        print()
+
+        # Find peak Sharpe and where it occurs
+        if sharpe_points:
+            best = max(sharpe_points, key=lambda x: x[1])
+            worst = min(sharpe_points, key=lambda x: x[1])
+            print(f"    Peak Sharpe:  {best[1]:>+.3f} at score ≈ {best[0]:.4f}  (regime: {_classify_regime(sym, best[0])})")
+            print(f"    Worst Sharpe: {worst[1]:>+.3f} at score ≈ {worst[0]:.4f}  (regime: {_classify_regime(sym, worst[0])})")
+
+            # Check if peak is in Hydra regime
+            peak_regime = _classify_regime(sym, best[0])
+            if "HYDRA" in peak_regime:
+                print(f"    → Peak Sharpe CONFIRMS Hydra regime is the edge zone")
+            elif best[1] > 0:
+                print(f"    → Peak Sharpe is positive but in {peak_regime}")
+            else:
+                print(f"    → No positive Sharpe zone detected")
+
+        print()
+
+
+def _print_routing_comparison(core_episodes: List[Dict[str, Any]]) -> None:
+    """Section 5: Simulated routing — Hydra-only vs Legacy-only vs ECS."""
+    print("-" * 72)
+    print("  SIMULATED ROUTING COMPARISON")
+    print("  (What if we always picked one engine? Scored episodes only)")
+    print("-" * 72)
+    print()
+
+    scored = [ep for ep in core_episodes if ep.get("hybrid_score", 0) > 0]
+
+    if len(scored) < 5:
+        print("  Insufficient scored episodes for routing comparison.")
+        print()
+        return
+
+    # For each scored episode, simulate three strategies:
+    # 1. "Hydra-only": only take trades in Hydra regime, skip Legacy regime
+    # 2. "Legacy-only": only take trades in Legacy regime, skip Hydra regime
+    # 3. "ECS (actual)": take all trades as-is (current routing)
+    # 4. "Anti-ECS": invert the regime — take Legacy regime, skip Hydra
+
+    strategies: Dict[str, List[float]] = {
+        "ECS_ACTUAL": [],
+        "HYDRA_ONLY": [],
+        "LEGACY_ONLY": [],
+        "ANTI_ECS": [],
+    }
+
+    for ep in scored:
+        sym = ep.get("symbol")
+        score = ep.get("hybrid_score", 0)
+        pnl = ep.get("net_pnl", 0)
+        regime = _classify_regime(sym, score)
+
+        strategies["ECS_ACTUAL"].append(pnl)
+
+        if "HYDRA" in regime:
+            strategies["HYDRA_ONLY"].append(pnl)
+            strategies["ANTI_ECS"].append(0.0)  # skip in anti-ECS
+        else:
+            strategies["LEGACY_ONLY"].append(pnl)
+            strategies["ANTI_ECS"].append(pnl)  # take in anti-ECS
+
+    print(f"  Scored episodes: {len(scored)}")
+    print()
+
+    print(f"    {'strategy':<14}  {'n':>4}  {'total_pnl':>10}  {'mean_pnl':>9}  {'sharpe':>7}  {'win%':>6}  {'PF':>6}")
+    print(f"    {'-'*14}  {'-'*4}  {'-'*10}  {'-'*9}  {'-'*7}  {'-'*6}  {'-'*6}")
+
+    for name in ["ECS_ACTUAL", "HYDRA_ONLY", "LEGACY_ONLY", "ANTI_ECS"]:
+        pnls = strategies[name]
+        non_zero = [p for p in pnls if p != 0.0] if name == "ANTI_ECS" else pnls
+        n = len(non_zero)
+        if n == 0:
+            print(f"    {name:<14}  {0:>4}  {'N/A':>10}")
+            continue
+        total = sum(non_zero)
+        mean = total / n
+        s = _sharpe(non_zero)
+        s_str = f"{s:>+7.3f}" if s is not None else "    N/A"
+        wr = sum(1 for p in non_zero if p > 0) / n * 100
+        winners_sum = sum(p for p in non_zero if p > 0)
+        losers_sum = abs(sum(p for p in non_zero if p <= 0)) or 0.001
+        pf = winners_sum / losers_sum
+
+        print(f"    {name:<14}  {n:>4}  {total:>+10.2f}  {mean:>+9.4f}  {s_str}  {wr:>5.1f}%  {pf:>6.2f}")
+
+    print()
+
+    # Cumulative PnL walk
+    print("  Cumulative PnL walk (chronological, scored episodes only):")
+    print()
+
+    # Sort by entry timestamp
+    scored_chrono = sorted(scored, key=lambda ep: ep.get("entry_ts", ""))
+
+    cum_ecs = 0.0
+    cum_hydra = 0.0
+    cum_legacy = 0.0
+    checkpoints: List[Dict[str, Any]] = []
+
+    for i, ep in enumerate(scored_chrono):
+        sym = ep.get("symbol")
+        score = ep.get("hybrid_score", 0)
+        pnl = ep.get("net_pnl", 0)
+        regime = _classify_regime(sym, score)
+
+        cum_ecs += pnl
+        if "HYDRA" in regime:
+            cum_hydra += pnl
+        else:
+            cum_legacy += pnl
+
+        # Log checkpoint every ~10 trades
+        if (i + 1) % max(1, len(scored_chrono) // 10) == 0 or i == len(scored_chrono) - 1:
+            checkpoints.append({
+                "trade": i + 1,
+                "ts": ep.get("entry_ts", "")[:10],
+                "cum_ecs": cum_ecs,
+                "cum_hydra": cum_hydra,
+                "cum_legacy": cum_legacy,
+            })
+
+    print(f"    {'trade':>6}  {'date':>10}  {'cum_ECS':>10}  {'cum_HYDRA':>10}  {'cum_LEGACY':>11}  {'H-L spread':>10}")
+    print(f"    {'-'*6}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*11}  {'-'*10}")
+
+    for cp in checkpoints:
+        spread = cp["cum_hydra"] - cp["cum_legacy"]
+        print(f"    {cp['trade']:>6}  {cp['ts']:>10}  {cp['cum_ecs']:>+10.2f}"
+              f"  {cp['cum_hydra']:>+10.2f}  {cp['cum_legacy']:>+11.2f}  {spread:>+10.2f}")
+
+    print()
+
+    # Final verdict
+    if cum_hydra > cum_legacy:
+        print(f"  → Hydra-regime cumulative: {cum_hydra:+.2f}  vs  Legacy-regime: {cum_legacy:+.2f}")
+        print(f"  → Spread (H−L): {cum_hydra - cum_legacy:+.2f}  — Hydra regime outperforms")
+    else:
+        print(f"  → Hydra-regime cumulative: {cum_hydra:+.2f}  vs  Legacy-regime: {cum_legacy:+.2f}")
+        print(f"  → Spread (H−L): {cum_hydra - cum_legacy:+.2f}  — Legacy regime outperforms")
+    print()
 
 
 def run() -> None:
@@ -315,7 +543,13 @@ def run() -> None:
                     print(f"    → PnL does NOT confirm regime boundary at this threshold")
         print()
 
-    # ── Section 4: Regime allocation summary ─────────────────────────
+    # ── Section 4: Regime Sharpe Surface ─────────────────────────────
+    _print_sharpe_surface(core_episodes)
+
+    # ── Section 5: Simulated Routing Comparison ──────────────────────
+    _print_routing_comparison(core_episodes)
+
+    # ── Section 6: Regime allocation summary ─────────────────────────
     print("=" * 72)
     print("  REGIME PnL SUMMARY")
     print("=" * 72)
