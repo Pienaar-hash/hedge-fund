@@ -593,6 +593,69 @@ def run() -> None:
         else:
             print(f"    → Legacy-regime trades have BETTER mean PnL")
 
+    # ── Section 7: Profit-Region Attribution ─────────────────────────
+    try:
+        from execution.shadow_selector_v2 import in_profit_region, PNL_POSITIVE_REGIONS, PROFIT_MASK_VERSION
+    except ImportError:
+        PNL_POSITIVE_REGIONS = {}  # type: ignore[assignment]
+        PROFIT_MASK_VERSION = "unknown"
+        in_profit_region = lambda sym, s: False  # type: ignore[assignment]
+
+    print()
+    print("=" * 72)
+    print("  PROFIT-REGION ATTRIBUTION")
+    print(f"  (mask version: {PROFIT_MASK_VERSION})")
+    print("=" * 72)
+    print()
+
+    pr_in_n = 0
+    pr_in_pnl = 0.0
+    pr_out_n = 0
+    pr_out_pnl = 0.0
+
+    for sym in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+        sym_in: List[float] = []
+        sym_out: List[float] = []
+        for ep in core_episodes:
+            if ep.get("symbol") != sym:
+                continue
+            score = ep.get("hybrid_score", 0)
+            if score <= 0:
+                continue
+            pnl = ep.get("net_pnl", 0)
+            if in_profit_region(sym, score):
+                sym_in.append(pnl)
+            else:
+                sym_out.append(pnl)
+
+        bands = PNL_POSITIVE_REGIONS.get(sym, [])
+        band_str = ", ".join(f"({lo:.4f}, {hi:.4f})" for lo, hi in bands) if bands else "none"
+        print(f"  {sym}  bands=[{band_str}]")
+        if sym_in:
+            in_total = sum(sym_in)
+            print(f"    Inside:   n={len(sym_in):>4}  PnL={in_total:>+10.2f}  mean={in_total/len(sym_in):>+8.4f}")
+            pr_in_n += len(sym_in)
+            pr_in_pnl += in_total
+        else:
+            print(f"    Inside:   n=   0  (no trades in profit region)")
+        if sym_out:
+            out_total = sum(sym_out)
+            print(f"    Outside:  n={len(sym_out):>4}  PnL={out_total:>+10.2f}  mean={out_total/len(sym_out):>+8.4f}")
+            pr_out_n += len(sym_out)
+            pr_out_pnl += out_total
+        else:
+            print(f"    Outside:  n=   0")
+        print()
+
+    print(f"  TOTAL:")
+    print(f"    Profit region:     n={pr_in_n:>4}  PnL={pr_in_pnl:>+10.2f}"
+          + (f"  mean={pr_in_pnl/pr_in_n:>+8.4f}" if pr_in_n else ""))
+    print(f"    Non-profit region: n={pr_out_n:>4}  PnL={pr_out_pnl:>+10.2f}"
+          + (f"  mean={pr_out_pnl/pr_out_n:>+8.4f}" if pr_out_n else ""))
+    if pr_in_n + pr_out_n > 0:
+        selectivity = pr_in_n / (pr_in_n + pr_out_n) * 100
+        print(f"    Selectivity: {selectivity:.1f}% of scored trades pass profit mask")
+
 
 if __name__ == "__main__":
     run()

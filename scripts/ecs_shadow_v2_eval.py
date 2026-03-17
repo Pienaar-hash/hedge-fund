@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 EPISODE_LEDGER = Path("logs/state/episode_ledger.json")
 V2_SHADOW_LOG = Path("logs/execution/selector_v2_shadow.jsonl")
@@ -119,81 +119,96 @@ def _sharpe(pnls: List[float]) -> float:
 
 # ── Join v2 shadow events with PnL ──────────────────────────────────────────
 
+CORE_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+
+
 def _build_scored_dataset() -> List[Dict[str, Any]]:
-    """Join soak events (scores) with episode PnL using timestamp proximity.
+    """Build scored dataset from episode ledger (hybrid_score + net_pnl).
+
+    Episodes already carry hybrid_score (= hydra_score used for regime
+    classification) and net_pnl.  For legacy_score, we optionally enrich
+    from soak events matched by (symbol, entry_ts) proximity.
 
     Returns list of dicts with: symbol, hydra_score, legacy_score,
-    score_delta, ecs_choice, regime, pnl, and v2 verdicts.
+    score_delta, ecs_choice, regime, pnl.
     """
     episodes = _load_episodes()
     soak_events = _load_soak_events()
 
-    # Build episode index: (symbol, close_ts_bucket) → pnl
-    ep_index: Dict[Tuple[str, int], float] = {}
-    for ep in episodes:
-        sym = ep.get("symbol", "")
-        pnl = ep.get("pnl") or ep.get("realized_pnl") or ep.get("pnl_usdt")
-        close_ts = ep.get("close_ts") or ep.get("closed_at") or ep.get("ts")
-        if sym and pnl is not None and close_ts is not None:
-            try:
-                ts_bucket = int(float(close_ts))
-                ep_index[(sym, ts_bucket)] = float(pnl)
-            except (ValueError, TypeError):
-                continue
-
-    # Build soak index: (symbol, ts_bucket) → soak_event
+    # Build soak index for legacy_score enrichment: symbol → sorted list
     soak_index: Dict[str, List[Dict]] = defaultdict(list)
     for ev in soak_events:
         sym = ev.get("symbol", "")
         if sym and ev.get("merge_hydra_score") is not None:
             soak_index[sym].append(ev)
-
-    # Sort soak events by timestamp
     for sym in soak_index:
         soak_index[sym].sort(key=lambda e: e.get("ts", 0))
 
-    # Join: for each soak event with scores, find closest episode PnL
+    def _find_legacy_score(sym: str, entry_ts_unix: float) -> Optional[float]:
+        """Find closest soak event's legacy score within 120s of entry."""
+        candidates = soak_index.get(sym, [])
+        best_score: Optional[float] = None
+        best_dist = float("inf")
+        for ev in candidates:
+            dist = abs(ev.get("ts", 0) - entry_ts_unix)
+            if dist < best_dist and dist < 120:
+                best_dist = dist
+                best_score = ev.get("merge_legacy_score")
+        return float(best_score) if best_score is not None else None
+
     scored: List[Dict[str, Any]] = []
-    for sym, events in soak_index.items():
-        sym_episodes = [(ts, pnl) for (s, ts), pnl in ep_index.items() if s == sym]
-        sym_episodes.sort()
+    for ep in episodes:
+        sym = ep.get("symbol", "")
+        if sym not in CORE_SYMBOLS:
+            continue
 
-        for ev in events:
-            h_score = ev.get("merge_hydra_score")
-            l_score = ev.get("merge_legacy_score")
-            if h_score is None:
-                continue
+        h_score = ep.get("hybrid_score", 0)
+        if not h_score or h_score <= 0:
+            continue
 
-            soak_ts = ev.get("ts", 0)
-            ecs_winner = ev.get("ecs_winner", "unknown")
+        pnl = ep.get("net_pnl")
+        if pnl is None:
+            continue
 
-            # Find closest episode within 300s window
-            best_pnl = None
-            best_dist = float("inf")
-            for ep_ts, ep_pnl in sym_episodes:
-                dist = abs(ep_ts - soak_ts)
-                if dist < best_dist and dist < 300:
-                    best_dist = dist
-                    best_pnl = ep_pnl
+        # Parse entry_ts for soak enrichment
+        entry_ts_str = ep.get("entry_ts", "")
+        entry_ts_unix = 0.0
+        if entry_ts_str:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(entry_ts_str)
+                entry_ts_unix = dt.timestamp()
+            except (ValueError, TypeError):
+                pass
 
-            if best_pnl is None:
-                continue
+        # Parse exit_ts for chronological ordering
+        exit_ts_str = ep.get("exit_ts", "")
+        exit_ts_unix = 0.0
+        if exit_ts_str:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(exit_ts_str)
+                exit_ts_unix = dt.timestamp()
+            except (ValueError, TypeError):
+                pass
 
-            regime = _classify_regime(sym, float(h_score))
-            score_delta = ev.get("score_delta")
-            if score_delta is None and l_score is not None:
-                score_delta = round(float(h_score) - float(l_score), 6)
+        regime = _classify_regime(sym, float(h_score))
+        ecs_choice = ep.get("engine_source", "unknown") or "unknown"
 
-            scored.append({
-                "symbol": sym,
-                "ts": soak_ts,
-                "hydra_score": float(h_score),
-                "legacy_score": float(l_score) if l_score is not None else 0.0,
-                "score_delta": score_delta,
-                "regime": regime,
-                "ecs_choice": ecs_winner,
-                "pnl": float(best_pnl),
-            })
+        # Enrich with legacy_score from soak events
+        l_score = _find_legacy_score(sym, entry_ts_unix) if entry_ts_unix > 0 else None
+        score_delta = round(float(h_score) - l_score, 6) if l_score is not None else None
+
+        scored.append({
+            "symbol": sym,
+            "ts": exit_ts_unix or entry_ts_unix,
+            "hydra_score": float(h_score),
+            "legacy_score": l_score if l_score is not None else 0.0,
+            "score_delta": score_delta,
+            "regime": regime,
+            "ecs_choice": ecs_choice,
+            "pnl": float(pnl),
+        })
 
     scored.sort(key=lambda r: r["ts"])
     return scored
@@ -202,11 +217,13 @@ def _build_scored_dataset() -> List[Dict[str, Any]]:
 def _apply_v2_selectors(
     scored: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Apply all three v2 candidate selectors to scored dataset."""
+    """Apply all four v2 candidate selectors to scored dataset."""
     from execution.shadow_selector_v2 import (
         _selector_a,
         _selector_b,
         _selector_c,
+        _selector_d,
+        in_profit_region,
     )
 
     for row in scored:
@@ -218,6 +235,7 @@ def _apply_v2_selectors(
         a = _selector_a(sym, h, ecs)
         b = _selector_b(sym, h)
         c = _selector_c(sym, h, l)
+        d = _selector_d(sym, h)
 
         row["a_choice"] = a["v2_choice"]
         row["a_abstain"] = a["v2_abstain"]
@@ -228,13 +246,17 @@ def _apply_v2_selectors(
         row["c_choice"] = c["v2_choice"]
         row["c_abstain"] = c["v2_abstain"]
         row["c_rule"] = c["rule"]
+        row["d_choice"] = d["v2_choice"]
+        row["d_abstain"] = d["v2_abstain"]
+        row["d_rule"] = d["rule"]
+        row["profit_region"] = in_profit_region(sym, h)
 
         # Regret deltas: PnL that v2 would save vs ECS
         # If v2 abstains → regret_delta = -pnl (avoids the loss or misses the win)
         # If v2 agrees with ECS → regret_delta = 0
         # If v2 disagrees → cannot know counterfactual PnL without replay
         #   conservative: assume same PnL → regret_delta = 0
-        for prefix in ("a", "b"):
+        for prefix in ("a", "b", "d"):
             choice = row[f"{prefix}_choice"]
             abstain = row[f"{prefix}_abstain"]
             if abstain:
@@ -280,7 +302,11 @@ def _print_summary(scored: List[Dict[str, Any]]) -> None:
           f"  Sharpe={_sharpe(hydra_pnl)}")
 
     # Per-candidate summary
-    for label, prefix in [("Candidate A (band)", "a"), ("Candidate B (region)", "b")]:
+    for label, prefix in [(
+        "Candidate A (band)", "a"),
+        ("Candidate B (region)", "b"),
+        ("Candidate D (profit)", "d"),
+    ]:
         # Trades v2 would take
         taken = [r for r in scored if not r.get(f"{prefix}_abstain")]
         taken_pnl = [r["pnl"] for r in taken]
@@ -311,7 +337,7 @@ def _print_routing_disagreement(scored: List[Dict[str, Any]]) -> None:
     """Section 2: Where v2 disagrees with ECS."""
     _print_header("2. ROUTING DISAGREEMENT MAP")
 
-    for label, prefix in [("Candidate A", "a"), ("Candidate B", "b")]:
+    for label, prefix in [("Candidate A", "a"), ("Candidate B", "b"), ("Candidate D", "d")]:
         disagree = [r for r in scored
                     if r.get(f"{prefix}_choice") != r["ecs_choice"]]
         agree = [r for r in scored
@@ -349,52 +375,58 @@ def _print_routing_disagreement(scored: List[Dict[str, Any]]) -> None:
 
 def _print_regret_heatmap(scored: List[Dict[str, Any]]) -> None:
     """Section 3: Regret by score bucket × symbol."""
-    _print_header("3. REGRET HEATMAP (Candidate B — positive-region routing)")
+    _print_header("3. REGRET HEATMAP")
 
-    # Bucket by hydra_score decile
-    buckets = defaultdict(lambda: defaultdict(list))
-    for r in scored:
-        bucket = round(r["hydra_score"], 1)  # 0.1 buckets
-        sym = r["symbol"]
-        regret = r.get("b_regret_delta")
-        if regret is not None:
-            buckets[bucket][sym].append(regret)
+    for cand_label, prefix in [("Candidate B (arbitration)", "b"), ("Candidate D (profit)", "d")]:
+        print(f"\n  {cand_label}:")
 
-    if not buckets:
-        print("\n  No regret data available.")
-        return
+        # Bucket by hydra_score decile
+        buckets: Dict[float, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+        for r in scored:
+            bucket = round(r["hydra_score"], 1)  # 0.1 buckets
+            sym = r["symbol"]
+            regret = r.get(f"{prefix}_regret_delta")
+            if regret is not None:
+                buckets[bucket][sym].append(regret)
 
-    symbols = sorted(set(r["symbol"] for r in scored))
-    header = f"  {'Bucket':>8s}"
-    for sym in symbols:
-        header += f"  {sym:>12s}"
-    header += f"  {'TOTAL':>10s}"
-    print(f"\n{header}")
-    print("  " + "-" * (len(header) - 2))
+        if not buckets:
+            print("    No regret data available.")
+            continue
 
-    for bucket in sorted(buckets.keys()):
-        row = f"  {bucket:8.1f}"
-        total_regret = 0.0
+        symbols = sorted(set(r["symbol"] for r in scored))
+        header = f"    {'Bucket':>8s}"
         for sym in symbols:
-            regrets = buckets[bucket].get(sym, [])
-            if regrets:
-                s = sum(regrets)
-                total_regret += s
-                row += f"  {s:+10.2f}({len(regrets)})"
-            else:
-                row += f"  {'---':>12s}"
-        row += f"  {total_regret:+10.2f}"
-        print(row)
+            header += f"  {sym:>12s}"
+        header += f"  {'TOTAL':>10s}"
+        print(f"\n{header}")
+        print("    " + "-" * (len(header) - 4))
+
+        for bucket in sorted(buckets.keys()):
+            row = f"    {bucket:8.1f}"
+            total_regret = 0.0
+            for sym in symbols:
+                regrets = buckets[bucket].get(sym, [])
+                if regrets:
+                    s = sum(regrets)
+                    total_regret += s
+                    row += f"  {s:+10.2f}({len(regrets)})"
+                else:
+                    row += f"  {'---':>12s}"
+            row += f"  {total_regret:+10.2f}"
+            print(row)
+        print()
 
 
 def _print_abstention_curve(scored: List[Dict[str, Any]]) -> None:
-    """Section 4: Cumulative PnL walk — ECS vs Hydra-only vs v2 vs v2+abstain."""
+    """Section 4: Cumulative PnL walk — ECS vs Hydra-only vs B vs D."""
     _print_header("4. ABSTENTION BENEFIT CURVE")
 
     cum_ecs = 0.0
     cum_hydra = 0.0
     cum_b = 0.0
     cum_b_abstain = 0.0
+    cum_d = 0.0
+    cum_d_abstain = 0.0
 
     walk: List[Dict[str, float]] = []
 
@@ -412,11 +444,18 @@ def _print_abstention_curve(scored: List[Dict[str, Any]]) -> None:
             cum_b_abstain += pnl
         # If abstained, cum_b_abstain stays same (PnL = 0)
 
+        # Candidate D: take if profit region, else abstain
+        if not r.get("d_abstain"):
+            cum_d += pnl
+            cum_d_abstain += pnl
+
         walk.append({
             "ecs": round(cum_ecs, 2),
             "hydra_only": round(cum_hydra, 2),
             "b_taken": round(cum_b, 2),
             "b_with_abstain": round(cum_b_abstain, 2),
+            "d_taken": round(cum_d, 2),
+            "d_with_abstain": round(cum_d_abstain, 2),
         })
 
     if not walk:
@@ -425,15 +464,17 @@ def _print_abstention_curve(scored: List[Dict[str, Any]]) -> None:
 
     # Print every 10th point and the final
     print(f"\n  {'#':>5s}  {'ECS':>10s}  {'Hydra-only':>12s}"
-          f"  {'B_taken':>10s}  {'B+abstain':>12s}")
-    print("  " + "-" * 55)
+          f"  {'B_taken':>10s}  {'B+abstain':>12s}"
+          f"  {'D_taken':>10s}  {'D+abstain':>12s}")
+    print("  " + "-" * 79)
     indices = list(range(0, len(walk), max(1, len(walk) // 10)))
     if (len(walk) - 1) not in indices:
         indices.append(len(walk) - 1)
     for idx in indices:
         w = walk[idx]
         print(f"  {idx + 1:5d}  {w['ecs']:+10.2f}  {w['hydra_only']:+12.2f}"
-              f"  {w['b_taken']:+10.2f}  {w['b_with_abstain']:+12.2f}")
+              f"  {w['b_taken']:+10.2f}  {w['b_with_abstain']:+12.2f}"
+              f"  {w['d_taken']:+10.2f}  {w['d_with_abstain']:+12.2f}")
 
     # Final comparison
     final = walk[-1]
@@ -442,13 +483,19 @@ def _print_abstention_curve(scored: List[Dict[str, Any]]) -> None:
     print(f"    Hydra-only:    {final['hydra_only']:+.2f}")
     print(f"    B (taken):     {final['b_taken']:+.2f}")
     print(f"    B + abstain:   {final['b_with_abstain']:+.2f}")
+    print(f"    D (taken):     {final['d_taken']:+.2f}")
+    print(f"    D + abstain:   {final['d_with_abstain']:+.2f}")
 
     # Improvement vs ECS
     if abs(final["ecs"]) > 0.01:
         b_improvement = final["b_with_abstain"] - final["ecs"]
+        d_improvement = final["d_with_abstain"] - final["ecs"]
         print(f"\n    B+abstain improvement vs ECS: {b_improvement:+.2f}")
-        print(f"    Losses avoided by abstention: "
+        print(f"    D+abstain improvement vs ECS: {d_improvement:+.2f}")
+        print(f"    Losses avoided by B abstention: "
               f"{sum(-r['pnl'] for r in scored if r.get('b_abstain') and r['pnl'] < 0):.2f}")
+        print(f"    Losses avoided by D abstention: "
+              f"{sum(-r['pnl'] for r in scored if r.get('d_abstain') and r['pnl'] < 0):.2f}")
 
 
 def _print_evaluation_metrics(scored: List[Dict[str, Any]]) -> None:
@@ -492,23 +539,144 @@ def _print_evaluation_metrics(scored: List[Dict[str, Any]]) -> None:
         print(f"    Wins missed:       {wins_missed:+.2f}")
         print(f"    Net benefit:       {losses_avoided - wins_missed:+.2f}")
 
+    # Candidate D abstention efficiency
+    d_abstained = [r for r in scored if r.get("d_abstain")]
+    d_taken_pnl = [r["pnl"] for r in scored if not r.get("d_abstain")]
+    if d_abstained:
+        d_losses_avoided = sum(-r["pnl"] for r in d_abstained if r["pnl"] < 0)
+        d_wins_missed = sum(r["pnl"] for r in d_abstained if r["pnl"] > 0)
+        print(f"\n  Candidate D abstention:")
+        print(f"    Trades abstained:  {len(d_abstained)}")
+        print(f"    Losses avoided:    {d_losses_avoided:+.2f}")
+        print(f"    Wins missed:       {d_wins_missed:+.2f}")
+        print(f"    Net benefit:       {d_losses_avoided - d_wins_missed:+.2f}")
+
     # Capacity ratio: is v2 capturing most of Hydra's edge?
     pnl_hydra_only = h_cum
     pnl_b = sum(b_taken_pnl) if b_taken_pnl else 0.0
+    pnl_d = sum(d_taken_pnl) if d_taken_pnl else 0.0
     if abs(pnl_hydra_only) > 0.01:
-        cap_ratio = pnl_b / pnl_hydra_only
-        print(f"\n  Capacity ratio (B / Hydra-only): {cap_ratio:.3f}")
-        if cap_ratio > 0.8:
-            print(f"    → Near-optimal routing")
-        elif cap_ratio > 0.5:
-            print(f"    → Moderate edge capture")
+        cap_ratio_b = pnl_b / pnl_hydra_only
+        cap_ratio_d = pnl_d / pnl_hydra_only
+        print(f"\n  Capacity ratio (B / Hydra-only): {cap_ratio_b:.3f}")
+        print(f"  Capacity ratio (D / Hydra-only): {cap_ratio_d:.3f}")
+        for label, cr in [("B", cap_ratio_b), ("D", cap_ratio_d)]:
+            if cr > 0.8:
+                print(f"    {label}: Near-optimal routing")
+            elif cr > 0.5:
+                print(f"    {label}: Moderate edge capture")
+            else:
+                print(f"    {label}: Routing losing too much edge")
+
+
+def _print_b_vs_d_comparison(scored: List[Dict[str, Any]]) -> None:
+    """Section 6: B vs D head-to-head — arbitration vs profit surface."""
+    _print_header("6. B vs D HEAD-TO-HEAD (arbitration vs profit surface)")
+
+    # Categorise each trade by B/D agreement
+    both_take: List[Dict] = []
+    b_take_d_abstain: List[Dict] = []
+    d_take_b_abstain: List[Dict] = []
+    both_abstain: List[Dict] = []
+
+    for r in scored:
+        b_abs = r.get("b_abstain", False)
+        d_abs = r.get("d_abstain", False)
+        if not b_abs and not d_abs:
+            both_take.append(r)
+        elif not b_abs and d_abs:
+            b_take_d_abstain.append(r)
+        elif b_abs and not d_abs:
+            d_take_b_abstain.append(r)
         else:
-            print(f"    → Routing losing too much edge")
+            both_abstain.append(r)
+
+    def _group_stats(rows: List[Dict]) -> str:
+        if not rows:
+            return "n=0"
+        pnls = [r["pnl"] for r in rows]
+        total = sum(pnls)
+        mean = total / len(pnls)
+        wr = sum(1 for p in pnls if p > 0) / len(pnls) * 100
+        return f"n={len(rows):>3}  PnL={total:>+8.2f}  mean={mean:>+6.2f}  win={wr:.0f}%"
+
+    print(f"\n  Both take:          {_group_stats(both_take)}")
+    print(f"  B takes, D abstains: {_group_stats(b_take_d_abstain)}")
+    print(f"  D takes, B abstains: {_group_stats(d_take_b_abstain)}")
+    print(f"  Both abstain:       {_group_stats(both_abstain)}")
+
+    # Where B takes but D abstains — these are the trades D filters out
+    if b_take_d_abstain:
+        print(f"\n  Trades B takes but D filters out (arbitration-only zone):")
+        sym_counts: Dict[str, List[float]] = defaultdict(list)
+        for r in b_take_d_abstain:
+            sym_counts[r["symbol"]].append(r["pnl"])
+        for sym in sorted(sym_counts.keys()):
+            pnls = sym_counts[sym]
+            total = sum(pnls)
+            print(f"    {sym:12s} n={len(pnls):>3}  PnL={total:>+8.2f}")
+        total_filtered = sum(r["pnl"] for r in b_take_d_abstain)
+        if total_filtered < 0:
+            print(f"    → D correctly filters {abs(total_filtered):.2f} of losses")
+        else:
+            print(f"    → D filters {total_filtered:+.2f} (filtering profitable trades!)")
+
+    # Where D takes but B abstains — edge D captures that B misses
+    if d_take_b_abstain:
+        print(f"\n  Trades D takes but B abstains (profit surface outside arbitration):")
+        sym_counts2: Dict[str, List[float]] = defaultdict(list)
+        for r in d_take_b_abstain:
+            sym_counts2[r["symbol"]].append(r["pnl"])
+        for sym in sorted(sym_counts2.keys()):
+            pnls = sym_counts2[sym]
+            total = sum(pnls)
+            print(f"    {sym:12s} n={len(pnls):>3}  PnL={total:>+8.2f}")
+
+
+def _print_profit_region_pnl(scored: List[Dict[str, Any]]) -> None:
+    """Section 7: PnL split by profit_region bucket."""
+    _print_header("7. PnL BY PROFIT REGION")
+
+    inside = [r for r in scored if r.get("profit_region", False)]
+    outside = [r for r in scored if not r.get("profit_region", False)]
+
+    def _bucket_line(label: str, rows: List[Dict]) -> str:
+        if not rows:
+            return f"  {label:20s}  n=  0  PnL=    0.00  mean=  0.00  win=  0%"
+        pnls = [r["pnl"] for r in rows]
+        total = sum(pnls)
+        mean = total / len(pnls)
+        wr = sum(1 for p in pnls if p > 0) / len(pnls) * 100
+        return (f"  {label:20s}  n={len(pnls):>3}  PnL={total:>+8.2f}"
+                f"  mean={mean:>+6.2f}  win={wr:.0f}%")
+
+    print(f"\n{_bucket_line('Inside profit region', inside)}")
+    print(f"{_bucket_line('Outside profit region', outside)}")
+
+    # Per-symbol breakdown
+    symbols = sorted(set(r["symbol"] for r in scored))
+    if symbols:
+        print(f"\n  Per-symbol breakdown:")
+        for sym in symbols:
+            sym_in = [r for r in inside if r["symbol"] == sym]
+            sym_out = [r for r in outside if r["symbol"] == sym]
+            in_pnl = sum(r["pnl"] for r in sym_in) if sym_in else 0.0
+            out_pnl = sum(r["pnl"] for r in sym_out) if sym_out else 0.0
+            print(f"    {sym:12s}  inside: n={len(sym_in):>3} PnL={in_pnl:>+8.2f}"
+                  f"   outside: n={len(sym_out):>3} PnL={out_pnl:>+8.2f}")
+
+    # Edge concentration
+    if inside:
+        in_total = sum(r["pnl"] for r in inside)
+        all_total = sum(r["pnl"] for r in scored)
+        if all_total != 0:
+            pct = in_total / abs(all_total) * 100
+            print(f"\n  Edge concentration: {pct:.0f}% of absolute PnL is inside profit regions")
 
 
 def _print_data_sufficiency(scored: List[Dict[str, Any]]) -> None:
-    """Section 6: Data sufficiency check."""
-    _print_header("6. DATA SUFFICIENCY")
+    """Section 8: Data sufficiency check."""
+    _print_header("8. DATA SUFFICIENCY")
 
     hydra_n = sum(1 for r in scored if "HYDRA" in r["regime"])
     target = 100
@@ -555,6 +723,8 @@ def main() -> None:
     _print_regret_heatmap(scored)
     _print_abstention_curve(scored)
     _print_evaluation_metrics(scored)
+    _print_b_vs_d_comparison(scored)
+    _print_profit_region_pnl(scored)
     _print_data_sufficiency(scored)
 
 

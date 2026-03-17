@@ -138,6 +138,88 @@ class TestSelectorB:
         assert r["rule"] == "B_abstain"
 
 
+# ── Profit region classification ─────────────────────────────────────────────
+
+class TestInProfitRegion:
+    def test_btc_inside(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        assert in_profit_region("BTCUSDT", 0.45) is True
+
+    def test_btc_outside_high(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        assert in_profit_region("BTCUSDT", 0.55) is False
+
+    def test_btc_boundary_low(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        # Lower boundary inclusive
+        assert in_profit_region("BTCUSDT", 0.4197) is True
+
+    def test_btc_boundary_high(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        # Upper boundary inclusive
+        assert in_profit_region("BTCUSDT", 0.4953) is True
+
+    def test_eth_inside_narrow_band(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        assert in_profit_region("ETHUSDT", 0.47) is True
+
+    def test_eth_outside_low(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        assert in_profit_region("ETHUSDT", 0.40) is False
+
+    def test_eth_outside_high(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        assert in_profit_region("ETHUSDT", 0.52) is False
+
+    def test_sol_always_false(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        assert in_profit_region("SOLUSDT", 0.40) is False
+        assert in_profit_region("SOLUSDT", 0.50) is False
+
+    def test_unknown_symbol(self):
+        from execution.shadow_selector_v2 import in_profit_region
+        assert in_profit_region("DOGEUSDT", 0.45) is False
+
+
+# ── Candidate D: Profit-conditioned routing ──────────────────────────────────
+
+class TestSelectorD:
+    def test_btc_profit_region(self):
+        from execution.shadow_selector_v2 import _selector_d
+        r = _selector_d("BTCUSDT", 0.45)
+        assert r["v2_choice"] == "hydra"
+        assert r["v2_abstain"] is False
+        assert r["rule"] == "D_profit_region"
+
+    def test_btc_outside_profit_region(self):
+        from execution.shadow_selector_v2 import _selector_d
+        r = _selector_d("BTCUSDT", 0.55)
+        assert r["v2_choice"] == "none"
+        assert r["v2_abstain"] is True
+        assert r["rule"] == "D_abstain"
+
+    def test_eth_profit_region(self):
+        from execution.shadow_selector_v2 import _selector_d
+        r = _selector_d("ETHUSDT", 0.47)
+        assert r["v2_choice"] == "hydra"
+        assert r["v2_abstain"] is False
+
+    def test_eth_outside_profit_region(self):
+        from execution.shadow_selector_v2 import _selector_d
+        # Below ETH profit band
+        r = _selector_d("ETHUSDT", 0.40)
+        assert r["v2_abstain"] is True
+        # Above ETH profit band
+        r = _selector_d("ETHUSDT", 0.52)
+        assert r["v2_abstain"] is True
+
+    def test_sol_always_abstain(self):
+        from execution.shadow_selector_v2 import _selector_d
+        r = _selector_d("SOLUSDT", 0.40)
+        assert r["v2_abstain"] is True
+        assert r["rule"] == "D_abstain"
+
+
 # ── Candidate C: Placeholder ─────────────────────────────────────────────────
 
 class TestSelectorC:
@@ -184,8 +266,15 @@ class TestEvaluateV2Shadow:
         assert result["a_choice"] == "hydra"  # inside BTC band
         assert result["b_choice"] == "hydra"  # inside BTC Hydra regime
         assert result["b_abstain"] is False
-        # Metadata
-        assert result["schema"] == "selector_v2_shadow_v1"
+        # Candidate D: 0.45 is inside BTC profit region
+        assert result["d_choice"] == "hydra"
+        assert result["d_abstain"] is False
+        assert result["d_rule"] == "D_profit_region"
+        # Profit region metadata
+        assert result["profit_region"] is True
+        assert "profit_mask_version" in result
+        # Schema v2
+        assert result["schema"] == "selector_v2_shadow_v2"
         assert result["symbol"] == "BTCUSDT"
         assert result["hydra_score"] == 0.45
         assert result["legacy_score"] == 0.55
@@ -207,6 +296,10 @@ class TestEvaluateV2Shadow:
         assert result["b_abstain"] is True
         assert result["b_choice"] == "none"
         assert result["a_choice"] == "legacy"  # A falls back to ECS
+        # D: 0.55 is outside BTC profit region
+        assert result["d_abstain"] is True
+        assert result["d_rule"] == "D_abstain"
+        assert result["profit_region"] is False
 
     def test_sol_all_abstain(self):
         from execution.shadow_selector_v2 import evaluate_v2_shadow
@@ -220,6 +313,9 @@ class TestEvaluateV2Shadow:
         assert result["b_abstain"] is True
         # A: no SOL bands → fallback to ECS
         assert result["a_choice"] == "legacy"
+        # D: SOL has no profit region
+        assert result["d_abstain"] is True
+        assert result["profit_region"] is False
 
 
 # ── JSONL logging ────────────────────────────────────────────────────────────

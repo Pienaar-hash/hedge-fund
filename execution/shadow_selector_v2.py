@@ -59,6 +59,27 @@ HYDRA_PREFERENCE_BANDS: Dict[str, List[tuple]] = {
     "SOLUSDT": [],  # no Hydra regime found
 }
 
+# ── Candidate D: PnL-positive regions per symbol ──
+# Derived from ecs_profit_mask.py (780 episodes, 2026-03-17).
+# These are hydra_score ranges where cumulative PnL is empirically positive.
+# Unlike REGIME_BOUNDARIES (arbitration surface — who wins the model comparison),
+# these represent the profit surface (where money is actually made).
+PNL_POSITIVE_REGIONS: Dict[str, List[tuple]] = {
+    "BTCUSDT": [(0.4197, 0.4953)],
+    "ETHUSDT": [(0.4393, 0.511)],
+    "SOLUSDT": [],  # no profitable region found
+}
+
+# Version tag logged in shadow events for mask lineage tracking.
+# Bump this whenever PNL_POSITIVE_REGIONS is refreshed.
+PROFIT_MASK_VERSION = "2026-03-17_v1"
+
+
+def in_profit_region(symbol: str, hydra_score: float) -> bool:
+    """Check if (symbol, hydra_score) falls inside a PnL-positive region."""
+    bands = PNL_POSITIVE_REGIONS.get(symbol, [])
+    return any(lo <= hydra_score <= hi for lo, hi in bands)
+
 
 def _v2_enabled() -> bool:
     return (os.getenv("SELECTOR_V2_SHADOW", "0") or "").strip().lower() in (
@@ -120,6 +141,21 @@ def _selector_c(
     """
     return {"v2_choice": None, "v2_abstain": None, "rule": "C_inactive"}
 
+# ── Candidate D: Profit-conditioned routing ──────────────────────────────────
+
+def _selector_d(
+    symbol: str, hydra_score: float,
+) -> Dict[str, Any]:
+    """Profit-conditioned routing: prefer Hydra in PnL-positive regions only.
+
+    Unlike Candidate B (arbitration surface — where Hydra wins the model
+    comparison), D operates on the profit surface (where Hydra actually
+    makes money).  This is a stricter filter: BTC mid-band, ETH narrow
+    mid-band, SOL excluded entirely.
+    """
+    if in_profit_region(symbol, hydra_score):
+        return {"v2_choice": "hydra", "v2_abstain": False, "rule": "D_profit_region"}
+    return {"v2_choice": "none", "v2_abstain": True, "rule": "D_abstain"}
 
 # ── Main shadow evaluation ───────────────────────────────────────────────────
 
@@ -162,14 +198,15 @@ def evaluate_v2_shadow(
 
         regime = classify_regime(symbol, h_score)
 
-        # Evaluate all three candidates
+        # Evaluate all four candidates
         result_a = _selector_a(symbol, h_score, ecs_choice)
         result_b = _selector_b(symbol, h_score)
         result_c = _selector_c(symbol, h_score, l_score)
+        result_d = _selector_d(symbol, h_score)
 
         event: Dict[str, Any] = {
             "ts": time.time(),
-            "schema": "selector_v2_shadow_v1",
+            "schema": "selector_v2_shadow_v2",
             "symbol": symbol,
             "cycle": cycle,
             # ── Input scores ──
@@ -177,6 +214,8 @@ def evaluate_v2_shadow(
             "legacy_score": l_score,
             "score_delta": score_delta,
             "hydra_regime_band": regime,
+            "profit_region": in_profit_region(symbol, h_score),
+            "profit_mask_version": PROFIT_MASK_VERSION,
             "ecs_conflict": merge_conflict,
             # ── Live ECS decision ──
             "ecs_choice": ecs_choice,
@@ -192,12 +231,16 @@ def evaluate_v2_shadow(
             "c_choice": result_c["v2_choice"],
             "c_abstain": result_c["v2_abstain"],
             "c_rule": result_c["rule"],
+            # ── Candidate D (profit-conditioned) ──
+            "d_choice": result_d["v2_choice"],
+            "d_abstain": result_d["v2_abstain"],
+            "d_rule": result_d["rule"],
         }
 
         _append_v2_event(event)
 
         # Log divergences for visibility
-        for label, res in [("A", result_a), ("B", result_b)]:
+        for label, res in [("A", result_a), ("B", result_b), ("D", result_d)]:
             if res["v2_choice"] and res["v2_choice"] != ecs_choice:
                 LOG.info(
                     "[selector_v2] %s divergence sym=%s ecs=%s v2=%s rule=%s",

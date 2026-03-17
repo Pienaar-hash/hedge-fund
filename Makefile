@@ -68,6 +68,10 @@ ecs-regret:
 ecs-v2-eval:
 	@PYTHONPATH=. $(PYTHON) scripts/ecs_shadow_v2_eval.py
 
+.PHONY: ecs-profit-mask
+ecs-profit-mask:
+	@PYTHONPATH=. $(PYTHON) scripts/ecs_profit_mask.py
+
 .PHONY: aw-verify
 aw-verify:
 	@PYTHONPATH=. $(PYTHON) scripts/activation_verify.py
