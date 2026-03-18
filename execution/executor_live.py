@@ -1214,6 +1214,16 @@ try:
 except Exception:
     BinaryLabShadowRunner = None  # type: ignore[assignment]
     _BINARY_LAB_SHADOW_AVAILABLE = False
+try:
+    from execution.binary_lab_s2_runtime import BinaryLabS2RuntimeWriter
+    from execution.binary_lab_s2_shadow import BinaryLabS2ShadowRunner
+    from execution.binary_lab_s2_model import BinaryProbabilityModel
+    _BINARY_LAB_S2_AVAILABLE = True
+except Exception:
+    BinaryLabS2RuntimeWriter = None  # type: ignore[assignment]
+    BinaryLabS2ShadowRunner = None  # type: ignore[assignment]
+    BinaryProbabilityModel = None  # type: ignore[assignment]
+    _BINARY_LAB_S2_AVAILABLE = False
 # v7.9_P4: Execution Alpha observability hooks
 try:
     from execution.minotaur_integration import (
@@ -1246,6 +1256,12 @@ except ImportError:  # pragma: no cover - optional dependency
 _BINARY_LAB_WRITER: Optional[Any] = None
 _BINARY_LAB_SHADOW_RUNNER: Optional[Any] = None
 _BINARY_LAB_ACTIVATION_ATTEMPTED = False
+
+# Binary Lab S2 globals (probability-model sleeve)
+_BINARY_LAB_S2_WRITER: Optional[Any] = None
+_BINARY_LAB_S2_SHADOW_RUNNER: Optional[Any] = None
+_BINARY_LAB_S2_MODEL: Optional[Any] = None
+_BINARY_LAB_S2_ACTIVATION_ATTEMPTED = False
 
 
 def _parse_binary_lab_mode(raw: str) -> Any:
@@ -1342,6 +1358,80 @@ def _binary_lab_tick(now_iso: str) -> bool:
         return True
     except Exception as exc:
         LOG.debug("[binary-lab] tick_failed: %s", exc)
+        return False
+
+
+def _binary_lab_s2_tick(now_iso: str) -> bool:
+    """
+    Binary Lab S2 — probability-model shadow sleeve.
+    Parallel to ``_binary_lab_tick()`` (S1).  Never influences real orders.
+    """
+    global _BINARY_LAB_S2_WRITER, _BINARY_LAB_S2_SHADOW_RUNNER
+    global _BINARY_LAB_S2_MODEL, _BINARY_LAB_S2_ACTIVATION_ATTEMPTED
+
+    if not _BINARY_LAB_S2_AVAILABLE:
+        return False
+
+    try:
+        mode_raw = os.getenv("BINARY_LAB_S2_MODE", "").strip().upper()
+        if mode_raw != "SHADOW":
+            return False
+
+        # Boot writer once
+        if _BINARY_LAB_S2_WRITER is None:
+            _BINARY_LAB_S2_WRITER = BinaryLabS2RuntimeWriter()
+            _BINARY_LAB_S2_WRITER.boot(now_iso)
+            LOG.info("[binary-lab-s2] writer initialized")
+
+        # Activation gate (mirrors S1 pattern)
+        activate_requested = os.getenv("BINARY_LAB_S2_ACTIVATE", "0").strip().lower() in {"1", "true", "yes", "on"}
+        activate_now = activate_requested and not _BINARY_LAB_S2_ACTIVATION_ATTEMPTED
+        if activate_now:
+            _BINARY_LAB_S2_ACTIVATION_ATTEMPTED = True
+
+        event_override: Any = None
+        if not activate_now and BinaryLabEventType is not None:
+            event_override = BinaryLabEventType.DAILY_CHECKPOINT
+
+        gate_go = os.getenv("BINARY_LAB_S2_ACTIVATION_GATE_GO", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+        ctx = RuntimeLoopContext(
+            now_ts=now_iso,
+            open_positions=0,
+            activate=activate_now,
+            activation_gate_go=gate_go,
+            mode=BinaryLabMode.SHADOW if BinaryLabMode is not None else None,
+            event_type_override=event_override,
+        )
+        _BINARY_LAB_S2_WRITER.tick(ctx)
+
+        # Shadow runner
+        if _BINARY_LAB_S2_SHADOW_RUNNER is None:
+            import json as _json
+            from pathlib import Path as _Path
+            limits_path = _Path("config/binary_lab_limits_s2.json")
+            if limits_path.exists():
+                with limits_path.open() as _f:
+                    _limits = _json.load(_f)
+                if _BINARY_LAB_S2_MODEL is None:
+                    _BINARY_LAB_S2_MODEL = BinaryProbabilityModel()
+                    try:
+                        _BINARY_LAB_S2_MODEL.load_state()
+                    except Exception:
+                        pass
+                _BINARY_LAB_S2_SHADOW_RUNNER = BinaryLabS2ShadowRunner(
+                    limits=_limits,
+                    model=_BINARY_LAB_S2_MODEL,
+                    writer=_BINARY_LAB_S2_WRITER,
+                    config_hash=_BINARY_LAB_S2_WRITER.limits_hash,
+                )
+                LOG.info("[binary-lab-s2] shadow runner initialized")
+        if _BINARY_LAB_S2_SHADOW_RUNNER is not None:
+            _BINARY_LAB_S2_SHADOW_RUNNER.tick(now_iso)
+
+        return True
+    except Exception as exc:
+        LOG.debug("[binary-lab-s2] tick_failed: %s", exc)
         return False
 
 # ---- Firestore publisher handle (revisions differ) ----
@@ -5253,6 +5343,10 @@ def _pub_tick(state: ExecutorState) -> None:
         binary_lab_written = _binary_lab_tick(now_iso)
     except Exception as exc:
         LOG.debug("[telemetry] binary_lab_state_write_failed: %s", exc)
+    try:
+        _binary_lab_s2_tick(now_iso)
+    except Exception as exc:
+        LOG.debug("[telemetry] binary_lab_s2_tick_failed: %s", exc)
     # Episode ledger rebuild (observability — fail-open, throttled)
     episode_ledger_written = False
     if (now_ts - state.last_episode_ledger_rebuild_ts) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:

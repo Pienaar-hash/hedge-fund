@@ -140,9 +140,11 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
         )
         for p in positions
     )
-    lines.append(f"Open Positions:   {open_count}")
     if open_count > 0:
+        lines.append(f"Open Positions:   {open_count}")
         lines.append(f"Unrealized PnL:   ${unrealized:,.2f}")
+    else:
+        lines.append("Open Positions:   0  (capital preserved, idle)")
     lines.append("")
 
     # ── Episode Ledger ─────────────────────────────────────────
@@ -196,7 +198,7 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
     lines.append(regime_line)
     lines.append("")
 
-    # ── Calibration Window ─────────────────────────────────────
+    # ── Calibration Window (shown only when ACTIVE) ────────────
     runtime = _safe_yaml(_RUNTIME_YAML)
     cw = runtime.get("calibration_window", {})
     if cw.get("enabled"):
@@ -208,8 +210,15 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
         lines.append(f"Calibration:      ACTIVE — {cal_episodes}/{cap} episodes")
         lines.append(f"  DD Kill:        {float(dd_kill) * 100:.1f}%")
         lines.append(f"  Started:        {start_ts}")
+        lines.append("")
+
+    # ── Hydra-Regime Trades ────────────────────────────────────
+    hydra_n, hydra_total = _count_hydra_regime_trades(ledger)
+    if hydra_total > 0:
+        pct = hydra_n / hydra_total * 100
+        lines.append(f"Hydra Trades:     {hydra_n}/{hydra_total} scored  ({pct:.0f}%)")
     else:
-        lines.append("Calibration:      INACTIVE")
+        lines.append(f"Hydra Trades:     {hydra_n} (awaiting scored episodes)")
     lines.append("")
 
     # ── Binary Sleeve ──────────────────────────────────────────
@@ -221,11 +230,14 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
     if binary_status in ("ACTIVE", "RUNNING"):
         lines.append(f"Binary Sleeve:    {binary_status} ({binary_mode}) — PnL ${binary_pnl:,.2f}")
     elif binary_status == "SHADOW":
-        lines.append(f"Binary Sleeve:    SHADOW — PnL ${binary_pnl:,.2f}")
+        lines.append(f"Binary Sleeve:    SHADOW (data collection)")
     elif binary_status == "DISABLED":
-        reason = binary.get("termination_reason", "")
-        suffix = f" ({reason})" if reason else ""
-        lines.append(f"Binary Sleeve:    DISABLED{suffix}")
+        if binary_mode == "SHADOW":
+            lines.append("Binary Sleeve:    SHADOW — not yet activated")
+        else:
+            reason = binary.get("termination_reason", "")
+            suffix = f" ({reason})" if reason else ""
+            lines.append(f"Binary Sleeve:    DISABLED{suffix}")
     else:
         lines.append(f"Binary Sleeve:    {binary_status}")
 
@@ -233,6 +245,54 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
     lines.append("═══════════════════════════════════════════════")
 
     return "\n".join(lines)
+
+
+# Regime boundaries (same as shadow_selector_v2 / ecs_shadow_v2_eval)
+_REGIME_BOUNDARIES: Dict[str, list] = {
+    "BTCUSDT": [0.5236],
+    "ETHUSDT": [0.4291, 0.4883],
+    "SOLUSDT": [],
+}
+_REGIME_LABELS: Dict[str, list] = {
+    "BTCUSDT": ["HYDRA_REGIME", "LEGACY_REGIME"],
+    "ETHUSDT": ["LEGACY_LOW", "HYDRA_REGIME", "LEGACY_HIGH"],
+    "SOLUSDT": ["LEGACY_ONLY"],
+}
+_HYDRA_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+
+
+def _classify_regime(symbol: str, score: float) -> str:
+    bounds = _REGIME_BOUNDARIES.get(symbol, [])
+    labels = _REGIME_LABELS.get(symbol, ["UNKNOWN"])
+    if not bounds:
+        return labels[0] if labels else "UNKNOWN"
+    for i, threshold in enumerate(bounds):
+        if score < threshold:
+            return labels[i] if i < len(labels) else "UNKNOWN"
+    return labels[-1] if labels else "UNKNOWN"
+
+
+def _count_hydra_regime_trades(ledger: Dict[str, Any]) -> tuple:
+    """Count episodes classified into HYDRA_REGIME.
+
+    Returns (hydra_count, total_scored) where total_scored is filtered
+    to core symbols with hybrid_score > 0.
+    """
+    episodes = ledger.get("episodes", [])
+    hydra_count = 0
+    total_scored = 0
+    for ep in episodes:
+        sym = ep.get("symbol", "")
+        if sym not in _HYDRA_SYMBOLS:
+            continue
+        h_score = float(ep.get("hybrid_score", 0) or 0)
+        if h_score <= 0:
+            continue
+        total_scored += 1
+        regime = _classify_regime(sym, h_score)
+        if "HYDRA" in regime:
+            hydra_count += 1
+    return hydra_count, total_scored
 
 
 def _count_calibration_episodes(

@@ -121,13 +121,14 @@ if flags.shadow_dle_log_mismatches:
     # logs cases where shadow verdict diverges from doctrine
 ```
 
-Key flags: `SHADOW_DLE_ENABLED`, `SHADOW_DLE_LOG_MISMATCHES`.
+Key flags: `SHADOW_DLE_ENABLED`, `SHADOW_DLE_LOG_MISMATCHES`, `DLE_ENFORCE_ENTRY_ONLY`.
 
-**DLE does NOT gate execution in v7.x.** It is observation-only (SHADOW_MODE). Phase B enforcement is not yet active.
+**DLE does NOT gate execution in v7.x.** It is observation-only (SHADOW_MODE). Phase B.1–B.4 (shadow authority enrichment) is complete; Phase C (activation window certification) is in progress. Full enforcement (Phase D) requires `DLE_ENFORCED=1` and `enforcement_gate.py` (not yet created).
 
-- Shadow log: `logs/execution/dle_shadow_events.jsonl` (append-only)
-- DLE specs: `docs/dle/` (14 documents — constitution, schemas, invariants)
-- Exit reason map: `config/exit_reason_map.yaml` (canonical normalization)
+- Shadow log: `logs/execution/dle_shadow_events.jsonl` (append-only, schema v2)
+- Rehearsal log: `logs/execution/dle_enforcement_rehearsal.jsonl` (B.5 counterfactual)
+- DLE specs: `docs/dle/` (15 documents — constitution, schemas, invariants)
+- Exit reason map: `config/exit_reason_map.yaml` (10 canonical values, binding)
 - Test coverage: `tests/unit/test_dle_shadow.py`
 
 ## Developer Workflow
