@@ -133,7 +133,7 @@ def render_circuit_breaker_status(snapshot: Dict[str, Any]) -> None:
     threshold_str = f"{max_dd_threshold * 100:.0f}%"
     
     if is_active:
-        st.markdown(
+        st.html(
             f"""
             <div style="background: linear-gradient(135deg, #4a1a1a 0%, #3a1010 100%); 
                         border: 2px solid #ff4444; border-radius: 8px; padding: 12px; margin: 10px 0;">
@@ -145,11 +145,10 @@ def render_circuit_breaker_status(snapshot: Dict[str, Any]) -> None:
                     New orders are vetoed until NAV recovers or config changes.
                 </div>
             </div>
-            """,
-            unsafe_allow_html=True
-        )
+            """
+            )
     else:
-        st.markdown(
+        st.html(
             f"""
             <div style="background: #1a2a1a; border: 1px solid #333; border-radius: 8px; padding: 8px; margin: 10px 0;">
                 <span style="color: #21c354;">✓</span>
@@ -157,9 +156,8 @@ def render_circuit_breaker_status(snapshot: Dict[str, Any]) -> None:
                     DD: {current_dd_str} (limit {threshold_str}) – circuit OK
                 </span>
             </div>
-            """,
-            unsafe_allow_html=True
-        )
+            """
+            )
 
 
 def render_tp_sl_registry_canary(snapshot: Dict[str, Any]) -> None:
@@ -181,7 +179,7 @@ def render_tp_sl_registry_canary(snapshot: Dict[str, Any]) -> None:
     if not registry_mismatch:
         return
     
-    st.markdown(
+    st.html(
         f"""
         <div style="background: linear-gradient(135deg, #5a1a1a 0%, #3a0a0a 100%); 
                     border: 3px solid #ff0000; border-radius: 8px; padding: 14px; margin: 10px 0;">
@@ -197,9 +195,8 @@ def render_tp_sl_registry_canary(snapshot: Dict[str, Any]) -> None:
                 Run: <code>python scripts/seed_exit_registry_from_open_positions.py</code>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True
-    )
+        """
+        )
 
 
 def render_correlation_groups_table(snapshot: Dict[str, Any]) -> None:
@@ -266,7 +263,7 @@ def render_correlation_groups_table(snapshot: Dict[str, Any]) -> None:
         </tr>"""
     table_html += "</table>"
     
-    st.markdown(table_html, unsafe_allow_html=True)
+    st.html(table_html)
 
 
 def render_risk_health_card(
@@ -286,7 +283,7 @@ def render_risk_health_card(
         cap_drawdown: Max drawdown cap as fraction (default 0.30 = 30%)
         cap_daily_loss: Max daily loss cap as fraction (default 0.10 = 10%)
     """
-    st.markdown("""
+    st.html("""
     <style>
     .risk-card {
         background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
@@ -339,7 +336,7 @@ def render_risk_health_card(
         margin-left: 4px;
     }
     </style>
-    """, unsafe_allow_html=True)
+    """)
     
     # Extract values from snapshot
     dd_state_block = snapshot.get("dd_state") or {}
@@ -408,7 +405,7 @@ def render_risk_health_card(
     risk_mode_score_display = f'<span class="risk-mode-score">[{risk_mode_score:.2f}]</span>' if risk_mode_score is not None else ""
     
     # Render the card
-    st.markdown(f"""
+    st.html(f"""
     <div class="risk-card">
         <div class="risk-card-header">🛡️ RISK HEALTH</div>
         <div class="risk-metric-row">
@@ -428,7 +425,7 @@ def render_risk_health_card(
             <span class="risk-metric-value">{exposure_str}</span>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
     
     # Render circuit breaker status
     render_circuit_breaker_status(snapshot)
@@ -547,7 +544,7 @@ def render_portfolio_var_panel(snapshot: Dict[str, Any]) -> None:
     var_usd_display = f"${var_usd:,.0f}" if var_usd else "—"
     vol_display = f"{portfolio_vol * 100:.1f}%" if portfolio_vol else "—"
     
-    st.markdown(f"""
+    st.html(f"""
     <div style="background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 12px; margin: 10px 0;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <span style="color: #aaa; font-weight: bold;">📊 Portfolio VaR ({confidence*100:.0f}%)</span>
@@ -566,7 +563,7 @@ def render_portfolio_var_panel(snapshot: Dict[str, Any]) -> None:
             <span style="color: #eee;">{vol_display} ann.</span>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
     
     # Progress bar for utilization
     st.progress(min(ratio, 1.0))
@@ -673,12 +670,12 @@ def render_alpha_decay_panel(decay_data: Dict[str, Any]) -> None:
         
         with cols[col_idx % len(cols)]:
             suffix = " (min)" if at_min else ""
-            st.markdown(f"""
+            st.html(f"""
             <div style="text-align: center; padding: 5px;">
                 <span style="color: #aaa; font-size: 11px;">{symbol}</span><br/>
                 <span style="color: {color}; font-weight: bold;">{decay_mult:.2f}x{suffix}</span>
             </div>
-            """, unsafe_allow_html=True)
+            """)
         
         col_idx += 1
 

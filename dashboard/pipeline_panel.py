@@ -87,7 +87,7 @@ def render_pipeline_parity(
     label = status["label"]
     reason = status["reason"]
 
-    st.markdown(
+    st.html(
         f"""
         <div style="
             padding:0.6rem 0.9rem;
@@ -118,9 +118,8 @@ def render_pipeline_parity(
              {reason}
           </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+        )
 
     basics = {
         "sample_size": int(compare_summary.get("sample_size") or 0),

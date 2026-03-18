@@ -8,7 +8,7 @@ from typing import Optional
 
 def inject_trader_toys_css() -> None:
     """Inject CSS styles for all trader toy components."""
-    st.markdown("""
+    st.html("""
     <style>
     /* ===== LIQUID GAUGE ===== */
     .liquid-gauge {
@@ -210,7 +210,7 @@ def inject_trader_toys_css() -> None:
         flex: 1;
     }
     </style>
-    """, unsafe_allow_html=True)
+    """)
 
 
 def render_liquid_gauge(
@@ -257,7 +257,7 @@ def render_liquid_gauge(
     else:
         display_val = f"{value:.1f}"
     
-    st.markdown(f"""
+    st.html(f"""
     <div class="liquid-gauge {color}" style="width:{size}px;height:{size}px;">
         <style>
             .liquid-gauge.{color}::before {{ height: {pct}%; }}
@@ -265,7 +265,7 @@ def render_liquid_gauge(
         <span class="gauge-value">{display_val}%</span>
         <span class="gauge-label">{label}</span>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
 
 def render_radial_progress(
@@ -296,7 +296,7 @@ def render_radial_progress(
     else:
         display_val = f"{pct:.0f}%"
     
-    st.markdown(f"""
+    st.html(f"""
     <div class="radial-progress" style="width:{size}px;height:{size}px;">
         <svg width="{size}" height="{size}" viewBox="0 0 90 90">
             <circle class="progress-bg" cx="45" cy="45" r="35"/>
@@ -308,7 +308,7 @@ def render_radial_progress(
         <span class="progress-text">{display_val}</span>
         <span class="progress-label">{label}</span>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
 
 def render_mini_bar(
@@ -335,7 +335,7 @@ def render_mini_bar(
     if label:
         html = f"<div style='font-size:11px;color:#888;margin-bottom:2px;'>{label}</div>" + html
     
-    st.markdown(html, unsafe_allow_html=True)
+    st.html(html)
 
 
 def render_pulse_indicator(status: str, label: str = "") -> None:
@@ -345,12 +345,12 @@ def render_pulse_indicator(status: str, label: str = "") -> None:
         status: Status color (green, yellow, red)
         label: Text label
     """
-    st.markdown(f"""
+    st.html(f"""
     <div style="display:flex;align-items:center;gap:8px;">
         <span class="pulse-dot {status}"></span>
         <span style="color:#ccc;font-size:14px;">{label}</span>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
 
 def render_gauge_panel(
@@ -367,14 +367,14 @@ def render_gauge_panel(
         drawdown_pct: Current drawdown %
         risk_capacity_pct: Available risk capacity %
     """
-    st.markdown("""
+    st.html("""
     <div class="gauge-row">
         <div class="gauge-item" id="gauge-exposure"></div>
         <div class="gauge-item" id="gauge-margin"></div>
         <div class="gauge-item" id="gauge-drawdown"></div>
         <div class="gauge-item" id="gauge-capacity"></div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
     
     cols = st.columns(4)
     
@@ -437,10 +437,10 @@ def render_stat_card(
     """
     delta_html = f'<div style="font-size:12px;color:{delta_color};margin-top:3px;">{delta}</div>' if delta else ""
     
-    st.markdown(f"""
+    st.html(f"""
     <div class="stat-card">
         <div class="stat-label">{label}</div>
         <div class="stat-value" style="color:{color};">{value}</div>
         {delta_html}
     </div>
-    """, unsafe_allow_html=True)
+    """)

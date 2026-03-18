@@ -125,11 +125,10 @@ def render_edge_calibration_panel(episode_ledger: Optional[Dict] = None) -> None
         else "🔴"
     ) if err_val is not None else "⚪"
 
-    st.markdown(
+    st.html(
         f"#### Edge Calibration &nbsp;&nbsp;"
-        f"<span style='font-size:0.85rem;'>{err_color} ERR = {err_label} (n={len(points)})</span>",
-        unsafe_allow_html=True,
-    )
+        f"<span style='font-size:0.85rem;'>{err_color} ERR = {err_label} (n={len(points)})</span>"
+        )
 
     df = pd.DataFrame(points)
     max_edge = df["predicted_edge"].max()

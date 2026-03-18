@@ -96,7 +96,7 @@ def render_regime_heatmap(
         snapshot: Regime snapshot from regimes.json
         show_values: Whether to show ATR/DD values in current cell
     """
-    st.markdown("""
+    st.html("""
     <style>
     .regime-heatmap {
         display: grid;
@@ -149,7 +149,7 @@ def render_regime_heatmap(
         background: transparent;
     }
     </style>
-    """, unsafe_allow_html=True)
+    """)
 
     atr_regime = int(snapshot.get("atr_regime", 0))
     dd_regime = int(snapshot.get("dd_regime", 0))
@@ -192,7 +192,7 @@ def render_regime_heatmap(
             )
     
     grid_html = '<div class="regime-heatmap">' + ''.join(cells) + '</div>'
-    st.markdown(grid_html, unsafe_allow_html=True)
+    st.html(grid_html)
 
 
 def render_regime_summary(snapshot: Dict[str, Any]) -> None:
@@ -234,7 +234,7 @@ def render_regime_card(snapshot: Dict[str, Any]) -> None:
     Args:
         snapshot: Regime snapshot from regimes.json
     """
-    st.markdown("""
+    st.html("""
     <style>
     .regime-card {
         background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
@@ -253,13 +253,13 @@ def render_regime_card(snapshot: Dict[str, Any]) -> None:
         padding-bottom: 10px;
     }
     </style>
-    """, unsafe_allow_html=True)
+    """)
     
-    st.markdown("""
+    st.html("""
     <div class="regime-card">
         <div class="regime-card-header">📊 REGIME MATRIX</div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
     
     render_regime_heatmap(snapshot)
     
