@@ -143,24 +143,22 @@ def _render_architecture_status(s: Dict[str, Any]) -> None:
     for label, key, detail in conditions:
         ok = s.get(key, False)
         icon = "✅" if ok else "❌"
-        st.markdown(
+        st.html(
             f'<span style="font-family:monospace;font-size:14px;">'
             f'{icon} <b>{label}</b> — {detail}'
-            f'</span>',
-            unsafe_allow_html=True,
-        )
+            f'</span>'
+            )
 
     # MRI trend sparkline
     history = s.get("ecs_score_history") or []
     if len(history) >= 2:
         spark = _sparkline(history)
-        st.markdown(
+        st.html(
             f'<span style="font-family:monospace;font-size:14px;">'
             f'<b>MRI Trend</b> '
             f'{history[0]:.2f} {spark} {history[-1]:.2f}'
-            f'</span>',
-            unsafe_allow_html=True,
-        )
+            f'</span>'
+            )
 
 
 def _render_regime_edge(s: Dict[str, Any]) -> None:
@@ -178,26 +176,24 @@ def _render_regime_edge(s: Dict[str, Any]) -> None:
             val = float(entry)
             h_n = l_n = "?"
         color = "#21ba45" if val > 0.01 else "#db2828" if val < -0.01 else "#888"
-        st.markdown(
+        st.html(
             f'<span style="font-family:monospace;font-size:14px;">'
             f'<b>{regime}</b> '
             f'<span style="color:{color};font-weight:bold">{val:+.4f}</span> '
             f'<span style="color:#666;">(hydra={h_n} legacy={l_n})</span>'
-            f'</span>',
-            unsafe_allow_html=True,
-        )
+            f'</span>'
+            )
     rdd = s.get("regime_dependence_spread", 0.0)
     if len(rsd) >= 2:
         rdd_color = "#21ba45" if rdd < 0.06 else "#f2c037" if rdd < 0.15 else "#db2828"
         rdd_label = "balanced" if rdd < 0.06 else "specializing" if rdd < 0.15 else "regime-locked"
-        st.markdown(
+        st.html(
             f'<span style="font-family:monospace;font-size:14px;">'
             f'<b>RDD</b> '
             f'<span style="color:{rdd_color};font-weight:bold">{rdd:.4f}</span> '
             f'<span style="color:#666;">({rdd_label})</span>'
-            f'</span>',
-            unsafe_allow_html=True,
-        )
+            f'</span>'
+            )
 
 
 # ---------------------------------------------------------------------------

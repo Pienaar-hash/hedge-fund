@@ -72,15 +72,14 @@ def render_hydra_monotonicity_panel(
     sp_color = _spearman_color(spearman)
     sl_color = _slope_color(slope)
 
-    st.markdown(
+    st.html(
         f"#### Hydra Score Monotonicity &nbsp;&nbsp;"
         f"<span style='font-size:0.85rem; color:{sp_color};'>"
         f"Spearman ρ = {sp_str}</span>"
         f"&nbsp;&nbsp;<span style='font-size:0.75rem; color:{sl_color};'>"
         f"({slope})</span>"
-        f"&nbsp;&nbsp;<span style='color:#666;font-size:0.7rem;'>(n={n})</span>",
-        unsafe_allow_html=True,
-    )
+        f"&nbsp;&nbsp;<span style='color:#666;font-size:0.7rem;'>(n={n})</span>"
+        )
 
     col1, col2 = st.columns(2)
 
@@ -122,7 +121,7 @@ def render_hydra_monotonicity_panel(
           </div>
         </div>
         """
-        st.markdown(html, unsafe_allow_html=True)
+        st.html(html)
 
     with col2:
         if not _HAS_ALTAIR:
@@ -209,7 +208,7 @@ def render_hydra_monotonicity_panel(
           </div>
         </div>
         """
-        st.markdown(q_html, unsafe_allow_html=True)
+        st.html(q_html)
 
     # --- Score vs Return scatter with quintile rails ---
     if _HAS_ALTAIR and quintiles and len(quintiles) == 5:
@@ -274,10 +273,9 @@ def render_hydra_monotonicity_panel(
                 'font-size:0.7rem;">HEAD CONTAMINATION</span>'
             )
 
-        st.markdown(
-            f"##### Per-Head Monotonicity{contam_badge}",
-            unsafe_allow_html=True,
-        )
+        st.html(
+            f"##### Per-Head Monotonicity{contam_badge}"
+            )
 
         head_rows = ""
         for h in per_head:
@@ -325,4 +323,4 @@ def render_hydra_monotonicity_panel(
           {head_rows}
         </div>
         """
-        st.markdown(head_html, unsafe_allow_html=True)
+        st.html(head_html)

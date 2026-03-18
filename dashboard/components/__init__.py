@@ -1,8 +1,7 @@
 """
 Dashboard Components — Institutional-grade UI modules.
 
-Each component follows the single-HTML-render pattern to avoid
-raw tag display issues with Streamlit's unsafe_allow_html.
+Each component uses st.html() for raw HTML rendering (Streamlit ≥1.33).
 """
 from dashboard.components.kpi_strip import render_kpi_strip
 from dashboard.components.aum import render_aum_block

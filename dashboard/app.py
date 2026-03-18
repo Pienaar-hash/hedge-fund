@@ -199,7 +199,7 @@ def _inject_css() -> None:
         css_content = ""
     
     # Inject CSS
-    st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
+    st.html(f"<style>{css_content}</style>")
 
 
 # =============================================================================
@@ -456,12 +456,11 @@ def main() -> None:
     # BUILD FOOTER
     # =========================================================================
     build = _get_build_info()
-    st.markdown(
+    st.html(
         f'<div style="text-align:center;color:#555;font-size:0.75rem;padding:1.5rem 0 0.5rem;">'
         f'Build: {build["version"]} &nbsp;·&nbsp; Commit: {build["commit"]}'
-        f' &nbsp;·&nbsp; Started: {build["started"]}</div>',
-        unsafe_allow_html=True,
-    )
+        f' &nbsp;·&nbsp; Started: {build["started"]}</div>'
+        )
 
 
 if __name__ == "__main__":

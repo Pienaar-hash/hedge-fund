@@ -293,7 +293,7 @@ def render_architecture_strip(metrics: Dict[str, Any]) -> None:
       </div>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    st.html(html)
 
     # --- Hydra Funnel detail row (only if data exists) ---
     if funnel_stages.get("generated", 0) > 0:
@@ -348,4 +348,4 @@ def render_architecture_strip(metrics: Dict[str, Any]) -> None:
 {'          <div style="margin-top:4px;display:flex;flex-wrap:wrap;">' + regime_rows + '</div>' if regime_rows else ''}
         </div>
         """
-        st.markdown(funnel_html, unsafe_allow_html=True)
+        st.html(funnel_html)

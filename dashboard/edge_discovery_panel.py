@@ -222,21 +222,21 @@ def render_regime_context(edge_insights: Dict[str, Any]) -> None:
 
     with cols[0]:
         st.markdown("**Vol Regime**")
-        st.markdown(get_badge(vol_regime, vol_colors), unsafe_allow_html=True)
+        st.html(get_badge(vol_regime, vol_colors))
 
     with cols[1]:
         st.markdown("**DD State**")
-        st.markdown(get_badge(dd_state, dd_colors), unsafe_allow_html=True)
+        st.html(get_badge(dd_state, dd_colors))
         if current_dd > 0:
             st.caption(f"Current: {current_dd:.1%}")
 
     with cols[2]:
         st.markdown("**Risk Mode**")
-        st.markdown(get_badge(risk_mode, risk_colors), unsafe_allow_html=True)
+        st.html(get_badge(risk_mode, risk_colors))
 
     with cols[3]:
         st.markdown("**Router Quality**")
-        st.markdown(get_router_badge(router_quality), unsafe_allow_html=True)
+        st.html(get_router_badge(router_quality))
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +291,7 @@ def render_alpha_router_allocation() -> None:
             </div>
         </div>
         '''
-        st.markdown(allocation_html, unsafe_allow_html=True)
+        st.html(allocation_html)
     
     with col2:
         # Component breakdown
@@ -387,7 +387,7 @@ def render_universe_optimizer() -> None:
             </div>
         </div>
         '''
-        st.markdown(size_html, unsafe_allow_html=True)
+        st.html(size_html)
     
     with col2:
         # Allowed symbols list
@@ -499,7 +499,7 @@ def render_alpha_miner() -> None:
             </div>
         </div>
         '''
-        st.markdown(count_html, unsafe_allow_html=True)
+        st.html(count_html)
     
     with col2:
         # Scan stats
@@ -629,7 +629,7 @@ def render_cross_pair_panel() -> None:
             </div>
         </div>
         '''
-        st.markdown(count_html, unsafe_allow_html=True)
+        st.html(count_html)
     
     with col2:
         # Pair stats
@@ -803,7 +803,7 @@ def render_sentinel_x_panel() -> None:
             </div>
         </div>
         '''
-        st.markdown(regime_html, unsafe_allow_html=True)
+        st.html(regime_html)
         
         if secondary_regime:
             sec_color = regime_colors.get(secondary_regime, "#888")
@@ -818,14 +818,13 @@ def render_sentinel_x_panel() -> None:
                 color = regime_colors.get(regime, "#888")
                 icon = regime_icons.get(regime, "")
                 bar_width = int(prob * 100)
-                st.markdown(
+                st.html(
                     f'<div style="margin:2px 0;">'
                     f'<span style="width:100px;display:inline-block;">{icon} {regime}</span>'
                     f'<span style="display:inline-block;width:{bar_width}%;background:{color};height:12px;border-radius:3px;"></span>'
                     f' {prob:.1%}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
+                    f'</div>'
+                    )
         else:
             st.caption("No probabilities available")
     
@@ -961,14 +960,13 @@ def render_alpha_decay_panel() -> None:
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.markdown(
+        st.html(
             f'<div style="text-align:center;">'
             f'<div style="font-size:2em;color:{health_color};">{health_icon}</div>'
             f'<div style="font-size:1.5em;font-weight:700;color:{health_color};">{overall_health:.1%}</div>'
             f'<div style="font-size:0.8em;color:#888;">Overall Alpha Health</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
+            f'</div>'
+            )
     
     with col2:
         st.metric("Symbol Survival", f"{avg_symbol_survival:.1%}")
@@ -1524,21 +1522,19 @@ def render_strategy_health(edge_insights: Dict[str, Any]) -> None:
     col_main, col_status = st.columns([3, 1])
 
     with col_main:
-        st.markdown(
+        st.html(
             f'<div style="text-align:center;padding:20px;">'
             f'<span style="font-size:64px;font-weight:bold;color:{color};">{health_score:.0%}</span>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+            f'</div>'
+            )
 
     with col_status:
-        st.markdown(
+        st.html(
             f'<div style="text-align:center;padding:30px 10px;">'
             f'<span style="background:{color};color:#fff;padding:8px 16px;border-radius:8px;'
             f'font-weight:600;font-size:1.2em;">{status}</span>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+            f'</div>'
+            )
 
     # Component breakdown
     st.markdown("#### Component Health")
@@ -1561,11 +1557,10 @@ def render_strategy_health(edge_insights: Dict[str, Any]) -> None:
         color = strength_colors.get(strength, "#888")
 
         st.markdown(f"**Factor Health**")
-        st.markdown(
+        st.html(
             f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:4px;'
-            f'font-weight:600;">{strength.upper()}</span>',
-            unsafe_allow_html=True,
-        )
+            f'font-weight:600;">{strength.upper()}</span>'
+            )
         st.caption(f"Mean edge: {mean_edge:.3f}")
         st.caption(f"Negative: {pct_neg:.0%}")
 
@@ -1585,11 +1580,10 @@ def render_strategy_health(edge_insights: Dict[str, Any]) -> None:
             color = "#d94a4a"
 
         st.markdown(f"**Symbol Health**")
-        st.markdown(
+        st.html(
             f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:4px;'
-            f'font-weight:600;">{mean_edge:.3f}</span>',
-            unsafe_allow_html=True,
-        )
+            f'font-weight:600;">{mean_edge:.3f}</span>'
+            )
         st.caption(f"Symbols: {symbol_count}")
         top_syms = symbol_health.get("top_contributors", [])
         if top_syms:
@@ -1611,11 +1605,10 @@ def render_strategy_health(edge_insights: Dict[str, Any]) -> None:
             color = "#d94a4a"
 
         st.markdown(f"**Category Health**")
-        st.markdown(
+        st.html(
             f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:4px;'
-            f'font-weight:600;">{mean_edge:.3f}</span>',
-            unsafe_allow_html=True,
-        )
+            f'font-weight:600;">{mean_edge:.3f}</span>'
+            )
         st.caption(f"Categories: {category_count}")
         if strongest:
             st.caption(f"Strongest: {strongest}")
@@ -1638,11 +1631,10 @@ def render_strategy_health(edge_insights: Dict[str, Any]) -> None:
             label = "MISALIGNED"
 
         st.markdown(f"**Regime Alignment**")
-        st.markdown(
+        st.html(
             f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:4px;'
-            f'font-weight:600;">{label}</span>',
-            unsafe_allow_html=True,
-        )
+            f'font-weight:600;">{label}</span>'
+            )
         st.caption(f"Vol: {vol_regime}")
         st.caption(f"DD: {dd_state}")
 
@@ -1656,11 +1648,10 @@ def render_strategy_health(edge_insights: Dict[str, Any]) -> None:
         color = bucket_colors.get(bucket, "#888")
 
         st.markdown(f"**Execution Quality**")
-        st.markdown(
+        st.html(
             f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:4px;'
-            f'font-weight:600;">{bucket.upper()}</span>',
-            unsafe_allow_html=True,
-        )
+            f'font-weight:600;">{bucket.upper()}</span>'
+            )
         st.caption(f"Router: {router_q:.0%}")
         st.caption(f"Slippage: {slippage:.1f} bps")
 

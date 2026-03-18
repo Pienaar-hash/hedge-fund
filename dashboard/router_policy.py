@@ -25,7 +25,7 @@ def render_router_policy_panel(
     st.markdown("### Router Auto-Tune (v6)")
 
     apply_badge = _badge("Apply: OFF (configured)", "#db2828" if not apply_enabled else "#21ba45")
-    st.markdown(apply_badge, unsafe_allow_html=True)
+    st.html(apply_badge)
 
     current_symbols = current_policy.get("symbols") if isinstance(current_policy, dict) else []
     sugg_symbols = suggestions.get("symbols") if isinstance(suggestions, dict) else []
