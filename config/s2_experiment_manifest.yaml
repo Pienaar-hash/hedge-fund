@@ -1,0 +1,51 @@
+# S2 Calibration Experiment Manifest
+# Frozen at experiment start — do not modify until n=50+ refit completes.
+# Any change to these parameters invalidates the experiment.
+
+experiment:
+  name: "s2_calibration_v1"
+  start_ts: "2026-03-19T18:30:00Z"
+  status: "ACCUMULATING"               # ACCUMULATING → REFIT_PENDING → EVALUATED
+  description: >
+    Isotonic calibration experiment on BTCUSDT 15-min binary rounds.
+    Accumulating observations in SHADOW mode until n≥50 triggers first refit.
+    Model lift measured via BSS (Brier Skill Score) against naive baseline.
+
+checkpoints:
+  refit_trigger_n: 50                   # first isotonic refit
+  confident_n: 150                      # calibration_confident flag
+  evaluation_n: [50, 100, 150]          # formal BSS evaluation points
+
+gate:
+  min_edge_threshold_pp: 3              # 0.03 — executable_edge gate
+  max_spread_threshold_pp: 4            # 0.04 — spread gate
+  max_quote_age_s: 75
+  min_time_remaining_s: 120
+
+model:
+  type: "isotonic_regression"
+  library: "sklearn.isotonic.IsotonicRegression"
+  params:
+    y_min: 0.0
+    y_max: 1.0
+    out_of_bounds: "clip"
+  baseline: "p_yes_mid"                 # naive adjusted-mid
+  features:
+    - "p_yes_mid"                       # primary input to calibrator
+  calibration_min_samples: 50
+  calibration_confident_samples: 150
+
+capital:
+  sleeve_total_usd: 900
+  per_round_usd: 30
+  max_concurrent: 3
+  kill_nav_usd: 650
+
+market:
+  asset: "BTCUSDT"
+  venue: "polymarket_shadow"
+  round_duration_s: 900                 # 15 minutes
+  settlement_source: "binance_mark_price"
+  fee_rate: 0.02
+
+frozen: true                            # DO NOT CHANGE — experiment integrity
