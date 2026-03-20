@@ -225,6 +225,25 @@ class BinaryProbabilityModel:
                 delta_std,
                 edge_max,
             )
+
+            # --- Persist refit snapshot (append-only JSONL) ---
+            snapshot = {
+                "refit_n": n,
+                "brier_model": round(brier_model, 6) if brier_model is not None else None,
+                "brier_baseline": round(brier_base, 6) if brier_base is not None else None,
+                "bss": bss,
+                "delta_mean": round(delta_mean, 6),
+                "delta_std": round(delta_std, 6),
+                "edge_max": round(edge_max, 6),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                hist = Path("logs/state/s2_refit_history.jsonl")
+                hist.parent.mkdir(parents=True, exist_ok=True)
+                with hist.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(snapshot, separators=(",", ":")) + "\n")
+            except Exception as snap_exc:
+                logger.warning("s2_model: refit snapshot write failed: %s", snap_exc)
         except Exception as exc:
             logger.warning("s2_model: refit failed: %s", exc)
 
