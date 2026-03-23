@@ -35,7 +35,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from dashboard.state_v7 import (
     load_all_state,
     load_risk_snapshot,
-    validate_surface_health,
     load_engine_metadata,
 )
 from dashboard.live_helpers import (
@@ -64,11 +63,17 @@ from dashboard.components.episode_ledger import (
     load_episode_ledger_state,
     render_episode_ledger_summary,
 )
-# ARCHIVED 2026-01-29: Hydra status strip disabled
-# from dashboard.components.hydra_status import (
-#     load_hydra_state,
-#     render_hydra_status_strip,
-# )
+
+# Experimental Matrix — S2 PM + Futures Proxy unified surface
+from dashboard.components.experimental_matrix import (
+    load_experimental_matrix_state,
+    render_experimental_matrix,
+)
+
+# System Certification — Activation Window governance
+from dashboard.components.certification import (
+    render_certification_panel,
+)
 
 # NAV Composition — Investor Truth Surface
 from dashboard.components.nav_composition import (
@@ -141,11 +146,9 @@ from dashboard.multi_engine_panel import render_multi_engine_panel
 from dashboard.layout import (
     render_header_block,
     render_kpi_strip,
-    render_aum_block,
     render_runtime_block,
     render_positions_block,
     render_strategy_block,
-    render_treasury_block,
     render_diagnostics_block,
 )
 
@@ -237,9 +240,9 @@ def _load_dashboard_state() -> Dict[str, Any]:
 
     # P1: Strategy transparency surfaces
     episode_ledger = load_episode_ledger_state()
-    # ARCHIVED 2026-01-29: Hydra state disabled
-    # hydra_state = load_hydra_state()
-    hydra_state = {}
+
+    # Experimental Matrix (S2 PM + Futures Proxy)
+    experimental_matrix = load_experimental_matrix_state()
     
     # NAV Composition (investor truth surface)
     nav_detail = load_nav_detail()
@@ -278,7 +281,8 @@ def _load_dashboard_state() -> Dict[str, Any]:
         "enforcement_state": enforcement_state,
         # P1: Strategy transparency
         "episode_ledger": episode_ledger,
-        "hydra_state": hydra_state,
+        # Experimental Matrix
+        "experimental_matrix": experimental_matrix,
         # NAV Composition
         "nav_detail": nav_detail,
         # Prediction telemetry
@@ -398,6 +402,11 @@ def main() -> None:
     render_episode_ledger_summary(state["episode_ledger"])
     
     # =========================================================================
+    # EXPERIMENTAL MATRIX (S2 PM + Futures Proxy hypothesis test)
+    # =========================================================================
+    render_experimental_matrix(state["experimental_matrix"])
+    
+    # =========================================================================
     # STRATEGY PERFORMANCE
     # =========================================================================
     render_strategy_block(
@@ -419,6 +428,8 @@ def main() -> None:
         )
         st.divider()
         render_enforcement_widget(state["enforcement_state"])
+        st.divider()
+        render_certification_panel()
         # Only show execution detail if there's actual fill data
         _exec_q = state["execution_quality"]
         if _exec_q and _exec_q.get("symbols"):
