@@ -58,6 +58,7 @@ DEFAULT_SYMBOL: str = "BTCUSDT"
 # Log paths
 # ---------------------------------------------------------------------------
 TRADE_LOG_PATH = Path("logs/execution/binary_lab_s2_trades.jsonl")
+PAPER_TRADE_LOG_PATH = Path("logs/execution/binary_lab_s2_paper_trades.jsonl")
 
 # ---------------------------------------------------------------------------
 # Edge bucket mapping — Amendment 8 (pure numeric labels)
@@ -70,6 +71,23 @@ def _edge_to_bucket(abs_edge: float) -> str:
     if abs_edge < 0.08:
         return "edge_5_8pp"
     return "edge_8pp_plus"
+
+
+def _price_region(p_market: float) -> str:
+    """Classify market price into a region for PnL attribution."""
+    if p_market < 0.15:
+        return "extreme_low"
+    if p_market < 0.30:
+        return "low"
+    if p_market < 0.45:
+        return "mid_low"
+    if p_market < 0.55:
+        return "center"
+    if p_market < 0.70:
+        return "mid_high"
+    if p_market < 0.85:
+        return "high"
+    return "extreme_high"
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +128,8 @@ class OpenRound:
     calibration_confident: bool
     edge_bucket: str
     spread: float
+    quote_source: str = "mid_plus_mean_spread"  # "clob_live" or "mid_plus_mean_spread"
+    reconstructed_entry_cost: Optional[float] = None  # what entry_cost WOULD be under reconstruction
     config_hash: Optional[str] = None
     freeze_intact: bool = True
 
@@ -168,6 +188,10 @@ class RoundOutcome:
     entry_ts: str
     exit_ts: str
     features: Dict[str, float]
+    quote_source: str = "mid_plus_mean_spread"
+    reconstructed_entry_cost: Optional[float] = None
+    slippage_vs_reconstructed: Optional[float] = None  # entry_cost - reconstructed_entry_cost
+    price_region: str = "center"
     config_hash: Optional[str] = None
     freeze_intact: bool = True
 
@@ -251,6 +275,7 @@ class BinaryLabS2ShadowRunner:
         trade_log_path: Path = TRADE_LOG_PATH,
         symbol: str = DEFAULT_SYMBOL,
         config_hash: Optional[str] = None,
+        paper_mode: bool = False,
     ) -> None:
         self._limits = limits
         self._model = model
@@ -258,6 +283,14 @@ class BinaryLabS2ShadowRunner:
         self._trade_writer = BinaryLabS2TradeWriter(trade_log_path)
         self._symbol = symbol
         self._config_hash = config_hash
+        self._paper_mode = paper_mode
+        self._execution_mode = "PAPER_TRADE" if paper_mode else "SHADOW"
+
+        # Paper trade writer — separate log for execution validation
+        if paper_mode:
+            self._paper_writer = BinaryLabS2TradeWriter(PAPER_TRADE_LOG_PATH)
+        else:
+            self._paper_writer = None
 
         self._open_rounds: List[OpenRound] = []
         self._passive_rounds: List[PassiveRound] = []
@@ -421,6 +454,14 @@ class BinaryLabS2ShadowRunner:
             entry_ts=rnd.entry_ts,
             exit_ts=now_ts,
             features=rnd.features,
+            quote_source=rnd.quote_source,
+            reconstructed_entry_cost=rnd.reconstructed_entry_cost,
+            slippage_vs_reconstructed=(
+                round(rnd.entry_cost - rnd.reconstructed_entry_cost, 6)
+                if rnd.reconstructed_entry_cost is not None
+                else None
+            ),
+            price_region=_price_region(rnd.p_yes_mid),
             config_hash=rnd.config_hash,
             freeze_intact=rnd.freeze_intact,
         )
@@ -540,6 +581,8 @@ class BinaryLabS2ShadowRunner:
             calibration_confident=signal.calibration_confident,
             edge_bucket=_edge_to_bucket(abs(signal.edge_yes)),
             spread=signal.spread,
+            quote_source=signal.quote_reconstruction_mode,
+            reconstructed_entry_cost=self._compute_reconstructed_entry_cost(signal),
             config_hash=self._config_hash,
             freeze_intact=state.get("freeze_intact", True),
         )
@@ -548,7 +591,7 @@ class BinaryLabS2ShadowRunner:
         # Log ENTRY
         self._trade_writer.write({
             "event_type": "ENTRY",
-            "execution_mode": "SHADOW",
+            "execution_mode": self._execution_mode,
             "ts": now_ts,
             "ts_ms": int(now_unix * 1000),
             "round_id": round_id,
@@ -571,6 +614,8 @@ class BinaryLabS2ShadowRunner:
             "reference_btc_price": round(ref_price, 2),
             "quote_age_s": signal.quote_age_s,
             "quote_reconstruction_mode": signal.quote_reconstruction_mode,
+            "quote_source": rnd.quote_source,
+            "reconstructed_entry_cost": rnd.reconstructed_entry_cost,
             "spread": signal.spread,
             "edge_bucket": rnd.edge_bucket,
             "calibration_active": signal.calibration_active,
@@ -602,6 +647,27 @@ class BinaryLabS2ShadowRunner:
                 }
         return {"current_nav_usd": 900.0, "freeze_intact": True}
 
+    @staticmethod
+    def _compute_reconstructed_entry_cost(signal: Any) -> Optional[float]:
+        """Compute what entry_cost would be under mid+spread reconstruction.
+
+        When quote_source is already 'mid_plus_mean_spread', returns signal.entry_cost.
+        When quote_source is 'clob_live', reconstructs from mid + spread to measure delta.
+        """
+        if signal.quote_reconstruction_mode != "clob_live":
+            return signal.entry_cost  # already using reconstruction — no delta
+
+        from execution.binary_lab_s2_signals import _reconstruct_quotes
+        quotes = _reconstruct_quotes(signal.p_yes_mid, signal.spread)
+        if quotes is None:
+            return None
+
+        if signal.trade_side == "YES":
+            return quotes["p_yes_ask"]
+        elif signal.trade_side == "NO":
+            return quotes["p_no_ask"]
+        return None
+
     # ------------------------------------------------------------------
     # Round-closed emission
     # ------------------------------------------------------------------
@@ -614,7 +680,7 @@ class BinaryLabS2ShadowRunner:
         #   pnl_usd       = gross_pnl_usd - fee_usd
         self._trade_writer.write({
             "event_type": "ROUND_CLOSED",
-            "execution_mode": "SHADOW",
+            "execution_mode": self._execution_mode,
             "ts": outcome.exit_ts,
             "ts_ms": int(_ts_to_unix(outcome.exit_ts) * 1000),
             "round_id": outcome.round_id,
@@ -639,7 +705,11 @@ class BinaryLabS2ShadowRunner:
             "settlement_btc_price": outcome.settlement_btc_price,
             "settlement_source": outcome.settlement_source,
             "quote_age_s": outcome.quote_age_s,
-            "quote_reconstruction_mode": "mid_plus_mean_spread",
+            "quote_reconstruction_mode": outcome.quote_source,
+            "quote_source": outcome.quote_source,
+            "reconstructed_entry_cost": outcome.reconstructed_entry_cost,
+            "slippage_vs_reconstructed": outcome.slippage_vs_reconstructed,
+            "price_region": outcome.price_region,
             "spread": outcome.spread,
             "edge_bucket": outcome.edge_bucket,
             "calibration_active": outcome.calibration_active,
@@ -657,6 +727,40 @@ class BinaryLabS2ShadowRunner:
             "brier_component": outcome.brier_component,
             "baseline_brier_component": outcome.baseline_brier_component,
         })
+
+        # Paper trade log — enhanced record for execution validation
+        if self._paper_writer is not None:
+            self._paper_writer.write({
+                "event_type": "PAPER_ROUND_CLOSED",
+                "execution_mode": "PAPER_TRADE",
+                "ts": outcome.exit_ts,
+                "entry_ts": outcome.entry_ts,
+                "round_id": outcome.round_id,
+                "trade_side": outcome.trade_side,
+                "quote_source": outcome.quote_source,
+                "p_yes_bid": outcome.p_yes_bid,
+                "p_yes_ask": outcome.p_yes_ask,
+                "p_yes_mid": outcome.p_yes_mid,
+                "entry_cost": outcome.entry_cost,
+                "reconstructed_entry_cost": outcome.reconstructed_entry_cost,
+                "slippage_vs_reconstructed": outcome.slippage_vs_reconstructed,
+                "price_region": outcome.price_region,
+                "edge_yes": outcome.edge_yes,
+                "executable_edge": outcome.executable_edge,
+                "edge_bucket": outcome.edge_bucket,
+                "spread": outcome.spread,
+                "outcome": outcome.outcome,
+                "outcome_yes": outcome.outcome_yes,
+                "payout": outcome.payout,
+                "pnl_usd": outcome.pnl_usd,
+                "gross_pnl_usd": outcome.gross_pnl_usd,
+                "fee_usd": outcome.fee_usd,
+                "notional_usd": outcome.notional_usd,
+                "reference_btc_price": outcome.reference_btc_price,
+                "settlement_btc_price": outcome.settlement_btc_price,
+                "brier_component": outcome.brier_component,
+                "calibration_confident": outcome.calibration_confident,
+            })
 
         # Feed state machine (edge_bucket as conviction_band) — Amendment 8
         if self._runtime_writer is not None:
@@ -705,7 +809,7 @@ class BinaryLabS2ShadowRunner:
     ) -> None:
         record: Dict[str, Any] = {
             "event_type": "NO_TRADE",
-            "execution_mode": "SHADOW",
+            "execution_mode": self._execution_mode,
             "ts": now_ts,
             "ts_ms": int(_ts_to_unix(now_ts) * 1000),
             "round_id": round_id,

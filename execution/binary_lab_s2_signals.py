@@ -258,34 +258,56 @@ def extract_s2_signal(
         logger.debug("s2_signals: mid out of range: %s", p_yes_mid)
         return None
 
-    # 4. Reconstruct quotes — with invariant validation
-    quotes = _reconstruct_quotes(p_yes_mid, spread_mean)
-    if quotes is None:
-        # Build a minimal signal for the rejection log
-        features: Dict[str, float] = {"p_yes_mid": p_yes_mid, "spread": spread_mean}
-        return BinaryLabS2Signal(
-            p_yes_bid=0.0, p_yes_ask=0.0, p_yes_mid=p_yes_mid,
-            p_no_bid=0.0, p_no_ask=0.0,
-            spread=spread_mean, depth_score=0.0,
-            quote_age_s=round(quote_age_s, 2),
-            quote_reconstruction_mode=QUOTE_RECONSTRUCTION_MODE,
-            p_baseline_yes=p_yes_mid, p_model_yes=p_yes_mid,
-            edge_yes=0.0, baseline_edge=0.0,
-            entry_cost=0.0, executable_edge=0.0,
-            trade_side="SKIP",
-            skip_reason="SKIP_INVALID_QUOTE_RECONSTRUCTION",
-            expected_value_usd=0.0,
-            calibration_active=model.calibration_active,
-            calibration_confident=model.calibration_confident,
-            features=features,
-            model_version=model.model_version,
-            ts=datetime.now(timezone.utc).isoformat(),
-        )
+    # 4. Prefer live CLOB bid/ask from health snapshot; fall back to reconstruction
+    clob_quotes = health.get("clob_quotes")
+    quote_source = QUOTE_RECONSTRUCTION_MODE
+    clob_bid: Optional[float] = None
+    clob_ask: Optional[float] = None
+    if clob_quotes and isinstance(clob_quotes, dict):
+        # Pick the first asset with valid bid/ask (YES-side token)
+        for _aid, q in clob_quotes.items():
+            bid = q.get("best_bid")
+            ask = q.get("best_ask")
+            if bid is not None and ask is not None and 0 < bid < ask <= 1:
+                clob_bid = float(bid)
+                clob_ask = float(ask)
+                quote_source = "clob_live"
+                break
 
-    p_yes_bid = quotes["p_yes_bid"]
-    p_yes_ask = quotes["p_yes_ask"]
-    p_no_bid = quotes["p_no_bid"]
-    p_no_ask = quotes["p_no_ask"]
+    if clob_bid is not None and clob_ask is not None:
+        p_yes_bid = clob_bid
+        p_yes_ask = clob_ask
+        p_no_bid = max(0.0, round(1.0 - p_yes_ask, 6))
+        p_no_ask = min(1.0, round(1.0 - p_yes_bid, 6))
+        actual_spread = round(p_yes_ask - p_yes_bid, 6)
+    else:
+        quotes = _reconstruct_quotes(p_yes_mid, spread_mean)
+        if quotes is None:
+            # Build a minimal signal for the rejection log
+            features: Dict[str, float] = {"p_yes_mid": p_yes_mid, "spread": spread_mean}
+            return BinaryLabS2Signal(
+                p_yes_bid=0.0, p_yes_ask=0.0, p_yes_mid=p_yes_mid,
+                p_no_bid=0.0, p_no_ask=0.0,
+                spread=spread_mean, depth_score=0.0,
+                quote_age_s=round(quote_age_s, 2),
+                quote_reconstruction_mode=QUOTE_RECONSTRUCTION_MODE,
+                p_baseline_yes=p_yes_mid, p_model_yes=p_yes_mid,
+                edge_yes=0.0, baseline_edge=0.0,
+                entry_cost=0.0, executable_edge=0.0,
+                trade_side="SKIP",
+                skip_reason="SKIP_INVALID_QUOTE_RECONSTRUCTION",
+                expected_value_usd=0.0,
+                calibration_active=model.calibration_active,
+                calibration_confident=model.calibration_confident,
+                features=features,
+                model_version=model.model_version,
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
+        p_yes_bid = quotes["p_yes_bid"]
+        p_yes_ask = quotes["p_yes_ask"]
+        p_no_bid = quotes["p_no_bid"]
+        p_no_ask = quotes["p_no_ask"]
+        actual_spread = spread_mean
 
     # 5. Depth score from health log
     event_freq = float(health.get("event_frequency_hz", 0))
@@ -307,7 +329,7 @@ def extract_s2_signal(
         "p_yes_mid": p_yes_mid,
         "p_yes_bid": p_yes_bid,
         "p_yes_ask": p_yes_ask,
-        "spread": spread_mean,
+        "spread": actual_spread,
         "depth_score": depth_score,
         "quote_age_s": round(quote_age_s, 2),
         **sentinel_features,
@@ -363,10 +385,10 @@ def extract_s2_signal(
         p_yes_mid=round(p_yes_mid, 6),
         p_no_bid=p_no_bid,
         p_no_ask=p_no_ask,
-        spread=round(spread_mean, 6),
+        spread=round(actual_spread, 6),
         depth_score=depth_score,
         quote_age_s=round(quote_age_s, 2),
-        quote_reconstruction_mode=QUOTE_RECONSTRUCTION_MODE,
+        quote_reconstruction_mode=quote_source,
         p_baseline_yes=round(p_baseline_yes, 6),
         p_model_yes=round(p_model_yes, 6),
         edge_yes=round(edge_yes, 6),

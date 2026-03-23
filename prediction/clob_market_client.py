@@ -804,6 +804,18 @@ class CLOBMarketClient:
                         self._current_market.end_ts - time.time(), 1
                     )
             summary["subscribed_ids"] = len(self._subscribed_ids)
+            # Include live CLOB best_bid/best_ask snapshot for each asset
+            if self._best_bid or self._best_ask:
+                clob_quotes: Dict[str, Any] = {}
+                for aid in set(list(self._best_bid) + list(self._best_ask)):
+                    bid = self._best_bid.get(aid)
+                    ask = self._best_ask.get(aid)
+                    clob_quotes[aid] = {
+                        "best_bid": bid,
+                        "best_ask": ask,
+                        "spread": round(ask - bid, 6) if bid is not None and ask is not None else None,
+                    }
+                summary["clob_quotes"] = clob_quotes
             _append_jsonl(self.health_log, summary)
             logger.info("[clob] health: %s", json.dumps(summary))
 
