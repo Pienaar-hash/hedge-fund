@@ -335,16 +335,6 @@ def main() -> None:
     render_edge_calibration_panel(state["episode_ledger"])
     
     # =========================================================================
-    # ENGINE LIFT (Hydra vs Legacy outcome comparison)
-    # =========================================================================
-    render_engine_lift_panel()
-
-    # =========================================================================
-    # HYDRA SCORE MONOTONICITY (score ordering quality)
-    # =========================================================================
-    render_hydra_monotonicity_panel()
-    
-    # =========================================================================
     # KPI STRIP (horizontal bar of key metrics)
     # =========================================================================
     render_kpi_strip(
@@ -379,14 +369,6 @@ def main() -> None:
     # EQUITY CURVE (NAV over time)
     # =========================================================================
     render_equity_curve()
-    
-    # =========================================================================
-    # MULTI-ENGINE SOAK (Architecture health & migration readiness)
-    # =========================================================================
-    try:
-        render_multi_engine_panel()
-    except Exception as exc:
-        LOG.warning("multi_engine_panel render failed: %s", exc)
     
     # =========================================================================
     # POSITIONS & EXECUTION
@@ -430,6 +412,15 @@ def main() -> None:
         render_enforcement_widget(state["enforcement_state"])
         st.divider()
         render_certification_panel()
+        # Engine Lift — only when Hydra has executions
+        render_engine_lift_panel()
+        # Hydra Score Monotonicity — research detail
+        render_hydra_monotonicity_panel()
+        # Multi-Engine Soak — detailed migration readiness
+        try:
+            render_multi_engine_panel()
+        except Exception as exc:
+            LOG.warning("multi_engine_panel render failed: %s", exc)
         # Only show execution detail if there's actual fill data
         _exec_q = state["execution_quality"]
         if _exec_q and _exec_q.get("symbols"):

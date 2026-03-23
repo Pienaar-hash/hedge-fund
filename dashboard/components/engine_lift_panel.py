@@ -51,6 +51,8 @@ def render_engine_lift_panel(lift_data: Optional[Dict[str, Any]] = None) -> None
     l_count = data.get("legacy_count", 0)
     if h_count + l_count < 10:
         return  # not enough data
+    if h_count == 0:
+        return  # need Hydra executions for meaningful comparison
 
     h_mean = data.get("hydra_mean_return", 0)
     l_mean = data.get("legacy_mean_return", 0)
