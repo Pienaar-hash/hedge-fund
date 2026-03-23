@@ -65,10 +65,18 @@ def load_experimental_matrix_state(
     fsp_trades_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Load all state for the experimental matrix panel."""
-    s2 = _safe_json(s2_path or _S2_STATE_PATH)
-    fsp = _safe_json(fsp_path or _FSP_STATE_PATH)
+    s2_p = s2_path or _S2_STATE_PATH
+    fsp_p = fsp_path or _FSP_STATE_PATH
+    s2 = _safe_json(s2_p)
+    fsp = _safe_json(fsp_p)
     trades = _safe_jsonl(fsp_trades_path or _FSP_TRADES_PATH)
-    return {"s2": s2, "fsp": fsp, "fsp_trades": trades}
+    return {
+        "s2": s2,
+        "fsp": fsp,
+        "fsp_trades": trades,
+        "s2_file_exists": s2_p.exists(),
+        "fsp_file_exists": fsp_p.exists(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +158,11 @@ def render_experimental_matrix(
     s2 = state.get("s2", {})
     fsp = state.get("fsp", {})
     trades = state.get("fsp_trades", [])
+    s2_exists = state.get("s2_file_exists", bool(s2))
+    fsp_exists = state.get("fsp_file_exists", bool(fsp))
 
-    # Auto-hide: no experiments active
-    if not s2 and not fsp:
+    # Auto-hide: no experiments deployed
+    if not s2 and not s2_exists and not fsp and not fsp_exists:
         return
 
     st.markdown("### Experimental Matrix")
@@ -244,7 +254,7 @@ def render_experimental_matrix(
 
         if fsp_exits > 0:
             st.caption(f"Mean Log Return: {mlr:+.8f}")
-    elif fsp:
+    elif fsp or fsp_exists:
         st.markdown("**Futures S2 Proxy** — deployed, awaiting first trade")
     else:
         st.markdown("**Futures S2 Proxy** — not deployed")
