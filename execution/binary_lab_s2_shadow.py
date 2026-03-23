@@ -192,6 +192,8 @@ class RoundOutcome:
     reconstructed_entry_cost: Optional[float] = None
     slippage_vs_reconstructed: Optional[float] = None  # entry_cost - reconstructed_entry_cost
     price_region: str = "center"
+    expected_payoff_ratio: Optional[float] = None   # (1 - entry_cost) / entry_cost
+    effective_payoff_ratio: Optional[float] = None  # (payout - entry_cost - fee/notional) / entry_cost
     config_hash: Optional[str] = None
     freeze_intact: bool = True
 
@@ -462,6 +464,14 @@ class BinaryLabS2ShadowRunner:
                 else None
             ),
             price_region=_price_region(rnd.p_yes_mid),
+            expected_payoff_ratio=(
+                round((1.0 - rnd.entry_cost) / rnd.entry_cost, 6)
+                if rnd.entry_cost > 0 else None
+            ),
+            effective_payoff_ratio=(
+                round((payout - rnd.entry_cost - fee / rnd.notional_usd) / rnd.entry_cost, 6)
+                if rnd.entry_cost > 0 else None
+            ),
             config_hash=rnd.config_hash,
             freeze_intact=rnd.freeze_intact,
         )
@@ -726,6 +736,8 @@ class BinaryLabS2ShadowRunner:
             "net_pnl_usd": outcome.pnl_usd,
             "brier_component": outcome.brier_component,
             "baseline_brier_component": outcome.baseline_brier_component,
+            "expected_payoff_ratio": outcome.expected_payoff_ratio,
+            "effective_payoff_ratio": outcome.effective_payoff_ratio,
         })
 
         # Paper trade log — enhanced record for execution validation
@@ -760,6 +772,8 @@ class BinaryLabS2ShadowRunner:
                 "settlement_btc_price": outcome.settlement_btc_price,
                 "brier_component": outcome.brier_component,
                 "calibration_confident": outcome.calibration_confident,
+                "expected_payoff_ratio": outcome.expected_payoff_ratio,
+                "effective_payoff_ratio": outcome.effective_payoff_ratio,
             })
 
         # Feed state machine (edge_bucket as conviction_band) — Amendment 8

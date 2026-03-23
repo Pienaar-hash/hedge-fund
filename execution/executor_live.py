@@ -1424,8 +1424,9 @@ def _binary_lab_s2_tick(now_iso: str) -> bool:
                     model=_BINARY_LAB_S2_MODEL,
                     writer=_BINARY_LAB_S2_WRITER,
                     config_hash=_BINARY_LAB_S2_WRITER.limits_hash,
+                    paper_mode=True,  # Phase 1: execution validation
                 )
-                LOG.info("[binary-lab-s2] shadow runner initialized")
+                LOG.info("[binary-lab-s2] PAPER TRADE runner initialized")
         if _BINARY_LAB_S2_SHADOW_RUNNER is not None:
             _BINARY_LAB_S2_SHADOW_RUNNER.tick(now_iso)
 
