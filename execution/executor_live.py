@@ -1263,6 +1263,15 @@ _BINARY_LAB_S2_SHADOW_RUNNER: Optional[Any] = None
 _BINARY_LAB_S2_MODEL: Optional[Any] = None
 _BINARY_LAB_S2_ACTIVATION_ATTEMPTED = False
 
+# Futures S2 Proxy globals
+try:
+    from execution.futures_s2_proxy import FuturesS2ProxyRunner
+    _FUTURES_S2_PROXY_AVAILABLE = True
+except Exception:
+    FuturesS2ProxyRunner = None  # type: ignore[assignment]
+    _FUTURES_S2_PROXY_AVAILABLE = False
+_FUTURES_S2_PROXY_RUNNER: Optional[Any] = None
+
 
 def _parse_binary_lab_mode(raw: str) -> Any:
     if not _BINARY_LAB_RUNTIME_AVAILABLE or BinaryLabMode is None:
@@ -1434,6 +1443,56 @@ def _binary_lab_s2_tick(now_iso: str) -> bool:
     except Exception as exc:
         LOG.debug("[binary-lab-s2] tick_failed: %s", exc)
         return False
+
+
+def _futures_s2_proxy_tick(now_iso: str) -> bool:
+    """
+    Futures S2 Proxy — parallel sleeve testing PM-edge transfer to futures.
+    Env-gated via FUTURES_S2_PROXY_MODE=PAPER.
+    """
+    global _FUTURES_S2_PROXY_RUNNER
+
+    if not _FUTURES_S2_PROXY_AVAILABLE:
+        return False
+
+    mode_raw = os.getenv("FUTURES_S2_PROXY_MODE", "").strip().upper()
+    if mode_raw != "PAPER":
+        return False
+
+    try:
+        if _FUTURES_S2_PROXY_RUNNER is None:
+            import json as _json
+            from pathlib import Path as _Path
+            limits_path = _Path("config/futures_s2_proxy.json")
+            if not limits_path.exists():
+                return False
+            with limits_path.open() as _f:
+                _limits = _json.load(_f)
+            if not _limits.get("enabled", True):
+                return False
+            # Reuse S2 model (read-only — same calibration)
+            global _BINARY_LAB_S2_MODEL
+            if _BINARY_LAB_S2_MODEL is None:
+                if BinaryProbabilityModel is not None:
+                    _BINARY_LAB_S2_MODEL = BinaryProbabilityModel()
+                    try:
+                        _BINARY_LAB_S2_MODEL.load_state()
+                    except Exception:
+                        pass
+                else:
+                    return False
+            _FUTURES_S2_PROXY_RUNNER = FuturesS2ProxyRunner(
+                limits=_limits,
+                model=_BINARY_LAB_S2_MODEL,
+            )
+            LOG.info("[futures-s2-proxy] PAPER runner initialized")
+
+        _FUTURES_S2_PROXY_RUNNER.tick(now_iso)
+        return True
+    except Exception as exc:
+        LOG.debug("[futures-s2-proxy] tick_failed: %s", exc)
+        return False
+
 
 # ---- Firestore publisher handle (revisions differ) ----
 ENV = _resolve_env()
@@ -5348,6 +5407,10 @@ def _pub_tick(state: ExecutorState) -> None:
         _binary_lab_s2_tick(now_iso)
     except Exception as exc:
         LOG.debug("[telemetry] binary_lab_s2_tick_failed: %s", exc)
+    try:
+        _futures_s2_proxy_tick(now_iso)
+    except Exception as exc:
+        LOG.debug("[telemetry] futures_s2_proxy_tick_failed: %s", exc)
     # Episode ledger rebuild (observability — fail-open, throttled)
     episode_ledger_written = False
     if (now_ts - state.last_episode_ledger_rebuild_ts) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:

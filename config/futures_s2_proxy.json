@@ -1,0 +1,18 @@
+{
+  "_meta": {
+    "sleeve_id": "futures_s2_proxy",
+    "version": "1.0",
+    "created": "2026-03-23",
+    "status": "PAPER",
+    "purpose": "Test whether PM calibration mispricing predicts short-horizon futures returns",
+    "time_horizon_minutes": 15
+  },
+  "symbols": ["BTCUSDT"],
+  "notional_usd": 200,
+  "hold_duration_s": 900,
+  "max_concurrent_per_symbol": 1,
+  "min_edge": 0.03,
+  "taker_fee_rate": 0.0004,
+  "max_quote_age_s": 90,
+  "dd_kill_usd": -500
+}
