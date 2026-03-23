@@ -32,6 +32,8 @@ _RUNTIME_YAML = Path("config/runtime.yaml")
 _RISK_SNAPSHOT = Path("logs/state/risk_snapshot.json")
 _SENTINEL_X = Path("logs/state/sentinel_x.json")
 _BINARY_LAB = Path("logs/state/binary_lab_state.json")
+_S2_STATE = Path("logs/state/binary_lab_s2_state.json")
+_FUTURES_S2_PROXY_STATE = Path("logs/state/futures_s2_proxy_state.json")
 
 
 def _safe_json(path: Path) -> Dict[str, Any]:
@@ -242,6 +244,32 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
         lines.append(f"Binary Sleeve:    {binary_status}")
 
     lines.append("")
+
+    # ── S2 Paper Trade ─────────────────────────────────────────
+    s2 = _safe_json(_S2_STATE)
+    if s2:
+        s2_metrics = s2.get("metrics", {})
+        s2_n = s2_metrics.get("total_trades", 0)
+        s2_pnl = float(s2.get("capital", {}).get("pnl_usd", 0) or 0)
+        s2_wr = float(s2_metrics.get("win_rate", 0) or 0)
+        # win_rate may be fractional (0.53) or percentage (53.0)
+        wr_display = s2_wr * 100 if s2_wr < 1 else s2_wr
+        lines.append(f"S2 Paper:         n={s2_n}  PnL=${s2_pnl:,.2f}  WR:{wr_display:.1f}%")
+        lines.append("")
+
+    # ── Futures S2 Proxy ───────────────────────────────────────
+    fsp = _safe_json(_FUTURES_S2_PROXY_STATE)
+    if fsp and fsp.get("total_entries", 0) > 0:
+        fsp_n = fsp.get("total_exits", 0)
+        fsp_pnl = float(fsp.get("cumulative_pnl", 0) or 0)
+        fsp_wr = float(fsp.get("realized_win_rate", 0) or 0)
+        fsp_mlr = float(fsp.get("mean_log_return", 0) or 0)
+        lines.append(
+            f"Futures Proxy:    n={fsp_n}  PnL=${fsp_pnl:,.2f}"
+            f"  WR:{fsp_wr * 100:.1f}%  mlr={fsp_mlr:+.6f}"
+        )
+        lines.append("")
+
     lines.append("═══════════════════════════════════════════════")
 
     return "\n".join(lines)

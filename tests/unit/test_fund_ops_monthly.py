@@ -28,6 +28,7 @@ from ops.fund_ops_monthly import (
     section_5_binary_lab,
     section_6_structural,
     section_7_measurement_focus,
+    section_8_experimental_matrix,
 )
 
 
@@ -144,6 +145,48 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "_RISK_VETOES", vetoes)
     monkeypatch.setattr(mod, "_RUNTIME_YAML", runtime)
 
+    s2_state = tmp_path / "binary_lab_s2_state.json"
+    s2_state.write_text(json.dumps({
+        "status": "ACTIVE",
+        "mode": "SHADOW",
+        "day": 6,
+        "day_total": 30,
+        "capital": {"current_nav_usd": 1487.05, "pnl_usd": 587.05},
+        "metrics": {
+            "total_trades": 158,
+            "win_rate": 0.5253,
+            "wins": 83,
+            "losses": 75,
+            "by_conviction_band": {
+                "3-5pp": {"trades": 45, "pnl_usd": 120.0, "ev_usd": 2.5},
+                "5-8pp": {"trades": 60, "pnl_usd": 250.0, "ev_usd": 4.1},
+                "8pp+": {"trades": 53, "pnl_usd": 217.05, "ev_usd": 5.0},
+            },
+        },
+        "kill_line": {"breached": False, "distance_usd": 837.05},
+        "freeze_intact": True,
+        "sleeve_id": "binary_lab_s2",
+        "rule_violations": 0,
+    }))
+
+    fsp_state = tmp_path / "futures_s2_proxy_state.json"
+    fsp_state.write_text(json.dumps({
+        "cumulative_pnl": 0.0,
+        "open_trades": [],
+        "total_entries": 0,
+        "total_exits": 0,
+        "realized_win_rate": 0.0,
+        "mean_log_return": 0.0,
+        "dd_kill_active": False,
+    }))
+
+    fsp_trades = tmp_path / "futures_s2_proxy_trades.jsonl"
+    fsp_trades.write_text("")
+
+    monkeypatch.setattr(mod, "_S2_STATE", s2_state)
+    monkeypatch.setattr(mod, "_FUTURES_S2_PROXY_STATE", fsp_state)
+    monkeypatch.setattr(mod, "_FUTURES_S2_PROXY_TRADES", fsp_trades)
+
 
 # ── Section label tests ─────────────────────────────────────────────
 
@@ -176,6 +219,10 @@ class TestSectionLabels:
     def test_section_7_label(self, isolate_state):
         result = section_7_measurement_focus()
         assert result.startswith("[SECTION_7]")
+
+    def test_section_8_label(self, isolate_state):
+        result = section_8_experimental_matrix()
+        assert result.startswith("[SECTION_8]")
 
 
 # ── Section content tests ───────────────────────────────────────────
@@ -229,6 +276,26 @@ class TestSectionContent:
         assert "certification window" in result
         assert "No parameter changes" in result
 
+    def test_section_8_has_s2_metrics(self, isolate_state):
+        result = section_8_experimental_matrix()
+        assert "PM S2 Paper Trade:" in result
+        assert "Rounds:" in result
+        assert "158" in result
+        assert "PnL:" in result
+        assert "$587.05" in result
+        assert "Win Rate:" in result
+        assert "Edge Band Breakdown:" in result
+
+    def test_section_8_futures_proxy_no_trades(self, isolate_state):
+        result = section_8_experimental_matrix()
+        assert "Futures S2 Proxy:" in result
+        assert "awaiting first trade" in result
+
+    def test_section_8_transfer_signal_no_data(self, isolate_state):
+        result = section_8_experimental_matrix()
+        assert "Transfer Signal:" in result
+        assert "No closed trades" in result
+
 
 # ── Missing state graceful handling ─────────────────────────────────
 
@@ -258,24 +325,33 @@ class TestMissingState:
         assert "[SECTION_5]" in result
         assert "Not deployed" in result
 
+    def test_section_8_missing_all(self, tmp_path, monkeypatch):
+        import ops.fund_ops_monthly as mod
+        monkeypatch.setattr(mod, "_S2_STATE", tmp_path / "missing.json")
+        monkeypatch.setattr(mod, "_FUTURES_S2_PROXY_STATE", tmp_path / "missing2.json")
+        monkeypatch.setattr(mod, "_FUTURES_S2_PROXY_TRADES", tmp_path / "missing3.jsonl")
+        result = section_8_experimental_matrix()
+        assert "[SECTION_8]" in result
+        assert "No experiments deployed" in result
+
 
 # ── Full report structure ───────────────────────────────────────────
 
 
 class TestFullReport:
-    def test_all_7_sections_present(self, isolate_state):
+    def test_all_8_sections_present(self, isolate_state):
         report = generate_monthly_report()
-        for i in range(1, 8):
+        for i in range(1, 9):
             assert f"[SECTION_{i}]" in report, f"Missing [SECTION_{i}]"
 
     def test_no_extra_sections(self, isolate_state):
         report = generate_monthly_report()
-        assert "[SECTION_8]" not in report
+        assert "[SECTION_9]" not in report
 
     def test_sections_in_order(self, isolate_state):
         report = generate_monthly_report()
         positions = []
-        for i in range(1, 8):
+        for i in range(1, 9):
             pos = report.index(f"[SECTION_{i}]")
             positions.append(pos)
         assert positions == sorted(positions), "Sections out of order"

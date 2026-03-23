@@ -48,6 +48,9 @@ _BINARY_LAB = _ROOT / "logs" / "state" / "binary_lab_state.json"
 _AW_STATE = _ROOT / "logs" / "state" / "activation_window_state.json"
 _RISK_VETOES = _ROOT / "logs" / "execution" / "risk_vetoes.jsonl"
 _RUNTIME_YAML = _ROOT / "config" / "runtime.yaml"
+_S2_STATE = _ROOT / "logs" / "state" / "binary_lab_s2_state.json"
+_FUTURES_S2_PROXY_STATE = _ROOT / "logs" / "state" / "futures_s2_proxy_state.json"
+_FUTURES_S2_PROXY_TRADES = _ROOT / "logs" / "execution" / "futures_s2_proxy_trades.jsonl"
 
 
 def _safe_json(path: Path) -> Dict[str, Any]:
@@ -423,8 +426,140 @@ def section_7_measurement_focus() -> str:
 
     lines.append("- Measure doctrine acceptance rate trend")
     lines.append("- Track regime stability and conviction distribution shift")
+
+    # Reference experimental matrix if active
+    s2 = _safe_json(_S2_STATE)
+    fsp = _safe_json(_FUTURES_S2_PROXY_STATE)
+    if s2 or fsp:
+        lines.append("- Monitor S2 / Futures Proxy experimental matrix (see Section 8)")
+        lines.append("- Track edge→return correlation for transfer hypothesis")
+
     lines.append("")
     lines.append("No parameter changes scheduled. Observation only.")
+
+    return "\n".join(lines)
+
+
+def section_8_experimental_matrix() -> str:
+    """[SECTION_8] Experimental Matrix — S2 Paper + Futures S2 Proxy."""
+    s2 = _safe_json(_S2_STATE)
+    fsp = _safe_json(_FUTURES_S2_PROXY_STATE)
+    trades_raw = _safe_jsonl(_FUTURES_S2_PROXY_TRADES)
+
+    if not s2 and not fsp:
+        return "[SECTION_8]\nNo experiments deployed."
+
+    lines = ["[SECTION_8]"]
+
+    # ── Sub-block A: PM S2 Paper Trade ──
+    if s2:
+        lines.append("")
+        lines.append("PM S2 Paper Trade:")
+        status = s2.get("status", "UNKNOWN")
+        mode = s2.get("mode", "")
+        metrics = s2.get("metrics", {})
+        capital = s2.get("capital", {})
+        n_trades = metrics.get("total_trades", 0)
+        wins = metrics.get("wins", 0)
+        losses = metrics.get("losses", 0)
+        pnl = float(capital.get("pnl_usd", 0) or 0)
+        nav = float(capital.get("current_nav_usd", 0) or 0)
+        wr = float(metrics.get("win_rate", 0) or 0)
+        # win_rate may be fractional (0.53) or percentage (53.0)
+        wr_display = wr * 100 if wr < 1 else wr
+        freeze = s2.get("freeze_intact", "DATA_UNAVAILABLE")
+        kill_breached = s2.get("kill_line", {}).get("breached", False)
+        kill_dist = float(s2.get("kill_line", {}).get("distance_usd", 0) or 0)
+
+        lines.append(f"  Status:           {status} ({mode})" if mode else f"  Status:           {status}")
+        lines.append(f"  Rounds:           {n_trades} (W:{wins} / L:{losses})")
+        lines.append(f"  PnL:              ${pnl:,.2f}")
+        lines.append(f"  Win Rate:         {wr_display:.1f}%")
+        lines.append(f"  Capital:          ${nav:,.2f}")
+        lines.append(f"  Kill Line:        {'BREACHED' if kill_breached else 'OK'} (distance: ${kill_dist:,.2f})")
+        lines.append(f"  Freeze Intact:    {'YES' if freeze is True else 'NO' if freeze is False else freeze}")
+
+        # Per-band breakdown
+        bands = metrics.get("by_conviction_band", {})
+        if bands:
+            lines.append("  Edge Band Breakdown:")
+            for band_name, bd in sorted(bands.items()):
+                bd_trades = bd.get("trades", 0)
+                bd_pnl = float(bd.get("pnl_usd", 0) or 0)
+                bd_ev = float(bd.get("ev_usd", 0) or 0)
+                lines.append(f"    {band_name}: n={bd_trades}  PnL=${bd_pnl:,.2f}  EV=${bd_ev:,.2f}")
+    else:
+        lines.append("")
+        lines.append("PM S2 Paper Trade:  Not deployed.")
+
+    # ── Sub-block B: Futures S2 Proxy ──
+    if fsp and (fsp.get("total_entries", 0) > 0 or fsp.get("dd_kill_active")):
+        lines.append("")
+        lines.append("Futures S2 Proxy:")
+        entries = fsp.get("total_entries", 0)
+        exits = fsp.get("total_exits", 0)
+        cum_pnl = float(fsp.get("cumulative_pnl", 0) or 0)
+        wr = float(fsp.get("realized_win_rate", 0) or 0)
+        mlr = float(fsp.get("mean_log_return", 0) or 0)
+        dd_kill = fsp.get("dd_kill_active", False)
+        open_count = len(fsp.get("open_trades", []))
+
+        lines.append(f"  Entries:          {entries}")
+        lines.append(f"  Exits:            {exits}")
+        lines.append(f"  Open:             {open_count}")
+        lines.append(f"  Cumulative PnL:   ${cum_pnl:,.4f}")
+        lines.append(f"  Win Rate:         {wr * 100:.1f}%" if exits > 0 else "  Win Rate:         N/A (no exits)")
+        lines.append(f"  Mean Log Return:  {mlr:+.8f}" if exits > 0 else "  Mean Log Return:  N/A")
+        lines.append(f"  DD Kill:          {'ACTIVE' if dd_kill else 'OK'}")
+    elif fsp:
+        lines.append("")
+        lines.append("Futures S2 Proxy:   Deployed, awaiting first trade.")
+    else:
+        lines.append("")
+        lines.append("Futures S2 Proxy:   Not deployed.")
+
+    # ── Sub-block C: Transfer Signal ──
+    closed_trades = [t for t in trades_raw if t.get("event_type") == "ROUND_CLOSED"]
+    n_closed = len(closed_trades)
+    if n_closed >= 30:
+        import math
+        edges = []
+        returns = []
+        for t in closed_trades:
+            snap = t.get("signal_snapshot", {})
+            edge = snap.get("edge")
+            lr = t.get("log_return")
+            if edge is not None and lr is not None:
+                edges.append(float(edge))
+                returns.append(float(lr))
+        if len(edges) >= 30:
+            n = len(edges)
+            mean_e = sum(edges) / n
+            mean_r = sum(returns) / n
+            cov = sum((e - mean_e) * (r - mean_r) for e, r in zip(edges, returns)) / n
+            std_e = math.sqrt(sum((e - mean_e) ** 2 for e in edges) / n)
+            std_r = math.sqrt(sum((r - mean_r) ** 2 for r in returns) / n)
+            corr = cov / (std_e * std_r) if std_e > 0 and std_r > 0 else 0.0
+            lines.append("")
+            lines.append("Transfer Signal:")
+            lines.append(f"  corr(edge, return):  {corr:+.4f}  (n={n})")
+            lines.append(f"  Mean Edge at Entry:  {mean_e:+.4f}")
+            lines.append(f"  Mean Log Return:     {mean_r:+.8f}")
+            if corr > 0.1:
+                lines.append("  Interpretation:      Positive transfer detected")
+            elif corr < -0.1:
+                lines.append("  Interpretation:      Inverse relationship detected")
+            else:
+                lines.append("  Interpretation:      No significant transfer")
+        else:
+            lines.append("")
+            lines.append(f"Transfer Signal:    Insufficient paired data (n={len(edges)}, need 30)")
+    elif n_closed > 0:
+        lines.append("")
+        lines.append(f"Transfer Signal:    Insufficient data (n={n_closed}, need 30)")
+    else:
+        lines.append("")
+        lines.append("Transfer Signal:    No closed trades yet.")
 
     return "\n".join(lines)
 
@@ -433,7 +568,7 @@ def section_7_measurement_focus() -> str:
 
 
 def generate_monthly_report(days: int = 30) -> str:
-    """Generate all 7 section blocks for the fund-ops monthly template."""
+    """Generate all 8 section blocks for the fund-ops monthly template."""
     sections = [
         section_1_capital_state(days=days),
         section_2_trade_activity(days=days),
@@ -442,6 +577,7 @@ def generate_monthly_report(days: int = 30) -> str:
         section_5_binary_lab(),
         section_6_structural(days=days),
         section_7_measurement_focus(),
+        section_8_experimental_matrix(),
     ]
     return "\n\n".join(sections)
 
