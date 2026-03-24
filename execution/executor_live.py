@@ -1490,7 +1490,7 @@ def _futures_s2_proxy_tick(now_iso: str) -> bool:
         _FUTURES_S2_PROXY_RUNNER.tick(now_iso)
         return True
     except Exception as exc:
-        LOG.debug("[futures-s2-proxy] tick_failed: %s", exc)
+        LOG.warning("[futures-s2-proxy] tick_failed: %s", exc, exc_info=True)
         return False
 
 
@@ -5410,7 +5410,7 @@ def _pub_tick(state: ExecutorState) -> None:
     try:
         _futures_s2_proxy_tick(now_iso)
     except Exception as exc:
-        LOG.debug("[telemetry] futures_s2_proxy_tick_failed: %s", exc)
+        LOG.warning("[telemetry] futures_s2_proxy_tick_failed: %s", exc)
     # Episode ledger rebuild (observability — fail-open, throttled)
     episode_ledger_written = False
     if (now_ts - state.last_episode_ledger_rebuild_ts) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:

@@ -446,6 +446,7 @@ class FuturesS2ProxyRunner:
     ) -> Optional[FuturesTradeOutcome]:
         """Close position via MARKET reduceOnly order."""
         exit_side = "SELL" if trade.side == "LONG" else "BUY"
+        exit_order_id = ""
 
         try:
             from execution.exchange_utils import send_order
@@ -457,17 +458,19 @@ class FuturesS2ProxyRunner:
                 positionSide=trade.side,
                 reduceOnly=True,
             )
+            exit_order_id = str(resp.get("orderId", ""))
         except Exception as exc:
             logger.warning(
-                "futures_s2_proxy: close_trade failed %s: %s",
+                "futures_s2_proxy: close_trade send_order failed %s: %s "
+                "— using current price as paper exit (testnet fallback)",
                 trade.round_id, exc,
             )
-            return None
+            resp = {}
 
-        exit_price = float(resp.get("avgPrice", 0))
-        exit_order_id = str(resp.get("orderId", ""))
+        _raw_exit_price = float(resp.get("avgPrice", 0) or 0)
+        exit_price = _raw_exit_price
 
-        # Fallback: if avgPrice is 0 (dry run), get current price
+        # Fallback: if avgPrice is 0 (dry run / testnet no-fill), get current price
         if exit_price <= 0:
             try:
                 from execution.exchange_utils import get_price
