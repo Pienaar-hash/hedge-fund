@@ -1032,9 +1032,9 @@
     "minNotional": "5"
   },
   "CELOUSDT": {
-    "tickSize": "0.001",
-    "minPrice": "0.010",
-    "maxPrice": "100000",
+    "tickSize": "0.000100",
+    "minPrice": "0.000100",
+    "maxPrice": "200",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",

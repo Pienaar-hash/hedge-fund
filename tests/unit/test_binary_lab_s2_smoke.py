@@ -701,9 +701,8 @@ class TestModelLifecycle:
         assert not model.calibration_confident
 
     def test_save_load_roundtrip(self, tmp_path: Path) -> None:
-        """save_state persists stats; load_state returns True but does not
-        restore observations (intentional — model starts fresh each boot,
-        observations accumulate from resolved rounds during current session)."""
+        """save_state persists observations; load_state restores them
+        and refits the calibrator so it survives executor restarts."""
         state_path = tmp_path / "cal.json"
         model = BinaryProbabilityModel(
             calibration_min_samples=5, state_path=state_path,
@@ -717,11 +716,13 @@ class TestModelLifecycle:
             data = json.load(f)
         assert data["n_observations"] == 10
         assert data["calibration_active"] is True
+        assert len(data.get("_observations", [])) == 10
 
         model2 = BinaryProbabilityModel(
             calibration_min_samples=5, state_path=state_path,
         )
         assert model2.load_state() is True
-        # Observations don't survive restart — this is by design.
-        # The model accumulates fresh observations from resolved rounds.
-        assert model2.n_observations == 0
+        # Observations survive restart and calibrator refits on load.
+        assert model2.n_observations == 10
+        assert model2.calibration_active is True
+        assert model2._calibrator is not None

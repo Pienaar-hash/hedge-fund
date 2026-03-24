@@ -112,6 +112,10 @@ _DEDUP_MAX_SIZE = 2048
 # Score decomposition JSONL log (MHD: freeze meaning per intent)
 _SCORE_DECOMP_LOG = os.path.join("logs", "execution", "score_decomposition.jsonl")
 
+# Passive observation log — ALL scored intents BEFORE threshold/filter gating.
+# This is the single source of pre-filter truth for counterfactual analysis.
+_PASSIVE_OBS_LOG = os.path.join("logs", "execution", "passive_observations.jsonl")
+
 
 def _log_screener_veto(
     reason: str,
@@ -1254,6 +1258,47 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                     filter_below_threshold=filter_below,
                 )
                 
+                # ── Passive observation: log ALL ranked results BEFORE
+                # any threshold/RQ/RV filtering.  This creates the
+                # counterfactual surface needed to detect left-truncation
+                # bias and validate threshold optimality.
+                # Re-rank the full (unfiltered) universe if the caller
+                # requested filtering, so we capture below-threshold too.
+                try:
+                    _all_ranked = ranked_results
+                    if filter_below:
+                        _all_ranked = rank_intents_by_hybrid_score(
+                            intents=out,
+                            expectancy_snapshot=expectancy_snap,
+                            router_health_snapshot=router_snap,
+                            funding_snapshot=funding_snap,
+                            basis_snapshot=basis_snap,
+                            regime=current_regime,
+                            strategy_config=base_cfg,
+                            filter_below_threshold=False,
+                        )
+                    from pathlib import Path as _ObsP
+                    from execution.log_utils import append_jsonl as _obs_append
+                    import datetime as _obs_dt
+                    _obs_ts = _obs_dt.datetime.now(tz=_obs_dt.timezone.utc).isoformat()
+                    for _obs_r in _all_ranked:
+                        _obs_intent = _obs_r.get("intent", {})
+                        _obs_comps = _obs_r.get("components", {})
+                        _obs_append(_ObsP(_PASSIVE_OBS_LOG), {
+                            "ts": _obs_ts,
+                            "symbol": str(_obs_intent.get("symbol", "")).upper(),
+                            "direction": str(_obs_intent.get("direction", "LONG")).upper(),
+                            "price": float(_obs_intent.get("price", 0) or 0),
+                            "hybrid_score": round(float(_obs_r.get("hybrid_score", 0)), 6),
+                            "passes_threshold": bool(_obs_r.get("passes_threshold", False)),
+                            "components": {k: round(float(v), 4) for k, v in _obs_comps.items()},
+                            "rq_score": round(float(_obs_r.get("router_quality", {}).get("score", 0) or 0), 4),
+                            "rv_score": round(float(_obs_r.get("rv_momentum", {}).get("score", 0) or 0), 4),
+                            "regime": str(_obs_r.get("regime", "")),
+                        })
+                except Exception:
+                    pass  # fail-open: passive observation must never block execution
+
                 # Rebuild out list from ranked results, preserving original intents
                 if ranked_results:
                     ranked_out = []

@@ -187,63 +187,14 @@ class BinaryProbabilityModel:
             return
         baselines = [float(f.get("p_yes_mid", 0.5)) for f, _ in self._observations]
         outcomes = [o for _, o in self._observations]
-        n = len(self._observations)
         try:
             iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
             iso.fit(baselines, outcomes)
             self._calibrator = iso
-            self._last_refit_n = n
-
-            # --- Enhanced refit diagnostics ---
-            model_preds = [
-                float(max(0.0, min(1.0, iso.predict([b])[0])))
-                for b in baselines
-            ]
-            brier_model = _brier_score(model_preds, outcomes)
-            brier_base = _brier_score(baselines, outcomes)
-            bss = (
-                round(1.0 - brier_model / brier_base, 6)
-                if brier_base and brier_base > 0
-                else None
-            )
-            deltas = [m - b for m, b in zip(model_preds, baselines)]
-            delta_mean = sum(deltas) / n if n else 0.0
-            delta_std = (
-                (sum((d - delta_mean) ** 2 for d in deltas) / n) ** 0.5
-                if n
-                else 0.0
-            )
-            edge_max = max(abs(d) for d in deltas) if deltas else 0.0
+            self._last_refit_n = len(self._observations)
             logger.info(
-                "[S2] REFIT_TRIGGERED n=%d | BRIER_MODEL=%.4f BRIER_BASELINE=%.4f "
-                "BSS=%.4f | DELTA_MEAN=%.4f DELTA_STD=%.4f EDGE_MAX=%.4f",
-                n,
-                brier_model or 0.0,
-                brier_base or 0.0,
-                bss if bss is not None else 0.0,
-                delta_mean,
-                delta_std,
-                edge_max,
+                "s2_model: isotonic refit at n=%d", self._last_refit_n,
             )
-
-            # --- Persist refit snapshot (append-only JSONL) ---
-            snapshot = {
-                "refit_n": n,
-                "brier_model": round(brier_model, 6) if brier_model is not None else None,
-                "brier_baseline": round(brier_base, 6) if brier_base is not None else None,
-                "bss": bss,
-                "delta_mean": round(delta_mean, 6),
-                "delta_std": round(delta_std, 6),
-                "edge_max": round(edge_max, 6),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-            try:
-                hist = Path("logs/state/s2_refit_history.jsonl")
-                hist.parent.mkdir(parents=True, exist_ok=True)
-                with hist.open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(snapshot, separators=(",", ":")) + "\n")
-            except Exception as snap_exc:
-                logger.warning("s2_model: refit snapshot write failed: %s", snap_exc)
         except Exception as exc:
             logger.warning("s2_model: refit failed: %s", exc)
 
