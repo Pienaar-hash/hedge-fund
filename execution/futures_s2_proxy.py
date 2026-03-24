@@ -116,6 +116,7 @@ class FuturesTradeOutcome:
     log_return: float
     entry_ts: str
     exit_ts: str
+    exit_delay_s: float
     entry_order_id: str
     exit_order_id: str
     signal_snapshot: Dict[str, Any]
@@ -387,6 +388,9 @@ class FuturesS2ProxyRunner:
         self._open_trades.append(trade)
         self._total_entries += 1
 
+        # Entry timing diagnostics
+        entry_window_position_s = round(now_unix - round_start, 1)
+
         # Log ENTRY
         self._writer.write({
             "event_type": "ENTRY",
@@ -404,6 +408,7 @@ class FuturesS2ProxyRunner:
             "order_status": status,
             "signal_snapshot": snapshot,
             "hold_duration_s": self._hold_s,
+            "entry_window_position_s": entry_window_position_s,
             "cumulative_pnl": round(self._cumulative_pnl, 4),
             "total_entries": self._total_entries,
         })
@@ -491,6 +496,13 @@ class FuturesS2ProxyRunner:
             log_ret = 0.0
 
         hold_duration = now_unix - trade.entry_ts_unix
+        exit_delay = now_unix - trade.exit_ts_unix  # >0 means late
+
+        if exit_delay > 30:
+            logger.warning(
+                "futures_s2_proxy: EXIT DELAY %s — %.1fs late (target=%ds actual=%.1fs)",
+                trade.round_id, exit_delay, self._hold_s, hold_duration,
+            )
 
         return FuturesTradeOutcome(
             round_id=trade.round_id,
@@ -505,6 +517,7 @@ class FuturesS2ProxyRunner:
             fee_usd=round(fee_usd, 6),
             net_pnl=round(net_pnl, 6),
             log_return=round(log_ret, 8),
+            exit_delay_s=round(exit_delay, 1),
             entry_ts=trade.entry_ts,
             exit_ts=now_ts,
             entry_order_id=trade.order_id,
@@ -536,6 +549,7 @@ class FuturesS2ProxyRunner:
             "qty": outcome.qty,
             "notional_usd": outcome.notional_usd,
             "hold_duration_s": outcome.hold_duration_s,
+            "exit_delay_s": outcome.exit_delay_s,
             "gross_pnl": outcome.gross_pnl,
             "fee_usd": outcome.fee_usd,
             "net_pnl": outcome.net_pnl,
@@ -557,9 +571,10 @@ class FuturesS2ProxyRunner:
         self._write_state()
 
         logger.info(
-            "futures_s2_proxy: CLOSED %s %s %s pnl=%.4f cum=%.2f log_ret=%.6f",
+            "futures_s2_proxy: CLOSED %s %s %s pnl=%.4f cum=%.2f log_ret=%.6f exit_delay=%.1fs",
             outcome.round_id, outcome.symbol, outcome.side,
             outcome.net_pnl, self._cumulative_pnl, outcome.log_return,
+            outcome.exit_delay_s,
         )
 
     def _log_no_trade(
