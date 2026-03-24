@@ -8,7 +8,7 @@
     "time_horizon_minutes": 15
   },
   "symbols": ["BTCUSDT"],
-  "notional_usd": 200,
+  "notional_usd": 500,
   "hold_duration_s": 900,
   "max_concurrent_per_symbol": 1,
   "min_edge": 0.03,

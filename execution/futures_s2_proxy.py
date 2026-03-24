@@ -180,6 +180,11 @@ class FuturesS2ProxyRunner:
         self._win_count: int = 0
         self._dd_kill_active: bool = False
 
+        # Heartbeat counters (session-level, reset on restart)
+        self._tick_count: int = 0
+        self._entries_attempted: int = 0
+        self._denials: Dict[str, int] = {}
+
         # Restore state from disk
         self._load_state()
 
@@ -190,6 +195,7 @@ class FuturesS2ProxyRunner:
     def tick(self, now_ts: str) -> bool:
         now_unix = _ts_to_unix(now_ts)
         acted = False
+        self._tick_count += 1
 
         # Exit first (free slots)
         if self._maybe_exit_all(now_unix, now_ts):
@@ -200,6 +206,9 @@ class FuturesS2ProxyRunner:
             for symbol in self._symbols:
                 if self._maybe_enter(symbol, now_unix, now_ts):
                     acted = True
+
+        # Heartbeat: persist state every tick so dashboard shows liveness
+        self._write_state()
 
         return acted
 
@@ -310,6 +319,7 @@ class FuturesS2ProxyRunner:
             return False
 
         # Place MARKET order on testnet
+        self._entries_attempted += 1
         order_side = "BUY" if direction == "LONG" else "SELL"
         try:
             from execution.exchange_utils import send_order
@@ -328,9 +338,30 @@ class FuturesS2ProxyRunner:
 
         # Parse response
         order_id = str(resp.get("orderId", ""))
-        fill_price = float(resp.get("avgPrice", 0) or price)
-        fill_qty = float(resp.get("executedQty", 0) or qty)
         status = resp.get("status", "")
+
+        # Fix: float-first-then-fallback.  Raw string "0.00000000" is
+        # truthy so ``float(x or fallback)`` skips the fallback.
+        _raw_fill_price = float(resp.get("avgPrice", 0) or 0)
+        fill_price = _raw_fill_price if _raw_fill_price > 0 else price
+        _raw_fill_qty = float(resp.get("executedQty", 0) or 0)
+        fill_qty = _raw_fill_qty if _raw_fill_qty > 0 else qty
+
+        logger.info(
+            "futures_s2_proxy: order resp %s %s — status=%s "
+            "executedQty=%s avgPrice=%s orderId=%s raw_qty=%.6f price=%.2f",
+            symbol, order_side, status,
+            resp.get("executedQty"), resp.get("avgPrice"), order_id,
+            raw_qty, price,
+        )
+
+        if _raw_fill_qty <= 0 and status != "DRY_RUN":
+            logger.info(
+                "futures_s2_proxy: exchange returned zero fill for %s — "
+                "using requested qty=%.6f as paper fill "
+                "(testnet no-liquidity fallback)",
+                symbol, qty,
+            )
 
         if fill_qty <= 0 and status != "DRY_RUN":
             self._log_no_trade(round_id, symbol, now_ts, "fill_qty_zero",
@@ -537,6 +568,7 @@ class FuturesS2ProxyRunner:
         *,
         signal: Any = None,
     ) -> None:
+        self._denials[reason] = self._denials.get(reason, 0) + 1
         record: Dict[str, Any] = {
             "event_type": "NO_TRADE",
             "execution_mode": EXECUTION_MODE,
@@ -593,6 +625,10 @@ class FuturesS2ProxyRunner:
             ) if self._total_exits > 0 else 0.0,
             "dd_kill_active": self._dd_kill_active,
             "updated_ts": _now_iso(),
+            # Heartbeat fields (session-level, reset on restart)
+            "tick_count": self._tick_count,
+            "entries_attempted": self._entries_attempted,
+            "denials_by_reason": dict(self._denials),
         }
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
