@@ -92,6 +92,10 @@ def _isolate_state(tmp_path, monkeypatch):
     binary.write_text(json.dumps({"status": "DISABLED", "mode": "PAPER", "capital": {"pnl_usd": 0}}))
     monkeypatch.setattr(mod, "_BINARY_LAB", binary)
 
+    # S2 / Futures Proxy — absent by default (experiment not deployed)
+    monkeypatch.setattr(mod, "_S2_STATE", tmp_path / "s2_nonexistent.json")
+    monkeypatch.setattr(mod, "_FUTURES_S2_PROXY_STATE", tmp_path / "fsp_nonexistent.json")
+
 
 class TestGenerateDailySummary:
 
@@ -160,11 +164,15 @@ class TestGenerateDailySummary:
         monkeypatch.setattr(mod, "_SENTINEL_X", tmp_path / "nonexistent6.json")
         monkeypatch.setattr(mod, "_RUNTIME_YAML", tmp_path / "nonexistent7.yaml")
         monkeypatch.setattr(mod, "_BINARY_LAB", tmp_path / "nonexistent8.json")
+        monkeypatch.setattr(mod, "_S2_STATE", tmp_path / "nonexistent9.json")
+        monkeypatch.setattr(mod, "_FUTURES_S2_PROXY_STATE", tmp_path / "nonexistent10.json")
 
         result = generate_daily_summary()
         assert isinstance(result, str)
         assert "Portfolio NAV:    $0.00" in result
-        assert "INACTIVE" in result
+        # Calibration only printed when active; binary sleeve shows UNKNOWN
+        assert "Calibration" not in result
+        assert "UNKNOWN" in result
 
     def test_no_positions_hides_unrealized(self, tmp_path, monkeypatch):
         """When 0 positions, Unrealized PnL line should not appear."""
@@ -198,7 +206,8 @@ class TestGenerateDailySummary:
         monkeypatch.setattr(mod, "_RUNTIME_YAML", runtime)
 
         result = generate_daily_summary()
-        assert "Calibration:      INACTIVE" in result
+        # Calibration block is only rendered when active
+        assert "Calibration" not in result
 
     def test_unrealized_pnl_fallback_camelCase(self, tmp_path, monkeypatch):
         """Legacy Binance-format unrealizedProfit should still be read."""
@@ -236,7 +245,7 @@ class TestGenerateDailySummary:
         assert "65%" in result
 
     def test_binary_shadow_mode(self, tmp_path, monkeypatch):
-        """Shadow mode should display as SHADOW with PnL."""
+        """Shadow mode should display as SHADOW (data collection)."""
         import ops.daily_summary as mod
         binary = tmp_path / "binary_shadow.json"
         binary.write_text(json.dumps({
@@ -246,8 +255,7 @@ class TestGenerateDailySummary:
         }))
         monkeypatch.setattr(mod, "_BINARY_LAB", binary)
         result = generate_daily_summary()
-        assert "Binary Sleeve:    SHADOW" in result
-        assert "$-12.50" in result
+        assert "Binary Sleeve:    SHADOW (data collection)" in result
 
     def test_binary_disabled_with_reason(self, tmp_path, monkeypatch):
         """DISABLED status should show termination_reason if present."""

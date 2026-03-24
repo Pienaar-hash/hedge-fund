@@ -362,11 +362,11 @@ def test_router_gauge_handles_empty(
     mock_warning.assert_called()
 
 
-@patch("streamlit.markdown")
+@patch("streamlit.html")
 @patch("streamlit.warning")
 def test_router_circle_gauge_renders(
     mock_warning: MagicMock,
-    mock_markdown: MagicMock,
+    mock_html: MagicMock,
 ) -> None:
     """Circle gauge renders with SVG."""
     from dashboard.router_gauge import render_router_circle_gauge
@@ -374,15 +374,15 @@ def test_router_circle_gauge_renders(
     router_state = _make_router_state()
     render_router_circle_gauge(router_state)
     
-    # Should render markdown with SVG
-    mock_markdown.assert_called()
-    call_args = mock_markdown.call_args[0][0]
+    # Should render html with SVG
+    mock_html.assert_called()
+    call_args = mock_html.call_args[0][0]
     assert "<svg" in call_args
 
 
-@patch("streamlit.markdown")
+@patch("streamlit.html")
 def test_router_gauge_compact_renders(
-    mock_markdown: MagicMock,
+    mock_html: MagicMock,
 ) -> None:
     """Compact gauge renders."""
     from dashboard.router_gauge import render_router_gauge_compact
@@ -390,7 +390,7 @@ def test_router_gauge_compact_renders(
     router_state = _make_router_state()
     render_router_gauge_compact(router_state)
     
-    mock_markdown.assert_called()
+    mock_html.assert_called()
 
 
 # ---------------------------------------------------------------------------

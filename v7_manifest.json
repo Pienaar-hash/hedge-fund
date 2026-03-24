@@ -557,6 +557,13 @@
       "update_frequency": "per_loop",
       "optional": true,
       "description": "V6 runtime probe diagnostics — feature flag echoes and pipeline health"
+    },
+    "minimal_core_validation": {
+      "path": "logs/state/minimal_core_validation.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Minimal core validation state — system health checks and preflight results"
     }
   },
   "execution_logs": {
@@ -648,6 +655,18 @@
       "owner": "executor",
       "optional": true,
       "description": "Fee-edge gate verdicts — entry veto/pass decisions with edge details"
+    },
+    "passive_observations": {
+      "path": "logs/execution/passive_observations.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "description": "Passive signal observations — hybrid scores and components logged without action"
+    },
+    "selector_v2_shadow": {
+      "path": "logs/execution/selector_v2_shadow.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "description": "Selector V2 shadow decisions — ECS conflict resolution and regime band classification"
     }
   },
   "prediction_layer": {
@@ -1381,6 +1400,27 @@
         "settlement_btc_price": "float|null — BTC price at resolution (ROUND_CLOSED only)",
         "deny_reason": "str|null — eligibility denial reason (NO_TRADE only)"
       }
+    },
+    "binary_lab_s2_paper_trades": {
+      "path": "logs/execution/binary_lab_s2_paper_trades.jsonl",
+      "owner": "binary_lab_s2_executor",
+      "update_frequency": "per_round",
+      "optional": true,
+      "description": "Binary Lab S2 paper trade log — PAPER_TRADE mode rounds with executable pricing and settlement"
+    },
+    "futures_s2_proxy_state": {
+      "path": "logs/state/futures_s2_proxy_state.json",
+      "owner": "futures_s2_proxy",
+      "update_frequency": "per_round",
+      "optional": true,
+      "description": "Futures S2 Proxy sleeve state — BTC-only testnet proxy tracking cumulative PnL and win rate"
+    },
+    "futures_s2_proxy_trades": {
+      "path": "logs/execution/futures_s2_proxy_trades.jsonl",
+      "owner": "futures_s2_proxy",
+      "update_frequency": "per_round",
+      "optional": true,
+      "description": "Futures S2 Proxy trade log — entry/exit/no_trade events for BTC testnet proxy sleeve"
     },
     "binary_lab_s2_calibration": {
       "path": "logs/state/binary_lab_s2_calibration.json",
