@@ -1485,9 +1485,11 @@ def _futures_s2_proxy_tick(now_iso: str) -> bool:
                 limits=_limits,
                 model=_BINARY_LAB_S2_MODEL,
             )
-            LOG.info("[futures-s2-proxy] PAPER runner initialized")
+            _proxy_interval = int(os.getenv("FUTURES_S2_PROXY_INTERVAL", "5"))
+            _FUTURES_S2_PROXY_RUNNER.start_daemon(interval=float(_proxy_interval))
+            LOG.info("[futures-s2-proxy] PAPER runner initialized — daemon started (interval=%ds)", _proxy_interval)
 
-        _FUTURES_S2_PROXY_RUNNER.tick(now_iso)
+        # Daemon handles ticking — no-op after init
         return True
     except Exception as exc:
         LOG.warning("[futures-s2-proxy] tick_failed: %s", exc, exc_info=True)
@@ -5407,10 +5409,6 @@ def _pub_tick(state: ExecutorState) -> None:
         _binary_lab_s2_tick(now_iso)
     except Exception as exc:
         LOG.debug("[telemetry] binary_lab_s2_tick_failed: %s", exc)
-    try:
-        _futures_s2_proxy_tick(now_iso)
-    except Exception as exc:
-        LOG.warning("[telemetry] futures_s2_proxy_tick_failed: %s", exc)
     # Episode ledger rebuild (observability — fail-open, throttled)
     episode_ledger_written = False
     if (now_ts - state.last_episode_ledger_rebuild_ts) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:
@@ -6193,7 +6191,14 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
             # Doctrine requires regime authority; without it, all trades are vetoed.
             with timed_section("sentinel_compute", api_calls=1):
                 _maybe_compute_sentinel_x()
-            
+
+            # Futures S2 proxy: time-sensitive sleeve — tick BEFORE heavy I/O
+            try:
+                _proxy_now_iso = datetime.now(timezone.utc).isoformat()
+                _futures_s2_proxy_tick(_proxy_now_iso)
+            except Exception as exc:
+                LOG.warning("[futures-s2-proxy] tick_failed: %s", exc)
+
             with timed_section("loop_once"):
                 _loop_once(_STATE, i)
             

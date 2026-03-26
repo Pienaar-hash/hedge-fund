@@ -546,3 +546,135 @@ class TestStaleQuoteRejection:
             entered = runner._maybe_enter("BTCUSDT", now_unix, now_ts)
 
         assert entered
+
+
+# ---------------------------------------------------------------------------
+# Entry / exit timing decomposition
+# ---------------------------------------------------------------------------
+
+class TestTimingDecomposition:
+    def test_entry_timestamps_populated(self):
+        """After _maybe_enter, OpenFuturesTrade carries 4 entry timestamps."""
+        td = tempfile.mkdtemp()
+        runner = _make_runner(tmp_dir=td)
+
+        signal = _FakeSignal(edge_yes=0.05)
+        round_start = _round_start_unix(1711200000.0)
+        now_unix = round_start + ENTRY_OFFSET_S + 10
+        now_ts = "2025-03-23T12:00:40+00:00"
+
+        with patch("execution.binary_lab_s2_signals.extract_s2_signal", return_value=signal), \
+             patch("execution.exchange_utils.get_price", return_value=50000.0), \
+             patch("execution.exchange_precision.normalize_qty", return_value=0.004), \
+             patch("execution.exchange_utils.send_order", return_value={"orderId": "t1", "avgPrice": "50000", "executedQty": "0.004", "status": "FILLED"}):
+            entered = runner._maybe_enter("BTCUSDT", now_unix, now_ts)
+
+        assert entered
+        trade = runner._open_trades[0]
+        assert trade.round_open_ts == round_start
+        assert trade.entry_signal_ready_ts > 0
+        assert trade.entry_order_submitted_ts >= trade.entry_signal_ready_ts
+        assert trade.entry_fill_ts >= trade.entry_order_submitted_ts
+
+    def test_exit_timestamps_populated(self):
+        """After _close_trade, FuturesTradeOutcome carries exit + carried entry timestamps."""
+        td = tempfile.mkdtemp()
+        runner = _make_runner(tmp_dir=td)
+        trade = OpenFuturesTrade(
+            round_id="FS2_20250323_1200",
+            symbol="BTCUSDT",
+            side="LONG",
+            entry_price=50000.0,
+            entry_ts="2025-03-23T12:00:30+00:00",
+            entry_ts_unix=1711195230.0,
+            exit_ts_unix=1711196130.0,
+            qty=0.004,
+            notional_usd=200.0,
+            order_id="entry1",
+            signal_snapshot={},
+            round_open_ts=1711195200.0,
+            entry_signal_ready_ts=1711195225.0,
+            entry_order_submitted_ts=1711195228.0,
+            entry_fill_ts=1711195229.5,
+        )
+
+        with patch("execution.exchange_utils.send_order", return_value={"orderId": "exit1", "avgPrice": "51000", "executedQty": "0.004", "status": "FILLED"}):
+            outcome = runner._close_trade(trade, "2025-03-23T12:15:30+00:00", 1711196130.0)
+
+        assert outcome is not None
+        assert outcome.hold_expiry_ts == 1711196130.0
+        assert outcome.exit_decision_ts > 0
+        assert outcome.exit_order_submitted_ts >= outcome.exit_decision_ts
+        assert outcome.exit_fill_confirmed_ts >= outcome.exit_order_submitted_ts
+        # Entry timestamps carried forward
+        assert outcome.entry_signal_ready_ts == 1711195225.0
+        assert outcome.entry_order_submitted_ts == 1711195228.0
+        assert outcome.entry_fill_ts == 1711195229.5
+
+    def test_timing_fields_survive_state_round_trip(self):
+        """Entry timing fields persist through _write_state / _load_state."""
+        td = tempfile.mkdtemp()
+        runner = _make_runner(tmp_dir=td)
+        runner._open_trades.append(OpenFuturesTrade(
+            round_id="FS2_20250323_1200",
+            symbol="BTCUSDT",
+            side="LONG",
+            entry_price=50000.0,
+            entry_ts="2025-03-23T12:00:30+00:00",
+            entry_ts_unix=1711195230.0,
+            exit_ts_unix=1711196130.0,
+            qty=0.004,
+            notional_usd=200.0,
+            order_id="entry1",
+            signal_snapshot={},
+            round_open_ts=1711195200.0,
+            entry_signal_ready_ts=1711195225.123,
+            entry_order_submitted_ts=1711195228.456,
+            entry_fill_ts=1711195229.789,
+        ))
+        runner._write_state()
+
+        runner2 = _make_runner(tmp_dir=td)
+        assert len(runner2._open_trades) == 1
+        restored = runner2._open_trades[0]
+        assert restored.round_open_ts == 1711195200.0
+        assert restored.entry_signal_ready_ts == 1711195225.123
+        assert restored.entry_order_submitted_ts == 1711195228.456
+        assert restored.entry_fill_ts == 1711195229.789
+
+
+# ---------------------------------------------------------------------------
+# Daemon thread
+# ---------------------------------------------------------------------------
+
+class TestDaemonThread:
+    def test_daemon_starts_and_ticks(self):
+        """Daemon thread starts, is_alive, and ticks at least once."""
+        import time as _time
+        td = tempfile.mkdtemp()
+        runner = _make_runner(tmp_dir=td)
+
+        assert not runner.daemon_alive()
+        runner.start_daemon(interval=0.1)
+
+        assert runner.daemon_alive()
+        _time.sleep(0.5)  # allow a few ticks
+        assert runner._tick_count >= 1
+
+        # Clean shutdown
+        runner._daemon.stop(timeout=2)
+        _time.sleep(0.2)
+        assert not runner.daemon_alive()
+
+    def test_daemon_double_start_is_noop(self):
+        """Calling start_daemon twice does not spawn a second thread."""
+        import time as _time
+        td = tempfile.mkdtemp()
+        runner = _make_runner(tmp_dir=td)
+
+        runner.start_daemon(interval=0.1)
+        first_daemon = runner._daemon
+        runner.start_daemon(interval=0.1)  # should be no-op
+        assert runner._daemon is first_daemon
+
+        runner._daemon.stop(timeout=2)

@@ -5063,18 +5063,6 @@
     "marketMaxQty": "300000",
     "minNotional": "5"
   },
-  "A2ZUSDT": {
-    "tickSize": "0.0000010",
-    "minPrice": "0.0000010",
-    "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "150000000",
-    "marketStepSize": "1",
-    "marketMinQty": "1",
-    "marketMaxQty": "15000000",
-    "minNotional": "5"
-  },
   "PLAYUSDT": {
     "tickSize": "0.0000100",
     "minPrice": "0.0000100",

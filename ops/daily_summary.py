@@ -255,7 +255,6 @@ def generate_daily_summary(now: Optional[datetime] = None) -> str:
         # win_rate may be fractional (0.53) or percentage (53.0)
         wr_display = s2_wr * 100 if s2_wr < 1 else s2_wr
         lines.append(f"S2 Paper:         n={s2_n}  PnL=${s2_pnl:,.2f}  WR:{wr_display:.1f}%")
-        lines.append("")
 
     # ── Futures S2 Proxy ───────────────────────────────────────
     fsp = _safe_json(_FUTURES_S2_PROXY_STATE)

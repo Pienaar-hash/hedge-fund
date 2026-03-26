@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -97,6 +98,11 @@ class OpenFuturesTrade:
     notional_usd: float
     order_id: str
     signal_snapshot: Dict[str, Any]
+    # Entry timing decomposition (unix timestamps)
+    round_open_ts: float = 0.0
+    entry_signal_ready_ts: float = 0.0
+    entry_order_submitted_ts: float = 0.0
+    entry_fill_ts: float = 0.0
 
 
 @dataclass
@@ -120,6 +126,15 @@ class FuturesTradeOutcome:
     entry_order_id: str
     exit_order_id: str
     signal_snapshot: Dict[str, Any]
+    # Exit timing decomposition (unix timestamps)
+    hold_expiry_ts: float = 0.0
+    exit_decision_ts: float = 0.0
+    exit_order_submitted_ts: float = 0.0
+    exit_fill_confirmed_ts: float = 0.0
+    # Entry timing carried forward for full decomposition
+    entry_signal_ready_ts: float = 0.0
+    entry_order_submitted_ts: float = 0.0
+    entry_fill_ts: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +154,33 @@ class _TradeWriter:
 
 
 # ---------------------------------------------------------------------------
+# Daemon thread for dedicated proxy cadence
+# ---------------------------------------------------------------------------
+class _ProxyTickThread(threading.Thread):
+    """Daemon thread that ticks the proxy runner at a dedicated cadence."""
+
+    def __init__(self, runner: "FuturesS2ProxyRunner", interval: float = 5.0) -> None:
+        super().__init__(daemon=True, name="futures-s2-proxy-tick")
+        self._runner = runner
+        self._interval = interval
+        self._stop_event = threading.Event()
+
+    def run(self) -> None:
+        logger.info("futures_s2_proxy: daemon started (interval=%.1fs)", self._interval)
+        while not self._stop_event.is_set():
+            try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                self._runner.tick(now_iso)
+            except Exception as exc:
+                logger.warning("futures_s2_proxy: daemon tick failed: %s", exc)
+            self._stop_event.wait(self._interval)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop_event.set()
+        self.join(timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 class FuturesS2ProxyRunner:
@@ -146,6 +188,7 @@ class FuturesS2ProxyRunner:
     Minimal futures sleeve — tests PM-edge transfer to futures returns.
 
     Called once per executor tick via ``tick(now_ts)``.
+    Can also run on a dedicated daemon thread via ``start_daemon()``.
     """
 
     def __init__(
@@ -186,6 +229,10 @@ class FuturesS2ProxyRunner:
         self._entries_attempted: int = 0
         self._denials: Dict[str, int] = {}
 
+        # Thread safety
+        self._lock = threading.Lock()
+        self._daemon: Optional[_ProxyTickThread] = None
+
         # Restore state from disk
         self._load_state()
 
@@ -194,24 +241,36 @@ class FuturesS2ProxyRunner:
     # ------------------------------------------------------------------
 
     def tick(self, now_ts: str) -> bool:
-        now_unix = _ts_to_unix(now_ts)
-        acted = False
-        self._tick_count += 1
+        with self._lock:
+            now_unix = _ts_to_unix(now_ts)
+            acted = False
+            self._tick_count += 1
 
-        # Exit first (free slots)
-        if self._maybe_exit_all(now_unix, now_ts):
-            acted = True
+            # Exit first (free slots)
+            if self._maybe_exit_all(now_unix, now_ts):
+                acted = True
 
-        # Then enter (only if slots available and DD kill not active)
-        if not self._dd_kill_active:
-            for symbol in self._symbols:
-                if self._maybe_enter(symbol, now_unix, now_ts):
-                    acted = True
+            # Then enter (only if slots available and DD kill not active)
+            if not self._dd_kill_active:
+                for symbol in self._symbols:
+                    if self._maybe_enter(symbol, now_unix, now_ts):
+                        acted = True
 
-        # Heartbeat: persist state every tick so dashboard shows liveness
-        self._write_state()
+            # Heartbeat: persist state every tick so dashboard shows liveness
+            self._write_state()
 
-        return acted
+            return acted
+
+    def start_daemon(self, interval: float = 5.0) -> None:
+        """Start a dedicated daemon thread that ticks at *interval* seconds."""
+        if self._daemon is not None and self._daemon.is_alive():
+            return  # already running
+        self._daemon = _ProxyTickThread(self, interval=interval)
+        self._daemon.start()
+
+    def daemon_alive(self) -> bool:
+        """Return True if the daemon thread is running."""
+        return self._daemon is not None and self._daemon.is_alive()
 
     # ------------------------------------------------------------------
     # Entry
@@ -259,6 +318,7 @@ class FuturesS2ProxyRunner:
             per_round_usd=self._notional_usd,
             min_edge_threshold=self._min_edge,
         )
+        _entry_signal_ready_ts = time.time()
         if signal is None:
             self._log_no_trade(round_id, symbol, now_ts, "signal_unavailable")
             return False
@@ -322,6 +382,7 @@ class FuturesS2ProxyRunner:
         # Place MARKET order on testnet
         self._entries_attempted += 1
         order_side = "BUY" if direction == "LONG" else "SELL"
+        _entry_order_submitted_ts = time.time()
         try:
             from execution.exchange_utils import send_order
             resp = send_order(
@@ -331,6 +392,7 @@ class FuturesS2ProxyRunner:
                 quantity=qty,
                 positionSide=direction,
             )
+            _entry_fill_ts = time.time()
         except Exception as exc:
             logger.warning("futures_s2_proxy: send_order failed: %s", exc)
             self._log_no_trade(round_id, symbol, now_ts,
@@ -384,6 +446,10 @@ class FuturesS2ProxyRunner:
             notional_usd=round(actual_notional, 4),
             order_id=order_id,
             signal_snapshot=snapshot,
+            round_open_ts=round_start,
+            entry_signal_ready_ts=_entry_signal_ready_ts,
+            entry_order_submitted_ts=_entry_order_submitted_ts,
+            entry_fill_ts=_entry_fill_ts,
         )
         self._open_trades.append(trade)
         self._total_entries += 1
@@ -409,6 +475,10 @@ class FuturesS2ProxyRunner:
             "signal_snapshot": snapshot,
             "hold_duration_s": self._hold_s,
             "entry_window_position_s": entry_window_position_s,
+            "round_open_ts": round(round_start, 3),
+            "entry_signal_ready_ts": round(_entry_signal_ready_ts, 3),
+            "entry_order_submitted_ts": round(_entry_order_submitted_ts, 3),
+            "entry_fill_ts": round(_entry_fill_ts, 3),
             "cumulative_pnl": round(self._cumulative_pnl, 4),
             "total_entries": self._total_entries,
         })
@@ -450,8 +520,10 @@ class FuturesS2ProxyRunner:
         self, trade: OpenFuturesTrade, now_ts: str, now_unix: float,
     ) -> Optional[FuturesTradeOutcome]:
         """Close position via MARKET reduceOnly order."""
+        _exit_decision_ts = time.time()
         exit_side = "SELL" if trade.side == "LONG" else "BUY"
         exit_order_id = ""
+        _exit_order_submitted_ts = time.time()
 
         try:
             from execution.exchange_utils import send_order
@@ -463,8 +535,10 @@ class FuturesS2ProxyRunner:
                 positionSide=trade.side,
                 reduceOnly=True,
             )
+            _exit_fill_confirmed_ts = time.time()
             exit_order_id = str(resp.get("orderId", ""))
         except Exception as exc:
+            _exit_fill_confirmed_ts = time.time()
             logger.warning(
                 "futures_s2_proxy: close_trade send_order failed %s: %s "
                 "— using current price as paper exit (testnet fallback)",
@@ -523,6 +597,13 @@ class FuturesS2ProxyRunner:
             entry_order_id=trade.order_id,
             exit_order_id=exit_order_id,
             signal_snapshot=trade.signal_snapshot,
+            hold_expiry_ts=trade.exit_ts_unix,
+            exit_decision_ts=round(_exit_decision_ts, 3),
+            exit_order_submitted_ts=round(_exit_order_submitted_ts, 3),
+            exit_fill_confirmed_ts=round(_exit_fill_confirmed_ts, 3),
+            entry_signal_ready_ts=trade.entry_signal_ready_ts,
+            entry_order_submitted_ts=trade.entry_order_submitted_ts,
+            entry_fill_ts=trade.entry_fill_ts,
         )
 
     # ------------------------------------------------------------------
@@ -557,6 +638,13 @@ class FuturesS2ProxyRunner:
             "entry_order_id": outcome.entry_order_id,
             "exit_order_id": outcome.exit_order_id,
             "signal_snapshot": outcome.signal_snapshot,
+            "hold_expiry_ts": outcome.hold_expiry_ts,
+            "exit_decision_ts": outcome.exit_decision_ts,
+            "exit_order_submitted_ts": outcome.exit_order_submitted_ts,
+            "exit_fill_confirmed_ts": outcome.exit_fill_confirmed_ts,
+            "entry_signal_ready_ts": outcome.entry_signal_ready_ts,
+            "entry_order_submitted_ts": outcome.entry_order_submitted_ts,
+            "entry_fill_ts": outcome.entry_fill_ts,
             "cumulative_pnl": round(self._cumulative_pnl, 4),
             "total_exits": self._total_exits,
             "realized_win_rate": round(
@@ -630,6 +718,10 @@ class FuturesS2ProxyRunner:
                     "notional_usd": t.notional_usd,
                     "order_id": t.order_id,
                     "signal_snapshot": t.signal_snapshot,
+                    "round_open_ts": t.round_open_ts,
+                    "entry_signal_ready_ts": t.entry_signal_ready_ts,
+                    "entry_order_submitted_ts": t.entry_order_submitted_ts,
+                    "entry_fill_ts": t.entry_fill_ts,
                 }
                 for t in self._open_trades
             ],
@@ -687,6 +779,10 @@ class FuturesS2ProxyRunner:
                     notional_usd=float(raw["notional_usd"]),
                     order_id=raw["order_id"],
                     signal_snapshot=raw.get("signal_snapshot", {}),
+                    round_open_ts=float(raw.get("round_open_ts", 0.0)),
+                    entry_signal_ready_ts=float(raw.get("entry_signal_ready_ts", 0.0)),
+                    entry_order_submitted_ts=float(raw.get("entry_order_submitted_ts", 0.0)),
+                    entry_fill_ts=float(raw.get("entry_fill_ts", 0.0)),
                 ))
 
             logger.info(
