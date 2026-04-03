@@ -20,6 +20,7 @@ import pytest
 from execution.binary_lab_s2_signals import (
     BinaryLabS2Signal,
     QUOTE_RECONSTRUCTION_MODE,
+    _price_region,
     check_s2_eligibility,
 )
 
@@ -100,6 +101,7 @@ def _make_signal(
         expected_value_usd=round(executable_edge * 30.0, 4) if trade_side != "SKIP" else 0.0,
         calibration_active=calibration_active,
         calibration_confident=calibration_confident,
+        price_region=_price_region(p_yes_mid),
         features={"p_yes_mid": p_yes_mid, "spread": spread},
         model_version="s2_naive_v1",
         ts=datetime.now(timezone.utc).isoformat(),
@@ -250,3 +252,118 @@ class TestGateOrderIndependence:
         result = check_s2_eligibility(signal, _TEST_LIMITS, **_COMMON_GATE_KWARGS)
         assert not result.eligible
         assert "executable_edge_below_min" in (result.deny_reason or "")
+
+
+# =========================================================================
+# Ablation gate tests (Gate 10-11)
+# =========================================================================
+
+_ABL_LIMITS = {
+    **_TEST_LIMITS,
+    "ablation_gate": {
+        "enabled": True,
+        "min_edge_abs": 0.10,
+        "side_filter": "ALL",
+        "fallback_min_edge_abs": 0.07,
+    },
+}
+
+
+class TestAblationEdgeGate:
+    """Gate 10: |edge_yes| < ablation_min_edge_abs → REJECTED."""
+
+    def test_edge_above_threshold_passes(self) -> None:
+        """edge_yes=0.11 passes ablation gate at 0.10."""
+        signal = _make_signal(p_yes_mid=0.48, spread=0.02, p_model_yes=0.59)
+        assert abs(signal.edge_yes) == pytest.approx(0.11, abs=1e-6)
+        result = check_s2_eligibility(signal, _ABL_LIMITS, **_COMMON_GATE_KWARGS)
+        assert result.eligible, f"Unexpected rejection: {result.deny_reason}"
+
+    def test_edge_below_threshold_rejected(self) -> None:
+        """edge_yes=0.07 rejected by ablation gate at 0.10."""
+        signal = _make_signal(p_yes_mid=0.48, spread=0.02, p_model_yes=0.55)
+        assert abs(signal.edge_yes) == pytest.approx(0.07, abs=1e-6)
+        result = check_s2_eligibility(signal, _ABL_LIMITS, **_COMMON_GATE_KWARGS)
+        assert not result.eligible
+        assert "ablation_edge_below_min" in (result.deny_reason or "")
+
+    def test_edge_at_threshold_passes(self) -> None:
+        """edge_yes=0.10 passes (gate uses strict <)."""
+        signal = _make_signal(p_yes_mid=0.48, spread=0.02, p_model_yes=0.58)
+        assert abs(signal.edge_yes) == pytest.approx(0.10, abs=1e-6)
+        result = check_s2_eligibility(signal, _ABL_LIMITS, **_COMMON_GATE_KWARGS)
+        assert result.eligible, f"Edge at threshold rejected: {result.deny_reason}"
+
+    def test_no_side_edge_uses_abs(self) -> None:
+        """NO-side: edge_yes=-0.12 → |edge_yes|=0.12 passes at 0.10."""
+        signal = _make_signal(
+            p_yes_mid=0.55, spread=0.02, p_model_yes=0.43, trade_side="NO",
+        )
+        assert signal.edge_yes < 0
+        assert abs(signal.edge_yes) == pytest.approx(0.12, abs=1e-6)
+        result = check_s2_eligibility(signal, _ABL_LIMITS, **_COMMON_GATE_KWARGS)
+        assert result.eligible
+
+    def test_disabled_skips_ablation_gate(self) -> None:
+        """With enabled=False, low edge passes."""
+        limits = {**_TEST_LIMITS, "ablation_gate": {"enabled": False, "min_edge_abs": 0.10}}
+        signal = _make_signal(p_yes_mid=0.48, spread=0.02, p_model_yes=0.52)
+        assert abs(signal.edge_yes) == pytest.approx(0.04, abs=1e-6)
+        result = check_s2_eligibility(signal, limits, **_COMMON_GATE_KWARGS)
+        assert result.eligible
+
+    def test_no_ablation_config_skips_gate(self) -> None:
+        """Without ablation_gate config, behaves as before."""
+        signal = _make_signal(p_yes_mid=0.48, spread=0.02, p_model_yes=0.52)
+        result = check_s2_eligibility(signal, _TEST_LIMITS, **_COMMON_GATE_KWARGS)
+        assert result.eligible
+
+
+class TestAblationSideFilter:
+    """Gate 11: side_filter blocks unwanted trade sides."""
+
+    def test_yes_only_allows_yes(self) -> None:
+        limits = {**_ABL_LIMITS, "ablation_gate": {**_ABL_LIMITS["ablation_gate"], "side_filter": "YES_ONLY"}}
+        signal = _make_signal(p_yes_mid=0.48, spread=0.02, p_model_yes=0.59)
+        result = check_s2_eligibility(signal, limits, **_COMMON_GATE_KWARGS)
+        assert result.eligible
+
+    def test_yes_only_blocks_no(self) -> None:
+        limits = {**_ABL_LIMITS, "ablation_gate": {**_ABL_LIMITS["ablation_gate"], "side_filter": "YES_ONLY"}}
+        signal = _make_signal(
+            p_yes_mid=0.55, spread=0.02, p_model_yes=0.43, trade_side="NO",
+        )
+        result = check_s2_eligibility(signal, limits, **_COMMON_GATE_KWARGS)
+        assert not result.eligible
+        assert "ablation_side_blocked" in (result.deny_reason or "")
+
+    def test_no_only_blocks_yes(self) -> None:
+        limits = {**_ABL_LIMITS, "ablation_gate": {**_ABL_LIMITS["ablation_gate"], "side_filter": "NO_ONLY"}}
+        signal = _make_signal(p_yes_mid=0.48, spread=0.02, p_model_yes=0.59)
+        result = check_s2_eligibility(signal, limits, **_COMMON_GATE_KWARGS)
+        assert not result.eligible
+        assert "ablation_side_blocked" in (result.deny_reason or "")
+
+    def test_all_allows_both_sides(self) -> None:
+        """side_filter=ALL allows both YES and NO."""
+        signal_yes = _make_signal(p_yes_mid=0.48, spread=0.02, p_model_yes=0.59)
+        signal_no = _make_signal(
+            p_yes_mid=0.55, spread=0.02, p_model_yes=0.43, trade_side="NO",
+        )
+        r1 = check_s2_eligibility(signal_yes, _ABL_LIMITS, **_COMMON_GATE_KWARGS)
+        r2 = check_s2_eligibility(signal_no, _ABL_LIMITS, **_COMMON_GATE_KWARGS)
+        assert r1.eligible
+        assert r2.eligible
+
+    def test_side_filter_after_magnitude_gate(self) -> None:
+        """Gate 10 (magnitude) fires before gate 11 (side filter)."""
+        limits = {**_ABL_LIMITS, "ablation_gate": {**_ABL_LIMITS["ablation_gate"], "side_filter": "YES_ONLY"}}
+        # NO-side with exec_edge ok (gate 3 passes) but |edge_yes| < 0.10 (gate 10 fires)
+        signal = _make_signal(
+            p_yes_mid=0.50, spread=0.02, p_model_yes=0.43, trade_side="NO",
+        )
+        assert abs(signal.edge_yes) == pytest.approx(0.07, abs=1e-6)
+        assert signal.executable_edge >= 0.03  # gate 3 passes
+        result = check_s2_eligibility(signal, limits, **_COMMON_GATE_KWARGS)
+        assert not result.eligible
+        assert "ablation_edge_below_min" in (result.deny_reason or "")

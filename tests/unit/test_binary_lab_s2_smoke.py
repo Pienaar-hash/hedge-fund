@@ -38,7 +38,9 @@ from execution.binary_lab_s2_signals import (
     S2EligibilityResult,
     QUOTE_RECONSTRUCTION_MODE,
     _reconstruct_quotes,
+    _price_region,
     check_s2_eligibility,
+    check_pm_sleeve_eligibility,
     edge_to_bucket,
 )
 
@@ -125,6 +127,7 @@ def _make_signal(
         expected_value_usd=round(executable_edge * 30.0, 4) if trade_side != "SKIP" else 0.0,
         calibration_active=calibration_active,
         calibration_confident=calibration_confident,
+        price_region=_price_region(p_yes_mid),
         features={"p_yes_mid": p_yes_mid, "spread": spread},
         model_version="s2_naive_v1",
         ts=datetime.now(timezone.utc).isoformat(),
@@ -726,3 +729,242 @@ class TestModelLifecycle:
         assert model2.n_observations == 10
         assert model2.calibration_active is True
         assert model2._calibrator is not None
+
+
+# =========================================================================
+# Part 5: PM Sleeve v1 — region-first gate tests
+# =========================================================================
+
+# PM Sleeve v1 limits fixture
+_PM_SLEEVE_LIMITS: Dict[str, Any] = {
+    **_TEST_LIMITS,
+    "pm_sleeve_v1": {
+        "enabled": True,
+        "price_region": {"max_entry_cost": 0.45},
+        "side_filter": "YES_ONLY",
+        "confidence_filter": {"enabled": True, "min_edge_abs": 0.05},
+        "kill_conditions": {
+            "rolling_window": 50,
+            "min_expectancy": 0.0,
+            "max_drawdown_usd": 250,
+            "min_region_hit_rate": 0.60,
+        },
+    },
+}
+
+
+class TestPriceRegion:
+    """Verify _price_region() classification boundaries."""
+
+    def test_extreme_low(self) -> None:
+        assert _price_region(0.10) == "extreme_low"
+
+    def test_low(self) -> None:
+        assert _price_region(0.20) == "low"
+        assert _price_region(0.29) == "low"
+
+    def test_mid_low(self) -> None:
+        assert _price_region(0.30) == "mid_low"
+        assert _price_region(0.44) == "mid_low"
+
+    def test_center(self) -> None:
+        assert _price_region(0.50) == "center"
+
+    def test_mid_high(self) -> None:
+        assert _price_region(0.55) == "mid_high"
+        assert _price_region(0.69) == "mid_high"
+
+    def test_high(self) -> None:
+        assert _price_region(0.70) == "high"
+        assert _price_region(0.84) == "high"
+
+    def test_extreme_high(self) -> None:
+        assert _price_region(0.90) == "extreme_high"
+
+    def test_boundaries_exact(self) -> None:
+        """Verify exact boundary values classify correctly."""
+        assert _price_region(0.15) == "low"      # >= 0.15 is low
+        assert _price_region(0.45) == "center"    # >= 0.45 is center
+        assert _price_region(0.55) == "mid_high"  # >= 0.55 is mid_high
+        assert _price_region(0.85) == "extreme_high"  # >= 0.85 is extreme_high
+
+
+class TestPMSleeveSignal:
+    """PM Sleeve v1 region-first signal extraction."""
+
+    def test_signal_includes_price_region(self) -> None:
+        """BinaryLabS2Signal must carry price_region field."""
+        signal = _make_signal(p_yes_mid=0.30, spread=0.02, p_model_yes=0.40)
+        assert hasattr(signal, "price_region")
+        assert signal.price_region == "mid_low"
+
+    def test_region_gate_blocks_high_price(self) -> None:
+        """entry_cost >= 0.45 → SKIP_REGION_BLOCKED (gate 1)."""
+        signal = _make_signal(
+            p_yes_mid=0.50, spread=0.02, p_model_yes=0.60,
+            trade_side="YES",
+        )
+        # entry_cost = p_yes_ask = 0.51 → above 0.45 threshold
+        assert signal.entry_cost > 0.45
+
+        # Use PM sleeve eligibility — signal should be blocked by region
+        # We test extract_pm_sleeve_signal directly via mocked health data
+        # For unit test, verify gate logic through check_pm_sleeve_eligibility
+        # with a signal that has trade_side=SKIP and SKIP_REGION_BLOCKED
+        blocked = _make_signal(
+            p_yes_mid=0.50, spread=0.02, p_model_yes=0.60,
+            trade_side="SKIP", skip_reason="SKIP_REGION_BLOCKED",
+        )
+        result = check_pm_sleeve_eligibility(
+            blocked, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert not result.eligible
+        assert result.deny_reason == "SKIP_REGION_BLOCKED"
+
+    def test_region_gate_passes_low_price(self) -> None:
+        """entry_cost < 0.45 → passes gate 1."""
+        signal = _make_signal(
+            p_yes_mid=0.30, spread=0.02, p_model_yes=0.40,
+            trade_side="YES",
+        )
+        # entry_cost = p_yes_ask = 0.31 → below 0.45
+        assert signal.entry_cost < 0.45
+
+        result = check_pm_sleeve_eligibility(
+            signal, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert result.eligible
+
+    def test_side_lock_blocks_no(self) -> None:
+        """NO trade side → SKIP_SIDE_BLOCKED (gate 2)."""
+        blocked = _make_signal(
+            p_yes_mid=0.30, spread=0.02, p_model_yes=0.20,
+            trade_side="SKIP", skip_reason="SKIP_SIDE_BLOCKED",
+        )
+        result = check_pm_sleeve_eligibility(
+            blocked, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert not result.eligible
+        assert result.deny_reason == "SKIP_SIDE_BLOCKED"
+
+    def test_confidence_filter_blocks_low_edge(self) -> None:
+        """|edge| < 0.05 → SKIP_CONFIDENCE_BELOW_MIN (gate 3)."""
+        blocked = _make_signal(
+            p_yes_mid=0.30, spread=0.02, p_model_yes=0.32,
+            trade_side="SKIP", skip_reason="SKIP_CONFIDENCE_BELOW_MIN",
+        )
+        result = check_pm_sleeve_eligibility(
+            blocked, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert not result.eligible
+        assert result.deny_reason == "SKIP_CONFIDENCE_BELOW_MIN"
+
+    def test_confidence_filter_disabled(self) -> None:
+        """When confidence_filter.enabled=false, edge check is skipped."""
+        limits_no_conf = {
+            **_PM_SLEEVE_LIMITS,
+            "pm_sleeve_v1": {
+                **_PM_SLEEVE_LIMITS["pm_sleeve_v1"],
+                "confidence_filter": {"enabled": False, "min_edge_abs": 0.05},
+            },
+        }
+        # With confidence disabled, this signal should pass even with small edge
+        signal = _make_signal(
+            p_yes_mid=0.30, spread=0.02, p_model_yes=0.32,
+            trade_side="YES",
+        )
+        result = check_pm_sleeve_eligibility(
+            signal, limits_no_conf,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert result.eligible
+
+    def test_gate_ordering_region_before_edge(self) -> None:
+        """High entry_cost blocked by region gate BEFORE edge is evaluated."""
+        # Signal with high price but technically valid edge
+        blocked = _make_signal(
+            p_yes_mid=0.60, spread=0.02, p_model_yes=0.70,
+            trade_side="SKIP", skip_reason="SKIP_REGION_BLOCKED",
+        )
+        # Edge magnitude is |0.70 - 0.60| = 0.10 → would pass confidence gate
+        assert abs(blocked.edge_yes) >= 0.05
+        # But price region blocks first
+        result = check_pm_sleeve_eligibility(
+            blocked, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert not result.eligible
+        assert result.deny_reason == "SKIP_REGION_BLOCKED"
+
+    def test_pm_sleeve_friction_gates_preserved(self) -> None:
+        """Friction gates (spread, quote age) still apply in PM sleeve."""
+        # Wide spread
+        signal = _make_signal(
+            p_yes_mid=0.30, spread=0.06, p_model_yes=0.40,
+            trade_side="YES",
+        )
+        result = check_pm_sleeve_eligibility(
+            signal, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert not result.eligible
+        assert "spread_too_wide" in (result.deny_reason or "")
+
+        # Stale quote
+        signal2 = _make_signal(
+            p_yes_mid=0.30, spread=0.02, p_model_yes=0.40,
+            trade_side="YES", quote_age_s=120.0,
+        )
+        result2 = check_pm_sleeve_eligibility(
+            signal2, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert not result2.eligible
+        assert "quote_stale" in (result2.deny_reason or "")
+
+    def test_pm_sleeve_runner_uses_pm_signal(self, tmp_path: Path) -> None:
+        """When pm_sleeve_v1.enabled, runner calls extract_pm_sleeve_signal."""
+        log_path = tmp_path / "trades.jsonl"
+        model = BinaryProbabilityModel()
+
+        runner = BinaryLabS2ShadowRunner(
+            limits=_PM_SLEEVE_LIMITS,
+            model=model,
+            writer=None,
+            trade_log_path=log_path,
+        )
+
+        now = time.time()
+        round_start = now - (now % ROUND_DURATION_S)
+        entry_time = round_start + 60
+        ts = datetime.fromtimestamp(entry_time, tz=timezone.utc).isoformat()
+
+        signal = _make_signal(
+            p_yes_mid=0.30, spread=0.02, p_model_yes=0.40,
+            trade_side="YES",
+        )
+
+        with patch("execution.binary_lab_s2_signals.extract_pm_sleeve_signal", return_value=signal) as mock_pm, \
+             patch("execution.binary_lab_s2_signals.check_pm_sleeve_eligibility") as mock_elig, \
+             patch("execution.exchange_utils.get_price", return_value=65000.0):
+            mock_elig.return_value = S2EligibilityResult(True, None, signal)
+            runner.tick(ts)
+            mock_pm.assert_called_once()
+
+        records = _collect_trade_log(log_path)
+        entries = [r for r in records if r.get("event_type") == "ENTRY"]
+        assert len(entries) == 1
+        assert entries[0]["trade_side"] == "YES"
+        assert "price_region" in entries[0]

@@ -74,20 +74,12 @@ def _edge_to_bucket(abs_edge: float) -> str:
 
 
 def _price_region(p_market: float) -> str:
-    """Classify market price into a region for PnL attribution."""
-    if p_market < 0.15:
-        return "extreme_low"
-    if p_market < 0.30:
-        return "low"
-    if p_market < 0.45:
-        return "mid_low"
-    if p_market < 0.55:
-        return "center"
-    if p_market < 0.70:
-        return "mid_high"
-    if p_market < 0.85:
-        return "high"
-    return "extreme_high"
+    """Classify market price into a region for PnL attribution.
+
+    Delegates to canonical implementation in binary_lab_s2_signals.
+    """
+    from execution.binary_lab_s2_signals import _price_region as _canonical_region
+    return _canonical_region(p_market)
 
 
 # ---------------------------------------------------------------------------
@@ -505,17 +497,35 @@ class BinaryLabS2ShadowRunner:
         # Time remaining in round
         time_remaining_s = (round_start + ROUND_DURATION_S) - now_unix
 
-        # Extract S2 signal
-        from execution.binary_lab_s2_signals import extract_s2_signal, check_s2_eligibility
+        # Extract signal — PM Sleeve v1 or legacy S2
+        pm_cfg = self._limits.get("pm_sleeve_v1") or {}
+        use_pm_sleeve = pm_cfg.get("enabled", False)
 
-        entry_gate = self._limits.get("entry_gate") or {}
-        min_edge = float(entry_gate.get("min_edge_threshold", 0.03))
+        if use_pm_sleeve:
+            from execution.binary_lab_s2_signals import (
+                extract_pm_sleeve_signal, check_pm_sleeve_eligibility,
+            )
+            price_region_cfg = pm_cfg.get("price_region") or {}
+            confidence_cfg = pm_cfg.get("confidence_filter") or {}
 
-        signal = extract_s2_signal(
-            self._model,
-            per_round_usd=self._per_round_usd,
-            min_edge_threshold=min_edge,
-        )
+            signal = extract_pm_sleeve_signal(
+                self._model,
+                per_round_usd=self._per_round_usd,
+                max_entry_cost=float(price_region_cfg.get("max_entry_cost", 0.45)),
+                confidence_filter_enabled=confidence_cfg.get("enabled", True),
+                min_edge_abs=float(confidence_cfg.get("min_edge_abs", 0.05)),
+            )
+        else:
+            from execution.binary_lab_s2_signals import extract_s2_signal
+
+            entry_gate = self._limits.get("entry_gate") or {}
+            min_edge = float(entry_gate.get("min_edge_threshold", 0.03))
+
+            signal = extract_s2_signal(
+                self._model,
+                per_round_usd=self._per_round_usd,
+                min_edge_threshold=min_edge,
+            )
         if signal is None:
             self._log_no_trade(round_id, now_ts, "signal_unavailable")
             return False
@@ -537,14 +547,25 @@ class BinaryLabS2ShadowRunner:
         # State for gate check
         state = self._get_current_state()
 
-        elig = check_s2_eligibility(
-            signal,
-            self._limits,
-            current_nav_usd=state.get("current_nav_usd", 900.0),
-            open_positions=len(self._open_rounds),
-            freeze_intact=state.get("freeze_intact", True),
-            time_remaining_s=time_remaining_s,
-        )
+        if use_pm_sleeve:
+            elig = check_pm_sleeve_eligibility(
+                signal,
+                self._limits,
+                current_nav_usd=state.get("current_nav_usd", 900.0),
+                open_positions=len(self._open_rounds),
+                freeze_intact=state.get("freeze_intact", True),
+                time_remaining_s=time_remaining_s,
+            )
+        else:
+            from execution.binary_lab_s2_signals import check_s2_eligibility
+            elig = check_s2_eligibility(
+                signal,
+                self._limits,
+                current_nav_usd=state.get("current_nav_usd", 900.0),
+                open_positions=len(self._open_rounds),
+                freeze_intact=state.get("freeze_intact", True),
+                time_remaining_s=time_remaining_s,
+            )
 
         if not elig.eligible:
             self._log_no_trade(
@@ -633,13 +654,18 @@ class BinaryLabS2ShadowRunner:
             "model_version": signal.model_version,
             "config_hash": self._config_hash,
             "freeze_intact": rnd.freeze_intact,
+            "price_region": signal.price_region,
+            "expected_payoff_ratio": (
+                round((1.0 - signal.entry_cost) / signal.entry_cost, 6)
+                if signal.entry_cost > 0 else None
+            ),
             "status": "filled",
         })
 
         logger.info(
-            "s2_shadow: ENTRY %s %s side=%s cost=%.4f edge=%.4f bucket=%s",
+            "s2_shadow: ENTRY %s %s side=%s cost=%.4f edge=%.4f region=%s",
             round_id, self._symbol, signal.trade_side,
-            signal.entry_cost, signal.executable_edge, rnd.edge_bucket,
+            signal.entry_cost, signal.executable_edge, signal.price_region,
         )
         return True
 
@@ -848,6 +874,8 @@ class BinaryLabS2ShadowRunner:
                 "calibration_active": signal.calibration_active,
                 "calibration_confident": signal.calibration_confident,
                 "model_version": signal.model_version,
+                "price_region": getattr(signal, "price_region", None),
+                "entry_cost": getattr(signal, "entry_cost", None),
             })
         self._trade_writer.write(record)
 
