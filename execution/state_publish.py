@@ -998,6 +998,43 @@ def write_risk_allocation_suggestions_state(payload: Dict[str, Any], state_dir: 
     _write_state_file("risk_allocation_suggestions_v6.json", payload, state_dir)
 
 
+def write_determinism_state(
+    snapshot_dict: Dict[str, Any],
+    proc_read_failures: int = 0,
+    state_dir: pathlib.Path | None = None,
+) -> Dict[str, Any]:
+    """Write execution determinism guard state to logs/state/determinism.json.
+
+    Called periodically from the main loop.  Dashboard reads this for
+    operator-visible environment health.
+    """
+    degraded = snapshot_dict.get("degraded", False)
+    held = snapshot_dict.get("held_degraded", False)
+    if degraded and held:
+        status = "HELD_DEGRADED"
+    elif degraded:
+        status = "DEGRADED"
+    else:
+        status = "OK"
+
+    payload = {
+        "determinism_status": status,
+        "degraded": degraded,
+        "held_degraded": held,
+        "executor_swap_kb": snapshot_dict.get("executor_swap_kb"),
+        "executor_rss_kb": snapshot_dict.get("executor_rss_kb"),
+        "system_swap_used_mb": snapshot_dict.get("system_swap_used_mb"),
+        "mem_psi_avg10": snapshot_dict.get("mem_psi_avg10"),
+        "avail_mem_pct": snapshot_dict.get("avail_mem_pct"),
+        "violations": snapshot_dict.get("violations", []),
+        "proc_read_failures": proc_read_failures,
+        "updated_ts": utc_now_iso(),
+        "engine_version": read_version(default="v7.6"),
+    }
+    _write_state_file("determinism.json", payload, state_dir)
+    return payload
+
+
 def write_pipeline_v6_shadow_state(payload: Dict[str, Any], state_dir: pathlib.Path | None = None) -> None:
     _write_state_file("pipeline_v6_shadow_head.json", payload, state_dir)
 

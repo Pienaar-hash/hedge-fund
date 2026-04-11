@@ -23,6 +23,32 @@ When ATR is missing or stale, falls back to the legacy proxy
 (confidence - 0.5) and marks edge_source = "fallback_proxy".
 
 Logging fields (true_edge_v1.*) make every pass/veto explainable.
+
+────────────────────────────────────────────────────────────────────
+EDGE CONTRACT NOTICE (P4A, 2026-04-09)
+────────────────────────────────────────────────────────────────────
+
+This module implements a **confidence-threshold heuristic**, NOT a
+validated expectancy model.
+
+  Model assumption:   confidence > 0.5 implies positive edge
+  Live reality:       conviction scores cluster 0.41–0.44 (always < 0.5)
+  Consequence:        adv = clamp(conf - 0.5, 0, cap) = 0 → ALWAYS zero edge
+  Classification:     CLASS_B defect (P3 diagnostic, 2026-04-09)
+
+The scoring surface produces a *relative ranking* (bounded [0, 1]),
+not a *calibrated economic probability*.  The 0.5 midpoint is an
+arbitrary threshold with no empirical grounding.
+
+The authoritative replacement is ``execution/expectancy_bridge.py``
+which maps conviction bands to E[net_edge_pct] from realized episodes.
+Until the bridge is promoted, this module remains the live edge source.
+
+Edge source taxonomy:
+  - ``confidence_threshold_model``  → this module (heuristic, ACTIVE)
+  - ``empirical_expectancy_bridge`` → expectancy_bridge.py (shadow-only)
+  - ``intent_expected_edge``        → strategy-provided edge (unused)
+────────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
@@ -38,6 +64,11 @@ DEFAULT_ADV_CAP: float = 0.25       # Clamp advantage at 25pp
 DEFAULT_K_ATR: float = 0.6          # Conservative multiplier for m15
 DEFAULT_MIN_ATR_PCT: float = 0.0001  # 0.01% — below this ATR is stale/invalid
 DEFAULT_SPREAD_SLIPPAGE_BPS: float = 0.0  # Optional spread+slippage deduction
+
+# The confidence midpoint that separates "has edge" from "no edge".
+# P4A NOTE: This is an arbitrary threshold, NOT empirically calibrated.
+# See EDGE CONTRACT NOTICE in module docstring.
+CONFIDENCE_MIDPOINT: float = 0.5
 
 # Per-timeframe k_atr defaults
 K_ATR_DEFAULTS: Dict[str, float] = {
@@ -107,6 +138,8 @@ class TrueEdgeResult:
     source: str             # "atr_conf_v1" or "fallback_proxy"
     spread_slippage_usd: float = 0.0
     fallback_reason: str = ""  # why fallback: atr_missing|atr_stale|atr_unit_suspect|price_missing
+    confidence_midpoint: float = CONFIDENCE_MIDPOINT  # P4A: expose the threshold
+    edge_contract: str = "confidence_threshold_model"  # P4A: edge source taxonomy
 
     def to_dict(self) -> Dict[str, Any]:
         return {f"true_edge_v1.{k}": v for k, v in asdict(self).items()}
@@ -155,8 +188,10 @@ def compute_true_edge(
     k_atr = _resolve_k_atr(config, timeframe)
     slip_bps = spread_slippage_bps if spread_slippage_bps is not None else config.spread_slippage_bps
 
-    # ── Step A: Advantage over 50/50 ──────────────────────────────────
-    adv = _clamp(confidence - 0.5, 0.0, config.adv_cap)
+    # ── Step A: Advantage over midpoint ────────────────────────────────
+    # P4A: CONFIDENCE_MIDPOINT is an arbitrary threshold, not empirically
+    # calibrated.  See EDGE CONTRACT NOTICE in module docstring.
+    adv = _clamp(confidence - CONFIDENCE_MIDPOINT, 0.0, config.adv_cap)
 
     # ── Validate ATR ──────────────────────────────────────────────────
     # ATR from vol.atr_pct() is in percentage (×100), but callers should
@@ -188,8 +223,8 @@ def compute_true_edge(
             use_fallback = True
 
     if use_fallback:
-        # Legacy proxy: confidence - 0.5 (same as signal_generator)
-        proxy_edge_pct = _clamp(confidence - 0.5, 0.0, 1.0)
+        # Legacy proxy: confidence - MIDPOINT (same as signal_generator)
+        proxy_edge_pct = _clamp(confidence - CONFIDENCE_MIDPOINT, 0.0, 1.0)
         expected_edge_usd = notional_usd * proxy_edge_pct
         slip_usd = notional_usd * (slip_bps / 10_000) if slip_bps else 0.0
         expected_edge_usd = max(0.0, expected_edge_usd - slip_usd)

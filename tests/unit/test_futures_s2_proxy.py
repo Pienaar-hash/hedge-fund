@@ -678,3 +678,105 @@ class TestDaemonThread:
         assert runner._daemon is first_daemon
 
         runner._daemon.stop(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# Variant mode tests
+# ---------------------------------------------------------------------------
+
+class TestVariantMode:
+    """Verify variant_mode transforms the edge→direction mapping."""
+
+    def _run_variant_entry(
+        self,
+        edge: float,
+        variant_mode: str,
+        *,
+        variant_min_edge_abs: float = 0.05,
+    ) -> Optional[str]:
+        """Return positionSide if entry made, else None."""
+        limits = dict(
+            _BASE_LIMITS,
+            variant_mode=variant_mode,
+            variant_min_edge_abs=variant_min_edge_abs,
+        )
+        td = tempfile.mkdtemp()
+        runner = _make_runner(limits=limits, tmp_dir=td)
+
+        signal = _FakeSignal(
+            p_yes_mid=0.50,
+            p_model_yes=0.50 + edge,
+            edge_yes=edge,
+        )
+
+        captured_side = {}
+        def fake_send_order(**kwargs):
+            captured_side["positionSide"] = kwargs.get("positionSide")
+            return {"orderId": "t1", "avgPrice": "50000",
+                    "executedQty": "0.004", "status": "FILLED"}
+
+        round_start = _round_start_unix(1711200000.0)
+        now_unix = round_start + ENTRY_OFFSET_S + 10
+        now_ts = "2025-03-23T12:00:40+00:00"
+
+        with patch("execution.binary_lab_s2_signals.extract_s2_signal", return_value=signal), \
+             patch("execution.exchange_utils.get_price", return_value=50000.0), \
+             patch("execution.exchange_precision.normalize_qty", return_value=0.004), \
+             patch("execution.exchange_utils.send_order", side_effect=fake_send_order):
+            entered = runner._maybe_enter("BTCUSDT", now_unix, now_ts)
+
+        if entered:
+            return captured_side.get("positionSide")
+        return None
+
+    # -- normal mode (baseline) --
+    def test_normal_long(self):
+        assert self._run_variant_entry(0.05, "normal") == "LONG"
+
+    def test_normal_short(self):
+        assert self._run_variant_entry(-0.05, "normal") == "SHORT"
+
+    # -- invert mode --
+    def test_invert_flips_long_to_short(self):
+        assert self._run_variant_entry(0.05, "invert") == "SHORT"
+
+    def test_invert_flips_short_to_long(self):
+        assert self._run_variant_entry(-0.05, "invert") == "LONG"
+
+    # -- short_only mode --
+    def test_short_only_blocks_long(self):
+        assert self._run_variant_entry(0.05, "short_only") is None
+
+    def test_short_only_allows_short(self):
+        assert self._run_variant_entry(-0.05, "short_only") == "SHORT"
+
+    # -- threshold mode --
+    def test_threshold_blocks_weak_edge(self):
+        # |0.04| < 0.05 threshold -> blocked
+        assert self._run_variant_entry(0.04, "threshold", variant_min_edge_abs=0.05) is None
+
+    def test_threshold_allows_strong_edge(self):
+        # |0.06| >= 0.05 threshold -> allowed
+        assert self._run_variant_entry(0.06, "threshold", variant_min_edge_abs=0.05) == "LONG"
+
+    def test_threshold_allows_strong_negative_edge(self):
+        assert self._run_variant_entry(-0.06, "threshold", variant_min_edge_abs=0.05) == "SHORT"
+
+    def test_threshold_blocks_weak_negative_edge(self):
+        assert self._run_variant_entry(-0.04, "threshold", variant_min_edge_abs=0.05) is None
+
+    # -- invert_threshold mode --
+    def test_invert_threshold_inverts_and_allows_strong(self):
+        # edge=+0.08, |edge|>=0.05 → passes threshold, invert → SHORT
+        assert self._run_variant_entry(0.08, "invert_threshold", variant_min_edge_abs=0.05) == "SHORT"
+
+    def test_invert_threshold_inverts_negative_strong(self):
+        # edge=-0.08, |edge|>=0.05 → passes threshold, invert → LONG
+        assert self._run_variant_entry(-0.08, "invert_threshold", variant_min_edge_abs=0.05) == "LONG"
+
+    def test_invert_threshold_blocks_weak_edge(self):
+        # edge=+0.04, |edge|<0.05 → blocked before inversion matters
+        assert self._run_variant_entry(0.04, "invert_threshold", variant_min_edge_abs=0.05) is None
+
+    def test_invert_threshold_blocks_weak_negative_edge(self):
+        assert self._run_variant_entry(-0.04, "invert_threshold", variant_min_edge_abs=0.05) is None

@@ -514,6 +514,9 @@ class BinaryLabS2ShadowRunner:
                 max_entry_cost=float(price_region_cfg.get("max_entry_cost", 0.45)),
                 confidence_filter_enabled=confidence_cfg.get("enabled", True),
                 min_edge_abs=float(confidence_cfg.get("min_edge_abs", 0.05)),
+                payoff_relaxation_threshold=float(
+                    confidence_cfg.get("payoff_relaxation_threshold", 5.0)
+                ),
             )
         else:
             from execution.binary_lab_s2_signals import extract_s2_signal

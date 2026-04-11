@@ -214,6 +214,10 @@ class FuturesS2ProxyRunner:
         self._max_quote_age: float = float(limits.get("max_quote_age_s", 90))
         self._dd_kill_usd: float = float(limits.get("dd_kill_usd", -500))
 
+        # Variant mode: "normal", "invert", "short_only", "threshold"
+        self._variant_mode: str = str(limits.get("variant_mode", "normal"))
+        self._variant_min_edge_abs: float = float(limits.get("variant_min_edge_abs", 0.05))
+
         # State
         self._open_trades: List[OpenFuturesTrade] = []
         self._processed_round_ids: set[str] = set()
@@ -235,6 +239,11 @@ class FuturesS2ProxyRunner:
 
         # Restore state from disk
         self._load_state()
+
+        logger.info(
+            "futures_s2_proxy: init variant_mode=%s min_edge=%.4f variant_min_edge_abs=%.4f",
+            self._variant_mode, self._min_edge, self._variant_min_edge_abs,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -340,6 +349,28 @@ class FuturesS2ProxyRunner:
                                signal=signal)
             return False
 
+        # ---- Variant mode transforms ----
+        if self._variant_mode == "invert":
+            direction = "SHORT" if direction == "LONG" else "LONG"
+        elif self._variant_mode == "short_only":
+            if direction == "LONG":
+                self._log_no_trade(round_id, symbol, now_ts,
+                                   "variant_long_disabled", signal=signal)
+                return False
+        elif self._variant_mode == "threshold":
+            if abs(edge) < self._variant_min_edge_abs:
+                self._log_no_trade(round_id, symbol, now_ts,
+                                   "variant_edge_below_abs_threshold",
+                                   signal=signal)
+                return False
+        elif self._variant_mode == "invert_threshold":
+            direction = "SHORT" if direction == "LONG" else "LONG"
+            if abs(edge) < self._variant_min_edge_abs:
+                self._log_no_trade(round_id, symbol, now_ts,
+                                   "variant_edge_below_abs_threshold",
+                                   signal=signal)
+                return False
+
         # Freeze signal snapshot for attribution
         snapshot: Dict[str, Any] = {
             "p_market": signal.p_yes_mid,
@@ -352,6 +383,7 @@ class FuturesS2ProxyRunner:
             "quote_age_s": signal.quote_age_s,
             "round_id": round_id,
             "symbol": symbol,
+            "variant_mode": self._variant_mode,
         }
 
         # Get current price and compute qty
@@ -474,6 +506,7 @@ class FuturesS2ProxyRunner:
             "order_status": status,
             "signal_snapshot": snapshot,
             "hold_duration_s": self._hold_s,
+            "variant_mode": self._variant_mode,
             "entry_window_position_s": entry_window_position_s,
             "round_open_ts": round(round_start, 3),
             "entry_signal_ready_ts": round(_entry_signal_ready_ts, 3),
@@ -647,6 +680,7 @@ class FuturesS2ProxyRunner:
             "entry_fill_ts": outcome.entry_fill_ts,
             "cumulative_pnl": round(self._cumulative_pnl, 4),
             "total_exits": self._total_exits,
+            "variant_mode": self._variant_mode,
             "realized_win_rate": round(
                 self._win_count / self._total_exits, 4,
             ) if self._total_exits > 0 else 0.0,
@@ -684,6 +718,7 @@ class FuturesS2ProxyRunner:
             "deny_reason": reason,
             "cumulative_pnl": round(self._cumulative_pnl, 4),
             "dd_kill_active": self._dd_kill_active,
+            "variant_mode": self._variant_mode,
         }
         if signal is not None:
             record["signal_snapshot"] = {

@@ -968,3 +968,57 @@ class TestPMSleeveSignal:
         assert len(entries) == 1
         assert entries[0]["trade_side"] == "YES"
         assert "price_region" in entries[0]
+
+    def test_payoff_relaxation_bypasses_confidence_at_extreme_low(self) -> None:
+        """At extreme_low (payoff >= 5.0), confidence filter is skipped."""
+        # entry_cost = p_yes_ask = 0.11 → payoff_ratio = (1 - 0.11)/0.11 = 8.09
+        # edge = |0.12 - 0.10| = 0.02 → below min_edge_abs=0.05
+        # Without relaxation: SKIP_CONFIDENCE_BELOW_MIN
+        # With relaxation (payoff 8.09 >= 5.0): PASS
+        signal = _make_signal(
+            p_yes_mid=0.10, spread=0.02, p_model_yes=0.12,
+            trade_side="YES",
+        )
+        assert signal.entry_cost < 0.15  # extreme_low
+        assert abs(signal.edge_yes) < 0.05  # below confidence threshold
+
+        result = check_pm_sleeve_eligibility(
+            signal, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert result.eligible
+
+    def test_payoff_relaxation_does_not_apply_at_mid_low(self) -> None:
+        """At mid_low (payoff < 5.0), confidence filter still applies."""
+        # entry_cost = p_yes_ask = 0.36 → payoff_ratio = (1-0.36)/0.36 = 1.78
+        # edge = |0.37 - 0.35| = 0.02 → below min_edge_abs=0.05
+        # payoff 1.78 < 5.0 → confidence filter applies → SKIP
+        blocked = _make_signal(
+            p_yes_mid=0.35, spread=0.02, p_model_yes=0.37,
+            trade_side="SKIP", skip_reason="SKIP_CONFIDENCE_BELOW_MIN",
+        )
+        result = check_pm_sleeve_eligibility(
+            blocked, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert not result.eligible
+        assert result.deny_reason == "SKIP_CONFIDENCE_BELOW_MIN"
+
+    def test_payoff_relaxation_boundary_at_threshold(self) -> None:
+        """At exactly payoff_ratio=5.0 (entry_cost=0.167), confidence still applies."""
+        # payoff = (1 - 0.175) / 0.175 = 4.71 → below threshold
+        blocked = _make_signal(
+            p_yes_mid=0.165, spread=0.02, p_model_yes=0.185,
+            trade_side="SKIP", skip_reason="SKIP_CONFIDENCE_BELOW_MIN",
+        )
+        # entry_cost = 0.175, payoff = 4.71 < 5.0
+        assert abs(blocked.edge_yes) < 0.05
+        result = check_pm_sleeve_eligibility(
+            blocked, _PM_SLEEVE_LIMITS,
+            current_nav_usd=900.0, open_positions=0,
+            freeze_intact=True, time_remaining_s=600.0,
+        )
+        assert not result.eligible
+        assert result.deny_reason == "SKIP_CONFIDENCE_BELOW_MIN"

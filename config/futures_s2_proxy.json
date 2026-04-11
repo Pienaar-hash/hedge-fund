@@ -1,11 +1,12 @@
 {
   "_meta": {
     "sleeve_id": "futures_s2_proxy",
-    "version": "1.0",
+    "version": "1.3",
     "created": "2026-03-23",
-    "status": "PAPER",
-    "purpose": "Test whether PM calibration mispricing predicts short-horizon futures returns",
-    "time_horizon_minutes": 15
+    "status": "DISABLED",
+    "purpose": "S2 falsified as standalone strategy (2026-03-30). Retained for feature/ensemble use.",
+    "time_horizon_minutes": 15,
+    "variant_note": "DISABLED after full variant sweep: normal(N=51), invert(N=59), invert_threshold(N=34). No positive gross expectancy in any variant. Signal reclassified as weak probabilistic feature (+0.22 corr after inversion)."
   },
   "symbols": ["BTCUSDT"],
   "notional_usd": 500,
@@ -14,5 +15,8 @@
   "min_edge": 0.03,
   "taker_fee_rate": 0.0004,
   "max_quote_age_s": 90,
-  "dd_kill_usd": -500
+  "dd_kill_usd": -500,
+  "variant_mode": "normal",
+  "variant_min_edge_abs": 0.07,
+  "enabled": false
 }

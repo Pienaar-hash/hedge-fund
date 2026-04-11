@@ -556,6 +556,7 @@ def extract_pm_sleeve_signal(
     max_entry_cost: float = 0.45,
     confidence_filter_enabled: bool = True,
     min_edge_abs: float = 0.05,
+    payoff_relaxation_threshold: float = 5.0,
 ) -> Optional[BinaryLabS2Signal]:
     """
     Region-first signal extraction for PM Sleeve v1.
@@ -709,8 +710,11 @@ def extract_pm_sleeve_signal(
         pass
 
     # GATE 3: Confidence filter (optional — uses magnitude, not direction)
+    # Payoff-ratio relaxation: at extreme asymmetry (payoff >= threshold),
+    # structural EV dominates and confidence filter is redundant.
     if trade_side != "SKIP" and confidence_filter_enabled:
-        if abs(edge_yes) < min_edge_abs:
+        payoff_ratio_g3 = (1.0 - entry_cost) / entry_cost if entry_cost > 0 else 0.0
+        if payoff_ratio_g3 < payoff_relaxation_threshold and abs(edge_yes) < min_edge_abs:
             trade_side = "SKIP"
             skip_reason = "SKIP_CONFIDENCE_BELOW_MIN"
 

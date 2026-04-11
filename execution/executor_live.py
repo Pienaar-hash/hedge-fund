@@ -208,6 +208,15 @@ _DISK_CRITICAL_THRESHOLD_PCT = float(os.getenv("DISK_CRITICAL_THRESHOLD_PCT", "9
 _DISK_ALERT_COOLDOWN_S = 600.0  # Don't spam — one alert per 10 min
 _ENV_EVENTS_PATH = Path("logs/execution/environment_events.jsonl")
 
+# Execution determinism guard (detects swap/PSI violations)
+_DETERMINISM_ALERT_COOLDOWN_S = 120.0  # Rate-limit env event logging
+_DETERMINISM_BLOCK_NEW_ENTRIES = True  # When degraded: veto new entries (exits always allowed)
+try:
+    from execution.determinism_guard import check_determinism, DeterminismSnapshot
+    _DETERMINISM_AVAILABLE = True
+except ImportError:
+    _DETERMINISM_AVAILABLE = False
+
 _ENGINE_VERSION = read_version(default="v7.6")
 
 # DLE Shadow Writer singleton (Phase A: log-only observation)
@@ -679,6 +688,93 @@ def _maybe_check_disk_pressure(state: ExecutorState, force: bool = False) -> Non
         append_jsonl(_ENV_EVENTS_PATH, payload)
     except Exception as exc:
         LOG.debug("[disk_guard] environment_event write failed: %s", exc)
+
+
+def _maybe_log_determinism_status(state: ExecutorState) -> None:
+    """Periodic determinism check — publishes state + emits events on degradation.
+
+    Always writes logs/state/determinism.json (operator-visible status).
+    On degradation: also appends environment_events.jsonl + DLE shadow event.
+    Rate-limited by _DETERMINISM_ALERT_COOLDOWN_S for event streams (not state).
+    """
+    if not _DETERMINISM_AVAILABLE:
+        return
+    try:
+        snap = check_determinism(force=True)
+    except Exception as exc:
+        LOG.debug("[determinism_guard] periodic check failed: %s", exc)
+        return
+
+    # Always publish state file (dashboard reads this)
+    try:
+        from execution.determinism_guard import get_proc_read_failures
+        from execution.state_publish import write_determinism_state
+        snap_dict = snap.as_dict()
+        snap_dict["held_degraded"] = snap.held_degraded
+        write_determinism_state(snap_dict, proc_read_failures=get_proc_read_failures())
+    except Exception as exc:
+        LOG.debug("[determinism_guard] state_publish failed: %s", exc)
+
+    if not snap.degraded:
+        return
+
+    # Rate-limit event emission (not state writes)
+    now = time.time()
+    if (now - state.last_determinism_alert_ts) < _DETERMINISM_ALERT_COOLDOWN_S:
+        return
+    state.last_determinism_alert_ts = now
+
+    payload = {
+        "ts": now_utc(),
+        "event_type": "execution_determinism_degraded",
+        "violations": snap.violations,
+        "executor_swap_kb": snap.executor_swap_kb,
+        "executor_rss_kb": snap.executor_rss_kb,
+        "system_swap_used_mb": snap.system_swap_used_mb,
+        "mem_psi_avg10": snap.mem_psi_avg10,
+        "avail_mem_pct": snap.avail_mem_pct,
+    }
+    LOG.warning(
+        "[determinism_guard] ENVIRONMENT DEGRADED — %d violation(s): %s",
+        len(snap.violations),
+        "; ".join(snap.violations),
+    )
+    try:
+        append_jsonl(_ENV_EVENTS_PATH, payload)
+    except Exception as exc:
+        LOG.debug("[determinism_guard] environment_event write failed: %s", exc)
+
+    # === DLE Shadow Hook: ENVIRONMENT DEGRADATION ===
+    dle_writer = _get_dle_writer()
+    if dle_writer:
+        try:
+            flags = get_flags()
+            shadow_build_chain(
+                enabled=flags.shadow_dle_enabled,
+                write_logs=flags.shadow_dle_write_logs,
+                writer=dle_writer,
+                attempt_id=f"env_determ_{int(now)}",
+                requested_action="ENVIRONMENT_CHECK",
+                symbol="*",
+                side="NONE",
+                strategy="DETERMINISM_GUARD",
+                qty_intent=None,
+                context={
+                    "violations": snap.violations,
+                    "executor_swap_kb": snap.executor_swap_kb,
+                    "mem_psi_avg10": snap.mem_psi_avg10,
+                    "avail_mem_pct": snap.avail_mem_pct,
+                },
+                phase_id="CYCLE_004",
+                action_class="ENVIRONMENT_DEGRADED",
+                policy_version=state.engine_version,
+                scope={"global": True},
+                constraints={"verdict": "DEGRADED", "violations": len(snap.violations)},
+                risk=snap.as_dict(),
+                authority_source="DETERMINISM_GUARD",
+            )
+        except Exception as exc:
+            LOG.debug("[dle_shadow] determinism hook failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -2869,7 +2965,32 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
     if reduce_only:
         # Exits are handled by doctrine_exit_verdict, not this gate
         return True, "REDUCE_ONLY_BYPASS", {}
-    
+
+    # INV-X: Execution Determinism Invariant
+    # Block new entries when executor environment is non-deterministic.
+    # Exits are exempt (reduceOnly bypass above).  Fail-open: if the
+    # guard module is unavailable or /proc unreadable, we do NOT veto.
+    if _DETERMINISM_AVAILABLE and _DETERMINISM_BLOCK_NEW_ENTRIES:
+        try:
+            det_snap = check_determinism()
+            if det_snap.degraded:
+                _det_details = {
+                    "violations": det_snap.violations,
+                    "executor_swap_kb": det_snap.executor_swap_kb,
+                    "system_swap_used_mb": det_snap.system_swap_used_mb,
+                    "mem_psi_avg10": det_snap.mem_psi_avg10,
+                    "avail_mem_pct": det_snap.avail_mem_pct,
+                }
+                log_doctrine_event(
+                    "ENTRY_VETO",
+                    str(intent.get("symbol", "")),
+                    DoctrineVerdict.VETO_ENVIRONMENT_DEGRADED,
+                    {"intent": intent, "determinism": _det_details},
+                )
+                return False, "ENVIRONMENT_DEGRADED", _det_details
+        except Exception as exc:
+            LOG.debug("[determinism_guard] check failed (fail-open): %s", exc)
+
     symbol = intent.get("symbol", "")
     sig = str(intent.get("signal", "")).upper()
     direction = sig if sig in ("BUY", "SELL") else "BUY"
@@ -3286,6 +3407,23 @@ def _check_fee_edge_gate(
                         },
                     )
 
+            # ── P3: Score-to-edge diagnostic (carry-neutral shadow) ───
+            try:
+                from execution.score_edge_diagnostic import build_diagnostic_record as _build_sed
+                _sed_rec = _build_sed(
+                    intent=intent,
+                    te_result=_te_result,
+                    fg_details=fg_details,
+                    fg_allowed=fg_allowed,
+                )
+                if _sed_rec is not None:
+                    append_jsonl(
+                        LOGS_ROOT / "execution" / "score_edge_diagnostic.jsonl",
+                        _sed_rec,
+                    )
+            except Exception as _sed_exc:
+                LOG.warning("[score_edge_diag] ERROR: %s", _sed_exc)
+
             if not fg_allowed:
                 LOG.info(
                     "[fee_gate] ENTRY VETO %s: edge $%.4f < "
@@ -3537,6 +3675,19 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
     intent["attempt_id"] = attempt_id
     intent["intent_id"] = intent_id
 
+    # ── Per-episode factor log (intent_factor_log.jsonl) ──────────────────
+    try:
+        from execution.intent_factor_log import build_factor_log_record
+
+        _factor_rec = build_factor_log_record(intent)
+        if _factor_rec is not None:
+            append_jsonl(
+                LOGS_ROOT / "execution" / "intent_factor_log.jsonl",
+                _factor_rec,
+            )
+    except Exception:
+        pass  # fail-open: logging must never block execution
+
     # ── v7.9-E2: Churn Guard ──────────────────────────────────────────────
     try:
         from execution.churn_guard import (
@@ -3573,6 +3724,17 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
     # (see post-risk-veto section below)
 
     # === DLE Shadow Hook: ENTRY ALLOW ===
+    # Stamp environment snapshot on intent for episode linkage.
+    # This makes environment a first-class part of the decision record.
+    if not reduce_only and _DETERMINISM_AVAILABLE:
+        try:
+            _env_snap = check_determinism()
+            _env_meta = intent.setdefault("metadata", {})
+            _env_meta["environment"] = _env_snap.for_episode()
+            _env_meta["environment_snapshot_hash"] = _env_snap.snapshot_hash()
+        except Exception:
+            pass  # fail-open — never block an allowed entry for telemetry
+
     if not reduce_only:
         dle_writer = _get_dle_writer()
         if dle_writer:
@@ -3604,6 +3766,8 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
                         "doctrine_details": doctrine_details,
                         "position_side": str(pos_side or ""),
                         "regime": str(doctrine_details.get("regime", "")) if doctrine_details else "",
+                        "environment": (intent.get("metadata") or {}).get("environment"),
+                        "environment_snapshot_hash": (intent.get("metadata") or {}).get("environment_snapshot_hash"),
                     },
                     phase_id="CYCLE_004",
                     action_class="ENTRY_ALLOW",
@@ -6213,7 +6377,10 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
             
             with timed_section("disk_guard"):
                 _maybe_check_disk_pressure(_STATE)
-            
+
+            with timed_section("determinism_guard"):
+                _maybe_log_determinism_status(_STATE)
+
             timing_end_loop()
             _consecutive_crashes = 0
         except KeyboardInterrupt:

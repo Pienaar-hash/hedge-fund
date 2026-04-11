@@ -133,6 +133,16 @@ def select_executable_candidate(
     selection_reason = "no_candidates"
 
     for c in candidates:
+        # ── ZERO_SCORE guard: hard ABSTAIN ─────────────────────────────────
+        # A score of 0 means unscored or missing — NEVER route to execution.
+        c_score = float(c.get("_selector_score", 0.0))
+        if c_score <= 0:
+            LOG.info(
+                "[candidate_selector] ZERO_SCORE_ABSTAIN sym=%s source=%s score=%.4f",
+                c.get("symbol", "?"), c.get("_selector_source", "?"), c_score,
+            )
+            continue
+
         if band_gate_active:
             band = str(c.get("conviction_band", "")).lower()
             rank = _CONVICTION_BAND_ORDER.get(band, -1)
@@ -172,8 +182,10 @@ def select_executable_candidate(
                 loser_engine = src
                 break
 
-    if not selected and candidates and selection_reason != "invariant_violation":
-        selection_reason = "all_rejected_by_band_gate"
+    if not selected and candidates and selection_reason == "no_candidates":
+        # All candidates were rejected — check why
+        all_zero = all(float(c.get("_selector_score", 0.0)) <= 0 for c in candidates)
+        selection_reason = "all_rejected_zero_score" if all_zero else "all_rejected_by_band_gate"
 
     return {
         "selected": selected,

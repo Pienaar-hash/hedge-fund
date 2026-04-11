@@ -159,9 +159,10 @@ class TestInProfitRegion:
         # Upper boundary inclusive
         assert in_profit_region("BTCUSDT", 0.4953) is True
 
-    def test_eth_inside_narrow_band(self):
+    def test_eth_v2_mask_discarded(self):
         from execution.shadow_selector_v2 import in_profit_region
-        assert in_profit_region("ETHUSDT", 0.47) is True
+        # V2: ETH mask discarded (unstable, overlap < 0.70)
+        assert in_profit_region("ETHUSDT", 0.47) is False
 
     def test_eth_outside_low(self):
         from execution.shadow_selector_v2 import in_profit_region
@@ -198,11 +199,13 @@ class TestSelectorD:
         assert r["v2_abstain"] is True
         assert r["rule"] == "D_abstain"
 
-    def test_eth_profit_region(self):
+    def test_eth_v2_always_abstain(self):
         from execution.shadow_selector_v2 import _selector_d
+        # V2: ETH mask discarded → all ETH scores produce ABSTAIN
         r = _selector_d("ETHUSDT", 0.47)
-        assert r["v2_choice"] == "hydra"
-        assert r["v2_abstain"] is False
+        assert r["v2_choice"] == "none"
+        assert r["v2_abstain"] is True
+        assert r["rule"] == "D_abstain"
 
     def test_eth_outside_profit_region(self):
         from execution.shadow_selector_v2 import _selector_d
@@ -218,6 +221,39 @@ class TestSelectorD:
         r = _selector_d("SOLUSDT", 0.40)
         assert r["v2_abstain"] is True
         assert r["rule"] == "D_abstain"
+
+
+# ── Zero-score policy ────────────────────────────────────────────────────────
+
+class TestZeroScore:
+    def test_zero_score_abstains(self):
+        from execution.shadow_selector_v2 import _selector_d
+        r = _selector_d("BTCUSDT", 0.0)
+        assert r["v2_abstain"] is True
+        assert r["v2_choice"] == "none"
+        assert r["rule"] == "D_zero_score"
+        assert r["d_zero_score"] is True
+
+    def test_none_score_abstains(self):
+        from execution.shadow_selector_v2 import _selector_d
+        r = _selector_d("BTCUSDT", None)
+        assert r["v2_abstain"] is True
+        assert r["v2_choice"] == "none"
+        assert r["rule"] == "D_no_score"
+        assert r["d_zero_score"] is True
+
+    def test_negative_score_abstains(self):
+        from execution.shadow_selector_v2 import _selector_d
+        r = _selector_d("BTCUSDT", -0.1)
+        assert r["v2_abstain"] is True
+        assert r["v2_choice"] == "none"
+        assert r["rule"] == "D_zero_score"
+        assert r["d_zero_score"] is True
+
+    def test_positive_score_not_flagged(self):
+        from execution.shadow_selector_v2 import _selector_d
+        r = _selector_d("BTCUSDT", 0.45)
+        assert r["d_zero_score"] is False
 
 
 # ── Candidate C: Placeholder ─────────────────────────────────────────────────
@@ -272,9 +308,9 @@ class TestEvaluateV2Shadow:
         assert result["d_rule"] == "D_profit_region"
         # Profit region metadata
         assert result["profit_region"] is True
-        assert "profit_mask_version" in result
-        # Schema v2
-        assert result["schema"] == "selector_v2_shadow_v2"
+        assert result["profit_mask_version"] == "2026-04-07_v2"
+        # Schema v3
+        assert result["schema"] == "selector_v2_shadow_v3"
         assert result["symbol"] == "BTCUSDT"
         assert result["hydra_score"] == 0.45
         assert result["legacy_score"] == 0.55
@@ -283,6 +319,25 @@ class TestEvaluateV2Shadow:
         assert result["cycle"] == 42
         # Score delta
         assert abs(result["score_delta"] - (-0.1)) < 1e-5
+        # v3 lineage fields
+        assert result["d_zero_score"] is False
+        assert result["d_mask_boundaries"] == [(0.4197, 0.4953)]
+        assert result["d_regime_boundary"] == 0.5369
+        # Hard required-fields guard (prevent silent schema drift)
+        V3_REQUIRED_FIELDS = {
+            "schema", "ts", "symbol", "cycle",
+            "hydra_score", "legacy_score", "score_delta",
+            "hydra_regime_band", "profit_region", "profit_mask_version",
+            "ecs_conflict", "ecs_choice",
+            "a_choice", "a_abstain", "a_rule",
+            "b_choice", "b_abstain", "b_rule",
+            "c_choice", "c_abstain", "c_rule",
+            "d_choice", "d_abstain", "d_rule",
+            "d_zero_score", "d_mask_boundaries", "d_regime_boundary",
+        }
+        assert V3_REQUIRED_FIELDS <= set(result.keys()), (
+            f"Missing v3 fields: {V3_REQUIRED_FIELDS - set(result.keys())}"
+        )
 
     def test_btc_legacy_region_produces_abstain(self):
         from execution.shadow_selector_v2 import evaluate_v2_shadow

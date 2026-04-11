@@ -1,0 +1,10 @@
+metric,value
+break_even_bps,9.59
+pct_above_hurdle,0.2013
+implied_min_score,0.3863
+fee_to_edge_ratio,
+friction_kill_rate,0.2619
+total_gross_edge_bps,-5095.73
+total_fee_drag_bps,1477.34
+total_net_edge_bps,-6573.07
+n_trades,154

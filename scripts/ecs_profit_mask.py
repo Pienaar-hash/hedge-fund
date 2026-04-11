@@ -367,5 +367,106 @@ def run() -> None:
     print()
 
 
+# ── Monotonicity salvageability test (DEC_ECS_PROFIT_MASK_V2) ────────────────
+
+def test_mask_salvageability(
+    symbol: str,
+    episodes: Optional[List[Dict[str, Any]]] = None,
+    n_buckets: int = 5,
+) -> Dict[str, Any]:
+    """Monotonicity test to determine if a symbol's profit mask is salvageable.
+
+    Tests four criteria (ALL must pass):
+      1. Spearman ρ > 0.15  (score is informative)
+      2. Q5-Q1 spread > 0   (top quintile outperforms bottom)
+      3. p-value < 0.10     (statistically significant)
+      4. Monotonicity ratio ≥ 0.75  (≤1 bucket violation)
+
+    Returns dict with test results and salvageable verdict.
+    """
+    # Lazy import to avoid circular dependency
+    from execution.hydra_monotonicity import compute_monotonicity, compute_quintile_spread
+
+    if episodes is None:
+        episodes = _load_episodes()
+
+    sym_eps = [ep for ep in episodes if ep.get("symbol") == symbol]
+
+    mono = compute_monotonicity(sym_eps, n_buckets=n_buckets)
+    q_spread = compute_quintile_spread(sym_eps)
+
+    rho = mono.get("spearman")
+    p_val = mono.get("p_value")
+    q5_q1 = q_spread.get("q5_q1_spread")
+
+    # Bucket-level monotonicity: count inversions
+    buckets = mono.get("buckets", [])
+    violations = 0
+    for i in range(len(buckets) - 1):
+        if buckets[i + 1]["mean_return"] < buckets[i]["mean_return"]:
+            violations += 1
+    n_gaps = max(1, len(buckets) - 1)
+    mono_ratio = 1.0 - violations / n_gaps if buckets else 0.0
+
+    salvageable = (
+        rho is not None and rho > 0.15
+        and q5_q1 is not None and q5_q1 > 0
+        and p_val is not None and p_val < 0.10
+        and mono_ratio >= 0.75
+    )
+
+    return {
+        "symbol": symbol,
+        "spearman": round(rho, 4) if rho is not None else None,
+        "p_value": round(p_val, 6) if p_val is not None else None,
+        "q5_q1_spread": round(q5_q1, 6) if q5_q1 is not None else None,
+        "monotonicity_ratio": round(mono_ratio, 4),
+        "violations": violations,
+        "n_buckets": len(buckets),
+        "salvageable": salvageable,
+        "n_episodes": mono.get("n", 0),
+        "slope": mono.get("slope", "unknown"),
+        "buckets": buckets,
+    }
+
+
+def run_salvageability() -> None:
+    """Run monotonicity salvageability test for ETH and SOL."""
+    episodes = _load_episodes()
+    if not episodes:
+        print("No episodes found.")
+        return
+
+    print("=" * 72)
+    print("  MONOTONICITY SALVAGEABILITY TEST")
+    print("=" * 72)
+
+    for sym in ["ETHUSDT", "SOLUSDT"]:
+        result = test_mask_salvageability(sym, episodes)
+        print()
+        print(f"  {sym}")
+        print(f"  {'─' * 50}")
+        print(f"    Episodes:            {result['n_episodes']}")
+        print(f"    Spearman ρ:          {result['spearman']}"
+              f"  {'✓' if result['spearman'] is not None and result['spearman'] > 0.15 else '✗'}")
+        print(f"    p-value:             {result['p_value']}"
+              f"  {'✓' if result['p_value'] is not None and result['p_value'] < 0.10 else '✗'}")
+        print(f"    Q5-Q1 spread:        {result['q5_q1_spread']}"
+              f"  {'✓' if result['q5_q1_spread'] is not None and result['q5_q1_spread'] > 0 else '✗'}")
+        print(f"    Monotonicity ratio:  {result['monotonicity_ratio']}"
+              f"  {'✓' if result['monotonicity_ratio'] >= 0.75 else '✗'}")
+        print(f"    Violations:          {result['violations']}/{result['n_buckets'] - 1 if result['n_buckets'] > 1 else 0}")
+        print(f"    Slope:               {result['slope']}")
+        print()
+        if result["salvageable"]:
+            print(f"    → SALVAGEABLE (all 4 criteria pass)")
+        else:
+            print(f"    → NOT SALVAGEABLE (mask discarded, revert to prior routing)")
+
+
 if __name__ == "__main__":
-    run()
+    import sys as _sys
+    if len(_sys.argv) > 1 and _sys.argv[1] == "--salvageability":
+        run_salvageability()
+    else:
+        run()
