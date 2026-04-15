@@ -831,3 +831,101 @@ def compute_burst_risk(
         consecutive_streaks=streaks,
         alerts=alerts,
     )
+
+
+# ---------------------------------------------------------------------------
+# Executor integration — single-call shadow evaluation
+# ---------------------------------------------------------------------------
+_FPS_CFG_CACHE: Optional[FPSv1Config] = None
+
+
+def evaluate_shadow_for_intent(
+    intent: Dict[str, Any],
+    sentinel_state: Dict[str, Any],
+) -> None:
+    """
+    Executor-callable shadow evaluation.  Builds FPSEvalContext from an
+    executor intent dict + sentinel_x state, evaluates, and appends to
+    shadow JSONL.  Completely fail-open: catches ALL exceptions so it can
+    never block the trading loop.
+
+    This function is the ONLY entry point the executor should use.
+    """
+    try:
+        global _FPS_CFG_CACHE  # noqa: PLW0603
+        if _FPS_CFG_CACHE is None:
+            import json as _json
+            _strat = {}
+            try:
+                _p = Path("config/strategy_config.json")
+                if _p.exists():
+                    _strat = _json.loads(_p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            _fps_block = (_strat.get("futures_permit_surface_v1") or {})
+            _FPS_CFG_CACHE = load_fps_config(_fps_block)
+
+        if not _FPS_CFG_CACHE.enabled:
+            return
+
+        # --- Extract fields from intent + sentinel state ---
+        symbol = str(intent.get("symbol", ""))
+        if not symbol:
+            return
+
+        price = float(intent.get("price", 0.0))
+        if price <= 0:
+            return
+
+        signal = str(intent.get("signal", intent.get("side", ""))).upper()
+        if signal in ("BUY", "LONG"):
+            proposed_direction = "LONG"
+        elif signal in ("SELL", "SHORT"):
+            proposed_direction = "SHORT"
+        else:
+            proposed_direction = "LONG"  # default; gate 2 will filter
+
+        # Regime from sentinel state
+        regime_current = str(sentinel_state.get("primary_regime", "UNKNOWN"))
+        regime_previous = str(sentinel_state.get("previous_regime", ""))
+        regime_age_bars = int(sentinel_state.get("regime_age_bars", 0))
+        regime_probs = sentinel_state.get("regime_probs") or {}
+        regime_confidence = float(
+            max(regime_probs.values()) if regime_probs else 0.0
+        )
+        crisis_flag = bool(sentinel_state.get("crisis_flag", False))
+
+        # Microstructure — use intent metadata or sensible defaults
+        meta = intent.get("metadata") or {}
+        atr_pct = float(meta.get("atr_pct", intent.get("atr_pct", 0.02)))
+        volume_z = float(meta.get("volume_z", 0.0))
+        spread_bps = float(meta.get("spread_bps", 1.0))
+
+        # Optional hypothesis fields (defaults are safe non-triggering values)
+        zscore = float(meta.get("zscore", intent.get("zscore", 0.0)))
+        rsi = float(meta.get("rsi", 50.0))
+        ema_slope = float(meta.get("ema_slope", 0.0))
+
+        ctx = FPSEvalContext(
+            symbol=symbol,
+            timestamp=time.time(),
+            regime_current=regime_current,
+            regime_previous=regime_previous,
+            regime_age_bars=regime_age_bars,
+            regime_confidence=regime_confidence,
+            crisis_flag=crisis_flag,
+            atr_pct=atr_pct,
+            volume_z=volume_z,
+            spread_bps=spread_bps,
+            price=price,
+            proposed_direction=proposed_direction,
+            zscore=zscore,
+            rsi=rsi,
+            ema_slope=ema_slope,
+        )
+
+        result = evaluate(ctx, _FPS_CFG_CACHE)
+        append_shadow_record(result, ctx, _FPS_CFG_CACHE)
+
+    except Exception as exc:
+        LOG.debug("[fps_v1] shadow evaluation failed (non-blocking): %s", exc)

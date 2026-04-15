@@ -6268,6 +6268,16 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                     except Exception:
                         pass  # v2 shadow must never block
 
+                    # ── FPS v1 shadow evaluation (research only) ──
+                    try:
+                        from execution.futures_permit_surface_v1 import (
+                            evaluate_shadow_for_intent,
+                        )
+                        _fps_sentinel = _load_sentinel_x_state()
+                        evaluate_shadow_for_intent(intent, _fps_sentinel)
+                    except Exception:
+                        pass  # FPS shadow must never block execution
+
                     if _ecs_result["selected"] is None:
                         continue  # No candidate passed — skip this intent
                 except Exception as _ecs_err:
