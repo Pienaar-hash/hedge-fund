@@ -9,8 +9,11 @@ v7.5_B1: Added slippage tracking, spread-aware TWAP, liquidity buckets
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import pathlib
+import tempfile
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -71,6 +74,7 @@ __all__ = [
     "TWAPResult",
     "RouterStats",
     "get_router_stats_snapshot",
+    "check_twap_recovery",
 ]
 
 _RUNTIME_CFG = load_runtime_config()
@@ -149,6 +153,50 @@ def _get_slippage_config() -> Optional["SlippageConfig"]:
         except Exception:
             _SLIPPAGE_CFG = None
     return _SLIPPAGE_CFG
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-1.3c: TWAP slice persistence for crash recovery
+# ---------------------------------------------------------------------------
+_TWAP_STATE_PATH = pathlib.Path("logs/state/twap_active.json")
+
+
+def _twap_state_write(payload: Dict[str, Any]) -> None:
+    """Atomically write TWAP active state."""
+    _TWAP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".twap_", dir=_TWAP_STATE_PATH.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, separators=(",", ":"))
+        os.replace(tmp, _TWAP_STATE_PATH)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _twap_state_clear() -> None:
+    """Remove the TWAP active state file on completion."""
+    try:
+        _TWAP_STATE_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def check_twap_recovery() -> Optional[Dict[str, Any]]:
+    """Return incomplete TWAP state if one exists, else None.
+
+    Intended to be called by the executor on startup.  The caller decides
+    whether to log a warning, reconcile, or discard.
+    """
+    try:
+        if _TWAP_STATE_PATH.exists():
+            with open(_TWAP_STATE_PATH, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+    except Exception:
+        pass
+    return None
 
 
 def get_market_microstructure(
@@ -830,6 +878,22 @@ def _route_twap(
     except Exception:
         pass
     
+    # AUDIT-1.3c: persist TWAP state for crash recovery
+    _twap_active_state: Dict[str, Any] = {
+        "symbol": symbol,
+        "side": side,
+        "total_qty": total_qty,
+        "gross_usd": gross_usd,
+        "total_slices": actual_slices,
+        "slice_quantities": slice_quantities,
+        "completed_slices": [],
+        "started_ts": time.time(),
+    }
+    try:
+        _twap_state_write(_twap_active_state)
+    except Exception:
+        _LOG.warning("[twap] failed to persist initial TWAP state", exc_info=True)
+
     skipped_slices = 0
     
     # Execute each slice
@@ -957,6 +1021,19 @@ def _route_twap(
             gross_usd, twap_cfg, child, "complete"
         )
         
+        # AUDIT-1.3c: update persisted state after each slice
+        try:
+            _twap_active_state["completed_slices"].append({
+                "index": i,
+                "order_id": child.order_id,
+                "filled_qty": child.filled_qty,
+                "status": child.status,
+                "ts": time.time(),
+            })
+            _twap_state_write(_twap_active_state)
+        except Exception:
+            _LOG.warning("[twap] failed to persist slice %d state", i, exc_info=True)
+
         # Sleep between slices (except after last)
         if i < actual_slices - 1 and twap_cfg.interval_seconds > 0:
             sleep_fn(twap_cfg.interval_seconds)
@@ -997,8 +1074,12 @@ def _route_twap(
     try:
         log_event(twap_logger, "twap_complete", safe_dump(twap_complete_event))
     except Exception:
-        pass
+        # AUDIT-1.1d: TWAP logging failure must not be silent
+        LOG.error("[twap] failed to log twap_complete event", exc_info=True)
     
+    # AUDIT-1.3c: clear TWAP state on completion
+    _twap_state_clear()
+
     return result
 
 

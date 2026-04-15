@@ -917,6 +917,7 @@ class HybridScoreConfig:
     router_weight: float = 0.15
     min_hybrid_score_long: float = DEFAULT_MIN_HYBRID_SCORE_LONG
     min_hybrid_score_short: float = DEFAULT_MIN_HYBRID_SCORE_SHORT
+    carry_weight_overrides: Dict[str, float] = field(default_factory=lambda: {"BTCUSDT": 0.0})
 
 
 DEFAULT_HYBRID_WEIGHTS = HybridScoreConfig()
@@ -942,6 +943,10 @@ def load_hybrid_config(strategy_config: Mapping[str, Any] | None = None) -> Hybr
         router_weight=float(hybrid_block.get("router_weight", 0.15)),
         min_hybrid_score_long=float(hybrid_block.get("intent_ranking", {}).get("min_hybrid_score_long", 0.55)),
         min_hybrid_score_short=float(hybrid_block.get("intent_ranking", {}).get("min_hybrid_score_short", 0.50)),
+        carry_weight_overrides={
+            str(k): float(v)
+            for k, v in hybrid_block.get("carry_weight_overrides", {"BTCUSDT": 0.0}).items()
+        },
     )
 
 
@@ -1116,6 +1121,10 @@ def hybrid_score_universe(
                 "expectancy": cfg.expectancy_weight,
                 "router": cfg.router_weight,
             }
+
+        # Per-symbol carry weight override (e.g. BTCUSDT → 0.0)
+        if symbol in cfg.carry_weight_overrides:
+            base_weights["carry"] = cfg.carry_weight_overrides[symbol]
 
         # Apply vol regime weight modifiers and normalize
         base_weights["carry"] = base_weights.get("carry", 0.0) * weight_mods.carry

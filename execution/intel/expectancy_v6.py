@@ -74,11 +74,12 @@ def _read_jsonl(path: Path, limit: int = 5000) -> List[Dict[str, Any]]:
 def load_trade_records(
     path: Path | str = DEFAULT_FILLS_PATH,
     lookback_hours: float = 24.0,
+    anchor_ts: float | None = None,
 ) -> List[Dict[str, Any]]:
     rows = _read_jsonl(Path(path))
     if not rows:
         return []
-    cutoff = time.time() - max(lookback_hours, 0.0) * 3600.0
+    cutoff = (anchor_ts or time.time()) - max(lookback_hours, 0.0) * 3600.0
     trades: List[Dict[str, Any]] = []
     for row in rows:
         event = str(row.get("event_type") or row.get("event") or "").lower()
@@ -104,12 +105,13 @@ def load_trade_records(
 def load_router_metrics(
     path: Path | str = DEFAULT_ROUTER_METRICS_PATH,
     lookback_hours: float = 24.0,
+    anchor_ts: float | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     path = Path(path)
     rows = _read_jsonl(path)
     if not rows:
         return {}
-    cutoff = time.time() - max(lookback_hours, 0.0) * 3600.0
+    cutoff = (anchor_ts or time.time()) - max(lookback_hours, 0.0) * 3600.0
     metrics: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         ts = _parse_timestamp(row.get("ts"))

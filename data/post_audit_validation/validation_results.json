@@ -1,0 +1,356 @@
+{
+  "ts": 1775984512.689033,
+  "step1_score_pnl": {
+    "data_sources": {
+      "p6_replay": {
+        "total_episodes": 1712,
+        "signaled_with_conviction": 1358
+      }
+    },
+    "by_symbol": {
+      "BTCUSDT": {
+        "n": 736,
+        "score_field": "conviction",
+        "spearman_rho": 0.1177,
+        "monotonicity_ratio": 0.4444,
+        "quintile_spread": {
+          "Q1": {
+            "n": 147,
+            "score_range": [
+              0.5045,
+              0.6203
+            ],
+            "mean_pnl": -1.3411,
+            "total_pnl": -197.15
+          },
+          "Q2": {
+            "n": 147,
+            "score_range": [
+              0.6203,
+              0.6236
+            ],
+            "mean_pnl": -0.2186,
+            "total_pnl": -32.14
+          },
+          "Q3": {
+            "n": 147,
+            "score_range": [
+              0.6236,
+              0.6349
+            ],
+            "mean_pnl": -1.975,
+            "total_pnl": -290.33
+          },
+          "Q4": {
+            "n": 147,
+            "score_range": [
+              0.6349,
+              0.6811
+            ],
+            "mean_pnl": -0.784,
+            "total_pnl": -115.25
+          },
+          "Q5": {
+            "n": 148,
+            "score_range": [
+              0.6904,
+              0.9384
+            ],
+            "mean_pnl": -1.7813,
+            "total_pnl": -263.64
+          },
+          "Q5_minus_Q1": -0.4402
+        },
+        "total_pnl": -898.51,
+        "mean_pnl": -1.2208,
+        "win_rate": 0.0897,
+        "verdicts": {
+          "rho_gt_0.15": "FAIL",
+          "Q5_Q1_gt_0": "FAIL",
+          "monotonicity_gte_0.75": "FAIL"
+        }
+      },
+      "ETHUSDT": {
+        "n": 370,
+        "score_field": "conviction",
+        "spearman_rho": 0.2003,
+        "monotonicity_ratio": 0.5556,
+        "quintile_spread": {
+          "Q1": {
+            "n": 74,
+            "score_range": [
+              0.5057,
+              0.6181
+            ],
+            "mean_pnl": -4.0884,
+            "total_pnl": -302.54
+          },
+          "Q2": {
+            "n": 74,
+            "score_range": [
+              0.6181,
+              0.6261
+            ],
+            "mean_pnl": -1.5955,
+            "total_pnl": -118.07
+          },
+          "Q3": {
+            "n": 74,
+            "score_range": [
+              0.6262,
+              0.651
+            ],
+            "mean_pnl": 0.2036,
+            "total_pnl": 15.07
+          },
+          "Q4": {
+            "n": 74,
+            "score_range": [
+              0.651,
+              0.7016
+            ],
+            "mean_pnl": -2.3827,
+            "total_pnl": -176.32
+          },
+          "Q5": {
+            "n": 74,
+            "score_range": [
+              0.7029,
+              0.8521
+            ],
+            "mean_pnl": 0.5787,
+            "total_pnl": 42.82
+          },
+          "Q5_minus_Q1": 4.6671
+        },
+        "total_pnl": -539.04,
+        "mean_pnl": -1.4569,
+        "win_rate": 0.0811,
+        "verdicts": {
+          "rho_gt_0.15": "PASS",
+          "Q5_Q1_gt_0": "PASS",
+          "monotonicity_gte_0.75": "FAIL"
+        }
+      },
+      "SOLUSDT": {
+        "n": 252,
+        "score_field": "conviction",
+        "spearman_rho": 0.0341,
+        "monotonicity_ratio": 0.4444,
+        "quintile_spread": {
+          "Q1": {
+            "n": 50,
+            "score_range": [
+              0.5392,
+              0.6146
+            ],
+            "mean_pnl": 2.1582,
+            "total_pnl": 107.91
+          },
+          "Q2": {
+            "n": 50,
+            "score_range": [
+              0.6147,
+              0.6201
+            ],
+            "mean_pnl": -8.7001,
+            "total_pnl": -435.01
+          },
+          "Q3": {
+            "n": 50,
+            "score_range": [
+              0.6203,
+              0.6272
+            ],
+            "mean_pnl": -1.4457,
+            "total_pnl": -72.28
+          },
+          "Q4": {
+            "n": 50,
+            "score_range": [
+              0.6274,
+              0.6767
+            ],
+            "mean_pnl": -0.6125,
+            "total_pnl": -30.63
+          },
+          "Q5": {
+            "n": 52,
+            "score_range": [
+              0.6768,
+              1.0
+            ],
+            "mean_pnl": -1.9928,
+            "total_pnl": -103.63
+          },
+          "Q5_minus_Q1": -4.151
+        },
+        "total_pnl": -533.63,
+        "mean_pnl": -2.1176,
+        "win_rate": 0.1825,
+        "verdicts": {
+          "rho_gt_0.15": "FAIL",
+          "Q5_Q1_gt_0": "FAIL",
+          "monotonicity_gte_0.75": "FAIL"
+        }
+      }
+    },
+    "hydra_score_distribution": {
+      "BTCUSDT": {
+        "n": 656,
+        "mean": 0.4854,
+        "std": 0.0261,
+        "min": 0.1781,
+        "max": 0.5312
+      },
+      "ETHUSDT": {
+        "n": 991,
+        "mean": 0.4802,
+        "std": 0.0478,
+        "min": 0.3543,
+        "max": 0.5907
+      },
+      "SOLUSDT": {
+        "n": 1301,
+        "mean": 0.4079,
+        "std": 0.0469,
+        "min": 0.2694,
+        "max": 0.5907
+      }
+    }
+  },
+  "step2_zero_score": {
+    "zero_score_audit_events": 1,
+    "by_source": {
+      "legacy_intent": 1
+    },
+    "by_layer": {
+      "screener": 1
+    },
+    "by_symbol": {
+      "BTCUSDT": 1
+    },
+    "p6_replay_analysis": {
+      "total_episodes": 1712,
+      "signaled": 1358,
+      "no_signal": 354,
+      "zero_conviction_in_signaled": 0,
+      "zero_conviction_rate": 0.0,
+      "no_signal_rate": 0.2068
+    },
+    "nonzero_conviction_pnl": {
+      "n": 1358,
+      "mean": -1.4515,
+      "total": -1971.18
+    },
+    "current_score_state": {
+      "total_symbols": 8,
+      "zero_score_count": 0,
+      "zero_rate": 0.0
+    }
+  },
+  "step3_determinism": {
+    "scoring_determinism": {
+      "hash_a": "359ef62cd898d07a",
+      "hash_b": "359ef62cd898d07a",
+      "match": true,
+      "verdict": "PASS"
+    },
+    "regime_determinism": {
+      "regime_a": "CHOPPY",
+      "regime_b": "CHOPPY",
+      "probs_match": true,
+      "verdict": "PASS"
+    },
+    "dedup_reset": {
+      "available": true,
+      "verdict": "PASS"
+    }
+  },
+  "step4_baseline": {
+    "ts": 1775984514.697301,
+    "score_distribution": {
+      "n": 8,
+      "mean": 0.4765,
+      "std": 0.0546,
+      "min": 0.4474,
+      "max": 0.5807,
+      "zero_count": 0,
+      "per_symbol": {
+        "SOLUSDT": 0.5807,
+        "ETHUSDT": 0.5468,
+        "BTCUSDT": 0.4474,
+        "DOGEUSDT": 0.4474,
+        "LINKUSDT": 0.4474,
+        "LTCUSDT": 0.4474,
+        "SUIUSDT": 0.4474,
+        "WIFUSDT": 0.4474
+      }
+    },
+    "regime_state": {
+      "primary": "TREND_DOWN",
+      "probs": {
+        "TREND_UP": 0.0001,
+        "TREND_DOWN": 0.5256,
+        "MEAN_REVERT": 0.1117,
+        "BREAKOUT": 0.0001,
+        "CHOPPY": 0.145,
+        "CRISIS": 0.2176
+      },
+      "cycle_count": 19935
+    },
+    "hydra_shadow_distribution": {
+      "BTCUSDT": {
+        "n": 656,
+        "mean": 0.4854,
+        "std": 0.0261
+      },
+      "ETHUSDT": {
+        "n": 991,
+        "mean": 0.4802,
+        "std": 0.0478
+      },
+      "SOLUSDT": {
+        "n": 1301,
+        "mean": 0.4079,
+        "std": 0.0469
+      }
+    },
+    "pnl_by_conviction_band": {
+      "0.40-0.60": {
+        "n": 32,
+        "mean_pnl": -4.0195,
+        "total_pnl": -128.62,
+        "win_rate": 0.25
+      },
+      "0.60+": {
+        "n": 1326,
+        "mean_pnl": -1.3896,
+        "total_pnl": -1842.55,
+        "win_rate": 0.1011
+      }
+    },
+    "config_hashes": {
+      "config/binary_lab_limits.json": "46100cc31e1cd7ec",
+      "config/binary_lab_limits_s2.json": "cd0cfa996e12eb79",
+      "config/correlation_groups.json": "d44e80d62e40c2ba",
+      "config/dataset_admission.json": "262d8aece47887c8",
+      "config/exchange_precision_cache.json": "265234b92bcf89ed",
+      "config/futures_s2_proxy.json": "e1e6936613d10b53",
+      "config/liquidity_buckets.json": "78e80d700eb84813",
+      "config/offexchange_holdings.json": "6e6149aebb0dbf60",
+      "config/pairs_universe.json": "885539d6bf10d71d",
+      "config/risk_limits.json": "122d5e31abf03f80",
+      "config/rv_momo_baskets.json": "6951554b88a220ea",
+      "config/settings.json": "659a902b287e8bfa",
+      "config/strategy_config.json": "32abeb03a11ef7df",
+      "config/strategy_registry.json": "7c14e70736e03a09",
+      "config/symbol_categories.json": "f0390c887a2d59cb",
+      "config/symbol_tiers.json": "07363cc3fde41f06",
+      "config/telegram_v7.json": "7a330eba8a2bc929",
+      "config/exit_reason_map.yaml": "9e36f40dbf03584c",
+      "config/runtime.yaml": "0bfd79ea061b049a",
+      "config/s2_experiment_manifest.yaml": "fcd6b44db051c481"
+    }
+  }
+}

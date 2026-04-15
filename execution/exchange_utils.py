@@ -744,8 +744,11 @@ def get_klines(symbol: str, interval: str, limit: int = 150) -> List[List[float]
         "/fapi/v1/klines",
         params={"symbol": symbol, "interval": interval, "limit": limit},
     )
+    raw_rows = r.json()
+    total_rows = len(raw_rows)
     out: List[List[float]] = []
-    for row in r.json():
+    malformed_count = 0
+    for row in raw_rows:
         try:
             open_time = int(row[0])
             open_p, high_p, low_p, close_p, volume = (
@@ -756,8 +759,33 @@ def get_klines(symbol: str, interval: str, limit: int = 150) -> List[List[float]
                 float(row[5]),
             )
         except (IndexError, TypeError, ValueError):
+            malformed_count += 1
             continue
         out.append([open_time, open_p, high_p, low_p, close_p, volume])
+
+    # Data quality gate (AUDIT-3.2a): reject batch on excessive malformation
+    if total_rows > 0:
+        malformed_rate = malformed_count / total_rows
+        valid_rate = len(out) / limit if limit > 0 else 1.0
+        if malformed_rate > 0.01:
+            raise ValueError(
+                f"get_klines({symbol}, {interval}): malformed row rate "
+                f"{malformed_rate:.1%} ({malformed_count}/{total_rows}) exceeds 1% threshold"
+            )
+        if valid_rate < 0.90:
+            raise ValueError(
+                f"get_klines({symbol}, {interval}): valid rows {len(out)}/{limit} "
+                f"({valid_rate:.1%}) below 90% minimum"
+            )
+
+    # Timestamp monotonicity check (AUDIT-3.2b)
+    for i in range(1, len(out)):
+        if out[i][0] <= out[i - 1][0]:
+            raise ValueError(
+                f"get_klines({symbol}, {interval}): non-monotonic timestamps at index {i}: "
+                f"{int(out[i-1][0])} >= {int(out[i][0])}"
+            )
+
     return out
 
 

@@ -1162,7 +1162,15 @@ def classify_regime(
 # Main Runner
 # ---------------------------------------------------------------------------
 
-_SENTINEL_X_CYCLE_COUNT = 0  # Module-level counter
+# Process-lifetime counter — resets only on executor restart.
+# Coupled to module import scope; use reset_sentinel_cycle_count() for tests.
+_SENTINEL_X_CYCLE_COUNT = 0
+
+
+def reset_sentinel_cycle_count() -> None:
+    """Reset the module-level cycle counter. For testing / process recycling."""
+    global _SENTINEL_X_CYCLE_COUNT
+    _SENTINEL_X_CYCLE_COUNT = 0
 
 
 def should_run_sentinel_x(
@@ -1261,6 +1269,20 @@ def run_sentinel_x_step(
         "feature_agg_bars": cfg.feature_agg_bars,
         "data_points": len(prices),
     }
+
+    # Regime regret instrumentation (AUDIT-4.4)
+    if prev_state and prev_state.primary_regime:
+        _regime_changed = state.primary_regime != prev_state.primary_regime
+        _prev_cycles = int(
+            (prev_state.history_meta or {}).get("consecutive_count", 0)
+        )
+        _transition_lag = _prev_cycles if _regime_changed else 0
+        state.meta["regime_regret"] = {
+            "prev_regime": prev_state.primary_regime,
+            "regime_changed": _regime_changed,
+            "cycles_in_prev": _prev_cycles,
+            "transition_lag_cycles": _transition_lag,
+        }
     
     # Save state
     if not dry_run:

@@ -289,33 +289,30 @@ class TestDailyLossGateNormalization:
 class TestBackwardsCompatibility:
     """Ensure existing percent-style configs still work correctly."""
 
-    def test_percent_style_config_also_works(self, monkeypatch):
+    def test_percent_style_config_rejected(self, monkeypatch):
         """
-        If config has daily_loss_limit_pct = 10.0 (percent-style, meaning 10%),
-        and observed daily loss is 12% (12.0 percent-style), it should veto.
-
-        Both values get normalized: 10.0 -> 0.10, 12.0 -> 0.12, and 0.12 >= 0.10.
+        AUDIT-1.4a: percent-style configs (daily_loss_limit_pct=10.0) are now
+        rejected with ValueError.  All _pct fields must use fractional form.
         """
         _fresh_nav(monkeypatch, 1000.0)
-        _mock_drawdown(monkeypatch, dd_pct=12.0, daily_loss_pct=12.0)
+        _mock_drawdown(monkeypatch, dd_pct=0.12, daily_loss_pct=0.12)
 
         st = RiskState()
-        st.daily_pnl_pct = -12.0
+        st.daily_pnl_pct = -0.12
         cfg = _base_cfg_fractional()
-        cfg["global"]["daily_loss_limit_pct"] = 10.0  # Percent-style cap
+        cfg["global"]["daily_loss_limit_pct"] = 10.0  # Percent-style cap — now rejected
 
-        veto, details = check_order(
-            symbol="BTCUSDT",
-            side="BUY",
-            requested_notional=25.0,
-            price=50000.0,
-            nav=1000.0,
-            open_qty=0.0,
-            now=0.0,
-            cfg=cfg,
-            state=st,
-            current_gross_notional=0.0,
-        )
-
-        reasons = details.get("reasons", [])
-        assert "day_loss_limit" in reasons
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="AUDIT-1.4a"):
+            check_order(
+                symbol="BTCUSDT",
+                side="BUY",
+                requested_notional=25.0,
+                price=50000.0,
+                nav=1000.0,
+                open_qty=0.0,
+                now=0.0,
+                cfg=cfg,
+                state=st,
+                current_gross_notional=0.0,
+            )

@@ -67,25 +67,32 @@ def test_no_duplicate_paths(manifest):
 
 
 def test_audit_no_violations():
-    """audit() should report no missing-required and no untracked files."""
-    # Import here to avoid module-level issues
+    """audit() should report no missing REQUIRED_STATIC and no untracked files.
+
+    AUDIT-1.2: CI-mode audit only checks static files.
+    REQUIRED_BOOTSTRAP files are expected to be absent in a clean clone.
+    """
     import sys
 
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     from manifest_audit import audit
 
-    missing_required, _optional, untracked = audit()
-    assert missing_required == [], f"Required files missing: {missing_required}"
+    missing_static, _missing_bootstrap, _optional, untracked = audit()
+    assert missing_static == [], f"REQUIRED_STATIC files missing: {missing_static}"
     assert untracked == [], f"Untracked files: {untracked}"
 
 
 def test_enforce_mode_manifest_ok():
-    """enforce mode should return MANIFEST_OK status."""
+    """enforce mode should return OK or BOOTSTRAP_INCOMPLETE (not DRIFT).
+
+    AUDIT-1.2: In a clean clone, BOOTSTRAP_INCOMPLETE is acceptable.
+    MANIFEST_DRIFT (missing static or untracked) is not.
+    """
     import sys
 
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     from manifest_audit import run_enforce
 
     result = run_enforce()
-    assert result["status"] == "MANIFEST_OK", f"Enforce failed: {result}"
-    assert result["violations"] == 0
+    assert result["status"] in ("MANIFEST_OK", "BOOTSTRAP_INCOMPLETE"), f"Enforce drift: {result}"
+    assert len(result.get("missing_static", [])) == 0, f"Static violations: {result}"
