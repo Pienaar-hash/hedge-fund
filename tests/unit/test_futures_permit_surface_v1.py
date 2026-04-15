@@ -1001,3 +1001,137 @@ class TestHypothesisNonOverlap:
         result = _gate1_structural_admissibility(ctx, FPSv1Config())
         # DR fires first (priority order in gate 1)
         assert result == DISLOCATION_REVERSION
+
+
+# ===================================================================
+# TestEvaluateShadowForIntent — executor integration wrapper
+# ===================================================================
+class TestEvaluateShadowForIntent:
+    """Tests for the evaluate_shadow_for_intent() executor integration."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self, monkeypatch):
+        """Reset the module-level config cache before each test."""
+        import execution.futures_permit_surface_v1 as _mod
+        monkeypatch.setattr(_mod, "_FPS_CFG_CACHE", None)
+
+    @pytest.fixture()
+    def shadow_dir(self, tmp_path, monkeypatch):
+        """Redirect shadow log to tmp_path so tests don't write to real logs."""
+        import execution.futures_permit_surface_v1 as _mod
+        log_path = tmp_path / "fps_shadow.jsonl"
+        monkeypatch.setattr(_mod, "_SHADOW_LOG", log_path)
+        return log_path
+
+    @staticmethod
+    def _intent(**overrides):
+        base = {
+            "symbol": "ETHUSDT",
+            "price": 3200.0,
+            "signal": "BUY",
+        }
+        base.update(overrides)
+        return base
+
+    @staticmethod
+    def _sentinel(**overrides):
+        base = {
+            "primary_regime": "TREND_UP",
+            "previous_regime": "CHOPPY",
+            "regime_age_bars": 5,
+            "regime_probs": {"TREND_UP": 0.70, "CHOPPY": 0.20},
+            "crisis_flag": False,
+        }
+        base.update(overrides)
+        return base
+
+    def test_happy_path_writes_shadow_record(self, shadow_dir, tmp_path, monkeypatch):
+        """Valid intent + sentinel produces a shadow JSONL line."""
+        from execution.futures_permit_surface_v1 import evaluate_shadow_for_intent
+        # Provide minimal config so it doesn't read real file
+        monkeypatch.setattr(
+            "execution.futures_permit_surface_v1._FPS_CFG_CACHE",
+            FPSv1Config(),
+        )
+        evaluate_shadow_for_intent(self._intent(), self._sentinel())
+        assert shadow_dir.exists()
+        lines = shadow_dir.read_text().strip().splitlines()
+        assert len(lines) >= 1
+        rec = json.loads(lines[0])
+        assert rec["symbol"] == "ETHUSDT"
+        assert rec["proposed_direction"] == "LONG"
+
+    def test_missing_symbol_returns_silently(self, shadow_dir, monkeypatch):
+        """No symbol → early return, no crash, no shadow line."""
+        from execution.futures_permit_surface_v1 import evaluate_shadow_for_intent
+        monkeypatch.setattr(
+            "execution.futures_permit_surface_v1._FPS_CFG_CACHE",
+            FPSv1Config(),
+        )
+        evaluate_shadow_for_intent(self._intent(symbol=""), self._sentinel())
+        assert not shadow_dir.exists()
+
+    def test_missing_price_returns_silently(self, shadow_dir, monkeypatch):
+        """price <= 0 → early return, no crash, no shadow line."""
+        from execution.futures_permit_surface_v1 import evaluate_shadow_for_intent
+        monkeypatch.setattr(
+            "execution.futures_permit_surface_v1._FPS_CFG_CACHE",
+            FPSv1Config(),
+        )
+        evaluate_shadow_for_intent(self._intent(price=0), self._sentinel())
+        assert not shadow_dir.exists()
+
+    def test_signal_buy_maps_to_long(self, shadow_dir, monkeypatch):
+        from execution.futures_permit_surface_v1 import evaluate_shadow_for_intent
+        monkeypatch.setattr(
+            "execution.futures_permit_surface_v1._FPS_CFG_CACHE",
+            FPSv1Config(),
+        )
+        evaluate_shadow_for_intent(self._intent(signal="BUY"), self._sentinel())
+        rec = json.loads(shadow_dir.read_text().strip().splitlines()[0])
+        assert rec["proposed_direction"] == "LONG"
+
+    def test_signal_sell_maps_to_short(self, shadow_dir, monkeypatch):
+        from execution.futures_permit_surface_v1 import evaluate_shadow_for_intent
+        monkeypatch.setattr(
+            "execution.futures_permit_surface_v1._FPS_CFG_CACHE",
+            FPSv1Config(),
+        )
+        evaluate_shadow_for_intent(self._intent(signal="SELL"), self._sentinel())
+        rec = json.loads(shadow_dir.read_text().strip().splitlines()[0])
+        assert rec["proposed_direction"] == "SHORT"
+
+    def test_config_disabled_skips(self, shadow_dir, monkeypatch):
+        """When config.enabled=False, no evaluation occurs."""
+        from execution.futures_permit_surface_v1 import evaluate_shadow_for_intent
+        cfg = FPSv1Config(enabled=False)
+        monkeypatch.setattr(
+            "execution.futures_permit_surface_v1._FPS_CFG_CACHE",
+            cfg,
+        )
+        evaluate_shadow_for_intent(self._intent(), self._sentinel())
+        assert not shadow_dir.exists()
+
+    def test_bad_sentinel_state_does_not_raise(self, shadow_dir, monkeypatch):
+        """Completely broken sentinel state → fail-open, no crash."""
+        from execution.futures_permit_surface_v1 import evaluate_shadow_for_intent
+        monkeypatch.setattr(
+            "execution.futures_permit_surface_v1._FPS_CFG_CACHE",
+            FPSv1Config(),
+        )
+        # Should not raise — fail-open
+        evaluate_shadow_for_intent(self._intent(), {"garbage": True})
+
+    def test_metadata_fields_propagate(self, shadow_dir, monkeypatch):
+        """Metadata fields (atr_pct, volume_z, rsi) flow into context."""
+        from execution.futures_permit_surface_v1 import evaluate_shadow_for_intent
+        monkeypatch.setattr(
+            "execution.futures_permit_surface_v1._FPS_CFG_CACHE",
+            FPSv1Config(),
+        )
+        intent = self._intent(metadata={"atr_pct": 0.05, "volume_z": 3.0, "rsi": 75.0})
+        evaluate_shadow_for_intent(intent, self._sentinel())
+        rec = json.loads(shadow_dir.read_text().strip().splitlines()[0])
+        assert rec["atr_pct"] == pytest.approx(0.05)
+        assert rec["volume_z"] == pytest.approx(3.0)
+        assert rec["rsi"] == pytest.approx(75.0)
