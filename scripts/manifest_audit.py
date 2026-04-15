@@ -37,7 +37,7 @@ def _load_manifest() -> Dict[str, Any]:
 
 
 def _extract_manifest_paths(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Return {path: {key, optional, section}} for every manifest entry."""
+    """Return {path: {key, optional, lifecycle, section}} for every manifest entry."""
     result: Dict[str, Dict[str, Any]] = {}
     for section in _SECTIONS_WITH_PATHS:
         if section not in manifest:
@@ -47,6 +47,7 @@ def _extract_manifest_paths(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any
                 result[entry["path"]] = {
                     "key": key,
                     "optional": entry.get("optional", False),
+                    "lifecycle": entry.get("lifecycle", "static"),
                     "section": section,
                 }
     return result
@@ -81,12 +82,18 @@ def _scan_disk() -> Set[str]:
     return files
 
 
-def audit() -> Tuple[List[str], List[str], List[str]]:
+def audit() -> Tuple[List[str], List[str], List[str], List[str]]:
     """
-    Run the manifest audit.
+    Run the manifest audit with 3-class lifecycle model (AUDIT-1.2).
+
+    Lifecycle classes:
+      - ``static``    — REQUIRED_STATIC: must exist in repo / clean clone.
+      - ``bootstrap`` — REQUIRED_BOOTSTRAP: must exist after first executor run.
+                         Absent in clean clone is OK.
+      - ``optional``  — feature-dependent, never required.
 
     Returns:
-        (missing_required, phantoms_optional, untracked)
+        (missing_static, missing_bootstrap, phantoms_optional, untracked)
     """
     manifest = _load_manifest()
     manifest_paths = _extract_manifest_paths(manifest)
@@ -96,30 +103,37 @@ def audit() -> Tuple[List[str], List[str], List[str]]:
 
     # Phantoms: in manifest but not on disk
     phantoms = manifest_set - disk_files
-    missing_required: List[str] = []
+    missing_static: List[str] = []
+    missing_bootstrap: List[str] = []
     phantoms_optional: List[str] = []
     for p in sorted(phantoms):
         info = manifest_paths[p]
         if info["optional"]:
             phantoms_optional.append(p)
+        elif info["lifecycle"] == "bootstrap":
+            missing_bootstrap.append(p)
         else:
-            missing_required.append(p)
+            missing_static.append(p)
 
     # Untracked: on disk but not in manifest
     untracked = sorted(disk_files - manifest_set)
 
-    return missing_required, phantoms_optional, untracked
+    return missing_static, missing_bootstrap, phantoms_optional, untracked
 
 
 def run_ci() -> int:
-    """CI mode: exit 0 on clean, exit 1 on any violation."""
-    missing, optional_phantoms, untracked = audit()
+    """CI mode: exit 0 on clean, exit 1 on any violation.
+
+    AUDIT-1.2: CI checks REQUIRED_STATIC and untracked only.
+    REQUIRED_BOOTSTRAP files are expected to be absent in clean clone.
+    """
+    missing_static, missing_bootstrap, optional_phantoms, untracked = audit()
 
     ok = True
 
-    if missing:
-        print(f"FAIL: {len(missing)} required manifest entries missing on disk:")
-        for p in missing:
+    if missing_static:
+        print(f"FAIL: {len(missing_static)} REQUIRED_STATIC entries missing on disk:")
+        for p in missing_static:
             print(f"  - {p}")
         ok = False
 
@@ -130,22 +144,33 @@ def run_ci() -> int:
         ok = False
 
     if ok:
-        print(f"MANIFEST_OK — 0 violations ({len(optional_phantoms)} optional phantoms)")
+        bootstrap_note = f", {len(missing_bootstrap)} bootstrap pending" if missing_bootstrap else ""
+        print(f"MANIFEST_OK — 0 violations ({len(optional_phantoms)} optional phantoms{bootstrap_note})")
         return 0
     else:
         return 1
 
 
 def run_enforce() -> Dict[str, Any]:
-    """Enforce mode: return structured JSON for executor preflight."""
-    missing, optional_phantoms, untracked = audit()
+    """Enforce mode: return structured JSON for executor preflight.
+
+    AUDIT-1.2: Executor preflight checks BOTH static AND bootstrap files.
+    """
+    missing_static, missing_bootstrap, optional_phantoms, untracked = audit()
+
+    has_violations = bool(missing_static or untracked)
+    has_bootstrap_gaps = bool(missing_bootstrap)
 
     result = {
-        "status": "MANIFEST_OK" if (not missing and not untracked) else "MANIFEST_DRIFT",
-        "missing_required": missing,
+        "status": "MANIFEST_OK" if (not has_violations and not has_bootstrap_gaps) else (
+            "MANIFEST_DRIFT" if has_violations else "BOOTSTRAP_INCOMPLETE"
+        ),
+        "missing_static": missing_static,
+        "missing_bootstrap": missing_bootstrap,
+        "missing_required": missing_static,  # backward compat
         "phantoms_optional": optional_phantoms,
         "untracked": untracked,
-        "violations": len(missing) + len(untracked),
+        "violations": len(missing_static) + len(untracked),
     }
 
     return result

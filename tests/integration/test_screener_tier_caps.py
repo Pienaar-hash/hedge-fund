@@ -10,18 +10,18 @@ def _risk_cfg(tmp_path):
     cfg = {
         "global": {
             "min_notional_usdt": 10.0,
-            "max_portfolio_gross_nav_pct": 15.0,
+            "max_portfolio_gross_nav_pct": 0.15,
             "max_concurrent_positions": 3,
             "trade_equity_nav_pct": 0.15,
             "max_trade_nav_pct": 0.2,
             "tiers": {
-                "CORE": {"per_symbol_nav_pct": 8.0},
-                "SATELLITE": {"per_symbol_nav_pct": 4.0},
-                "TACTICAL": {"per_symbol_nav_pct": 2.0},
-                "ALT-EXT": {"per_symbol_nav_pct": 1.0},
+                "CORE": {"per_symbol_nav_pct": 0.08},
+                "SATELLITE": {"per_symbol_nav_pct": 0.04},
+                "TACTICAL": {"per_symbol_nav_pct": 0.02},
+                "ALT-EXT": {"per_symbol_nav_pct": 0.01},
             },
         },
-        "per_symbol": {"BTCUSDT": {"max_order_notional": 25.0, "max_nav_pct": 100.0}},
+        "per_symbol": {"BTCUSDT": {"max_order_notional": 25.0, "max_nav_pct": 1.0}},
     }
     p = tmp_path / "risk_limits.json"
     p.write_text(json.dumps(cfg))

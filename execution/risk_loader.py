@@ -25,11 +25,14 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 def normalize_percentage(value: Any) -> float:
     """
-    Normalize percentage-like values to a fraction in [0, 1].
+    Validate that a _pct config value is expressed as a fraction in [0, 1].
 
-    - If 0 < value <= 1, treat as already expressed as a fraction.
-    - If value > 1, treat as percent and divide by 100.
-    - Clamp absurd values (>100%) to 1.0 and log an error.
+    AUDIT-1.4a: All _pct fields MUST be in fractional form (0.05 = 5%).
+    Values > 1.0 are rejected as config errors instead of being silently
+    divided by 100 (which previously corrupted values like 1.5 → 0.015).
+
+    Raises ValueError for values > 1.0 so config mistakes are caught at
+    load time rather than silently mis-scaled.
     """
     try:
         pct = float(value)
@@ -37,12 +40,13 @@ def normalize_percentage(value: Any) -> float:
         return 0.0
     if pct <= 0:
         return 0.0
-    if pct <= 1.0:
-        return pct
-    if pct > 100.0:
-        LOGGER.error("[risk_loader] normalize_percentage clamp for value>100: %s", pct)
-        pct = 100.0
-    return pct / 100.0
+    if pct > 1.0:
+        raise ValueError(
+            f"[risk_loader] AUDIT-1.4a: _pct value {pct} > 1.0 — "
+            f"config must use fractional form (0.05 = 5%%). "
+            f"Fix the config or use a non-_pct field for leverage ratios."
+        )
+    return pct
 
 
 def _merge_pair_caps(risk_cfg: Dict[str, Any], pairs_cfg: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
@@ -72,6 +76,22 @@ def apply_testnet_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
     overrides = (cfg or {}).get("testnet_overrides") or {}
     if not enabled or not overrides.get("enabled"):
         return cfg
+
+    # AUDIT-1.4c: Require explicit confirmation env var for testnet overrides.
+    # Without TESTNET_OVERRIDES_CONFIRM=1, overrides are logged but NOT applied.
+    confirm = os.getenv("TESTNET_OVERRIDES_CONFIRM", "0") == "1"
+    if not confirm:
+        try:
+            import logging
+            logging.getLogger("risk_loader").warning(
+                "[risk_loader][testnet] AUDIT-1.4c: testnet_overrides present but "
+                "TESTNET_OVERRIDES_CONFIRM=1 not set — overrides SKIPPED, "
+                "conservative defaults in effect. Set TESTNET_OVERRIDES_CONFIRM=1 to apply."
+            )
+        except Exception:
+            pass
+        return cfg
+
     cfg = dict(cfg or {})
     global_cfg = cfg.setdefault("global", {})
     for key, value in overrides.items():
@@ -113,12 +133,13 @@ def load_risk_config() -> Dict[str, Any]:
         if key in risk_cfg and key not in g:
             g[key] = risk_cfg[key]
     # Normalize percent-like caps to guard against mis-scaled configs
+    # AUDIT-1.4a: max_gross_exposure_pct is a leverage ratio (1.5 = 150% NAV),
+    # not a percentage fraction, so it is excluded from normalize_percentage.
     for key in (
         "trade_equity_nav_pct",
         "max_trade_nav_pct",
         "symbol_notional_share_cap_pct",
         "max_symbol_exposure_pct",
-        "max_gross_exposure_pct",
     ):
         if key in g:
             g[key] = normalize_percentage(g[key])

@@ -104,8 +104,33 @@ except Exception:  # pragma: no cover - optional dependency
 LOG_TAG = "[screener]"
 LOGGER = logging.getLogger("signal_screener")
 LOGGER.setLevel(logging.INFO)
+
+
+def _intent_has_valid_score(intent: Mapping[str, Any]) -> bool:
+    """Return True if the intent carries a positive score, or has no score fields (legacy).
+
+    Rejects intents with explicit score=0.0 or hybrid_score=0.0.
+    Legacy intents without score fields are allowed through.
+    """
+    has_any_score = False
+    for key in ("hybrid_score", "score"):
+        val = intent.get(key)
+        if val is not None:
+            has_any_score = True
+            if float(val) > 0.0:
+                return True
+    # No score fields at all = legacy intent, allow through
+    if not has_any_score:
+        return True
+    # Had score field(s) but all were zero/negative
+    return False
 _DEDUP_CACHE: "OrderedDict[Tuple[str, str, str, str], float]" = OrderedDict()
 _DEDUP_MAX_SIZE = 2048
+
+
+def reset_dedup_cache() -> None:
+    """Clear the module-level dedup cache. For testing / process recycling."""
+    _DEDUP_CACHE.clear()
 
 # Score decomposition JSONL log (MHD: freeze meaning per intent)
 _SCORE_DECOMP_LOG = os.path.join("logs", "execution", "score_decomposition.jsonl")
@@ -512,7 +537,7 @@ def would_emit(
     overall_ok = len(reasons) == 0
 
     if overall_ok and timeframe and candle_close_ts is not None:
-        now_ts = time.time()
+        now_ts = time.monotonic()
         _dedupe_prune(now_ts)
         key = _dedupe_key(sym, timeframe, side, candle_close_ts)
         expires_at = _DEDUP_CACHE.get(key)
@@ -1426,6 +1451,37 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             record_signal_emitted()
         except Exception:
             pass
+
+    # Zero-score guard: reject intents with no meaningful score (AUDIT-2.2a)
+    pre_filter = len(out)
+    _zero_score_log = os.path.join("logs", "execution", "zero_score_audit.jsonl")
+    _kept_out = []
+    for i in out:
+        if _intent_has_valid_score(i):
+            _kept_out.append(i)
+        else:
+            _source = "legacy_intent"
+            if i.get("hybrid_score") is not None and float(i["hybrid_score"]) == 0.0:
+                _source = "all_components_zero"
+            elif i.get("score") is not None and float(i["score"]) == 0.0:
+                _source = "hydra_zero"
+            try:
+                from execution.log_utils import append_jsonl as _ajl
+                from pathlib import Path as _P
+                _ajl(_P(_zero_score_log), {
+                    "ts": time.time(),
+                    "source": _source,
+                    "layer": "screener",
+                    "symbol": i.get("symbol"),
+                    "score": i.get("score"),
+                    "hybrid_score": i.get("hybrid_score"),
+                })
+            except Exception:
+                pass
+    out = _kept_out
+    zero_rejected = pre_filter - len(out)
+    if zero_rejected > 0:
+        print(f"{LOG_TAG} zero-score guard rejected {zero_rejected}/{pre_filter} intents")
 
     print(f"{LOG_TAG} attempted={attempted} emitted={len(out)}")
     return IntentBatch(out, attempted)

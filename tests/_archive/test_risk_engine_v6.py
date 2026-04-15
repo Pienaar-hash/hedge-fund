@@ -47,7 +47,7 @@ def _decision_pair(risk_cfg: Dict[str, Any], intent: OrderIntent, state_setup=No
 
 
 def test_risk_engine_matches_trade_cap():
-    risk_cfg = {"global": {"max_trade_nav_pct": 5.0}}
+    risk_cfg = {"global": {"max_trade_nav_pct": 0.05}}
     intent = OrderIntent(
         symbol="BTCUSDT",
         side="BUY",
@@ -62,7 +62,7 @@ def test_risk_engine_matches_trade_cap():
 
 
 def test_risk_engine_matches_tier_cap():
-    risk_cfg = {"global": {"tiers": {"CORE": {"per_symbol_nav_pct": 10.0}}}}
+    risk_cfg = {"global": {"tiers": {"CORE": {"per_symbol_nav_pct": 0.10}}}}
     intent = OrderIntent(
         symbol="ETHUSDT",
         side="BUY",
@@ -78,10 +78,10 @@ def test_risk_engine_matches_tier_cap():
 
 
 def test_risk_engine_matches_daily_loss_limit():
-    risk_cfg = {"global": {"daily_loss_limit_pct": 5.0}}
+    risk_cfg = {"global": {"daily_loss_limit_pct": 0.05}}
 
     def _state_setup(state: RiskState) -> None:
-        state.daily_pnl_pct = -6.0
+        state.daily_pnl_pct = -0.06
 
     intent = OrderIntent(
         symbol="SOLUSDT",

@@ -74,7 +74,7 @@ def _normalize_observed_pct(value: float) -> float:
 LOGGER = logging.getLogger("risk_limits")
 
 DEFAULT_SYMBOL_SHARE_CAP = 0.25  # 25% of 7d notional
-DEFAULT_SYMBOL_DD_CAP_PCT = 3.0
+DEFAULT_SYMBOL_DD_CAP_PCT = 0.03  # 3% drawdown cap
 COOLDOWN_H = 24
 REASON_TRADE_EQUITY_CAP = "trade_gt_equity_cap"
 REASON_MAX_TRADE_NAV = "max_trade_nav_pct"
@@ -111,7 +111,14 @@ _NAV_SNAPSHOT_PATHS: List[str] = [
 ]
 
 DEFAULT_NAV_FRESHNESS_SECONDS = int(os.environ.get("NAV_FRESHNESS_SECONDS", "90"))
-DEFAULT_FAIL_CLOSED_ON_NAV_STALE = os.environ.get("FAIL_CLOSED_ON_NAV_STALE", "1") != "0"
+# AUDIT-1.1a: NAV fail-closed is unconditional.  The env-var override has been
+# removed.  Trading on stale NAV is never permitted (except testnet).
+_BINANCE_TESTNET = os.environ.get("BINANCE_TESTNET", "0") in ("1", "true", "yes")
+DEFAULT_FAIL_CLOSED_ON_NAV_STALE: bool = True
+if os.environ.get("FAIL_CLOSED_ON_NAV_STALE", "1") == "0" and not _BINANCE_TESTNET:
+    LOGGER.critical(
+        "[risk] FAIL_CLOSED_ON_NAV_STALE=0 is forbidden outside testnet — forcing fail-closed"
+    )
 PEAK_STATE_MAX_AGE_SEC = int(os.environ.get("PEAK_STATE_MAX_AGE_SEC", str(24 * 3600)))
 DEFAULT_PEAK_STALE_SECONDS = int(os.environ.get("PEAK_STALE_SECONDS", "600") or 600)
 DEFAULT_TRADE_EQUITY_NAV_PCT = 15.0
@@ -248,11 +255,12 @@ def enforce_nav_freshness_or_veto(risk_ctx: Dict[str, Any], nav_dict: Dict[str, 
         threshold = DEFAULT_NAV_FRESHNESS_SECONDS
 
     fail_closed_cfg = cfg.get("fail_closed_on_nav_stale")
-    fail_closed = (
-        bool(fail_closed_cfg)
-        if fail_closed_cfg is not None
-        else DEFAULT_FAIL_CLOSED_ON_NAV_STALE
-    )
+    # AUDIT-1.1a: fail-closed is unconditional — config overrides are ignored
+    # outside testnet.  On testnet the config value is still respected.
+    if _BINANCE_TESTNET and fail_closed_cfg is not None:
+        fail_closed = bool(fail_closed_cfg)
+    else:
+        fail_closed = True
 
     age = nav_dict.get("age")
     sources_ok = nav_dict.get("sources_ok")
@@ -919,8 +927,9 @@ def clamp_order_size(requested_qty: float, step_size: float) -> float:
 def will_violate_exposure(
     current_gross: float, add_notional: float, nav: float, max_nav_pct: float
 ) -> bool:
-    cap_frac = _normalize_pct(max_nav_pct)
-    limit = float(nav) * max(cap_frac, 0.0)
+    # AUDIT-1.4a: caller is responsible for providing a pre-validated fraction
+    # or ratio.  Do NOT re-normalize here (previously caused double-normalization).
+    limit = float(nav) * max(float(max_nav_pct), 0.0)
     total = float(current_gross) + float(add_notional)
     return total > limit
 
@@ -1036,11 +1045,11 @@ def check_order(
         nav_threshold_s = DEFAULT_NAV_FRESHNESS_SECONDS
 
     nav_fail_closed_cfg = g_cfg.get("fail_closed_on_nav_stale")
-    nav_fail_closed = (
-        bool(nav_fail_closed_cfg)
-        if nav_fail_closed_cfg is not None
-        else DEFAULT_FAIL_CLOSED_ON_NAV_STALE
-    )
+    # AUDIT-1.1a: fail-closed unconditional outside testnet
+    if _BINANCE_TESTNET and nav_fail_closed_cfg is not None:
+        nav_fail_closed = bool(nav_fail_closed_cfg)
+    else:
+        nav_fail_closed = True
 
     nav_health = nav_health_snapshot(nav_threshold_s)
     nav_age = nav_health.get("age_s")
@@ -1631,6 +1640,17 @@ def check_order(
         reasons.append("symbol_cap")
         thresholds.setdefault("max_order_notional", float(max_order_notional))
 
+    # AUDIT-5.4 P1: Max absolute position size in USD (hard cap)
+    max_position_usd = float(s_cfg.get("max_position_usd", 0.0) or 0.0)
+    if max_position_usd > 0.0:
+        existing_notional = abs(float(open_qty) * float(price))
+        total_after = existing_notional + req_notional
+        if total_after > max_position_usd:
+            reasons.append("max_position_usd")
+            thresholds["max_position_usd"] = max_position_usd
+            thresholds["existing_notional"] = existing_notional
+            thresholds["total_after"] = total_after
+
     cap_cfg_raw = (
         s_cfg.get("max_nav_pct", s_cfg.get("symbol_notional_share_cap_pct"))
         if isinstance(s_cfg, Mapping)
@@ -1714,6 +1734,16 @@ def check_order(
         reasons.append("leverage_exceeded")
         thresholds.setdefault("max_leverage", float(lev_cap))
 
+    # AUDIT-5.4 P2: Effective leverage cross-check (gross exposure / NAV)
+    max_effective_lev = float(g_cfg.get("max_effective_leverage", 0.0) or 0.0)
+    if max_effective_lev > 0.0 and nav_f > 0.0:
+        projected_gross = float(current_gross_notional) + req_notional
+        effective_lev = projected_gross / nav_f
+        if effective_lev > max_effective_lev:
+            reasons.append("effective_leverage_exceeded")
+            thresholds["max_effective_leverage"] = max_effective_lev
+            thresholds["projected_effective_leverage"] = round(effective_lev, 4)
+
     # Per-symbol cooldown after last fill
     cooldown_sec = int(float(s_cfg.get("cooldown_sec", 0) or 0))
     if cooldown_sec > 0:
@@ -1786,12 +1816,17 @@ def check_order(
                 reasons.append(REASON_MAX_TRADE_NAV)
 
     # Gross exposure cap (global) — accept legacy/new keys
+    # AUDIT-1.4a: max_gross_exposure_pct is a leverage ratio (1.5 = 150% NAV),
+    # not a fractional percentage, so it must NOT go through _normalize_pct.
     max_gross_nav_pct_raw = (
         (g_cfg.get("max_portfolio_gross_nav_pct")
          if (g_cfg.get("max_portfolio_gross_nav_pct") is not None)
          else g_cfg.get("max_gross_nav_pct", 0.0))
     )
-    max_gross_nav_pct = _normalize_pct(max_gross_nav_pct_raw)
+    try:
+        max_gross_nav_pct = float(max_gross_nav_pct_raw or 0.0)
+    except (TypeError, ValueError):
+        max_gross_nav_pct = 0.0
     if max_gross_nav_pct > 0.0:
         if will_violate_exposure(
             float(current_gross_notional), req_notional, float(nav_f), max_gross_nav_pct

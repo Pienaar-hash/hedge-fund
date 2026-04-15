@@ -271,13 +271,12 @@ class TestDryRunDefault:
         assert result is False
 
     def test_prod_requires_explicit_dry_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """ENV=prod with DRY_RUN unset must raise RuntimeError at startup."""
+        """AUDIT-1.1b: DRY_RUN unset must raise RuntimeError at startup (any env)."""
         src = Path("execution/executor_live.py").read_text()
-        # The guard must check ENV==prod and os.getenv("DRY_RUN") is None
-        assert 'ENV.lower() == "prod"' in src or "ENV.lower() == 'prod'" in src
+        # The guard must check os.getenv("DRY_RUN") is None for ALL environments
         assert 'os.getenv("DRY_RUN") is None' in src or "os.getenv('DRY_RUN') is None" in src
         # Verify the RuntimeError message exists
-        assert "DRY_RUN must be explicitly set in prod" in src
+        assert "DRY_RUN must be explicitly set" in src
 
     def test_prod_with_explicit_dry_run_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """ENV=prod with DRY_RUN=0 should NOT raise — operator intent is clear."""

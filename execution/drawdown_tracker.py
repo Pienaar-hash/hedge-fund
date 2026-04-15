@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
@@ -182,11 +183,25 @@ def save_peak_state(state: Dict[str, Any]) -> None:
     payload.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
     payload.setdefault("ts", time.time())
     _ensure_dir()
+    # AUDIT-1.3a: Atomic write — crash during write must not corrupt peak state.
+    # Pattern: write to temp file + fsync + os.replace (atomic rename).
+    target = PEAK_STATE_PATH
+    parent_dir = os.path.dirname(target) or "."
     try:
-        with open(PEAK_STATE_PATH, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, sort_keys=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=".peak_", dir=parent_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True)
+            os.replace(tmp_path, target)
+        except BaseException:
+            # Clean up temp file on any failure
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception:
-        pass
+        LOGGER.error("[drawdown] FAILED to write peak state to %s", target, exc_info=True)
 
 
 def compute_intraday_drawdown(

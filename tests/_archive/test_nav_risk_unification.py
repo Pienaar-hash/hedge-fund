@@ -57,7 +57,7 @@ def test_drawdown_stale_state_does_not_veto(monkeypatch):
     monkeypatch.setattr(risk_limits, "_peak_from_nav_log", lambda *_a, **_k: 0.0)
 
     state = risk_limits.RiskState()
-    cfg = {"global": {"max_nav_drawdown_pct": 5.0, "min_notional_usdt": 0.0, "peak_stale_seconds": 1}}
+    cfg = {"global": {"max_nav_drawdown_pct": 0.05, "min_notional_usdt": 0.0, "peak_stale_seconds": 1}}
     veto, detail = risk_limits.check_order(
         "BTCUSDT",
         "BUY",
@@ -132,7 +132,7 @@ def test_unified_drawdown_logic(monkeypatch):
     )
     monkeypatch.setattr(risk_limits, "get_confirmed_nav", lambda: {"nav": 800.0, "ts": now - 1})
     state = risk_limits.RiskState()
-    cfg = {"global": {"max_nav_drawdown_pct": 10.0}}
+    cfg = {"global": {"max_nav_drawdown_pct": 0.10}}
     veto, detail = risk_limits.check_order(
         "ETHUSDT",
         "BUY",

@@ -42,6 +42,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from execution.log_utils import append_jsonl
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -1219,6 +1221,28 @@ def hydra_route_intents(
 
     # Filter out any that became flat after limiting
     merged_intents = [m for m in merged_intents if m.net_side != "flat" and m.nav_pct > 0]
+
+    # Filter out zero-score intents (AUDIT-2.2a)
+    _zero_score_log = Path("logs/execution/zero_score_audit.jsonl")
+    _pre_zero = len(merged_intents)
+    _zero_rejected: List[HydraMergedIntent] = []
+    _kept: List[HydraMergedIntent] = []
+    for m in merged_intents:
+        if m.score > 0.0:
+            _kept.append(m)
+        else:
+            _zero_rejected.append(m)
+    merged_intents = _kept
+    for zr in _zero_rejected:
+        append_jsonl(_zero_score_log, {
+            "ts": time.time(),
+            "source": "hydra_merge",
+            "symbol": zr.symbol,
+            "score": zr.score,
+            "side": zr.net_side,
+            "heads": zr.heads,
+            "rationale": zr.rationale,
+        })
 
     # Step 5: Rank and trim
     # Sort by score (descending), then by nav_pct (descending)

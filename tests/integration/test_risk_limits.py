@@ -62,7 +62,7 @@ def _base_cfg():
         "global": {
             "whitelist": ["BTCUSDT"],
             "min_notional_usdt": 25.0,
-            "daily_loss_limit_pct": 3.0,
+            "daily_loss_limit_pct": 0.03,
             "max_trade_nav_pct": 0.2,
             "trade_equity_nav_pct": 0.15,
             "nav_freshness_seconds": 1_000_000,
@@ -311,9 +311,9 @@ def test_symbol_notional_guard_respects_cfg(monkeypatch):
     monkeypatch.setattr(risk_limits_module, "is_in_asset_universe", lambda s: True, raising=False)
     monkeypatch.setattr(risk_limits_module, "total_notional_7d", lambda: 100.0, raising=False)
     monkeypatch.setattr(risk_limits_module, "notional_7d_by_symbol", lambda s: 30.0, raising=False)
-    cfg = {"global": {"symbol_notional_share_cap_pct": 20.0}}
+    cfg = {"global": {"symbol_notional_share_cap_pct": 0.20}}
     assert risk_limits_module.symbol_notional_guard("BTCUSDT", cfg) is False
-    cfg["per_symbol"] = {"BTCUSDT": {"symbol_notional_share_cap_pct": 40.0}}
+    cfg["per_symbol"] = {"BTCUSDT": {"symbol_notional_share_cap_pct": 0.40}}
     assert risk_limits_module.symbol_notional_guard("BTCUSDT", cfg) is True
 
 
@@ -334,7 +334,7 @@ def test_symbol_dd_guard_respects_cfg(monkeypatch):
         fake_disable,
         raising=False,
     )
-    cfg = {"global": {"symbol_drawdown_cap_pct": 4.0}}
+    cfg = {"global": {"symbol_drawdown_cap_pct": 0.04}}
     assert risk_limits_module.symbol_dd_guard("BTCUSDT", cfg) is True
     assert risk_limits_module.symbol_dd_guard("BTCUSDT", cfg) is False
     assert captured.get("symbol") == "BTCUSDT"
@@ -464,7 +464,7 @@ def test_micro_notional_lev_included_allows_10_blocks_9():
         "global": {
             "whitelist": ["BTCUSDT"],
             "min_notional_usdt": 10.0,
-            "max_portfolio_gross_nav_pct": 100.0,
+            "max_portfolio_gross_nav_pct": 1.0,
             "max_leverage": 20,
             "nav_freshness_seconds": 1_000_000,
         },
