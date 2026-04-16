@@ -906,6 +906,25 @@ def evaluate_shadow_for_intent(
         rsi = float(meta.get("rsi", 50.0))
         ema_slope = float(meta.get("ema_slope", 0.0))
 
+        # Hypothesis-class fields — omitted keys stay at FPSEvalContext defaults
+        _hyp_kwargs: Dict[str, Any] = {}
+        if "atr_percentile" in meta:
+            _hyp_kwargs["atr_percentile"] = float(meta["atr_percentile"])
+        if "range_ratio" in meta:
+            _hyp_kwargs["range_ratio"] = float(meta["range_ratio"])
+        if "local_breakout_dir" in meta:
+            _hyp_kwargs["local_breakout_dir"] = meta["local_breakout_dir"]
+        if "continuation_failed" in meta:
+            _hyp_kwargs["continuation_failed"] = bool(meta["continuation_failed"])
+        if "wick_rejection" in meta:
+            _hyp_kwargs["wick_rejection"] = bool(meta["wick_rejection"])
+        if "ema_aligned" in meta:
+            _hyp_kwargs["ema_aligned"] = bool(meta["ema_aligned"])
+        if "pullback_atr_ratio" in meta:
+            _hyp_kwargs["pullback_atr_ratio"] = float(meta["pullback_atr_ratio"])
+        if "momentum_reacceleration" in meta:
+            _hyp_kwargs["momentum_reacceleration"] = bool(meta["momentum_reacceleration"])
+
         ctx = FPSEvalContext(
             symbol=symbol,
             timestamp=time.time(),
@@ -922,6 +941,7 @@ def evaluate_shadow_for_intent(
             zscore=zscore,
             rsi=rsi,
             ema_slope=ema_slope,
+            **_hyp_kwargs,
         )
 
         result = evaluate(ctx, _FPS_CFG_CACHE)

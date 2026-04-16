@@ -6126,6 +6126,28 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                     if isinstance(_mi, dict) and _mi.get("source") == "hydra"
                 )
                 _hydra_funnel.record("post_merge", _hydra_post_merge, regime=_funnel_regime)
+                # --- FPS feature enrichment for Hydra-sourced intents ---
+                try:
+                    from execution.exchange_utils import get_klines as _fps_get_klines
+                    from execution.signal_screener import _compute_fps_features
+                    for _hi in intents_raw:
+                        if not isinstance(_hi, dict) or _hi.get("source") != "hydra":
+                            continue
+                        _hi_meta = _hi.setdefault("metadata", {})
+                        if "fps_feature_source" in _hi_meta:
+                            continue  # already enriched
+                        _hi_sym = _hi.get("symbol", "")
+                        _hi_price = float(_hi.get("price", 0))
+                        if not _hi_sym or _hi_price <= 0:
+                            continue
+                        _hi_kl = _fps_get_klines(_hi_sym, "15m", limit=750)
+                        _hi_closes = [row[4] for row in _hi_kl]
+                        _hi_feats = _compute_fps_features(_hi_kl, _hi_closes, _hi_price)
+                        _hi_feats["fps_feature_source"] = "hydra_executor_enrich"
+                        for _fk, _fv in _hi_feats.items():
+                            _hi_meta.setdefault(_fk, _fv)
+                except Exception as _fps_enrich_err:
+                    LOG.debug("[hydra_fps_enrich] fail-open: %s", _fps_enrich_err)
         except Exception as _hydra_err:
             LOG.warning("[hydra] fail-open — error in pipeline, using legacy intents: %s", _hydra_err)
         LOG.info(
