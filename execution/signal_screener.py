@@ -552,6 +552,155 @@ def would_emit(
     return overall_ok, reasons, extra
 
 
+# ---------------------------------------------------------------------------
+# FPS feature computation (shared by screener + executor Hydra enrichment)
+# ---------------------------------------------------------------------------
+def _compute_fps_features(
+    kl: List[List[float]],
+    closes: List[float],
+    price: float,
+    *,
+    rsi_val: Optional[float] = None,
+    zscore_val: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Compute microstructure features for FPS from raw klines.
+
+    Returns a dict of only the fields that could be reliably computed.
+    Omits fields where data is insufficient rather than defaulting to
+    neutral values, so downstream consumers can distinguish "unavailable"
+    from "available and neutral".
+
+    Parameters
+    ----------
+    kl : list of [open_time, open, high, low, close, volume] rows
+    closes : list of close prices (convenience, extracted from kl)
+    price : current live price
+    rsi_val : pre-computed RSI (avoids recomputation in screener path)
+    zscore_val : pre-computed z-score (avoids recomputation in screener path)
+    """
+    features: Dict[str, Any] = {"fps_feature_source": "unknown", "fps_feature_version": "v1"}
+    MIN_BARS = 50  # minimum bars for meaningful features
+
+    if len(kl) < MIN_BARS or price <= 0:
+        return features
+
+    highs = [float(row[2]) for row in kl]
+    lows = [float(row[3]) for row in kl]
+    volumes = [float(row[5]) for row in kl]
+
+    # --- Pass-through indicators (reuse if pre-computed) ---
+    if rsi_val is not None:
+        features["rsi"] = rsi_val
+    else:
+        features["rsi"] = _rsi(closes, 14)
+
+    if zscore_val is not None:
+        features["zscore"] = zscore_val
+    else:
+        features["zscore"] = _zscore(closes, 20)
+
+    # --- ATR and ATR-derived ---
+    lookback = min(50, len(kl) - 1)
+    tr_values = []
+    for j in range(-lookback, 0):
+        hi = highs[j]
+        lo = lows[j]
+        pc = closes[j - 1]
+        tr_values.append(max(hi - lo, abs(hi - pc), abs(lo - pc)))
+    if tr_values:
+        atr = sum(tr_values) / len(tr_values)
+        if price > 0:
+            features["atr_pct"] = atr / price
+
+        # atr_percentile: rank current ATR among recent ATR values
+        rolling_trs = []
+        window = min(14, lookback)
+        for k in range(len(tr_values) - window + 1):
+            rolling_trs.append(sum(tr_values[k:k + window]) / window)
+        if rolling_trs:
+            current_atr = rolling_trs[-1]
+            rank = sum(1 for v in rolling_trs if v <= current_atr)
+            features["atr_percentile"] = 100.0 * rank / len(rolling_trs)
+
+        # pullback_atr_ratio: distance from recent extreme / ATR
+        if atr > 0:
+            recent_high = max(highs[-20:])
+            recent_low = min(lows[-20:])
+            dist_from_high = (recent_high - price) / atr
+            dist_from_low = (price - recent_low) / atr
+            features["pullback_atr_ratio"] = min(dist_from_high, dist_from_low)
+
+    # --- Range ratio: current bar range / rolling avg range ---
+    ranges = [highs[j] - lows[j] for j in range(-lookback, 0)]
+    avg_range = sum(ranges) / len(ranges) if ranges else 0.0
+    current_range = highs[-1] - lows[-1]
+    if avg_range > 0:
+        features["range_ratio"] = current_range / avg_range
+
+    # --- Volume z-score ---
+    vol_lookback = min(50, len(volumes))
+    if vol_lookback >= 10:
+        vol_seg = volumes[-vol_lookback:]
+        vol_mean = sum(vol_seg) / vol_lookback
+        vol_var = sum((v - vol_mean) ** 2 for v in vol_seg) / vol_lookback
+        vol_std = vol_var ** 0.5
+        if vol_std > 0:
+            features["volume_z"] = (volumes[-1] - vol_mean) / vol_std
+
+    # --- EMA slope and alignment ---
+    def _ema(data: List[float], span: int) -> List[float]:
+        if len(data) < span:
+            return []
+        alpha = 2.0 / (span + 1)
+        out = [sum(data[:span]) / span]
+        for val in data[span:]:
+            out.append(alpha * val + (1 - alpha) * out[-1])
+        return out
+
+    ema_fast_arr = _ema(closes, 12)
+    ema_slow_arr = _ema(closes, 26)
+    if ema_fast_arr and ema_slow_arr and price > 0:
+        features["ema_slope"] = (ema_fast_arr[-1] - ema_slow_arr[-1]) / price
+        features["ema_aligned"] = (price > ema_slow_arr[-1]) if features["ema_slope"] > 0 else (price < ema_slow_arr[-1])
+
+    # --- Local breakout direction ---
+    bk_window = min(20, len(highs) - 1)
+    if bk_window >= 5:
+        recent_max = max(highs[-bk_window - 1:-1])  # exclude current bar
+        recent_min = min(lows[-bk_window - 1:-1])
+        if price > recent_max:
+            features["local_breakout_dir"] = "HIGH"
+        elif price < recent_min:
+            features["local_breakout_dir"] = "LOW"
+
+    # --- Continuation failed: no new high/low over last N bars ---
+    cf_window = min(5, len(highs) - 1)
+    if cf_window >= 3:
+        peak = max(highs[-cf_window - 1:-1])
+        trough = min(lows[-cf_window - 1:-1])
+        # Failed if current bar didn't exceed prior range
+        features["continuation_failed"] = (highs[-1] <= peak and lows[-1] >= trough)
+
+    # --- Wick rejection: large wick relative to body on latest bar ---
+    if len(kl) >= 2:
+        o, hi, lo, c = float(kl[-1][1]), float(kl[-1][2]), float(kl[-1][3]), float(kl[-1][4])
+        body = abs(c - o)
+        upper_wick = hi - max(o, c)
+        lower_wick = min(o, c) - lo
+        max_wick = max(upper_wick, lower_wick)
+        features["wick_rejection"] = (max_wick > body * 1.5) if body > 0 else False
+
+    # --- Momentum reacceleration: short EMA slope increasing ---
+    if len(ema_fast_arr) >= 3 and len(ema_slow_arr) >= 3:
+        slope_recent = ema_fast_arr[-1] - ema_fast_arr[-2]
+        slope_prior = ema_fast_arr[-2] - ema_fast_arr[-3]
+        features["momentum_reacceleration"] = (
+            (slope_recent > slope_prior > 0) or (slope_recent < slope_prior < 0)
+        )
+
+    return features
+
+
 def _rsi(closes: List[float], period: int = 14) -> float:
     if len(closes) <= period:
         return 50.0
@@ -1063,6 +1212,15 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         except Exception as _trend_exc:
             LOGGER.warning("[screener] trend_score computation failed for %s: %s", sym, _trend_exc)
             intent["trend_score"] = 0.5
+        # --- FPS feature enrichment (shadow data plane) ---
+        try:
+            _fps_feats = _compute_fps_features(
+                kl, closes, price, rsi_val=rsi, zscore_val=z,
+            )
+            _fps_feats["fps_feature_source"] = "screener"
+            metadata_block.update(_fps_feats)
+        except Exception as _fps_exc:
+            LOGGER.debug("[screener] fps_feature enrichment failed for %s: %s", sym, _fps_exc)
         if dbg:
             print(
                 f"[sigdbg] {sym} tf={tf} z={round(z,3)} rsi={round(rsi,1)} trend={trend} pct={per_trade_nav_pct} lev={lev} ok"
