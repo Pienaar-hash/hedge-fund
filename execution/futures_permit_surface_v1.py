@@ -887,8 +887,25 @@ def evaluate_shadow_for_intent(
 
         # Regime from sentinel state
         regime_current = str(sentinel_state.get("primary_regime", "UNKNOWN"))
-        regime_previous = str(sentinel_state.get("previous_regime", ""))
-        regime_age_bars = int(sentinel_state.get("regime_age_bars", 0))
+        # previous_regime: sentinel uses history_meta.last_primary or
+        # meta.regime_regret.prev_regime — fall back to top-level key if present.
+        _hist = sentinel_state.get("history_meta") or {}
+        _regret = (sentinel_state.get("meta") or {}).get("regime_regret") or {}
+        regime_previous = str(
+            sentinel_state.get("previous_regime")
+            or _regret.get("prev_regime")
+            or _hist.get("last_primary")
+            or ""
+        )
+        # regime_age_bars: consecutive_count from history_meta, or
+        # cycles_in_prev from regime_regret as fallback.
+        _raw_age = (
+            sentinel_state.get("regime_age_bars")
+            or _hist.get("consecutive_count")
+            or _regret.get("cycles_in_prev")
+            or 0
+        )
+        regime_age_bars = int(_raw_age)
         regime_probs = sentinel_state.get("regime_probs") or {}
         regime_confidence = float(
             max(regime_probs.values()) if regime_probs else 0.0
