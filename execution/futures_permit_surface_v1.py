@@ -474,6 +474,7 @@ def append_shadow_record(
             "snapshot_hash": result.snapshot_hash,
             "regime_current": ctx.regime_current,
             "regime_previous": ctx.regime_previous,
+            "regime_age_bars": ctx.regime_age_bars,
             "regime_confidence": ctx.regime_confidence,
             "atr_pct": ctx.atr_pct,
             "volume_z": ctx.volume_z,
