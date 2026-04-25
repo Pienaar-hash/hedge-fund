@@ -9,22 +9,16 @@ Must pass before historical replay is authorized.
 """
 
 import pytest
-import time
-from typing import Dict, List
+from typing import Dict
 
 from execution.p6_simple_rules import (
-    C1Config,
-    DEFAULT_CONFIG as C1_DEFAULT,
     P6Signal,
     generate_simple_rule_signals,
 )
 from execution.p6_price_state import (
-    C2Config,
-    DEFAULT_CONFIG as C2_DEFAULT,
     generate_price_state_signals,
 )
 from execution.p6_shadow_evaluator import (
-    evaluate_signal_against_bridge,
     evaluate_and_log_signals,
 )
 from execution.expectancy_bridge import BandEntry, BandTable

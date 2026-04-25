@@ -101,7 +101,6 @@ def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
     print(f"[{flags.get('prefix', 'live')}] Firestore heartbeat skipped (disabled)", flush=True)
 
 # --- Force package import path when launched via Supervisor ---
-import importlib.util  # noqa: E402
 
 class _NoopDoc:
     exists = False

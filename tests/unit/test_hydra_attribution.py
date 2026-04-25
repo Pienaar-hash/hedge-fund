@@ -10,11 +10,7 @@ Flow:
                → get_head_contributions_for_position() → Fill enrichment
 """
 
-import json
 import pytest
-import tempfile
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from execution.position_tp_sl_registry import (
     register_position_tp_sl,
@@ -22,7 +18,6 @@ from execution.position_tp_sl_registry import (
     get_head_contributions,
     get_all_head_contributions,
     unregister_position_tp_sl,
-    _make_key,
 )
 
 from execution.hydra_integration import (

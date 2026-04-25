@@ -15,7 +15,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 LOGGER = logging.getLogger("exchange_precision")
 

@@ -1,5 +1,4 @@
 """Tests for regime_pressure._compute_hostility_label() MODERATE tier."""
-import pytest
 
 from execution.regime_pressure import RegimePressureState
 

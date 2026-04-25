@@ -12,11 +12,8 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-from pathlib import Path
 from unittest import mock
 
-import pytest
 
 
 # ── Regime classification ────────────────────────────────────────────────────
@@ -377,7 +374,7 @@ class TestEvaluateV2Shadow:
 
 class TestLogging:
     def test_append_creates_file(self, tmp_path):
-        from execution.shadow_selector_v2 import _append_v2_event, _V2_LOG_PATH
+        from execution.shadow_selector_v2 import _append_v2_event
         log_path = tmp_path / "test_v2.jsonl"
         with mock.patch("execution.shadow_selector_v2._V2_LOG_PATH", log_path):
             _append_v2_event({"test": True, "ts": 1234})

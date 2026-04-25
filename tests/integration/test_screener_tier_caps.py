@@ -2,7 +2,6 @@ import json
 import pytest
 import execution.risk_limits as risk_limits
 from execution.risk_limits import RiskState, check_order
-from execution import risk_loader
 import os
 from pathlib import Path
 

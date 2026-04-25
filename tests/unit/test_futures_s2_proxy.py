@@ -668,7 +668,6 @@ class TestDaemonThread:
 
     def test_daemon_double_start_is_noop(self):
         """Calling start_daemon twice does not spawn a second thread."""
-        import time as _time
         td = tempfile.mkdtemp()
         runner = _make_runner(tmp_dir=td)
 

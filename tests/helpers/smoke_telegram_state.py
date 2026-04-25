@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
 from execution import telegram_alerts_v7 as ta7
 

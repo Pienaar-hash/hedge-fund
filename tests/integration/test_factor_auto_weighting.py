@@ -10,7 +10,6 @@ Validates:
 """
 from __future__ import annotations
 
-import pytest
 
 from execution.factor_diagnostics import (
     compute_factor_ir,

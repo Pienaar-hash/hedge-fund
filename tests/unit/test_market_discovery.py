@@ -14,8 +14,7 @@ Covers:
 from __future__ import annotations
 
 import json
-import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 from unittest.mock import patch
 
 import pytest
@@ -24,9 +23,6 @@ from prediction.market_discovery import (
     DiscoveredMarket,
     DiscoverySnapshot,
     SLUG_15M,
-    SLUG_5M,
-    TITLE_FILTER,
-    _gamma_get,
     _parse_iso,
     _parse_outcomes,
     _parse_tokens,

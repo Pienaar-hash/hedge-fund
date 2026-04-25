@@ -25,10 +25,6 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from prediction.round_observer import (
-    INTRAROUND_INTERVAL_S,
-    ORACLE_STALE_MS,
-    POLYMARKET_FEE_RATE,
-    SNAPSHOT_OFFSETS_S,
     RoundObserver,
     RoundState,
     TerminalSnapshot,

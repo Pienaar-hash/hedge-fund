@@ -1,4 +1,3 @@
-import os
 
 from execution import risk_loader
 

@@ -8,8 +8,6 @@ from unittest.mock import MagicMock
 from execution.score_edge_diagnostic import (
     build_diagnostic_record,
     classify_defect,
-    CARRY_NEUTRAL,
-    REQUIRED_COMPONENTS,
 )
 
 

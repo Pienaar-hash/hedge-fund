@@ -15,15 +15,11 @@ Covers:
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 from prediction.dle_prediction_gate import (
     PredictionDLEEvent,
     PredictionDLEWriter,
-    PredictionDecision,
-    PredictionPermit,
     VetoReason,
     build_decision,
     derive_prediction_decision_id,

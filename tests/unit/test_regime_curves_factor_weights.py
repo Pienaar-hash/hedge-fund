@@ -5,7 +5,7 @@ Unit tests for regime curves in factor weights (v7.7_P6).
 from __future__ import annotations
 
 import pytest
-from typing import Any, Dict
+from typing import Dict
 
 from execution.factor_diagnostics import (
     FactorRegimeCurvesConfig,

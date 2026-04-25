@@ -13,10 +13,6 @@ import pytest
 from execution.fee_gate import (
     FeeGateConfig,
     check_fee_edge,
-    compute_round_trip_fee,
-    compute_required_edge,
-    DEFAULT_TAKER_FEE_RATE,
-    DEFAULT_FEE_BUFFER_MULT,
 )
 
 

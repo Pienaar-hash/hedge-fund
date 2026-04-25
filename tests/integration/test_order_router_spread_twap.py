@@ -3,8 +3,7 @@ Tests for spread-aware TWAP in order_router.py (v7.5_B1)
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
-from typing import Any, Dict
+from unittest.mock import patch
 
 
 # ===========================================================================

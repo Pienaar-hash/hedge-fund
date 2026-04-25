@@ -15,13 +15,10 @@ Covers:
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 from prediction.belief_ingest import (
     AggregateState,
-    BeliefEvent,
     build_belief_event,
     compute_aggregate,
     derive_aggregate_hash,

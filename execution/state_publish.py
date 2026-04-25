@@ -24,7 +24,6 @@ from execution.diagnostics_metrics import (
     _load_strategy_config,
 )
 from execution.router_metrics import RouterQualityConfig, load_router_quality_config
-from utils.firestore_client import get_db
 from execution.pnl_tracker import export_pnl_attribution_state
 from execution.versioning import read_version
 from execution.utils import get_usd_to_zar

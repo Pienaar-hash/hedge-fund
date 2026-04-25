@@ -11,17 +11,13 @@ Tests:
 import json
 import pytest
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import patch
 
 from execution.position_ledger import (
     PositionLedgerEntry,
     PositionTP_SL,
     build_position_ledger,
     sync_ledger_with_positions,
-    load_positions_state,
     load_tp_sl_registry,
-    save_tp_sl_registry,
     upsert_tp_sl,
     delete_tp_sl,
     ledger_to_dict,

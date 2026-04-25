@@ -15,7 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ def test_compute_rolling_returns_zero_window() -> None:
 # ---------------------------------------------------------------------------
 def test_export_equity_series_creates_file() -> None:
     """export_equity_series creates equity.json."""
-    from execution.pnl_tracker import export_equity_series, STATE_DIR, EQUITY_PATH
+    from execution.pnl_tracker import export_equity_series
     
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)

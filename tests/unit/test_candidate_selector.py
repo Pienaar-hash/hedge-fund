@@ -1,5 +1,4 @@
 """Tests for execution.candidate_selector — Phase 4 Commit 1."""
-import pytest
 from execution.candidate_selector import (
     build_candidates,
     select_executable_candidate,

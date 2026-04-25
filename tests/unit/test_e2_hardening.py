@@ -124,7 +124,7 @@ class TestBootstrapFromPositions:
                 "symbol": "BTCUSDT",
                 "positionSide": "LONG",
                 "executedQty": 0.01,
-                "ts": f"2025-01-01T00:00:00",
+                "ts": "2025-01-01T00:00:00",
             }
             f.write(json.dumps(fill) + "\n")
             f.flush()

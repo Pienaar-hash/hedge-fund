@@ -11,9 +11,6 @@ Tests:
 - EMA smoothing
 - Bounds enforcement (floor/ceiling)
 """
-import pytest
-from datetime import datetime, timezone
-from typing import Any, Dict
 
 from execution.alpha_router import (
     AlphaRouterConfig,

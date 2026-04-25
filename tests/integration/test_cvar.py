@@ -4,7 +4,7 @@ Tests for CVaR (Expected Shortfall) calculations (v7.5_A1)
 
 import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from execution.vol_risk import (
     CVaRConfig,

@@ -19,7 +19,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import subprocess
 import time
 from dataclasses import asdict
@@ -43,7 +42,6 @@ from execution.p6_shadow_evaluator import (
 )
 from execution.p6_simple_rules import (
     C1Config,
-    P6Signal,
     generate_simple_rule_signals,
 )
 from execution.sentinel_x import extract_regime_features

@@ -7,12 +7,9 @@ Tests the two anti-churn safety rails:
 """
 
 import pytest
-import time
-from unittest.mock import patch, MagicMock
 
 from execution.churn_guard import (
     ChurnConfig,
-    ChurnState,
     check_entry_allowed,
     check_exit_allowed,
     record_entry,

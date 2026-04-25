@@ -5,7 +5,6 @@ PATCHSET_V7.7_P6
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 from execution.conviction_engine import (
     RegimeCurvesConfig,
@@ -13,9 +12,6 @@ from execution.conviction_engine import (
     ConvictionContext,
     compute_conviction_score,
     compute_conviction_score_with_regime,
-    get_vol_regime_multiplier,
-    get_dd_regime_multiplier,
-    load_conviction_config,
 )
 
 

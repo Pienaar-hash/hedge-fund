@@ -10,7 +10,6 @@ Validates:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from execution.intel.symbol_score_v6 import FactorVector
 from execution.factor_diagnostics import (

@@ -12,7 +12,6 @@ These tests enforce all invariants for:
 This ensures future dev cannot break risk telemetry.
 """
 import pytest
-import math
 
 
 # Normalizer used in production (mirrors state_publish._to_frac and risk_limits._normalize_observed_pct)

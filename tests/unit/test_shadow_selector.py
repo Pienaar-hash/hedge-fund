@@ -1,11 +1,9 @@
 """Tests for execution.shadow_selector — Phase 4 Commit 2."""
 import json
 import os
-import time
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
 from execution.shadow_selector import (
     _shadow_enabled,

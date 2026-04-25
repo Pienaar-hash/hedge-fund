@@ -1,7 +1,6 @@
 """Tests for execution.hydra_monotonicity module."""
 import json
 import os
-import pytest
 from execution.hydra_monotonicity import (
     compute_monotonicity,
     compute_monotonicity_by_head,

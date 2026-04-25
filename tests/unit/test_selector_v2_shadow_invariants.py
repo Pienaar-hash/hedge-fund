@@ -5,7 +5,6 @@ and Candidate D routing. These protect against silent regression
 during the shadow observation phase before D activation.
 """
 
-import pytest
 
 from execution.shadow_selector_v2 import (
     PNL_POSITIVE_REGIONS_V2,

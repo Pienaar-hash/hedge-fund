@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Tuple, Mapping, Optional
 
 import os
 from .exchange_utils import get_klines, get_price, get_symbol_filters
-from .exchange_precision import normalize_qty, normalize_price
+from .exchange_precision import normalize_qty
 from .orderbook_features import evaluate_entry_gate
 from .signal_generator import (
     normalize_intent as generator_normalize_intent,
@@ -43,14 +43,11 @@ from execution.strategy_adaptation import (
 )
 from execution.position_sizing import compute_adaptive_weight
 from execution.v6_flags import get_flags, log_v6_flag_snapshot
-from execution.risk_limits import check_order
 from execution.strategies.vol_target import generate_vol_target_intent
 from execution.utils.vol import (
-    atr_pct,
     compute_vol_regime_from_prices,
     load_vol_regime_config,
     get_sizing_multiplier,
-    build_vol_regime_snapshot,
 )
 from execution.intel.symbol_score_v6 import (
     load_expectancy_snapshot,

@@ -8,7 +8,6 @@ Tests:
 - is_meta_scheduler_active() logic
 """
 
-import pytest
 
 from execution.meta_scheduler import (
     MetaSchedulerConfig,

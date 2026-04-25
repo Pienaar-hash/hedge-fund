@@ -23,8 +23,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import requests
 
 from execution import exchange_utils as ex
-from execution.exchange_utils import strip_position_side_if_one_way, ensure_position_side
-from execution.exchange_precision import normalize_price, normalize_qty
+from execution.exchange_utils import ensure_position_side
+from execution.exchange_precision import normalize_price
 from execution.log_utils import get_logger, log_event, safe_dump
 from execution.intel.maker_offset import suggest_maker_offset_bps
 from execution.intel.router_autotune_shared import suggest_autotune_for_symbol

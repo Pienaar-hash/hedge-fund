@@ -5,9 +5,6 @@ Tests symbol-to-group mapping and exposure calculations.
 """
 
 import pytest
-from decimal import Decimal
-from typing import Set
-from unittest.mock import patch, MagicMock
 
 from execution.correlation_groups import (
     build_symbol_to_groups_index,

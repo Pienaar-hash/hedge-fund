@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from execution.p6_simple_rules import P6Signal
 

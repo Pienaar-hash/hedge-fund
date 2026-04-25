@@ -15,10 +15,7 @@ Contract invariants:
 
 from __future__ import annotations
 
-import json
 import logging
-import math
-from pathlib import Path
 from typing import Dict, List
 from unittest.mock import patch
 
@@ -26,7 +23,6 @@ import pytest
 
 from execution.binary_lab_s2_model import (
     BinaryProbabilityModel,
-    _SKLEARN_AVAILABLE,
 )
 
 # ---------------------------------------------------------------------------

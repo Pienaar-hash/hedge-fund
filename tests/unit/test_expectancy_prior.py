@@ -18,7 +18,6 @@ from execution.intel.expectancy_v6 import (
     compute_expectancy_prior,
     blend_expectancy,
     build_expectancy_snapshot,
-    MIN_EXPECTANCY_TRADES,
 )
 
 

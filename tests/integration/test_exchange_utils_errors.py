@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import types
 
-import pytest
 import requests
 
 import execution.exchange_utils as ex

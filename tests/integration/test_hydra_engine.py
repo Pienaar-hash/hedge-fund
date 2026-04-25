@@ -12,10 +12,8 @@ Tests cover:
 
 import json
 import pytest
-import tempfile
 from pathlib import Path
 from typing import Any, Dict
-from unittest.mock import patch, MagicMock
 
 from execution.hydra_engine import (
     STRATEGY_HEADS,
@@ -23,12 +21,10 @@ from execution.hydra_engine import (
     HydraState,
     HydraMergedIntent,
     load_hydra_config,
-    load_hydra_state,
     save_hydra_state,
     log_hydra_intents,
     run_hydra_step,
     is_hydra_enabled,
-    hydra_merged_intent_to_execution_intent,
 )
 
 from execution.hydra_integration import (
@@ -323,7 +319,6 @@ class TestDashboardPanel:
     def test_panel_import(self):
         """Test that panel can be imported."""
         from dashboard.hydra_panel import (
-            load_hydra_state,
             render_hydra_panel,
             render_hydra_widget,
         )

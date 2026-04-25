@@ -11,8 +11,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
-import textwrap
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict
@@ -25,8 +23,6 @@ from execution.activation_window import (
     _emit_dle_lifecycle_event,
     _reset_globals,
     check_activation_window,
-    collect_stack_health,
-    get_activation_sizing_override,
     get_scale_gate_cap,
     log_activation_boot_status,
     record_verification_verdict,

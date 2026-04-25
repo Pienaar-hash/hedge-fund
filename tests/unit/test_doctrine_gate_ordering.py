@@ -8,13 +8,10 @@ and prevents future reordering mistakes.
 """
 from __future__ import annotations
 
-import json
 import os
 import time
-import types
 from pathlib import Path
-from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, patch, PropertyMock
+from typing import Any, Dict
 
 import pytest
 
@@ -198,13 +195,6 @@ class TestDoctrineGateOrdering:
 
     def test_reduce_only_bypasses_doctrine(self) -> None:
         """Exits (reduceOnly) skip the doctrine gate entirely."""
-        from execution.doctrine_kernel import (
-            RegimeSnapshot,
-            IntentSnapshot,
-            ExecutionSnapshot,
-            PortfolioSnapshot,
-            doctrine_entry_verdict,
-        )
 
         # CHOPPY regime — but reduceOnly should bypass
         # We test this at the _doctrine_gate level concept:

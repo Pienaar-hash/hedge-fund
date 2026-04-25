@@ -16,10 +16,7 @@ from pathlib import Path
 import pytest
 
 from execution.factor_diagnostics import (
-    AdaptiveConfig,
-    AutoWeightingConfig,
     FactorDiagnosticsConfig,
-    FactorWeights,
     build_factor_diagnostics_snapshot,
     load_factor_diagnostics_state,
     write_factor_diagnostics_state,

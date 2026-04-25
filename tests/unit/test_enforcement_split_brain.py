@@ -25,9 +25,7 @@ from execution.enforcement_rehearsal import (
     record_split_brain_check,
     get_enforcement_metrics,
     EnforcementMetrics,
-    init_enforcement,
     reset_rehearsal,
-    init_rehearsal,
 )
 
 pytestmark = pytest.mark.unit

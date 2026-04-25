@@ -8,11 +8,9 @@ Tests:
 4. Position with no TP/SL -> no exit
 """
 
-import json
 import pytest
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from execution.exit_scanner import (
     ExitCandidate,

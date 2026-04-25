@@ -3,11 +3,7 @@ Unit tests for position_tp_sl_registry.py (PATCHSET V2)
 """
 
 import pytest
-import json
-import os
-import tempfile
 import time
-from pathlib import Path
 
 
 # ===========================================================================

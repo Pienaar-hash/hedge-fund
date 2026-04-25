@@ -15,10 +15,6 @@ v7.8_P5: Cross-Pair Statistical Arbitrage Engine.
 """
 
 import pytest
-import math
-from unittest.mock import patch, MagicMock
-from dataclasses import asdict
-from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Import the module under test

@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional
 
 import execution.router_metrics as router_metrics
 import execution.rv_momentum as rv_momentum

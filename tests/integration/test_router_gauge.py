@@ -399,7 +399,6 @@ def test_router_gauge_compact_renders(
 def test_write_router_health_adds_score() -> None:
     """write_router_health_state adds health score if missing."""
     import tempfile
-    import json
     from pathlib import Path
     
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -2,8 +2,6 @@
 Tests for slippage_model.py (v7.5_B1)
 """
 
-import json
-import math
 import pytest
 import tempfile
 import time

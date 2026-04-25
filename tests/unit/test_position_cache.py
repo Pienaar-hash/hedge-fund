@@ -1,6 +1,5 @@
 """Tests for execution.position_cache — TTL-based position cache."""
 
-import time
 from unittest.mock import MagicMock
 
 import pytest

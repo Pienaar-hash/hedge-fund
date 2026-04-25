@@ -5,7 +5,7 @@ import json
 import pytest
 from pathlib import Path
 
-from execution.hydra_funnel import HydraFunnel, get_funnel, record, snapshot, flush
+from execution.hydra_funnel import HydraFunnel, get_funnel
 
 
 class TestHydraFunnel:

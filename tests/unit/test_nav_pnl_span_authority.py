@@ -7,9 +7,7 @@ nav_window_valid() is the single-point guard for all dashboard panels.
 Bug class: authority-ordering violation — windowed metrics displayed
 without proving sufficient log span.
 """
-import json
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

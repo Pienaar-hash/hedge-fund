@@ -16,7 +16,6 @@ import pytest
 from typing import Dict, Any
 
 from execution.edge_scanner import (
-    StrategyHealth,
     compute_strategy_health,
     _compute_factor_health,
     _compute_symbol_health,

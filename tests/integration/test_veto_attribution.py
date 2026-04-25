@@ -1,7 +1,6 @@
 import pathlib
 import sys
 
-import pytest
 
 
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "scripts"

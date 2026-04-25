@@ -16,7 +16,6 @@ import pytest
 
 from execution.strategies.vol_target import (
     VolTargetConfig,
-    RISK_MODE_ORDER,
     _risk_mode_allowed,
     compute_vol_factor,
     compute_per_trade_nav_pct,

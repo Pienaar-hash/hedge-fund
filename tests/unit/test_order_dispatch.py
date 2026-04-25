@@ -1,9 +1,6 @@
 """Tests for execution.order_dispatch — extracted dispatch functions."""
 
-import time
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 import requests

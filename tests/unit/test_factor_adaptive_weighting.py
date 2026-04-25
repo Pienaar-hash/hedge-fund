@@ -20,8 +20,6 @@ from execution.factor_diagnostics import (
     AutoWeightingConfig,
     FactorCovarianceSnapshot,
     FactorPerformance,
-    FactorWeights,
-    FactorWeightsSnapshot,
     apply_adaptive_bias_to_weights,
     build_factor_weights_snapshot,
     compute_adaptive_weight_bias,

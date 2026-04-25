@@ -2,7 +2,6 @@
 import json
 import time
 
-import pytest
 
 from scripts.shadow_pnl_join import (
     MIN_EPISODES_SUFFICIENT,

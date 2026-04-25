@@ -4,9 +4,6 @@ Tests for state publishing of vol regime data (v7.4 B2).
 from __future__ import annotations
 
 import json
-import pytest
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 from execution.state_publish import publish_vol_regime_snapshot
