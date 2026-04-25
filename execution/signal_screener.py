@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, List, Tuple, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Sequence, Tuple, Mapping, Optional
 
 import os
 from .exchange_utils import get_klines, get_price, get_symbol_filters
