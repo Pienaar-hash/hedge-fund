@@ -43,6 +43,7 @@ from execution.strategy_adaptation import (
 )
 from execution.position_sizing import compute_adaptive_weight
 from execution.v6_flags import get_flags, log_v6_flag_snapshot
+from execution.risk_limits import check_order  # noqa: F401 - re-exported for tests/integration/test_screener_dedupe.py monkeypatching
 from execution.strategies.vol_target import generate_vol_target_intent
 from execution.utils.vol import (
     compute_vol_regime_from_prices,
