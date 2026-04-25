@@ -10,11 +10,8 @@ Tests cover:
 - View functions
 """
 import json
-import math
-import tempfile
-from pathlib import Path
-from typing import Any, Dict, List
-from unittest.mock import patch, MagicMock
+from typing import List
+from unittest.mock import patch
 
 import pytest
 

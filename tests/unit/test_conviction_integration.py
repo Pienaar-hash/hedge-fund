@@ -10,17 +10,13 @@ these fields, causing the executor's conviction gate to veto
 from __future__ import annotations
 
 import copy
-import types
-from typing import Any, Dict, List, Mapping
-from unittest.mock import patch, MagicMock
+from typing import Any, Dict, List
 
 import pytest
 
 import execution.signal_screener as sc
 from execution.conviction_engine import (
     ConvictionContext,
-    ConvictionConfig,
-    ConvictionResult,
     compute_conviction,
     load_conviction_config,
 )

@@ -11,7 +11,6 @@ Tests Hydra PnL Attribution & Drawdown Engine:
 - Integration helpers
 """
 
-import json
 import pytest
 import tempfile
 from pathlib import Path
@@ -48,8 +47,6 @@ from execution.hydra_pnl import (
     update_gross_exposure,
     # Kill switch
     check_kill_switch,
-    evaluate_all_kill_switches,
-    # Throttling
     compute_throttle_scale,
     update_throttle_scales,
     # Integration helpers

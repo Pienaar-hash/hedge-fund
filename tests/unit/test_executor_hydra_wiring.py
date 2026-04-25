@@ -9,8 +9,8 @@ Tests the Hydra multi-strategy injection point in executor_live.py:
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
-from typing import Any, Dict, List
+from unittest.mock import patch
+from typing import Any, Dict
 
 # ---------------------------------------------------------------------------
 # Helpers — simulate the merge logic extracted from executor_live.py

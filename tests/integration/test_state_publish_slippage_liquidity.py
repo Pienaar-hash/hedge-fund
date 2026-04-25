@@ -3,10 +3,9 @@ Tests for slippage and liquidity state publishing (v7.5_B1)
 """
 
 import json
-import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 # ===========================================================================

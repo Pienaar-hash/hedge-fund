@@ -13,9 +13,8 @@ Covers:
 """
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-import pytest
 from execution.dle_shadow import (
     SCHEMA_VERSION,
     SCHEMA_VERSION_V2,

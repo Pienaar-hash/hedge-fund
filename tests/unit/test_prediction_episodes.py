@@ -15,11 +15,8 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
 
-import pytest
 from prediction.prediction_episodes import (
-    PredictionEpisode,
     brier_score,
     compute_trust_advisory,
     derive_episode_id,

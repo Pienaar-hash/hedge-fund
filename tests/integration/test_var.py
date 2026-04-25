@@ -2,10 +2,9 @@
 Tests for vol_risk.py — VaR and CVaR calculations (v7.5_A1)
 """
 
-import math
 import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from execution.vol_risk import (
     VaRConfig,

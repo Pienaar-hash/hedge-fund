@@ -2,10 +2,9 @@
 Tests for VaR/CVaR integration with risk_limits.py (v7.5_A1)
 """
 
-import pytest
 from unittest.mock import patch, MagicMock
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 
 # ===========================================================================

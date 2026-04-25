@@ -33,9 +33,9 @@ import json
 import os
 import shutil
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from execution.log_utils import get_logger, log_event
 

@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import os
 import pytest
-from typing import Any, Dict
-from unittest import mock
 
 # Force safe defaults even if .env sets production values.
 os.environ["ENV"] = "test"

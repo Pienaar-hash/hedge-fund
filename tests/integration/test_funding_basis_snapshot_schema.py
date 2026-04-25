@@ -19,7 +19,6 @@ import pathlib
 import tempfile
 from typing import Any, Dict
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Manifest registration tests

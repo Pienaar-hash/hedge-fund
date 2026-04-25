@@ -23,10 +23,9 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 # ── Doctrine kernel (K5: CRISIS) ──────────────────────────────────────────
 from execution.doctrine_kernel import (
@@ -45,7 +44,6 @@ from execution.risk_limits import check_order, RiskState
 from execution.risk_engine_v6 import classify_risk_mode, RiskMode
 
 # ── Sizing snapshot (tripwire) ────────────────────────────────────────────
-from execution.sizing_snapshot import emit_sizing_snapshot, REQUIRED_KEYS
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -18,7 +18,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict
@@ -28,7 +27,6 @@ import pytest
 
 from execution.binary_lab_signals import (
     BinaryLabSignal,
-    EligibilityResult,
     _BAND_RANK,
     _regime_to_direction,
     _score_to_band,
@@ -44,7 +42,6 @@ from execution.binary_lab_shadow import (
     BinaryLabShadowRunner,
     BinaryLabTradeWriter,
     OpenRound,
-    RoundOutcome,
     SimulatedExecutionAdapter,
     SimulatedFill,
     _make_round_id,

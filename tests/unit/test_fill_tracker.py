@@ -352,8 +352,6 @@ class TestFillTaskHandle:
     @pytest.mark.unit
     def test_poll_fill_task_returns_none_then_result(self) -> None:
         """poll_fill_task returns None while not done, then the result."""
-        import execution.fill_tracker as ft
-        import time as _time
 
         ack = _make_ack()
         handle = start_fill_task(ack, position_tracker=PositionTracker())

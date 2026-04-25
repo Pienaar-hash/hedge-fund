@@ -4,7 +4,6 @@ Tests for signal screener vol regime integration (v7.4 B2).
 from __future__ import annotations
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 from execution.utils.vol import (
     get_sizing_multiplier,

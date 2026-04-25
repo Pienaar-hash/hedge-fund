@@ -321,7 +321,7 @@ def _maybe_rank_alerts(alerts: Sequence[Dict[str, Any]]) -> Sequence[Dict[str, A
     """
     try:
         import os
-        from prediction.alert_ranker import rank_alerts, PredictionSnapshot
+        from prediction.alert_ranker import rank_alerts
         from prediction.state_surface import build_prediction_state
 
         phase = os.environ.get("PREDICTION_PHASE", "P0_OBSERVE")

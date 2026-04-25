@@ -14,8 +14,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest import mock
@@ -29,8 +27,6 @@ from execution.episode_ledger import (
     EpisodeLedger,
     EpisodeV2,
     EPISODE_LEDGER_SCHEMA_V2,
-    MATCH_WINDOW_NARROW_S,
-    MATCH_WINDOW_WIDE_S,
     _bind_authority,
     _compute_episode_uid,
     _find_nearest_link,

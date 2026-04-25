@@ -6,12 +6,8 @@ Tests that write_risk_snapshot_state includes portfolio_dd_pct and circuit_break
 from __future__ import annotations
 
 import json
-import pathlib
-import tempfile
-from typing import Any, Dict
 from unittest import mock
 
-import pytest
 
 
 class TestRiskSnapshotCircuitBreakerFields:

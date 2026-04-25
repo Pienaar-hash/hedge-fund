@@ -6,10 +6,7 @@ Tests the portfolio_dd_circuit veto reason and circuit breaker behavior.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from typing import Any, Dict
-from unittest import mock
 
 import pytest
 

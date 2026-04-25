@@ -12,7 +12,6 @@ These tests verify:
   4. Normal entries are blocked as usual
 """
 
-import pytest
 
 
 def _is_doctrine_exit(intent: dict) -> bool:

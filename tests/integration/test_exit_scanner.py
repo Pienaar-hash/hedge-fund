@@ -3,11 +3,6 @@ Unit tests for exit_scanner.py (PATCHSET V2 — Vol-Target Exit Scanner)
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
-from typing import Dict, Any, Optional
-import json
-import os
-import tempfile
 
 from execution.exit_scanner import (
     ExitReason,

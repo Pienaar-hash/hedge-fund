@@ -20,15 +20,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
 
 from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
-from execution.firestore_utils import _safe_load_json
-from execution.events import now_utc, write_event
+from execution.events import now_utc
 from execution.helpers import (
     coerce_veto_reasons as _coerce_veto_reasons,
     git_commit as _git_commit,
-    iso_to_ts as _iso_to_ts,
     json_default as _json_default,
     mk_id,
-    ms_to_iso as _ms_to_iso,
     normalize_status as _normalize_status,
     now_iso as _now_iso,
     read_dry_run_flag as _read_dry_run_flag,
@@ -39,7 +36,6 @@ from execution.helpers import (
 from execution.sizing import (
     estimate_intent_qty as _estimate_intent_qty,
     nav_pct_fraction as _nav_pct_fraction,
-    size_from_nav as _size_from_nav,
 )
 from execution.fill_tracker import (
     OrderAckInfo,
@@ -48,16 +44,12 @@ from execution.fill_tracker import (
     fetch_order_status as _fetch_order_status,
     fetch_order_trades as _fetch_order_trades,
     emit_order_ack as _emit_order_ack,
-    should_emit_close as _should_emit_close,
-    confirm_order_fill as _confirm_order_fill,
     start_fill_task as _start_fill_task,
     wait_fill_task as _wait_fill_task,
     poll_fill_task as _poll_fill_task,
 )
-from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
 from execution.universe_resolver import (
     symbol_min_gross,
-    symbol_target_leverage,
     symbol_tier,
     universe_by_symbol,
 )
@@ -70,7 +62,6 @@ from execution import router_metrics
 from execution.intel import maker_offset, router_autotune_shared
 from execution.exchange_utils import get_price
 
-import requests
 from execution.intel.router_policy import router_policy
 from execution.v6_flags import get_flags, flags_to_dict, log_v6_flag_snapshot
 from execution.dle_shadow import shadow_build_chain, DLEShadowWriter, hash_snapshot as _dle_hash_snapshot, DEFAULT_ENTRY_PERMIT_TTL_S, DEFAULT_EXIT_PERMIT_TTL_S
@@ -79,7 +70,6 @@ from execution.loop_timing import (
     start_loop as timing_start_loop,
     end_loop as timing_end_loop,
     timed_section,
-    get_timing_summary,
 )
 
 # Optional .env so Supervisor doesn't need to export everything
@@ -972,13 +962,11 @@ def _maybe_publish_execution_intel() -> None:
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (
-    _req,
     _is_dual_side,
     build_order_payload,
     classify_binance_error,
     get_balances,
     get_positions,
-    get_price,
     is_testnet,
     send_order,
     set_dry_run,
@@ -1071,7 +1059,7 @@ from execution.utils import (
     save_json,
     get_live_positions,
 )
-from execution.utils.metrics import fee_pnl_ratio, router_effectiveness_7d
+from execution.utils.metrics import fee_pnl_ratio
 
 from execution.signal_generator import (
     normalize_intent as generator_normalize_intent,
@@ -5605,7 +5593,7 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
     
     # v7.9_P4: Cache position mode at startup for order sanitization
     try:
-        from execution.exchange_utils import refresh_dual_side_cache, is_hedge_mode
+        from execution.exchange_utils import refresh_dual_side_cache
         is_hedge = refresh_dual_side_cache()
         if is_hedge:
             LOG.info("[executor] Account is in HEDGE (dual-side) mode — positionSide required")

@@ -17,9 +17,6 @@ from execution.doctrine_kernel import (
     ExecutionSnapshot,
     PortfolioSnapshot,
     PositionSnapshot,
-    AlphaHealthSnapshot,
-    REGIME_STABILITY_CYCLES,
-    REGIME_CONFIDENCE_FLOOR,
 )
 
 

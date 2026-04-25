@@ -13,10 +13,9 @@ from execution.intel.router_policy import router_policy
 from execution.intel.maker_offset import suggest_maker_offset_bps
 from execution.log_utils import JsonlLogger
 from execution.order_router import effective_px
-from execution.risk_engine_v6 import OrderIntent, RiskDecision, RiskEngineV6
+from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
 from execution.risk_limits import RiskState
 from execution.universe_resolver import symbol_tier
-from execution.utils import load_json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PIPELINE_SHADOW_LOG = PROJECT_ROOT / "logs" / "pipeline_v6_shadow.jsonl"

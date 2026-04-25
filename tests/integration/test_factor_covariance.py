@@ -7,7 +7,6 @@ Verifies:
 - Factor volatilities from diagonal
 - Known relationships (e.g., B = 2*A -> correlation ~1)
 """
-import pytest
 import numpy as np
 
 

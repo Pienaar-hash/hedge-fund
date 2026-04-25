@@ -8,7 +8,7 @@ import statistics
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from execution.log_utils import get_logger
 from execution.pipeline_v6_shadow import PIPELINE_SHADOW_LOG

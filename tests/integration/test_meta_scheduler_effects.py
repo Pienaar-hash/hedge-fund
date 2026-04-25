@@ -8,16 +8,12 @@ Tests:
 - Neutral when disabled
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from typing import Dict, Any
 
 from execution.meta_scheduler import (
     MetaSchedulerConfig,
     MetaSchedulerState,
     FactorMetaState,
     ConvictionMetaState,
-    CategoryMetaState,
     create_neutral_state,
     meta_learning_step,
     get_factor_meta_weights,

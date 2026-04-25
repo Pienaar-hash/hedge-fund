@@ -11,8 +11,8 @@ Tests cover:
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List
-from unittest.mock import patch, MagicMock
+from typing import List
+from unittest.mock import patch
 
 import pytest
 
@@ -111,7 +111,6 @@ class TestAlphaMinerStepIntegration:
         """Test complete miner step with mocked exchange data."""
         from execution.alpha_miner import (
             run_alpha_miner_step,
-            load_alpha_miner_config,
             AlphaMinerConfig,
         )
 

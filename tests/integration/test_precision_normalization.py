@@ -5,7 +5,7 @@ Validates exchange filter normalization for qty/price to prevent -1111 errors.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Test data matching exchange filters
 MOCK_PRECISION_TABLE = {

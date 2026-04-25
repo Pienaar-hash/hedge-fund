@@ -11,8 +11,6 @@ Tests:
 """
 
 import pytest
-from dataclasses import asdict
-from pathlib import Path
 import json
 
 
@@ -91,7 +89,7 @@ class TestEdgeInsightsWithHealth:
 
     def test_edge_insights_includes_strategy_health_field(self):
         """EdgeInsights dataclass has strategy_health field."""
-        from execution.edge_scanner import EdgeInsights, StrategyHealth
+        from execution.edge_scanner import EdgeInsights
 
         insights = EdgeInsights(
             symbol_edges={},

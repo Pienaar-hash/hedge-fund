@@ -7,9 +7,7 @@ Verifies:
 - Minmax normalization: values in [0, 1]
 - Edge cases: zero variance, empty vectors
 """
-import pytest
 import numpy as np
-from typing import List
 
 
 class TestZscoreNormalization:
@@ -17,7 +15,7 @@ class TestZscoreNormalization:
     
     def test_zscore_produces_mean_near_zero(self):
         """Z-score normalized factors should have mean near 0."""
-        from execution.intel.symbol_score_v6 import FactorVector, build_factor_vector
+        from execution.intel.symbol_score_v6 import build_factor_vector
         from execution.factor_diagnostics import normalize_factor_vectors
         
         # Create vectors with varying trend values

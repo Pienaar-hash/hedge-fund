@@ -10,10 +10,6 @@ Tests the core functionality of the Universe Optimizer module:
 from __future__ import annotations
 
 import json
-import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-from datetime import datetime
 
 
 # ---------------------------------------------------------------------------

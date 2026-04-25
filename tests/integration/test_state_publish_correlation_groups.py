@@ -5,7 +5,6 @@ Tests that correlation_groups block is correctly written to risk_snapshot.json.
 """
 
 import json
-import os
 import pathlib
 import tempfile
 import pytest

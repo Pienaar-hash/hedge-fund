@@ -8,7 +8,6 @@ volatility regime, and time-of-day expectancy buckets.
 """
 
 import datetime as dt
-from typing import Dict
 
 from execution.intel.router_autotune_shared import suggest_autotune_for_symbol
 from execution.utils.metrics import router_effectiveness_7d

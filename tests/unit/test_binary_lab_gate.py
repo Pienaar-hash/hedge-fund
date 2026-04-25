@@ -12,8 +12,6 @@ Covers:
 from __future__ import annotations
 
 import copy
-import json
-import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -28,7 +26,6 @@ from hybrid_variance_audit import (  # noqa: E402
     CONVICTION_MEDIUM_PLUS_FLOOR,
     CONVICTION_NON_UNSCORED_FLOOR,
     DEFAULT_WEIGHTS,
-    DISPERSION_FLOOR_STD,
     PERSISTENCE_MIN_PER_WINDOW,
     PERSISTENCE_MIN_WINDOWS,
     WEIGHTS_MIN_RECORDS,

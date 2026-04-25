@@ -5,18 +5,15 @@ Unit tests for regime curves in conviction engine (v7.7_P6).
 from __future__ import annotations
 
 import pytest
-from typing import Any, Dict
 
 from execution.conviction_engine import (
     ConvictionConfig,
     ConvictionContext,
     RegimeCurvesConfig,
     compute_conviction,
-    compute_conviction_score,
     compute_conviction_score_with_regime,
     get_dd_regime_multiplier,
     get_vol_regime_multiplier,
-    load_conviction_config,
     load_regime_curves_config,
 )
 

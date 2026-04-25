@@ -18,12 +18,10 @@ from execution.hydra_pnl import (
     STRATEGY_HEADS,
     HydraPnlConfig,
     HydraPnlState,
-    HeadPnlStats,
     load_hydra_pnl_config,
     load_hydra_pnl_state,
     save_hydra_pnl_state,
     run_hydra_pnl_step,
-    get_head_throttle_scales,
     apply_pnl_throttle_to_cerberus,
     apply_pnl_throttle_to_hydra_budgets,
 )

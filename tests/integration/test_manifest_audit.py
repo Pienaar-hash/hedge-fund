@@ -47,7 +47,7 @@ def test_manifest_entries_have_required_fields(manifest):
                 errors.append(f"{section}.{key}: missing 'path'")
             if "owner" not in entry:
                 errors.append(f"{section}.{key}: missing 'owner'")
-    assert not errors, f"Manifest field violations:\n" + "\n".join(errors)
+    assert not errors, "Manifest field violations:\n" + "\n".join(errors)
 
 
 def test_no_duplicate_paths(manifest):
@@ -63,7 +63,7 @@ def test_no_duplicate_paths(manifest):
                 if p in seen:
                     dupes.append(f"{p} (in {seen[p]} and {section}.{key})")
                 seen[p] = f"{section}.{key}"
-    assert not dupes, f"Duplicate paths:\n" + "\n".join(dupes)
+    assert not dupes, "Duplicate paths:\n" + "\n".join(dupes)
 
 
 def test_audit_no_violations():

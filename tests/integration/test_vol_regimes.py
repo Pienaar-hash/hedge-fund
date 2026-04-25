@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import math
 import pytest
-from unittest.mock import patch
 
 from execution.utils.vol import (
     compute_log_returns,
@@ -19,7 +18,6 @@ from execution.utils.vol import (
     load_vol_regime_config,
     VolRegime,
     VolRegimeConfig,
-    HybridWeightModifiers,
 )
 
 

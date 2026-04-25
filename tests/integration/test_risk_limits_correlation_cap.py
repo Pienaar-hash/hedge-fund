@@ -5,8 +5,7 @@ Tests that orders are vetoed when correlation group exposure would exceed caps.
 """
 
 import pytest
-from decimal import Decimal
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 from typing import Dict, Any
 
 from execution import risk_limits as risk_limits_module

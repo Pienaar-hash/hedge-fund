@@ -29,14 +29,11 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from execution.minotaur_engine import (
     # Config
     MinotaurConfig,
-    load_minotaur_config,
-    is_minotaur_enabled,
-    # Dataclasses
     MicrostructureSnapshot,
     ExecutionRegime,
     ExecutionPlan,
@@ -46,12 +43,8 @@ from execution.minotaur_engine import (
     # Constants
     REGIME_NORMAL,
     REGIME_THIN,
-    REGIME_WIDE_SPREAD,
-    REGIME_SPIKE,
     REGIME_CRUNCH,
     MODE_INSTANT,
-    MODE_TWAP,
-    # Functions
     build_microstructure_snapshot,
     classify_execution_regime,
     build_execution_plan,

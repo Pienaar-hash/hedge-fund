@@ -17,20 +17,15 @@ Covers:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Dict
 
-import pytest
 from prediction.alert_ranker import (
     PredictionSnapshot,
-    RankingResult,
-    _entropy,
     _max_shift,
     _normalized_entropy,
     _relevance_score,
     rank_alerts,
 )
-from prediction.firewall import FirewallVerdict
 
 
 # ---------------------------------------------------------------------------

@@ -2,13 +2,10 @@
 Tests for Alpha Decay Engine (v7.5_A1)
 """
 
-import math
-import time
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
-import json
 
 from execution.intel.symbol_score_v6 import (
     AlphaDecayConfig,
