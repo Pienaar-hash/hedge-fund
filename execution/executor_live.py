@@ -4068,11 +4068,7 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
     if not reduce_only:
         _BAND_ORDER = {"very_low": 0, "low": 1, "medium": 2, "high": 3, "very_high": 4}
         try:
-            _strat_cfg = _load_strategy_config() if "_load_strategy_config" in dir() else {}
-            if not _strat_cfg:
-                import json as _json
-                with open("config/strategy_config.json") as _f:
-                    _strat_cfg = _json.load(_f)
+            _strat_cfg = load_json("config/strategy_config.json") or {}
             _conv_cfg = _strat_cfg.get("conviction", {})
             _conv_mode = str(_conv_cfg.get("mode", "off")).lower()
             _min_band_str = str(_conv_cfg.get("min_entry_band", "")).lower()
