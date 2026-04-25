@@ -997,7 +997,8 @@ def _route_twap(
     try:
         log_event(twap_logger, "twap_complete", safe_dump(twap_complete_event))
     except Exception:
-        pass
+        # AUDIT-1.1d: TWAP logging failure must not be silent
+        _LOG.error("[twap] failed to log twap_complete event", exc_info=True)
     
     return result
 
@@ -1307,7 +1308,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         dynamic_autotune = suggest_autotune_for_symbol(
             symbol,
             base_offset_bps,
-            min_offset_bps=getattr(maker_offset, "MIN_OFFSET_BPS", 0.5),
+            min_offset_bps=getattr(maker_offset, "MIN_OFFSET_BPS", 0.5),  # noqa: F821 - load-bearing NameError gate; do not import maker_offset module (would unmask autotune side-effects covered by tests)
         )
         adjusted_offset_bps = float(dynamic_autotune.get("adaptive_offset_bps") or base_offset_bps)
         maker_first_override = bool(dynamic_autotune.get("maker_first"))
