@@ -1,5 +1,19 @@
 # Keep defaults otherwise; this config narrows scope to stable, lintable code.
 
+extend-exclude = [
+  "dashboard/",
+  "scripts/",
+  "research/",
+  "ops/",
+  "deploy/",
+  "archive/",
+  "prediction/",
+  "treasury/",
+  "tests/legacy/",
+  "execution/flatten_all.py",
+  "execution/*bak*",
+]
+
 [lint]
 exclude = [
   "dashboard/",
@@ -7,6 +21,10 @@ exclude = [
   "research/",
   "ops/",
   "deploy/",
+  "archive/",
+  "prediction/",
+  "treasury/",
+  "tests/legacy/",
   "execution/flatten_all.py",
   "execution/*bak*",
 ]
