@@ -1906,6 +1906,7 @@ def build_kpis_v7(
     slip_q75 = _avg([_safe_float(entry.get("slippage_p75") or entry.get("slip_q75")) for entry in router_entries])
     router_stats = risk_snap.get("router_stats") if isinstance(risk_snap.get("router_stats"), Mapping) else {}
     policy_quality = None
+    maker_first_flag: Optional[bool] = None
     if router_stats:
         fallback_ratio = (
             _safe_float(
@@ -1935,7 +1936,6 @@ def build_kpis_v7(
             policy_quality = max(quality_counts.items(), key=lambda kv: kv[1])[0]
         except Exception:
             policy_quality = None
-    maker_first_flag: Optional[bool] = None
     try:
         total = int(summary.get("count") or len(router_entries) or 0)
         enabled = _safe_float(summary.get("maker_first_enabled"))
