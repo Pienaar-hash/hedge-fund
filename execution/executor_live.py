@@ -201,7 +201,7 @@ _DETERMINISM_ALERT_COOLDOWN_S = 120.0  # Rate-limit env event logging
 _DETERMINISM_BLOCK_NEW_ENTRIES = True  # When degraded: veto new entries (exits always allowed)
 # AUDIT-1.1e: determinism_guard is a safety-critical import — hard abort on failure
 try:
-    from execution.determinism_guard import check_determinism, DeterminismSnapshot
+    from execution.determinism_guard import check_determinism, DeterminismSnapshot  # noqa: F401 - availability probe; DeterminismSnapshot re-exported for callers
     _DETERMINISM_AVAILABLE = True
 except ImportError as _det_err:
     raise ImportError(
@@ -1216,16 +1216,16 @@ from execution import pipeline_v6_shadow
 try:
     from execution.doctrine_kernel import (
         doctrine_entry_verdict,
-        doctrine_exit_verdict,
+        doctrine_exit_verdict,  # noqa: F401 - availability probe / future use
         build_regime_snapshot_from_state,
         build_execution_snapshot_from_state,
         DoctrineVerdict,
-        ExitReason,
-        RegimeSnapshot,
+        ExitReason,  # noqa: F401 - availability probe / public re-export
+        RegimeSnapshot,  # noqa: F401 - availability probe / public re-export
         IntentSnapshot,
-        ExecutionSnapshot,
+        ExecutionSnapshot,  # noqa: F401 - availability probe / public re-export
         PortfolioSnapshot as DoctrinePortfolioSnapshot,
-        AlphaHealthSnapshot,
+        AlphaHealthSnapshot,  # noqa: F401 - availability probe / public re-export
         log_doctrine_event,
     )
     _DOCTRINE_AVAILABLE = True
@@ -2840,8 +2840,8 @@ def _maybe_compute_sentinel_x() -> None:
         from execution.sentinel_x import (
             run_sentinel_x_step,
             load_sentinel_x_config,
-            SentinelXState,
-            save_sentinel_x_state,
+            SentinelXState,  # noqa: F401 - availability probe / public re-export
+            save_sentinel_x_state,  # noqa: F401 - availability probe; persisted via _write_sentinel_state
         )
         from execution.exchange_utils import get_klines
         from pathlib import Path
@@ -3322,7 +3322,7 @@ def _check_fee_edge_gate(
     Silently passes on import errors or unexpected failures.
     """
     try:
-        from execution.fee_gate import check_fee_edge, check_fee_edge_v2  # noqa: F811
+        from execution.fee_gate import check_fee_edge, check_fee_edge_v2  # noqa: F811, F401 - availability probe; v2 used below
         from execution.true_edge import compute_true_edge
 
         _fg_notional = gross_target
@@ -5812,8 +5812,8 @@ def _loop_once(state: ExecutorState, i: int) -> None:
             scan_all_exits,
             build_doctrine_exit_intent,
             build_exit_intent,
-            DoctrineExitCandidate,
-            ExitCandidate,
+            DoctrineExitCandidate,  # noqa: F401 - availability probe / typing re-export
+            ExitCandidate,  # noqa: F401 - availability probe / typing re-export
         )
         
         # Build price map from positions (markPrice) or fetch live
