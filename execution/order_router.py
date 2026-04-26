@@ -39,15 +39,15 @@ from execution.utils.execution_health import record_execution_error
 # v7.5_B1: Slippage and liquidity imports
 try:
     from execution.liquidity_model import (
-        get_liquidity_model,
+        get_liquidity_model,  # noqa: F401 - availability probe / public re-export
         get_bucket_for_symbol,
-        LiquidityBucketConfig,
+        LiquidityBucketConfig,  # noqa: F401 - availability probe / public re-export
     )
     from execution.slippage_model import (
         SlippageObservation,
         estimate_expected_slippage_bps,
         compute_realized_slippage_bps,
-        compute_spread_bps,
+        compute_spread_bps,  # noqa: F401 - availability probe / public re-export
         record_slippage_observation,
         load_slippage_config,
         SlippageConfig,

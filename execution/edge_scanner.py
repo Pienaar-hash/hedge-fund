@@ -1239,7 +1239,7 @@ def update_meta_scheduler(
     """
     try:
         from execution.meta_scheduler import (
-            MetaSchedulerConfig,
+            MetaSchedulerConfig,  # noqa: F401 - availability probe / public re-export
             load_meta_scheduler_config,
             load_meta_scheduler_state,
             write_meta_scheduler_state,
@@ -1562,7 +1562,7 @@ def update_sentinel_x(
     try:
         from execution.sentinel_x import (
             load_sentinel_x_config,
-            load_sentinel_x_state,
+            load_sentinel_x_state,  # noqa: F401 - availability probe; future enrichment
             run_sentinel_x_step,
             get_sentinel_x_for_insights,
             should_run_sentinel_x,

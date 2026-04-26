@@ -1358,7 +1358,7 @@ def compute_and_write_factor_diagnostics_state(
             load_factor_diagnostics_config,
             extract_factor_vectors_from_hybrid_results,
             build_factor_diagnostics_snapshot,
-            FactorVector,
+            FactorVector,  # noqa: F401 - availability probe / typing re-export
         )
         from execution.intel.symbol_score_v6 import build_factor_vector
         
@@ -1543,7 +1543,7 @@ def compute_and_write_edge_insights(
         from execution.edge_scanner import (
             build_edge_insights_snapshot,
             write_edge_insights,
-            EdgeScannerConfig,
+            EdgeScannerConfig,  # noqa: F401 - availability probe / public re-export
         )
         
         sd = state_dir or STATE_DIR
