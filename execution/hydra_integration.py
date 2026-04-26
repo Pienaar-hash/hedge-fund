@@ -283,23 +283,23 @@ def merge_with_single_strategy_intents(
         if not sym:
             continue
         h = hydra_by_sym.get(sym)
-        l = legacy_by_sym.get(sym)
-        if h and l:
+        lg = legacy_by_sym.get(sym)
+        if h and lg:
             hs = _intent_score(h)
-            ls = _intent_score(l)
+            ls = _intent_score(lg)
             _conflicts += 1
             if hs > ls:
-                primary, fallback = h, l
+                primary, fallback = h, lg
                 _hydra_won += 1
             elif ls > hs:
-                primary, fallback = l, h
+                primary, fallback = lg, h
                 _legacy_won += 1
             else:
                 if prefer_hydra:
-                    primary, fallback = h, l
+                    primary, fallback = h, lg
                     _hydra_won += 1
                 else:
-                    primary, fallback = l, h
+                    primary, fallback = lg, h
                     _legacy_won += 1
             primary["_fallback"] = fallback
             primary["merge_conflict"] = True
@@ -327,7 +327,7 @@ def merge_with_single_strategy_intents(
         elif h:
             merged.append(h)
         else:
-            merged.append(l)  # type: ignore[arg-type]
+            merged.append(lg)  # type: ignore[arg-type]
 
     if _conflicts:
         _avg_sel = sum(_selected_scores) / len(_selected_scores)

@@ -25,16 +25,16 @@ class TestBuildCandidates:
 
     def test_both_engines_sorted_by_score(self):
         h = _make_intent(score=0.8, source="hydra")
-        l = _make_intent(score=0.6, source="legacy")
-        candidates = build_candidates("BTCUSDT", hydra_intent=h, legacy_intent=l)
+        lg = _make_intent(score=0.6, source="legacy")
+        candidates = build_candidates("BTCUSDT", hydra_intent=h, legacy_intent=lg)
         assert len(candidates) == 2
         assert candidates[0]["_selector_source"] == "hydra"
         assert candidates[1]["_selector_source"] == "legacy"
 
     def test_legacy_higher_score_sorts_first(self):
         h = _make_intent(score=0.3, source="hydra")
-        l = _make_intent(score=0.9, source="legacy")
-        candidates = build_candidates("BTCUSDT", hydra_intent=h, legacy_intent=l)
+        lg = _make_intent(score=0.9, source="legacy")
+        candidates = build_candidates("BTCUSDT", hydra_intent=h, legacy_intent=lg)
         assert candidates[0]["_selector_source"] == "legacy"
         assert candidates[1]["_selector_source"] == "hydra"
 
@@ -71,10 +71,10 @@ class TestSelectExecutableCandidate:
         h = _make_intent(score=0.8, source="hydra", conviction_band="high")
         h["_selector_source"] = "hydra"
         h["_selector_score"] = 0.8
-        l = _make_intent(score=0.5, source="legacy", conviction_band="medium")
-        l["_selector_source"] = "legacy"
-        l["_selector_score"] = 0.5
-        result = select_executable_candidate([h, l], min_conviction_band="medium")
+        lg = _make_intent(score=0.5, source="legacy", conviction_band="medium")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.5
+        result = select_executable_candidate([h, lg], min_conviction_band="medium")
         assert result["selected"] is h
         assert result["winner_engine"] == "hydra"
         assert result["loser_engine"] == "legacy"
@@ -84,11 +84,11 @@ class TestSelectExecutableCandidate:
         h = _make_intent(score=0.8, source="hydra", conviction_band="low")
         h["_selector_source"] = "hydra"
         h["_selector_score"] = 0.8
-        l = _make_intent(score=0.5, source="legacy", conviction_band="high")
-        l["_selector_source"] = "legacy"
-        l["_selector_score"] = 0.5
-        result = select_executable_candidate([h, l], min_conviction_band="medium")
-        assert result["selected"] is l
+        lg = _make_intent(score=0.5, source="legacy", conviction_band="high")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.5
+        result = select_executable_candidate([h, lg], min_conviction_band="medium")
+        assert result["selected"] is lg
         assert result["winner_engine"] == "legacy"
         assert result["loser_engine"] == "hydra"
         assert result["selection_reason"] == "band_pass"
@@ -97,10 +97,10 @@ class TestSelectExecutableCandidate:
         h = _make_intent(score=0.8, source="hydra", conviction_band="very_low")
         h["_selector_source"] = "hydra"
         h["_selector_score"] = 0.8
-        l = _make_intent(score=0.5, source="legacy", conviction_band="low")
-        l["_selector_source"] = "legacy"
-        l["_selector_score"] = 0.5
-        result = select_executable_candidate([h, l], min_conviction_band="medium")
+        lg = _make_intent(score=0.5, source="legacy", conviction_band="low")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.5
+        result = select_executable_candidate([h, lg], min_conviction_band="medium")
         assert result["selected"] is None
         assert result["winner_engine"] == "none"
         assert result["selection_reason"] == "all_rejected_by_band_gate"
@@ -125,10 +125,10 @@ class TestSelectExecutableCandidate:
         h = _make_intent(score=0.8, source="hydra", conviction_band="high")
         h["_selector_source"] = "hydra"
         h["_selector_score"] = 0.8
-        l = _make_intent(score=0.5, source="legacy", conviction_band="medium")
-        l["_selector_source"] = "legacy"
-        l["_selector_score"] = 0.5
-        result = select_executable_candidate([h, l], min_conviction_band="low")
+        lg = _make_intent(score=0.5, source="legacy", conviction_band="medium")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.5
+        result = select_executable_candidate([h, lg], min_conviction_band="low")
         assert len(result["candidates"]) == 2
 
 
@@ -137,15 +137,15 @@ class TestSelectorEndToEnd:
 
     def test_full_pipeline_hydra_wins(self):
         h = _make_intent(score=0.8, source="hydra", conviction_band="high")
-        l = _make_intent(score=0.4, source="legacy", conviction_band="medium")
-        candidates = build_candidates("BTCUSDT", hydra_intent=h, legacy_intent=l)
+        lg = _make_intent(score=0.4, source="legacy", conviction_band="medium")
+        candidates = build_candidates("BTCUSDT", hydra_intent=h, legacy_intent=lg)
         result = select_executable_candidate(candidates, min_conviction_band="medium")
         assert result["selected"]["_selector_source"] == "hydra"
 
     def test_full_pipeline_fallback_to_legacy(self):
         h = _make_intent(score=0.9, source="hydra", conviction_band="very_low")
-        l = _make_intent(score=0.3, source="legacy", conviction_band="high")
-        candidates = build_candidates("BTCUSDT", hydra_intent=h, legacy_intent=l)
+        lg = _make_intent(score=0.3, source="legacy", conviction_band="high")
+        candidates = build_candidates("BTCUSDT", hydra_intent=h, legacy_intent=lg)
         result = select_executable_candidate(candidates, min_conviction_band="medium")
         assert result["selected"]["_selector_source"] == "legacy"
 
@@ -179,10 +179,10 @@ class TestZeroScoreAbstain:
         h = _make_intent(score=0.0, source="hydra")
         h["_selector_source"] = "hydra"
         h["_selector_score"] = 0.0
-        l = _make_intent(score=0.0, source="legacy")
-        l["_selector_source"] = "legacy"
-        l["_selector_score"] = 0.0
-        result = select_executable_candidate([h, l])
+        lg = _make_intent(score=0.0, source="legacy")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.0
+        result = select_executable_candidate([h, lg])
         assert result["selected"] is None
         assert result["selection_reason"] == "all_rejected_zero_score"
 
@@ -197,11 +197,11 @@ class TestZeroScoreAbstain:
         h = _make_intent(score=0.0, source="hydra")
         h["_selector_source"] = "hydra"
         h["_selector_score"] = 0.0
-        l = _make_intent(score=0.4, source="legacy", conviction_band="medium")
-        l["_selector_source"] = "legacy"
-        l["_selector_score"] = 0.4
-        result = select_executable_candidate([l, h])
-        assert result["selected"] is l
+        lg = _make_intent(score=0.4, source="legacy", conviction_band="medium")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.4
+        result = select_executable_candidate([lg, h])
+        assert result["selected"] is lg
         assert result["winner_engine"] == "legacy"
 
     def test_positive_score_still_passes(self):

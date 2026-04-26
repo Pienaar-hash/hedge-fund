@@ -470,7 +470,7 @@ class TestKillSwitchIdempotency:
         # Only one doctrine event
         if doctrine.exists():
             lines = doctrine.read_text().strip().split("\n")
-            events = [json.loads(l) for l in lines if l.strip()]
+            events = [json.loads(line) for line in lines if line.strip()]
             halt_events = [e for e in events if e.get("event") == "ACTIVATION_WINDOW_HALT"]
             assert len(halt_events) == 1
 
