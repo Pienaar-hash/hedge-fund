@@ -619,6 +619,14 @@
       "update_frequency": "per_loop",
       "optional": true,
       "description": "Minimal core validation state \u2014 system health checks and preflight results"
+    },
+    "fps_rtb_reset_marker": {
+      "path": "logs/state/fps_rtb_reset_marker.json",
+      "owner": "fps_rtb_sanity_check",
+      "update_frequency": "on_event",
+      "optional": true,
+      "lifecycle": "optional",
+      "description": "One-shot FPS regime-trip-bar (RTB) reset marker; written when RTB state is wiped due to upstream sentinel field-mapping fixes. Consumed by scripts/fps_rtb_sanity_check.py to skip RTB samples older than the reset."
     }
   },
   "execution_logs": {
