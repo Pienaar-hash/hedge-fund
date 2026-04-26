@@ -116,7 +116,7 @@ class TestVarVetoReason:
         
         should_veto, details = check_portfolio_var_limit(var_result, var_config)
         
-        assert should_veto == True
+        assert should_veto is True
         assert details["reason"] == "portfolio_var_limit"
         assert "observed" in details
         assert "limits" in details
@@ -146,7 +146,7 @@ class TestCvarVetoReason:
         
         should_veto, details = check_position_cvar_limit(cvar_result, cvar_config)
         
-        assert should_veto == True
+        assert should_veto is True
         assert details["reason"] == "position_cvar_limit"
         assert details["observed"]["symbol"] == "BTCUSDT"
         assert details["observed"]["position_cvar_nav_pct"] == 0.05
@@ -172,7 +172,7 @@ class TestDeterministicVetoScenarios:
         
         should_veto, _ = check_portfolio_var_limit(var_result, var_config)
         
-        assert should_veto == False
+        assert should_veto is False
 
     def test_cvar_within_limit_no_veto(self):
         """CVaR within limit should not trigger veto."""
@@ -190,7 +190,7 @@ class TestDeterministicVetoScenarios:
         
         should_veto, _ = check_position_cvar_limit(cvar_result, cvar_config)
         
-        assert should_veto == False
+        assert should_veto is False
 
     def test_both_var_and_cvar_can_trigger(self):
         """Both VaR and CVaR can independently trigger vetoes."""
@@ -212,8 +212,8 @@ class TestDeterministicVetoScenarios:
         cvar_config = CVaRConfig(enabled=True, max_position_cvar_nav_pct=0.04)
         cvar_veto, _ = check_position_cvar_limit(cvar_result, cvar_config)
         
-        assert var_veto == True
-        assert cvar_veto == True
+        assert var_veto is True
+        assert cvar_veto is True
 
 
 # ===========================================================================
@@ -241,7 +241,7 @@ class TestVarCvarConfigIntegration:
         
         config = load_var_config(strategy_cfg)
         
-        assert config.enabled == True
+        assert config.enabled is True
         assert config.confidence == 0.99
         assert config.lookback_bars == 500
         assert config.halflife_bars == 100
@@ -264,7 +264,7 @@ class TestVarCvarConfigIntegration:
         
         config = load_cvar_config(strategy_cfg)
         
-        assert config.enabled == True
+        assert config.enabled is True
         assert config.confidence == 0.95
         assert config.lookback_bars == 400
         assert config.max_position_cvar_nav_pct == 0.04
@@ -289,5 +289,5 @@ class TestVarCvarConfigIntegration:
         cvar_config = CVaRConfig(enabled=False, max_position_cvar_nav_pct=0.04)
         cvar_veto, _ = check_position_cvar_limit(cvar_result, cvar_config)
         
-        assert var_veto == False
-        assert cvar_veto == False
+        assert var_veto is False
+        assert cvar_veto is False

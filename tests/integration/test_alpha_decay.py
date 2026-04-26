@@ -29,7 +29,7 @@ class TestAlphaDecayConfig:
         """Default config should have expected values."""
         config = AlphaDecayConfig()
         
-        assert config.enabled == True
+        assert config.enabled is True
         assert config.half_life_minutes == 45.0
         assert config.min_decay_multiplier == 0.35
 
@@ -45,7 +45,7 @@ class TestAlphaDecayConfig:
         
         config = load_alpha_decay_config(strategy_cfg)
         
-        assert config.enabled == True
+        assert config.enabled is True
         assert config.half_life_minutes == 60.0
         assert config.min_decay_multiplier == 0.25
 
@@ -59,7 +59,7 @@ class TestAlphaDecayConfig:
         
         config = load_alpha_decay_config(strategy_cfg)
         
-        assert config.enabled == False
+        assert config.enabled is False
 
 
 # ===========================================================================
@@ -337,5 +337,5 @@ class TestAlphaDecayHybridIntegration:
             now=now,
         )
         
-        assert result["at_minimum"] == True
+        assert result["at_minimum"] is True
         assert result["decay_multiplier"] == 0.35

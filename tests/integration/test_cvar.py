@@ -206,7 +206,7 @@ class TestCvarVetoLogic:
         # At exact limit should NOT veto (only > should veto)
         should_veto, details = check_position_cvar_limit(cvar_result, cvar_config)
         
-        assert should_veto == False
+        assert should_veto is False
 
     def test_veto_triggers_just_above_limit(self):
         """Should veto when CVaR just exceeds limit."""
@@ -225,7 +225,7 @@ class TestCvarVetoLogic:
         
         should_veto, details = check_position_cvar_limit(cvar_result, cvar_config)
         
-        assert should_veto == True
+        assert should_veto is True
 
     def test_veto_details_contain_required_fields(self):
         """Veto details should contain all required fields for logging."""
@@ -274,7 +274,7 @@ class TestCvarConfigLoading:
         
         should_veto, details = check_position_cvar_limit(cvar_result, config)
         
-        assert should_veto == False
+        assert should_veto is False
         assert details == {}
 
     def test_config_values_are_parsed_correctly(self):
