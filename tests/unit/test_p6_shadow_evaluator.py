@@ -220,7 +220,7 @@ class TestEvaluateAndLogSignals:
 
     def test_writes_jsonl(self, sample_signal, mock_regime_tables, mock_pooled_table, tmp_path):
         log_file = tmp_path / "test_shadow.jsonl"
-        records = evaluate_and_log_signals(
+        evaluate_and_log_signals(
             [sample_signal],
             regime_tables=mock_regime_tables,
             pooled_table=mock_pooled_table,

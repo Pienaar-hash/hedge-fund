@@ -113,8 +113,6 @@ class TestDLELifecycleEvents:
 
     def test_emit_dle_lifecycle_event_writes_to_log(self, tmp_path):
         """STRUCTURAL_GUARD events are written to the shadow log."""
-        log_path = tmp_path / "execution" / "dle_shadow_events.jsonl"
-
         written_events = []
 
         class MockWriter:
@@ -156,7 +154,6 @@ class TestDLELifecycleEvents:
         manifest_path = _make_manifest(tmp_path)
 
         emitted = []
-        original_emit = _emit_dle_lifecycle_event
 
         def capture(action, details):
             emitted.append((action, details))

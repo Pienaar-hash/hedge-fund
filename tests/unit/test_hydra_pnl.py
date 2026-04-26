@@ -455,7 +455,7 @@ class TestKillSwitch:
             cooldown_remaining=5,
         )
 
-        result = check_kill_switch(stats, cfg)
+        check_kill_switch(stats, cfg)
         assert stats.cooldown_remaining == 4
         assert stats.kill_switch_active is True
 
@@ -469,7 +469,7 @@ class TestKillSwitch:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "events.jsonl"
-            result = check_kill_switch(stats, cfg, log_path)
+            check_kill_switch(stats, cfg, log_path)
 
             assert stats.cooldown_remaining == 0
             assert stats.kill_switch_active is False

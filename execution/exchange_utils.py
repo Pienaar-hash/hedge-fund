@@ -700,7 +700,7 @@ def _req(
                     time.sleep(sleep_for + jitter)
                     backoff = min(_BACKOFF_MAX, backoff * 2.0)
                     continue
-            classification = _record_exchange_error(
+            _record_exchange_error(
                 "exchange",
                 "http_error",
                 exc,

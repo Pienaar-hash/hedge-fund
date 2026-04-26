@@ -534,10 +534,6 @@ class TestDiscoverBySlug:
         _discover_by_slug("15m", now, num_windows=4)
 
         assert mock_get.call_count == 4
-        slugs_queried = [
-            call.kwargs.get("params", call.args[1] if len(call.args) > 1 else {}).get("slug", "")
-            for call in mock_get.call_args_list
-        ]
         # Extract slug params from positional or keyword args
         actual_slugs = []
         for call in mock_get.call_args_list:

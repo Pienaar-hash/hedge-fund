@@ -139,7 +139,7 @@ class TestComputeAndWriteSlippageState:
                 state_dir = Path(tmpdir)
                 # Should handle the exception without crashing
                 try:
-                    result = compute_and_write_slippage_state(state_dir)
+                    compute_and_write_slippage_state(state_dir)
                 except RuntimeError:
                     pass  # Expected exception propagation
 

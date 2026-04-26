@@ -267,7 +267,6 @@ def diagnose_band_drag(audit: Dict[str, Any]) -> List[Dict[str, Any]]:
     drags: List[Dict[str, Any]] = []
 
     for band_key, band_data in audit.items():
-        band_net = band_data["net_pnl"]
         for dim_name in ["symbol_breakdown", "side_breakdown", "regime_breakdown",
                          "exit_reason_breakdown", "duration_breakdown"]:
             breakdown = band_data.get(dim_name, {})

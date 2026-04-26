@@ -61,7 +61,7 @@ class TestSaveLoadIdentity:
 
     def test_observation_count_preserved(self, tmp_path: Path) -> None:
         state_path = tmp_path / "cal.json"
-        model = _build_model_with_observations(30, state_path=state_path)
+        _build_model_with_observations(30, state_path=state_path)
 
         model2 = BinaryProbabilityModel(
             calibration_min_samples=10, state_path=state_path,
@@ -128,7 +128,7 @@ class TestNoTruncation:
 
     def test_large_observation_set_preserved(self, tmp_path: Path) -> None:
         state_path = tmp_path / "cal.json"
-        model = _build_model_with_observations(200, state_path=state_path)
+        _build_model_with_observations(200, state_path=state_path)
 
         model2 = BinaryProbabilityModel(
             calibration_min_samples=10, state_path=state_path,

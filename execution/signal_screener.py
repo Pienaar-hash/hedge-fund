@@ -941,11 +941,6 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         lev = float(params.get("leverage") or symbol_target_leverage(sym_key) or 1.0)
         if lev <= 0:
             lev = 1.0
-        per_symbol_cfg = {}
-        try:
-            per_symbol_cfg = ((rlc.get("per_symbol") or {}) if isinstance(rlc, Mapping) else {}).get(sym_key, {}) or {}
-        except Exception:
-            per_symbol_cfg = {}
         entry_forced = (params.get("entry", {}) or {}).get("type") == "always_on"
         if kill_switch:
             _log_screener_veto("KILL_SWITCH", sym, tf=tf)
@@ -1019,13 +1014,10 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             continue
 
         # Trend filter: block counter-trend entries
-        is_counter_trend = False
         if signal == "SELL" and trend == "BULL":
-            is_counter_trend = True
             _log_screener_veto("COUNTER_TREND", sym, tf=tf, signal=signal, trend=trend)
             continue
         if signal == "BUY" and trend == "BEAR":
-            is_counter_trend = True
             _log_screener_veto("COUNTER_TREND", sym, tf=tf, signal=signal, trend=trend)
             continue
 

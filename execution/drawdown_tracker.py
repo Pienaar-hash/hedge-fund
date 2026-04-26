@@ -217,7 +217,6 @@ def compute_intraday_drawdown(
     tz = _resolve_timezone(reset_timezone)
     now_dt = now.astimezone(tz) if now is not None else datetime.now(tz)
     day_key = now_dt.strftime("%Y-%m-%d")
-    prev_day = base_state.get("day") or base_state.get("date")
 
     nav_value = _as_float(nav_usd)
     stored_nav = _as_float(base_state.get("nav") or base_state.get("nav_usd"))

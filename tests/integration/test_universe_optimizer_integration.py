@@ -69,7 +69,7 @@ class TestEdgeScannerIntegration:
         state_path = tmp_path / "universe_optimizer.json"
 
         # Call run_universe_optimizer_step directly with state_path parameter
-        state = run_universe_optimizer_step(
+        run_universe_optimizer_step(
             candidate_symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
             symbol_edges={
                 "BTCUSDT": {"edge": 0.8},

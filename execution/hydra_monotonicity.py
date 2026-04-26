@@ -560,7 +560,6 @@ def compute_threshold_sweep(
 
     # Compare to current default threshold (0.50)
     current_row = next((r for r in sweep if r["threshold"] == 0.50), None)
-    optimal_row = next((r for r in sweep if r["threshold"] == best_t), None)
 
     return {
         "sweep": sweep,

@@ -100,7 +100,7 @@ class TestPersistSnapshot:
     def test_writes_state_file(self, tmp_path):
         dest = str(tmp_path / "hydra_monotonicity.json")
         eps = [_make_episode(0.3 + i * 0.03, 100, 100 + i * 0.1) for i in range(10)]
-        snap = persist_snapshot(eps, path=dest)
+        persist_snapshot(eps, path=dest)
         assert os.path.exists(dest)
         data = json.loads(open(dest).read())
         assert data["n"] == 10

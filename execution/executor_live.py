@@ -36,7 +36,7 @@ from execution.helpers import (
 )
 from execution.sizing import (
     estimate_intent_qty as _estimate_intent_qty,
-    nav_pct_fraction as _nav_pct_fraction,
+    nav_pct_fraction as _nav_pct_fraction,  # noqa: F401 — re-exported for tests
 )
 from execution.fill_tracker import (
     OrderAckInfo,
@@ -47,7 +47,7 @@ from execution.fill_tracker import (
     poll_fill_task as _poll_fill_task,
 )
 from execution.universe_resolver import (
-    symbol_min_gross,
+    symbol_min_gross,  # noqa: F401 — re-exported for tests
     symbol_tier,
     universe_by_symbol,
 )
@@ -3887,7 +3887,6 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             except Exception as exc:
                 LOG.debug("[dle_shadow] entry_allow hook failed: %s", exc)
 
-    per_trade_nav_pct = _nav_pct_fraction(intent.get("per_trade_nav_pct"))
     try:
         screener_gross = float(intent.get("gross_usd") or 0.0)
     except Exception:
@@ -3898,7 +3897,6 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
         lev = 1.0
     gross_from_intent = float(intent.get("gross_usd") or 0.0)
     gross_target = float(gross_from_intent or (cap * lev))
-    intent_min_notional = _to_float(intent.get("min_notional")) or 0.0
     price_guess = 0.0
     try:
         price_guess = float(intent.get("price", 0.0) or 0.0)
@@ -3920,7 +3918,6 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
         LOG.error("[PORTFOLIO_REFRESH] snapshot refresh failed", exc_info=True)
     nav_snapshot = _nav_snapshot()
     nav_usd = float(nav_snapshot.get("nav_usd", 0.0) or 0.0)
-    using_nav_pct = False
     symbol_gross_map: Dict[str, float] = {}
     try:
         raw_map = nav_snapshot.get("symbol_gross_usd") or {}
@@ -3932,22 +3929,10 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
                     continue
     except Exception:
         symbol_gross_map = {}
-    symbol_buckets: Dict[str, str] = {}
     tier_name = symbol_tier(symbol)
-    tier_gross_map: Dict[str, float] = {}
     current_tier_gross = 0.0
-    per_symbol_limits: Dict[str, Dict[str, Any]] = {}
-    sym_limits: Dict[str, Any] = {}
-    sym_max_order = 0.0
-    sym_max_nav_pct = 0.0
 
     cfg = load_json("config/strategy_config.json") or {}
-    sizing_cfg = (cfg.get("sizing") or {})
-    floor_gross = max(
-        symbol_min_gross(symbol.upper()),
-        intent_min_notional,
-        float((_RISK_CFG.get("global") or {}).get("min_notional_usdt", 0.0) or 0.0),
-    )
     gross_target = float(intent.get("gross_usd") or gross_target or 0.0)
     # --- Calibration window sizing cap ---
     # When active, cap gross_target to calibration per_trade_nav_pct * NAV.
