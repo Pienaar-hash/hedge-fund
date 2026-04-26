@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Time-of-day expectancy and slippage analytics.
 
@@ -11,6 +9,8 @@ v5.10.0 adds a minimal, read-only skeleton:
 - No behavior changes.
 - API designed for later integration with dashboard and router tuning.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 import datetime as dt

@@ -12,8 +12,6 @@ from __future__ import annotations
 import math
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from execution.intel.trend_score import (
     compute_trend_score,
     compute_trend_score_from_prices,
@@ -21,6 +19,8 @@ from execution.intel.trend_score import (
     _momentum_zscore,
     _regime_compression,
 )
+
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------

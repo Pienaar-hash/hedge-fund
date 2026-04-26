@@ -16,6 +16,7 @@ This module:
 from __future__ import annotations
 
 import json
+import logging as _logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -792,8 +793,6 @@ def get_sentinel_x_conviction_weight() -> tuple[float, str]:
 # ---------------------------------------------------------------------------
 # Post-Merge Intent Enrichment (v7.9_P3)
 # ---------------------------------------------------------------------------
-
-import logging as _logging
 
 _ENRICH_LOG = _logging.getLogger("conviction_engine.enrich")
 

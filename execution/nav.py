@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 """
 v7 AUM source: AUM = futures NAV (pure) + off-exchange holdings.
 Legacy reserves/treasury handling removed.
 """
+
+from __future__ import annotations
 
 import json
 import math

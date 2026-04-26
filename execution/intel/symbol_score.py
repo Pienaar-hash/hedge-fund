@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Symbol scoring model for execution intelligence (v5.10.0).
 
@@ -10,6 +8,8 @@ The score is intended to:
 - Drive size multipliers in later v5.10.x commits.
 - Support dashboards and routing policies.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
