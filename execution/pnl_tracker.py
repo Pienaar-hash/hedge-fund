@@ -287,16 +287,16 @@ def _bucket_trend_strength(strength: Any) -> Optional[str]:
 
 def _bucket_carry_regime(*, carry_long: Any, carry_short: Any, eps: float = 1e-6) -> str:
     try:
-        l = float(carry_long)
+        long_v = float(carry_long)
     except Exception:
-        l = 0.0
+        long_v = 0.0
     try:
         s = float(carry_short)
     except Exception:
         s = 0.0
-    if l > s + eps:
+    if long_v > s + eps:
         return "long_carry"
-    if s > l + eps:
+    if s > long_v + eps:
         return "short_carry"
     return "neutral"
 

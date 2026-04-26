@@ -76,7 +76,7 @@ class TestAppendJsonl:
         _append_jsonl(target, {"n": 3})
         lines = _read_jsonl(target)
         assert len(lines) == 3
-        assert [l["n"] for l in lines] == [1, 2, 3]
+        assert [entry["n"] for entry in lines] == [1, 2, 3]
 
     def test_one_line_per_event(self, tmp_path: Path):
         target = tmp_path / "log.jsonl"
@@ -401,7 +401,7 @@ class TestLogIntegrity:
             )
         lines = _read_jsonl(tmp_logs["oracle"])
         assert len(lines) == 5
-        assert [l["price"] for l in lines] == prices
+        assert [entry["price"] for entry in lines] == prices
 
     def test_seq_increments_when_no_upstream_seq(self, client: RTDSOracleClient, tmp_logs):
         """When upstream provides no seq, client assigns local seq."""

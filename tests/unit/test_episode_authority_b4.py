@@ -717,7 +717,7 @@ class TestEdgeCases:
         # Read back the LINK event
         with open(log_path, "r") as f:
             lines = f.readlines()
-        link_line = [json.loads(l) for l in lines if json.loads(l).get("event_type") == "LINK"]
+        link_line = [json.loads(line) for line in lines if json.loads(line).get("event_type") == "LINK"]
         assert len(link_line) == 1
         assert "ts" in link_line[0]["payload"]  # B.4: payload.ts present
         assert link_line[0]["payload"]["ts"] == link_line[0]["ts"]  # same value
