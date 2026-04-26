@@ -25,8 +25,10 @@ def test_per_thread_session_distinct() -> None:
 
     t1 = threading.Thread(target=grab, args=("a",))
     t2 = threading.Thread(target=grab, args=("b",))
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
     assert results["a"] != results["b"], "Two threads must not share the same Session"
 
 
@@ -43,8 +45,10 @@ def test_per_thread_session_has_api_key() -> None:
 
     t1 = threading.Thread(target=grab, args=("a",))
     t2 = threading.Thread(target=grab, args=("b",))
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
     # Both threads should have the key (may be empty string in test env)
     assert "a" in headers and "b" in headers
     assert headers["a"] == headers["b"]
@@ -90,8 +94,10 @@ def test_time_sync_lock_serialises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     t1 = threading.Thread(target=eu._sync_server_time, kwargs={"force": True})
     t2 = threading.Thread(target=eu._sync_server_time, kwargs={"force": True})
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
     # The first thread does the HTTP call.  The second thread enters the
     # lock, sees that LAST_TIME_SYNC is now recent (force=True still
