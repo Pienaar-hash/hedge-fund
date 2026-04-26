@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """
 Router policy engine (v5.10.4).
 
 Decides whether to run maker-first and what taker bias to apply based on
 router effectiveness and volatility regimes.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional

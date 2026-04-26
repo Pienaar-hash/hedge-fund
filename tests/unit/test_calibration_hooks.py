@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from execution.intel.symbol_score_v6 import (
     get_calibration_state,
     apply_calibration,
     CalibrationState,
     CALIBRATION_MIN_EPISODES,
 )
+
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------

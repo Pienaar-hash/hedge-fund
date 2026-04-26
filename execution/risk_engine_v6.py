@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """
 RiskEngine v6 — parity wrapper around existing risk_limits logic.
 
 Provides structured OrderIntent/RiskDecision helpers so higher-level modules
 can reason about risk outcomes without directly invoking risk_limits.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
