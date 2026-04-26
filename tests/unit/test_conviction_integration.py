@@ -118,7 +118,6 @@ class TestConvictionAttachedToIntent:
 
         for result in ranked_results:
             intent = dict(result.get("intent", {}))
-            symbol = str(intent.get("symbol", "")).upper()
 
             intent["hybrid_score"] = result.get("hybrid_score", 0.5)
             intent["hybrid_passes_threshold"] = result.get("passes_threshold", True)

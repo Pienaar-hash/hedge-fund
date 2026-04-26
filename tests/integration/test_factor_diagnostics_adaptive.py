@@ -189,14 +189,6 @@ class TestAdaptiveWeightBehavior:
         # trend has highest PnL
         factor_pnl = {"trend": 500.0, "carry": 50.0, "expectancy": 30.0}
 
-        # Baseline without adaptive
-        baseline = build_factor_diagnostics_snapshot(
-            factor_vectors=vectors,
-            cfg=cfg,
-            factor_pnl=factor_pnl,
-            strategy_config=_strategy_config(adaptive_enabled=False),
-        )
-
         # With adaptive
         with_adaptive = build_factor_diagnostics_snapshot(
             factor_vectors=vectors,
@@ -205,7 +197,6 @@ class TestAdaptiveWeightBehavior:
             strategy_config=_strategy_config(adaptive_enabled=True),
         )
 
-        baseline_weights = baseline.to_dict().get("weights", {})
         adaptive_weights = with_adaptive.to_dict().get("weights", {})
 
         # trend should have higher weight with adaptive (or at least not lower)
@@ -227,14 +218,6 @@ class TestAdaptiveWeightBehavior:
         ]
         # carry has negative PnL
         factor_pnl = {"trend": 100.0, "carry": -200.0, "expectancy": 30.0}
-
-        # Baseline without adaptive
-        baseline = build_factor_diagnostics_snapshot(
-            factor_vectors=vectors,
-            cfg=cfg,
-            factor_pnl=factor_pnl,
-            strategy_config=_strategy_config(adaptive_enabled=False),
-        )
 
         # With adaptive
         with_adaptive = build_factor_diagnostics_snapshot(

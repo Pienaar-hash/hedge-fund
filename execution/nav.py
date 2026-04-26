@@ -425,7 +425,6 @@ def _nav_sources(cfg: JSONDict) -> Tuple[str, str, bool, Any]:
 
 
 def compute_trading_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
-    nav_cfg = (cfg or {}).get("nav") or {}
     trading_source, _, _, manual = _nav_sources(cfg)
     if trading_source == "manual":
         if manual is not None:

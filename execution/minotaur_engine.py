@@ -351,7 +351,6 @@ def build_snapshot_from_orderbook(
     
     best_bid = float(bids[0][0]) if bids else 0.0
     best_ask = float(asks[0][0]) if asks else 0.0
-    mid_price = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 0.0
     
     # Calculate depth in USD for top 5 levels
     bid_depth_usd = sum(float(b[0]) * float(b[1]) for b in bids[:5]) if bids else 0.0

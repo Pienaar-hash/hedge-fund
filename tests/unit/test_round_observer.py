@@ -649,7 +649,6 @@ class TestCollectSpreads:
     def test_collects_spreads_within_window(self, tmp_path: Path) -> None:
         market_log = tmp_path / "clob.jsonl"
         start_ms = 1771833600000
-        end_ms = 1771834500000
 
         records = [
             # Outside window (before start) — must be first so reverse scan

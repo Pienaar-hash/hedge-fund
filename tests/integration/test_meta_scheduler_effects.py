@@ -384,8 +384,8 @@ class TestMultiFactorInteractions:
         weights = get_factor_meta_weights(state)
         
         # Momentum should increase, carry should decrease
-        momentum_weight = weights.get("momentum", 1.0)
-        carry_weight = weights.get("carry", 1.0)
+        assert "momentum" in weights
+        assert "carry" in weights
         
         # After one step with fresh state, both should be close to neutral
         # but trending in opposite directions in EMAs

@@ -104,7 +104,7 @@ class TestPublishPositionsWithLedger:
                     "BTCUSDT:LONG": {"symbol": "BTCUSDT", "tp": 55000.0, "sl": 47000.0},
                     "ETHUSDT:SHORT": {"symbol": "ETHUSDT", "tp": 2800.0, "sl": 3200.0},
                 }):
-                    with patch("execution.state_publish._append_local_jsonl") as mock_jsonl:
+                    with patch("execution.state_publish._append_local_jsonl"):
                         with patch("execution.state_publish.write_positions_snapshot_state") as mock_write:
                             with patch("execution.state_publish._compute_exec_stats", return_value={}):
                                 publish_positions(rows)

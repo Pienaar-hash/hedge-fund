@@ -317,14 +317,6 @@ class TestBuildFactorWeightsSnapshotAdaptive:
         # High IR and PnL for trend → should get boosted
         factor_pnl = {"trend": 100.0, "carry": -10.0, "expectancy": 5.0}
 
-        # Baseline without adaptive
-        baseline = build_factor_weights_snapshot(
-            factor_cov=sample_factor_covariance,
-            factor_pnl=factor_pnl,
-            auto_weight_cfg=default_auto_weight_config,
-            adaptive_cfg=None,
-        )
-
         # With adaptive enabled
         with_adaptive = build_factor_weights_snapshot(
             factor_cov=sample_factor_covariance,

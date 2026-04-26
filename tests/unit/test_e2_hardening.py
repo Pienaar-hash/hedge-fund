@@ -8,7 +8,6 @@ Tests for E2.1-E2.3 hardening patches:
 import json
 import os
 import tempfile
-import time
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -118,7 +117,6 @@ class TestBootstrapFromPositions:
         """Bootstrap reads fill log to find last entry timestamp."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             # Write a fill from 1 hour ago
-            ts_old = time.time() - 3600
             fill = {
                 "event_type": "order_fill",
                 "symbol": "BTCUSDT",

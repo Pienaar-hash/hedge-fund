@@ -509,7 +509,7 @@ class TestRouteTWAP:
         def mock_sleep(seconds):
             sleep_calls.append(seconds)
         
-        result = _route_twap(
+        _route_twap(
             intent=intent,
             risk_ctx={},
             twap_cfg=cfg,
