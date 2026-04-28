@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from ops.fund_ops_monthly import (
+from ops.fund_ops_monthly import (  # noqa: E402
     generate_monthly_report,
     section_1_capital_state,
     section_2_trade_activity,

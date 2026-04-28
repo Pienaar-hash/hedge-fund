@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("pandas")
 
-from dashboard import nav_helpers, live_helpers
+from dashboard import nav_helpers, live_helpers  # noqa: E402
 
 
 def test_signal_attempts_summary_parses_latest():
