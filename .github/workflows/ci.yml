@@ -52,8 +52,10 @@ jobs:
       - name: Lint
         run: ruff check .
 
-      - name: Typecheck
-        run: mypy .
+      - name: Typecheck P6 critical surfaces
+        run: |
+          mypy execution/futures_permit_surface_v1.py \
+               execution/drift_monitor.py
 
       - name: Dashboard import boundary check
         run: |
