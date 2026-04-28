@@ -23,7 +23,7 @@ import pytest
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from scripts.telegram_daily_heartbeat import (
+from scripts.telegram_daily_heartbeat import (  # noqa: E402
     _activation_window_block,
     _enforce_message_limits,
     _safe_json,
