@@ -160,18 +160,22 @@ def check_score_distribution(
 
 def run_drift_check() -> Dict[str, Any]:
     """Run all drift checks and produce a consolidated report."""
-    report = {
-        "ts": time.time(),
+    checks: Dict[str, Dict[str, Any]] = {
         "zero_score_events": check_zero_score_rate(),
         "score_monotonicity": check_score_monotonicity(),
         "score_distribution": check_score_distribution(),
-        "alerts": [],
     }
-
-    for key in ("zero_score_events", "score_monotonicity", "score_distribution"):
-        alert = report[key].get("alert")
+    alerts: list[str] = []
+    for key, check in checks.items():
+        alert = check.get("alert")
         if alert:
-            report["alerts"].append(f"{key}:{alert}")
+            alerts.append(f"{key}:{alert}")
+
+    report: Dict[str, Any] = {
+        "ts": time.time(),
+        **checks,
+        "alerts": alerts,
+    }
 
     # Write report
     try:
