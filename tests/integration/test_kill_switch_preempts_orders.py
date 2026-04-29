@@ -169,7 +169,7 @@ class TestK1KillSwitch:
                 mock_nav.return_value = {"nav_usd": 10000.0}
                 mock_port.refresh = MagicMock()
 
-                from execution.executor_live import _send_order
+                from execution.executor_live import _send_order, _STATE
 
                 intent = {
                     "symbol": "BTCUSDT",
@@ -179,7 +179,7 @@ class TestK1KillSwitch:
                     "per_trade_nav_pct": 0.05,
                     "leverage": 1,
                 }
-                _send_order(intent)
+                _send_order(_STATE, intent)
 
                 # INVARIANT 1: No sizing snapshot
                 mock_snap.assert_not_called()

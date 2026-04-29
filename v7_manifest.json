@@ -369,6 +369,55 @@
         "meta": "Dict - lookback_days, total_realized_pnl, total_unrealized_pnl, heads_killed"
       }
     },
+    "hydra_funnel": {
+      "path": "logs/state/hydra_funnel.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Hydra intent pipeline visibility funnel - tracks survival through generation, merge, doctrine, execution",
+      "fields": {
+        "stages": "Dict[str, int] - generated, post_merge, submitted, post_doctrine, executed",
+        "visibility_rate": "float - executed / generated (0-1)",
+        "regime_visibility": "Dict[str, RegimeVis] - per-regime stage counts and visibility rates",
+        "updated_ts": "Unix timestamp"
+      }
+    },
+    "edge_calibration": {
+      "path": "logs/state/edge_calibration.json",
+      "owner": "executor",
+      "update_frequency": "on_trade_close",
+      "optional": true,
+      "description": "Edge Realization Ratio (ERR) accumulator - predicted vs realized edge",
+      "fields": {
+        "err": "float - ratio of realized returns to predicted edges",
+        "count": "int - number of recorded trades"
+      }
+    },
+    "engine_lift": {
+      "path": "logs/state/engine_lift.json",
+      "owner": "executor",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Engine lift metrics - Hydra vs legacy performance comparison",
+      "fields": {
+        "updated_ts": "Unix timestamp"
+      }
+    },
+    "hydra_monotonicity": {
+      "path": "logs/state/hydra_monotonicity.json",
+      "owner": "executor",
+      "update_frequency": "on_demand",
+      "optional": true,
+      "description": "Hydra score monotonicity - Spearman correlation between score deciles and PnL",
+      "fields": {
+        "spearman": "float - Spearman rank correlation",
+        "n": "int - number of scored episodes",
+        "slope": "str - positive/negative/flat",
+        "head_contamination": "bool - whether mixed-head scores corrupt monotonicity",
+        "q5_q1_spread": "float|null - Q5 minus Q1 mean return (quintile spread)",
+        "quintiles": "list - per-quintile mean_return, mean_score, n"
+      }
+    },
     "execution_quality": {
       "path": "logs/state/execution_quality.json",
       "owner": "executor",
@@ -379,6 +428,22 @@
         "updated_ts": "ISO timestamp",
         "symbols": "Dict[str, QualityStats] - per-symbol avg/p95/max slippage, fill_ratio, twap_usage",
         "meta": "Dict - enabled, thin_symbols, crunch_symbols, throttling_active"
+      }
+    },
+    "fallback_metrics": {
+      "path": "logs/state/fallback_metrics.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Fallback swap and Hydra quality telemetry - 24h rolling window",
+      "fields": {
+        "fallback_rate": "float - fallback_count / conflict_count",
+        "fallback_edge_delta": "float - avg_fallback_score - avg_normal_score",
+        "primary_rejection_gap": "float - avg_primary_score - avg_fallback_score",
+        "hydra_quality_diff": "float - avg_hydra_exec_score - avg_legacy_exec_score",
+        "hydra_rescue_rate": "float - hydra_fallback_executions / conflicts",
+        "hydra_overconfidence": "float - hydra_primary_rejected / hydra_primary_count",
+        "ts": "Unix timestamp of last persist"
       }
     },
     "execution_alpha": {
@@ -642,7 +707,14 @@
       "path": "logs/execution/dataset_rollback.jsonl",
       "owner": "dataset_rollback",
       "optional": true,
-      "description": "Dataset rollback trigger events \u2014 temporal/replay anomalies"
+      "description": "Dataset rollback trigger events — temporal/replay anomalies"
+    },
+    "fee_gate_events": {
+      "path": "logs/execution/fee_gate_events.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Fee-edge gate verdicts — entry veto/pass decisions with edge details"
     }
   },
   "prediction_layer": {
@@ -1082,6 +1154,48 @@
         "deny_reason": "str \u2014 ENTRY_DENIED_NO_PERMIT | ENTRY_DENIED_EXPIRED_PERMIT | ENTRY_DENIED_MISMATCH_SYMBOL | ENTRY_DENIED_MISMATCH_DIRECTION | ENTRY_DENIED_INDEX_UNAVAILABLE",
         "matched_permit_id": "str|null \u2014 permit that was found but invalid (e.g. expired)",
         "phase": "str \u2014 always C.1"
+      }
+    },
+    "ecs_shadow_events": {
+      "path": "logs/execution/ecs_shadow_events.jsonl",
+      "owner": "shadow_selector",
+      "update_frequency": "per_cycle_per_symbol",
+      "optional": true,
+      "description": "Phase 4 Commit 2: ECS shadow selector telemetry. Compares candidate_selector decisions with executor fallback-swap arbitration. Append-only.",
+      "schema_version": "ecs_shadow_v1",
+      "fields": {
+        "ts": "float — Unix timestamp",
+        "schema": "str — always ecs_shadow_v1",
+        "symbol": "str — trading pair",
+        "cycle": "int — executor cycle number",
+        "selector_winner": "str — engine source the selector picked",
+        "executor_winner": "str — engine source the executor picked",
+        "agreement": "bool — whether selector and executor agree",
+        "selector_reason": "str — band_pass | highest_score | no_candidates | all_rejected_by_band_gate",
+        "executor_used_fallback": "bool — whether executor swapped to fallback",
+        "candidates_count": "int — number of candidates evaluated",
+        "selector_loser": "str|null — engine source of losing candidate",
+        "min_conviction_band": "str — conviction band gate setting"
+      }
+    },
+    "ecs_soak_events": {
+      "path": "logs/execution/ecs_soak_events.jsonl",
+      "owner": "shadow_selector",
+      "update_frequency": "per_cycle_per_symbol",
+      "optional": true,
+      "description": "Phase 4 Commit 3: ECS soak telemetry. When USE_ECS_SELECTOR=1, compares live ECS decisions with simulated old fallback-swap path. Append-only.",
+      "schema_version": "ecs_soak_v1",
+      "fields": {
+        "ts": "float — Unix timestamp",
+        "schema": "str — always ecs_soak_v1",
+        "symbol": "str — trading pair",
+        "cycle": "int — executor cycle number",
+        "ecs_winner": "str — engine source the ECS selector picked",
+        "old_path_winner": "str — engine source the old fallback-swap path would have picked",
+        "agreement": "bool — whether ECS and old path agree",
+        "ecs_reason": "str — selection reason from ECS",
+        "candidates_count": "int — number of candidates evaluated",
+        "min_conviction_band": "str — conviction band gate setting"
       }
     },
     "dle_permit_expired": {

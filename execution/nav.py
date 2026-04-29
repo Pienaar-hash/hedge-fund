@@ -395,11 +395,17 @@ def _futures_nav_usdt(nav_cfg: Optional[Dict[str, Any]] = None) -> Tuple[float, 
 
     if sources_ok:
         _persist_confirmed_nav(nav_total, detail=detail, source_health=source_health)
+        LOGGER.info(
+            "[nav] confirmed nav=%.2f sources=%s age=%s",
+            nav_total, source_health, cached_age_int,
+        )
     else:
         LOGGER.warning(
-            "[nav] snapshot_mark_unhealthy balances_ok=%s positions_ok=%s",
+            "[nav] snapshot_mark_unhealthy balances_ok=%s positions_ok=%s nav=%.2f age=%s",
             balances_ok,
             positions_ok,
+            nav_total,
+            cached_age_int,
         )
         _mark_nav_unhealthy(detail=detail, source_health=source_health)
     return nav_total, detail

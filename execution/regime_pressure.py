@@ -135,7 +135,8 @@ class RegimePressureState:
         
         Labels:
             CALM     — < 2 changes/day, avg dwell > 12h
-            HOSTILE  — 2-5 changes/day or avg dwell 4-12h
+            MODERATE — 2-4 changes/day or avg dwell 6-12h
+            HOSTILE  — 4-5 changes/day or avg dwell 4-6h
             EXTREME  — > 5 changes/day or avg dwell < 4h
         """
         changes_per_day = self.regime_changes_7d / 7.0 if self.regime_changes_7d > 0 else 0
@@ -145,12 +146,16 @@ class RegimePressureState:
         if changes_per_day > 5 or (avg_dwell > 0 and avg_dwell < 4):
             return "EXTREME"
         
+        # HOSTILE: high churn or short dwell
+        if changes_per_day > 4 or (avg_dwell > 0 and avg_dwell < 6):
+            return "HOSTILE"
+        
         # CALM: low churn and long dwell
         if changes_per_day < 2 and avg_dwell > 12:
             return "CALM"
         
-        # Default: HOSTILE
-        return "HOSTILE"
+        # MODERATE: normal market churn
+        return "MODERATE"
 
 
 # ---------------------------------------------------------------------------

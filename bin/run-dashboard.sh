@@ -34,4 +34,4 @@ fi
 
 export DASHBOARD_PORT="$PORT"
 
-exec /root/hedge-fund/venv/bin/streamlit run dashboard/main.py --server.headless=true --server.port="$PORT"
+exec /root/hedge-fund/venv/bin/streamlit run dashboard/app.py --server.headless=true --server.port="$PORT"

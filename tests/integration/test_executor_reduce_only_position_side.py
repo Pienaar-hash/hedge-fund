@@ -119,7 +119,7 @@ def test_reduce_only_buy_sets_short_position(stub_executor_env):
     intent = _base_intent("BUY")
 
     with pytest.raises(stub_executor_env["stop_exc"]):
-        executor_live._send_order(intent, skip_flip=True)
+        executor_live._send_order(executor_live._STATE, intent, skip_flip=True)
 
     assert stub_executor_env["build_calls"], "build_order_payload was not invoked"
     assert stub_executor_env["send_calls"], "send_order was not invoked"
@@ -132,7 +132,7 @@ def test_reduce_only_sell_sets_long_position(stub_executor_env):
     intent = _base_intent("SELL")
 
     with pytest.raises(stub_executor_env["stop_exc"]):
-        executor_live._send_order(intent, skip_flip=True)
+        executor_live._send_order(executor_live._STATE, intent, skip_flip=True)
 
     assert intent["positionSide"] == "LONG"
     assert stub_executor_env["build_calls"][0]["position_side"] == "LONG"
@@ -144,7 +144,7 @@ def test_explicit_position_side_is_preserved(stub_executor_env):
     intent["positionSide"] = "LONG"
 
     with pytest.raises(stub_executor_env["stop_exc"]):
-        executor_live._send_order(intent, skip_flip=True)
+        executor_live._send_order(executor_live._STATE, intent, skip_flip=True)
 
     assert intent["positionSide"] == "LONG"
     assert stub_executor_env["build_calls"][0]["position_side"] == "LONG"

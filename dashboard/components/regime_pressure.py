@@ -86,7 +86,10 @@ def render_regime_pressure_widget(state: Optional[Dict[str, Any]] = None) -> Non
     
     # Hostility badge colors
     hostility_colors = {
-        "HOSTILE": "#ef4444",
+        "CALM": "#22c55e",       # Green
+        "MODERATE": "#f59e0b",   # Amber
+        "HOSTILE": "#ef4444",    # Red
+        "EXTREME": "#dc2626",    # Deep red
         "UNCERTAIN": "#f59e0b",
         "FAVORABLE": "#22c55e",
     }

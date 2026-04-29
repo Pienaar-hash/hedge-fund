@@ -38,7 +38,7 @@
     "USDC",
     "FDUSD"
   ],
-  "restricted_symbols": ["ETHUSDT"],
+  "restricted_symbols": [],
   "per_symbol": {
     "BTCUSDT": {
       "min_notional": 25,

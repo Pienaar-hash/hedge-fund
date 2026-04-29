@@ -568,6 +568,7 @@ def wait_fill_task(handle: FillTaskHandle) -> FillResult:
                 position_tracker=handle.position_tracker,
             )
     else:
+        LOG.warning("[fills] no future available; falling back to sync")
         handle._result = confirm_order_fill(
             handle.ack,
             handle.metadata,
