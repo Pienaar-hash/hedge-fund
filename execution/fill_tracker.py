@@ -14,7 +14,7 @@ import threading
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Coroutine, Dict, List, Mapping, Optional
 
 from execution.events import now_utc, write_event
 from execution.exchange_utils import _req
@@ -85,7 +85,7 @@ class FillTaskRunner:
 
     # ── public API ────────────────────────────────────────────────
 
-    def submit(self, coro) -> Future:  # type: ignore[type-arg]
+    def submit(self, coro: Coroutine[Any, Any, Any]) -> "Future[Any]":
         """Schedule *coro* on the background loop, return a Future."""
         assert self._loop is not None and self._loop.is_running()
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
@@ -173,7 +173,7 @@ class FillTaskHandle:
     position_tracker: Optional[PositionTracker] = None
     _result: FillResult = field(default=None, repr=False)
     _done: bool = field(default=False, repr=False)
-    _future: Optional[Future] = field(default=None, repr=False)  # type: ignore[type-arg]
+    _future: Optional["Future[Any]"] = field(default=None, repr=False)
 
 
 # ──────────────────────────────────────────────────────────────────
