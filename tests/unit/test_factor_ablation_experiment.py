@@ -1,6 +1,5 @@
 """Tests for factor_ablation_experiment.py — Factor Ablation Grid."""
 import json
-import math
 import os
 import tempfile
 
@@ -8,13 +7,9 @@ import pytest
 
 from scripts.factor_ablation_experiment import (
     ABLATION_VARIANTS,
-    CARRY_FIX_REFERENCE,
     DEFAULT_WEIGHTS,
-    INTERACTION_THRESHOLD,
-    MASK_MIDPOINT,
     RMSE_STRONG,
     RMSE_USABLE,
-    VARIANT_LABELS,
     ablate_score,
     compute_ablation_grid,
     estimate_factor_values,
@@ -27,7 +22,6 @@ from scripts.factor_ablation_experiment import (
     section_displacement,
     section_economic,
     section_interaction,
-    section_reconstruction,
     section_verdict,
 )
 from scripts.carry_fix_experiment import (

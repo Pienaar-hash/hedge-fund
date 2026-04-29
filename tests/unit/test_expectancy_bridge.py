@@ -1,8 +1,6 @@
 """Tests for execution/expectancy_bridge.py — P4B/P4D Expectancy Bridge."""
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,7 +10,6 @@ from execution.expectancy_bridge import (
     BandTable,
     BridgeConfig,
     BridgeLookupResult,
-    RegimeBridgeLookupResult,
     build_band_table,
     build_regime_conditional_table,
     check_monotonicity,

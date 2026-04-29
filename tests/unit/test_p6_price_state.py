@@ -11,7 +11,6 @@ from execution.p6_price_state import (
     compute_region_conviction,
     generate_price_state_signals,
 )
-from execution.p6_simple_rules import P6Signal
 
 TS = 1700000000.0
 

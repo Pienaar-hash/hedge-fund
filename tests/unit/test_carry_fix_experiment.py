@@ -1,14 +1,9 @@
 """Tests for carry_fix_experiment.py — Layer 0 BTC carry-direction bias experiment."""
 import json
-import math
 
-import pytest
 
 from scripts.carry_fix_experiment import (
-    DEFAULT_CARRY_WEIGHT,
-    MASK_MIDPOINT,
     NEAR_MISS_BAND,
-    NEUTRAL_CARRY,
     REFERENCE_MASK,
     classify_region,
     compute_carry_score,
@@ -22,7 +17,6 @@ from scripts.carry_fix_experiment import (
     section_economic_validation,
     section_mask_alignment,
     section_pass_fail,
-    section_selector_relevance,
 )
 
 

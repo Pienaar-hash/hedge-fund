@@ -2,15 +2,9 @@
 import json
 import time
 
-import pytest
 
 from scripts.shadow_validation_report import (
-    KILL_REGION_COUNT_14D_MIN,
-    KILL_REGION_DRIFT_MAX,
     MIN_SCORES_SUFFICIENT,
-    PROMOTE_EPISODE_COUNT,
-    PROMOTE_SOAK_DAYS,
-    REFERENCE_MASK,
     _section_daily_throughput,
     _section_decision_distribution,
     _section_drift_alerts,
@@ -237,7 +231,6 @@ class TestScoreDriftMetrics:
 
     def test_spillover_velocity_positive(self):
         """Velocity = latest_day_spillover - avg(prior 7 days)."""
-        import time as _t
         base = 1_700_000_000  # fixed epoch
         DAY = 86400
         events = []

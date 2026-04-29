@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import os
-import time
-import textwrap
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from execution.determinism_guard import (
-    CHECK_INTERVAL_S,
     HYSTERESIS_CLEAR_S,
     DeterminismSnapshot,
     _read_avail_mem_pct,

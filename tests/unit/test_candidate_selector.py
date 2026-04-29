@@ -179,10 +179,10 @@ class TestZeroScoreAbstain:
         h = _make_intent(score=0.0, source="hydra")
         h["_selector_source"] = "hydra"
         h["_selector_score"] = 0.0
-        l = _make_intent(score=0.0, source="legacy")
-        l["_selector_source"] = "legacy"
-        l["_selector_score"] = 0.0
-        result = select_executable_candidate([h, l])
+        lg = _make_intent(score=0.0, source="legacy")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.0
+        result = select_executable_candidate([h, lg])
         assert result["selected"] is None
         assert result["selection_reason"] == "all_rejected_zero_score"
 
@@ -197,11 +197,11 @@ class TestZeroScoreAbstain:
         h = _make_intent(score=0.0, source="hydra")
         h["_selector_source"] = "hydra"
         h["_selector_score"] = 0.0
-        l = _make_intent(score=0.4, source="legacy", conviction_band="medium")
-        l["_selector_source"] = "legacy"
-        l["_selector_score"] = 0.4
-        result = select_executable_candidate([l, h])
-        assert result["selected"] is l
+        lg = _make_intent(score=0.4, source="legacy", conviction_band="medium")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.4
+        result = select_executable_candidate([lg, h])
+        assert result["selected"] is lg
         assert result["winner_engine"] == "legacy"
 
     def test_positive_score_still_passes(self):

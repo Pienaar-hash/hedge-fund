@@ -202,7 +202,7 @@ _ENV_EVENTS_PATH = Path("logs/execution/environment_events.jsonl")
 _DETERMINISM_ALERT_COOLDOWN_S = 120.0  # Rate-limit env event logging
 _DETERMINISM_BLOCK_NEW_ENTRIES = True  # When degraded: veto new entries (exits always allowed)
 try:
-    from execution.determinism_guard import check_determinism, DeterminismSnapshot
+    from execution.determinism_guard import check_determinism, DeterminismSnapshot  # noqa: F401 - re-exported for callers
     _DETERMINISM_AVAILABLE = True
 except ImportError:
     _DETERMINISM_AVAILABLE = False

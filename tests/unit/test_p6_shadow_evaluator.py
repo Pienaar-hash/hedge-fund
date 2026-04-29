@@ -2,14 +2,10 @@
 
 import json
 import pytest
-import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from execution.p6_simple_rules import P6Signal
 from execution.p6_shadow_evaluator import (
-    DEFAULT_FEE_THRESHOLD_PCT,
-    SHADOW_LOG_PATH,
     compute_shadow_summary,
     evaluate_and_log_signals,
     evaluate_signal_against_bridge,
@@ -17,8 +13,6 @@ from execution.p6_shadow_evaluator import (
 from execution.expectancy_bridge import (
     BandEntry,
     BandTable,
-    BridgeConfig,
-    RegimeBridgeLookupResult,
 )
 
 TS = 1700000000.0
@@ -226,7 +220,7 @@ class TestEvaluateAndLogSignals:
 
     def test_writes_jsonl(self, sample_signal, mock_regime_tables, mock_pooled_table, tmp_path):
         log_file = tmp_path / "test_shadow.jsonl"
-        records = evaluate_and_log_signals(
+        evaluate_and_log_signals(
             [sample_signal],
             regime_tables=mock_regime_tables,
             pooled_table=mock_pooled_table,
