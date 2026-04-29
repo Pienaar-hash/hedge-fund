@@ -1,7 +1,6 @@
 """Tests for execution.hydra_monotonicity module."""
 import json
 import os
-import pytest
 from execution.hydra_monotonicity import (
     compute_monotonicity,
     compute_monotonicity_by_head,
@@ -102,6 +101,7 @@ class TestPersistSnapshot:
         dest = str(tmp_path / "hydra_monotonicity.json")
         eps = [_make_episode(0.3 + i * 0.03, 100, 100 + i * 0.1) for i in range(10)]
         snap = persist_snapshot(eps, path=dest)
+        assert snap is not None
         assert os.path.exists(dest)
         data = json.loads(open(dest).read())
         assert data["n"] == 10

@@ -1,11 +1,9 @@
 """Tests for execution.shadow_selector — Phase 4 Commit 2."""
 import json
 import os
-import time
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
 from execution.shadow_selector import (
     _shadow_enabled,
@@ -69,7 +67,7 @@ class TestRunShadowComparison:
         assert result["schema"] == "ecs_shadow_v1"
         # Check JSONL was written
         assert log_path.exists()
-        events = [json.loads(l) for l in log_path.read_text().splitlines()]
+        events = [json.loads(line) for line in log_path.read_text().splitlines()]
         assert len(events) == 1
         assert events[0]["agreement"] is True
 
@@ -202,6 +200,6 @@ class TestRunShadowComparison:
                         executor_used_fallback=False,
                         cycle=cycle,
                     )
-        events = [json.loads(l) for l in log_path.read_text().splitlines()]
+        events = [json.loads(line) for line in log_path.read_text().splitlines()]
         assert len(events) == 3
         assert [e["cycle"] for e in events] == [0, 1, 2]

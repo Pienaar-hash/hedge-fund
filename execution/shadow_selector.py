@@ -86,7 +86,6 @@ def run_shadow_comparison(
         hydra_intent = None
         legacy_intent = None
         primary_source = str(primary_copy.get("source", "")).lower()
-        fallback_source = str((fallback_copy or {}).get("source", "")).lower() if fallback_copy else ""
 
         if primary_source == "hydra":
             hydra_intent = primary_copy
