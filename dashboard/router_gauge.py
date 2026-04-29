@@ -106,7 +106,7 @@ def render_router_circle_gauge(router_state: dict[str, Any]) -> None:
     ring_pct = health_score * 100
     
     # SVG circular gauge
-    st.markdown(
+    st.html(
         f"""
         <div style="display: flex; flex-direction: column; align-items: center; padding: 10px;">
             <svg width="140" height="140" viewBox="0 0 140 140">
@@ -138,9 +138,8 @@ def render_router_circle_gauge(router_state: dict[str, Any]) -> None:
             </svg>
             <div style="font-size: 12px; color: #888; margin-top: 5px;">Router Health</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +178,7 @@ def render_router_gauge(router_state: dict[str, Any]) -> None:
         status_label, status_color = _get_health_status(router_state)
         
         # Render status badge
-        st.markdown(
+        st.html(
             f"""
             <div style="
                 display: inline-block;
@@ -193,58 +192,53 @@ def render_router_gauge(router_state: dict[str, Any]) -> None:
                     ● {status_label}
                 </span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            """
+            )
         
         # Metrics grid
         m1, m2 = st.columns(2)
         
         with m1:
             maker_color = COLOR_OK if maker_ratio >= 0.7 else (COLOR_WARN if maker_ratio >= 0.5 else COLOR_DEGRADED)
-            st.markdown(
+            st.html(
                 f"""
                 <div style="padding: 8px; background: #1a1a2e; border-radius: 8px; margin-bottom: 8px;">
                     <div style="font-size: 11px; color: #888;">Maker Ratio</div>
                     <div style="font-size: 20px; font-weight: bold; color: {maker_color};">{maker_ratio:.1%}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """
+                )
             
             fb_color = COLOR_OK if fallback_ratio <= 0.1 else (COLOR_WARN if fallback_ratio <= 0.3 else COLOR_DEGRADED)
-            st.markdown(
+            st.html(
                 f"""
                 <div style="padding: 8px; background: #1a1a2e; border-radius: 8px;">
                     <div style="font-size: 11px; color: #888;">Fallback Ratio</div>
                     <div style="font-size: 20px; font-weight: bold; color: {fb_color};">{fallback_ratio:.1%}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """
+                )
         
         with m2:
             slip_color = COLOR_OK if avg_slippage <= 5 else (COLOR_WARN if avg_slippage <= 15 else COLOR_DEGRADED)
-            st.markdown(
+            st.html(
                 f"""
                 <div style="padding: 8px; background: #1a1a2e; border-radius: 8px; margin-bottom: 8px;">
                     <div style="font-size: 11px; color: #888;">Avg Slippage</div>
                     <div style="font-size: 20px; font-weight: bold; color: {slip_color};">{avg_slippage:.1f} bps</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """
+                )
             
             rej_color = COLOR_OK if reject_ratio <= 0.05 else (COLOR_WARN if reject_ratio <= 0.15 else COLOR_DEGRADED)
-            st.markdown(
+            st.html(
                 f"""
                 <div style="padding: 8px; background: #1a1a2e; border-radius: 8px;">
                     <div style="font-size: 11px; color: #888;">Reject Rate</div>
                     <div style="font-size: 20px; font-weight: bold; color: {rej_color};">{reject_ratio:.1%}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +257,7 @@ def render_router_gauge_compact(router_state: dict[str, Any]) -> None:
     health_score = router_state.get("router_health_score", 0.0)
     status_label, status_color = _get_health_status(router_state)
     
-    st.markdown(
+    st.html(
         f"""
         <div style="display: flex; align-items: center; gap: 15px;">
             <svg width="50" height="50" viewBox="0 0 50 50">
@@ -279,6 +273,5 @@ def render_router_gauge_compact(router_state: dict[str, Any]) -> None:
                 <div style="font-size: 11px; color: #888;">Router Health</div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+        )

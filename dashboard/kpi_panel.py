@@ -11,7 +11,7 @@ import streamlit as st
 from dashboard.nav_helpers import safe_float, safe_format
 from dashboard.dashboard_utils import format_fraction
 
-st.markdown(
+st.html(
     """
     <style>
     .stMetric, .css-1ht1j8u, .css-16idsys, [data-testid="stMetricValue"] {
@@ -20,9 +20,8 @@ st.markdown(
         white-space: nowrap !important;
     }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+    """
+    )
 
 STATE_DIR = Path(os.getenv("STATE_DIR") or "logs/state")
 KPI_V7_STATE_PATH = Path(os.getenv("KPI_V7_STATE_PATH") or (STATE_DIR / "kpis_v7.json"))

@@ -301,11 +301,11 @@ def render_treasury_health(
     
     with col2:
         assets_age_html = _age_badge(health["assets_surface_age_s"], stale_threshold=86400)
-        st.markdown(f"**Assets Age:** {assets_age_html}", unsafe_allow_html=True)
+        st.html(f"**Assets Age:** {assets_age_html}")
     
     with col3:
         yield_age_html = _age_badge(health["yield_surface_age_s"], stale_threshold=86400)
-        st.markdown(f"**Yield Age:** {yield_age_html}", unsafe_allow_html=True)
+        st.html(f"**Yield Age:** {yield_age_html}")
     
     # Warnings and missing fields
     warnings = health.get("warnings", [])

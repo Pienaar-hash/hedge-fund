@@ -51,6 +51,8 @@ def render_engine_lift_panel(lift_data: Optional[Dict[str, Any]] = None) -> None
     l_count = data.get("legacy_count", 0)
     if h_count + l_count < 10:
         return  # not enough data
+    if h_count == 0:
+        return  # need Hydra executions for meaningful comparison
 
     h_mean = data.get("hydra_mean_return", 0)
     l_mean = data.get("legacy_mean_return", 0)
@@ -62,11 +64,10 @@ def render_engine_lift_panel(lift_data: Optional[Dict[str, Any]] = None) -> None
     cel_str = f"{cel * 100:+.3f}%" if cel is not None else "—"
     color = _cel_color(cel)
 
-    st.markdown(
+    st.html(
         f"#### Hydra vs Legacy &nbsp;&nbsp;"
-        f"<span style='font-size:0.85rem; color:{color};'>Outcome CEL = {cel_str}</span>",
-        unsafe_allow_html=True,
-    )
+        f"<span style='font-size:0.85rem; color:{color};'>Outcome CEL = {cel_str}</span>"
+        )
 
     col1, col2 = st.columns(2)
 
@@ -99,7 +100,7 @@ def render_engine_lift_panel(lift_data: Optional[Dict[str, Any]] = None) -> None
           </div>
         </div>
         """
-        st.markdown(html, unsafe_allow_html=True)
+        st.html(html)
 
     with col2:
         if _HAS_ALTAIR:

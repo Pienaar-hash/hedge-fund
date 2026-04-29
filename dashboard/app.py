@@ -35,7 +35,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from dashboard.state_v7 import (
     load_all_state,
     load_risk_snapshot,
-    validate_surface_health,
     load_engine_metadata,
 )
 from dashboard.live_helpers import (
@@ -64,11 +63,17 @@ from dashboard.components.episode_ledger import (
     load_episode_ledger_state,
     render_episode_ledger_summary,
 )
-# ARCHIVED 2026-01-29: Hydra status strip disabled
-# from dashboard.components.hydra_status import (
-#     load_hydra_state,
-#     render_hydra_status_strip,
-# )
+
+# Experimental Matrix — S2 PM + Futures Proxy unified surface
+from dashboard.components.experimental_matrix import (
+    load_experimental_matrix_state,
+    render_experimental_matrix,
+)
+
+# System Certification — Activation Window governance
+from dashboard.components.certification import (
+    render_certification_panel,
+)
 
 # NAV Composition — Investor Truth Surface
 from dashboard.components.nav_composition import (
@@ -106,19 +111,33 @@ from dashboard.components.architecture_strip import (
 )
 
 # Edge Calibration
-from dashboard.components.edge_calibration_panel import (
-    render_edge_calibration_panel,
-)
+try:
+    from dashboard.components.edge_calibration_panel import (
+        render_edge_calibration_panel,
+    )
+except Exception:  # pragma: no cover - defensive import fallback
+    def render_edge_calibration_panel(*_args: Any, **_kwargs: Any) -> None:
+        return
+
 
 # Engine Lift (Hydra vs Legacy)
-from dashboard.components.engine_lift_panel import (
-    render_engine_lift_panel,
-)
+try:
+    from dashboard.components.engine_lift_panel import (
+        render_engine_lift_panel,
+    )
+except Exception:  # pragma: no cover - defensive import fallback
+    def render_engine_lift_panel(*_args: Any, **_kwargs: Any) -> None:
+        return
+
 
 # Hydra Score Monotonicity
-from dashboard.components.hydra_monotonicity_panel import (
-    render_hydra_monotonicity_panel,
-)
+try:
+    from dashboard.components.hydra_monotonicity_panel import (
+        render_hydra_monotonicity_panel,
+    )
+except Exception:  # pragma: no cover - defensive import fallback
+    def render_hydra_monotonicity_panel(*_args: Any, **_kwargs: Any) -> None:
+        return
 
 # Multi-Engine Soak Panel
 from dashboard.multi_engine_panel import render_multi_engine_panel
@@ -127,11 +146,9 @@ from dashboard.multi_engine_panel import render_multi_engine_panel
 from dashboard.layout import (
     render_header_block,
     render_kpi_strip,
-    render_aum_block,
     render_runtime_block,
     render_positions_block,
     render_strategy_block,
-    render_treasury_block,
     render_diagnostics_block,
 )
 
@@ -185,7 +202,7 @@ def _inject_css() -> None:
         css_content = ""
     
     # Inject CSS
-    st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
+    st.html(f"<style>{css_content}</style>")
 
 
 # =============================================================================
@@ -223,9 +240,9 @@ def _load_dashboard_state() -> Dict[str, Any]:
 
     # P1: Strategy transparency surfaces
     episode_ledger = load_episode_ledger_state()
-    # ARCHIVED 2026-01-29: Hydra state disabled
-    # hydra_state = load_hydra_state()
-    hydra_state = {}
+
+    # Experimental Matrix (S2 PM + Futures Proxy)
+    experimental_matrix = load_experimental_matrix_state()
     
     # NAV Composition (investor truth surface)
     nav_detail = load_nav_detail()
@@ -264,7 +281,8 @@ def _load_dashboard_state() -> Dict[str, Any]:
         "enforcement_state": enforcement_state,
         # P1: Strategy transparency
         "episode_ledger": episode_ledger,
-        "hydra_state": hydra_state,
+        # Experimental Matrix
+        "experimental_matrix": experimental_matrix,
         # NAV Composition
         "nav_detail": nav_detail,
         # Prediction telemetry
@@ -317,16 +335,6 @@ def main() -> None:
     render_edge_calibration_panel(state["episode_ledger"])
     
     # =========================================================================
-    # ENGINE LIFT (Hydra vs Legacy outcome comparison)
-    # =========================================================================
-    render_engine_lift_panel()
-
-    # =========================================================================
-    # HYDRA SCORE MONOTONICITY (score ordering quality)
-    # =========================================================================
-    render_hydra_monotonicity_panel()
-    
-    # =========================================================================
     # KPI STRIP (horizontal bar of key metrics)
     # =========================================================================
     render_kpi_strip(
@@ -363,14 +371,6 @@ def main() -> None:
     render_equity_curve()
     
     # =========================================================================
-    # MULTI-ENGINE SOAK (Architecture health & migration readiness)
-    # =========================================================================
-    try:
-        render_multi_engine_panel()
-    except Exception as exc:
-        LOG.warning("multi_engine_panel render failed: %s", exc)
-    
-    # =========================================================================
     # POSITIONS & EXECUTION
     # =========================================================================
     render_positions_block(
@@ -382,6 +382,11 @@ def main() -> None:
     # P1: STRATEGY TRANSPARENCY (Capital is intentionally idle)
     # =========================================================================
     render_episode_ledger_summary(state["episode_ledger"])
+    
+    # =========================================================================
+    # EXPERIMENTAL MATRIX (S2 PM + Futures Proxy hypothesis test)
+    # =========================================================================
+    render_experimental_matrix(state["experimental_matrix"])
     
     # =========================================================================
     # STRATEGY PERFORMANCE
@@ -405,6 +410,17 @@ def main() -> None:
         )
         st.divider()
         render_enforcement_widget(state["enforcement_state"])
+        st.divider()
+        render_certification_panel()
+        # Engine Lift — only when Hydra has executions
+        render_engine_lift_panel()
+        # Hydra Score Monotonicity — research detail
+        render_hydra_monotonicity_panel()
+        # Multi-Engine Soak — detailed migration readiness
+        try:
+            render_multi_engine_panel()
+        except Exception as exc:
+            LOG.warning("multi_engine_panel render failed: %s", exc)
         # Only show execution detail if there's actual fill data
         _exec_q = state["execution_quality"]
         if _exec_q and _exec_q.get("symbols"):
@@ -442,12 +458,11 @@ def main() -> None:
     # BUILD FOOTER
     # =========================================================================
     build = _get_build_info()
-    st.markdown(
+    st.html(
         f'<div style="text-align:center;color:#555;font-size:0.75rem;padding:1.5rem 0 0.5rem;">'
         f'Build: {build["version"]} &nbsp;·&nbsp; Commit: {build["commit"]}'
-        f' &nbsp;·&nbsp; Started: {build["started"]}</div>',
-        unsafe_allow_html=True,
-    )
+        f' &nbsp;·&nbsp; Started: {build["started"]}</div>'
+        )
 
 
 if __name__ == "__main__":
