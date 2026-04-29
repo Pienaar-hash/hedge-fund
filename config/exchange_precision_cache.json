@@ -3,12 +3,12 @@
     "tickSize": "0.10",
     "minPrice": "261.10",
     "maxPrice": "809484",
-    "stepSize": "0.001",
-    "minQty": "0.001",
+    "stepSize": "0.0001",
+    "minQty": "0.0001",
     "maxQty": "1000",
-    "marketStepSize": "0.001",
-    "marketMinQty": "0.001",
-    "marketMaxQty": "1000",
+    "marketStepSize": "0.0001",
+    "marketMinQty": "0.0001",
+    "marketMaxQty": "120",
     "minNotional": "100"
   },
   "ETHUSDT": {
@@ -924,9 +924,9 @@
     "minNotional": "5"
   },
   "GTCUSDT": {
-    "tickSize": "0.001",
-    "minPrice": "0.001",
-    "maxPrice": "100000",
+    "tickSize": "0.000100",
+    "minPrice": "0.000100",
+    "maxPrice": "200",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
@@ -984,9 +984,9 @@
     "minNotional": "5"
   },
   "ATAUSDT": {
-    "tickSize": "0.0001",
-    "minPrice": "0.0001",
-    "maxPrice": "100000",
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
@@ -3176,7 +3176,7 @@
     "maxQty": "3000000",
     "marketStepSize": "1",
     "marketMinQty": "1",
-    "marketMaxQty": "300000",
+    "marketMaxQty": "5000000",
     "minNotional": "5"
   },
   "SWELLUSDT": {
@@ -4833,18 +4833,6 @@
     "marketStepSize": "1",
     "marketMinQty": "1",
     "marketMaxQty": "1000000",
-    "minNotional": "5"
-  },
-  "OLUSDT": {
-    "tickSize": "0.0000100",
-    "minPrice": "0.0000100",
-    "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "30000000",
-    "marketStepSize": "1",
-    "marketMinQty": "1",
-    "marketMaxQty": "3000000",
     "minNotional": "5"
   },
   "SAHARAUSDT": {

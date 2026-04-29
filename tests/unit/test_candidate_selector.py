@@ -162,3 +162,70 @@ class TestSelectorEndToEnd:
         candidates = build_candidates("BTCUSDT", hydra_intent=h)
         result = select_executable_candidate(candidates, min_conviction_band="high")
         assert result["selected"] is None
+
+
+class TestZeroScoreAbstain:
+    """ZERO_SCORE policy: score <= 0 must NEVER be selected."""
+
+    def test_single_zero_score_rejected(self):
+        c = _make_intent(score=0.0, source="hydra")
+        c["_selector_source"] = "hydra"
+        c["_selector_score"] = 0.0
+        result = select_executable_candidate([c])
+        assert result["selected"] is None
+        assert result["selection_reason"] == "all_rejected_zero_score"
+
+    def test_both_zero_score_rejected(self):
+        h = _make_intent(score=0.0, source="hydra")
+        h["_selector_source"] = "hydra"
+        h["_selector_score"] = 0.0
+        lg = _make_intent(score=0.0, source="legacy")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.0
+        result = select_executable_candidate([h, lg])
+        assert result["selected"] is None
+        assert result["selection_reason"] == "all_rejected_zero_score"
+
+    def test_negative_score_rejected(self):
+        c = _make_intent(score=-0.1, source="hydra")
+        c["_selector_source"] = "hydra"
+        c["_selector_score"] = -0.1
+        result = select_executable_candidate([c])
+        assert result["selected"] is None
+
+    def test_zero_hydra_positive_legacy_selects_legacy(self):
+        h = _make_intent(score=0.0, source="hydra")
+        h["_selector_source"] = "hydra"
+        h["_selector_score"] = 0.0
+        lg = _make_intent(score=0.4, source="legacy", conviction_band="medium")
+        lg["_selector_source"] = "legacy"
+        lg["_selector_score"] = 0.4
+        result = select_executable_candidate([lg, h])
+        assert result["selected"] is lg
+        assert result["winner_engine"] == "legacy"
+
+    def test_positive_score_still_passes(self):
+        """Ensure the guard doesn't block valid positive scores."""
+        c = _make_intent(score=0.01, source="hydra")
+        c["_selector_source"] = "hydra"
+        c["_selector_score"] = 0.01
+        result = select_executable_candidate([c])
+        assert result["selected"] is not None
+
+    def test_zero_score_via_build_candidates(self):
+        """End-to-end: missing score → 0.0 → ABSTAIN."""
+        intent_no_score = {"symbol": "BTCUSDT", "source": "hydra"}
+        candidates = build_candidates("BTCUSDT", hydra_intent=intent_no_score)
+        assert len(candidates) == 1
+        assert candidates[0]["_selector_score"] == 0.0
+        result = select_executable_candidate(candidates)
+        assert result["selected"] is None
+        assert result["selection_reason"] == "all_rejected_zero_score"
+
+    def test_zero_score_with_band_gate(self):
+        """Zero-score is rejected BEFORE band gate check."""
+        c = _make_intent(score=0.0, source="hydra", conviction_band="very_high")
+        c["_selector_source"] = "hydra"
+        c["_selector_score"] = 0.0
+        result = select_executable_candidate([c], min_conviction_band="low")
+        assert result["selected"] is None

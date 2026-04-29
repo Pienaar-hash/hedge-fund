@@ -415,7 +415,8 @@ class TestSelectorInvariantGuards:
         }
         result = select_executable_candidate([c], "low")
         assert result["selected"] is None
-        assert result["selection_reason"] == "invariant_violation"
+        # ZERO_SCORE guard fires before invariant guard (score <= 0 → ABSTAIN)
+        assert result["selection_reason"] == "all_rejected_zero_score"
 
     def test_normal_score_passes(self):
         from execution.candidate_selector import select_executable_candidate
@@ -431,7 +432,7 @@ class TestSelectorInvariantGuards:
         assert result["selected"] is not None
         assert result["winner_engine"] == "hydra"
 
-    def test_zero_score_passes(self):
+    def test_zero_score_abstains(self):
         from execution.candidate_selector import select_executable_candidate
         c = {
             "symbol": "BTCUSDT",
@@ -442,7 +443,9 @@ class TestSelectorInvariantGuards:
             "conviction_band": "low",
         }
         result = select_executable_candidate([c], "low")
-        assert result["selected"] is not None
+        # ZERO_SCORE policy: score == 0 → hard ABSTAIN (never route)
+        assert result["selected"] is None
+        assert result["selection_reason"] == "all_rejected_zero_score"
 
 
 # ---------------------------------------------------------------------------

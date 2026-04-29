@@ -1308,6 +1308,7 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                         intent["hybrid_components"] = result.get("components", {})
                         intent["hybrid_weighted"] = result.get("weighted_contributions", {})
                         intent["hybrid_weights_used"] = result.get("weights_used", {})
+                        intent["hybrid_carry_details"] = result.get("carry_details", {})
                         intent["router_quality_score"] = rq_score
                         intent["rv_momentum_score"] = rv_score_val
                         

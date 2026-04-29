@@ -3,7 +3,7 @@ import sys
 
 
 
-SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
