@@ -51,7 +51,7 @@ def test_executor_ack_and_fill_event_flow(monkeypatch) -> None:
     )
     assert ack_info is not None
 
-    fill_summary = executor_live._confirm_order_fill(ack_info)
+    fill_summary = fill_tracker.confirm_order_fill(ack_info)
     assert fill_summary is not None
     assert pytest.approx(fill_summary.executed_qty) == pytest.approx(1.0)
     assert pytest.approx(fill_summary.avg_price) == pytest.approx(100.5)
