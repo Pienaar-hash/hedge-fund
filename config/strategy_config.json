@@ -498,8 +498,9 @@
     }
   },
   "conviction": {
-    "enabled": true,
-    "mode": "live",
+    "enabled": false,
+    "mode": "off",
+    "_authority_frozen": "2026-04-12: conviction surface economically falsified — demoted to telemetry. See config/CONVICTION_AUTHORITY_FROZEN.md",
     "min_entry_band": "low",
     "size_multipliers": {
       "very_low": 0.3,
@@ -528,6 +529,26 @@
       "min_for_full_size": 0.80
     },
     "category_weight": 0.0
+  },
+  "futures_permit_surface_v1": {
+    "enabled": true,
+    "mode": "shadow_only",
+    "authority": "none",
+    "_structural_note": "Authority and mode are hard-coded in FPSv1Config.__post_init__. Config values here are for documentation only — the code forces authority=none and mode=shadow_only regardless.",
+    "setup_classes": [
+      "REGIME_TRANSITION_BREAK",
+      "POST_CRISIS_RESTABILIZATION",
+      "DISLOCATION_REVERSION",
+      "BREAKOUT_RETEST_CONFIRM",
+      "LIQUIDITY_VACUUM_RECLAIM",
+      "VOL_EXPANSION_BREAKOUT",
+      "EXHAUSTION_REVERSAL",
+      "TREND_PULLBACK"
+    ],
+    "can_influence_sizing": false,
+    "can_influence_entry": false,
+    "can_influence_exit": false,
+    "can_influence_routing": false
   },
   "category_momentum": {
     "enabled": true,
@@ -715,7 +736,7 @@
     "universe_optimizer_enabled": true,
     "alpha_router_enabled": true,
     "factor_diagnostics_enabled": true,
-    "conviction_enabled": true,
+    "conviction_enabled": false,
     "high_deterioration_threshold": 0.60,
     "low_survival_threshold": 0.40,
     "run_interval_cycles": 10

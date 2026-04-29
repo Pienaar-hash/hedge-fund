@@ -201,11 +201,14 @@ _ENV_EVENTS_PATH = Path("logs/execution/environment_events.jsonl")
 # Execution determinism guard (detects swap/PSI violations)
 _DETERMINISM_ALERT_COOLDOWN_S = 120.0  # Rate-limit env event logging
 _DETERMINISM_BLOCK_NEW_ENTRIES = True  # When degraded: veto new entries (exits always allowed)
+# AUDIT-1.1e: determinism_guard is a safety-critical import — hard abort on failure
 try:
     from execution.determinism_guard import check_determinism, DeterminismSnapshot  # noqa: F401 - re-exported for callers
     _DETERMINISM_AVAILABLE = True
-except ImportError:
-    _DETERMINISM_AVAILABLE = False
+except ImportError as _det_err:
+    raise ImportError(
+        f"CRITICAL: execution.determinism_guard is required for safe operation: {_det_err}"
+    ) from _det_err
 
 _ENGINE_VERSION = read_version(default="v7.6")
 
@@ -264,6 +267,19 @@ def _dle_enrichment(
             context_snapshot["nav_usd"] = nav_usd
         context_snapshot["positions_hash"] = positions_hash
         context_snapshot["scores_hash"] = scores_hash
+        # AUDIT-3.3: Regime features + config hash for observability
+        try:
+            context_snapshot["regime_features"] = {
+                k: v for k, v in details.items()
+                if k not in ("regime", "confidence")
+            } if details else {}
+        except Exception:
+            pass
+        try:
+            from execution.activation_window import _compute_config_hash
+            context_snapshot["config_hash"] = _compute_config_hash()
+        except Exception:
+            pass
 
         provenance: Dict[str, Any] = {
             "engine_version": _ENGINE_VERSION,
@@ -1215,8 +1231,12 @@ try:
         log_doctrine_event,
     )
     _DOCTRINE_AVAILABLE = True
-except ImportError:
-    _DOCTRINE_AVAILABLE = False
+except ImportError as _doc_err:
+    # AUDIT-1.1e: doctrine_kernel is the supreme authority — hard abort on failure.
+    # Without doctrine, ALL entry/exit gating is bypassed.
+    raise ImportError(
+        f"CRITICAL: execution.doctrine_kernel is required — cannot run without doctrine: {_doc_err}"
+    ) from _doc_err
 
 # Cycle statistics (non-invasive, observational only)
 try:
@@ -1321,10 +1341,13 @@ except ImportError:
     def load_minotaur_config():
         return None
 
+# AUDIT-1.1e: signal_screener.run_once is required for signal generation
 try:
     from execution.signal_screener import run_once as run_screener_once
-except ImportError:  # pragma: no cover - optional dependency
-    run_screener_once = None
+except ImportError as _scr_err:
+    raise ImportError(
+        f"CRITICAL: execution.signal_screener.run_once is required: {_scr_err}"
+    ) from _scr_err
 
 # Binary Lab state writer globals (observational only)
 _BINARY_LAB_WRITER: Optional[Any] = None
@@ -1614,12 +1637,57 @@ def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
 DRY_RUN = _read_dry_run_flag()
 set_dry_run(DRY_RUN)
 
-# ── Prod safety: DRY_RUN must be explicitly set ──────────────────────
-if ENV.lower() == "prod" and os.getenv("DRY_RUN") is None:
+# ── AUDIT-1.1b: DRY_RUN must be explicitly set in ALL environments ────
+if os.getenv("DRY_RUN") is None:
     raise RuntimeError(
-        "DRY_RUN must be explicitly set in prod (ENV=prod). "
+        "DRY_RUN must be explicitly set (any environment). "
         "Set DRY_RUN=0 for live or DRY_RUN=1 for dry-run."
     )
+
+# ── AUDIT-1.1c: Abort on missing critical config files ───────────────
+_CRITICAL_CONFIG_FILES = [
+    "config/risk_limits.json",
+    "config/runtime.yaml",
+    "config/strategy_config.json",
+    "config/symbol_tiers.json",
+]
+for _cfg_path in _CRITICAL_CONFIG_FILES:
+    if not os.path.isfile(_cfg_path):
+        raise RuntimeError(
+            f"Critical config file missing: {_cfg_path} — cannot start executor"
+        )
+
+# ── AUDIT-1.3b: Single-executor PID lock ─────────────────────────────
+from execution.executor_lock import acquire_executor_lock  # noqa: E402
+_executor_lock_fd: int | None = None
+
+
+def _acquire_startup_lock() -> None:
+    """Acquire PID lock. Called from main(), not at import time."""
+    global _executor_lock_fd
+    _executor_lock_fd = acquire_executor_lock()
+
+
+# ── AUDIT-1.3c: TWAP crash recovery check ────────────────────────────
+from execution.order_router import check_twap_recovery  # noqa: E402
+
+
+def _check_startup_twap_recovery() -> None:
+    """Check for incomplete TWAP state. Called from main(), not at import time."""
+    _stale_twap = check_twap_recovery()
+    if _stale_twap:
+        LOG.warning(
+            "[executor] TWAP_RECOVERY: incomplete TWAP found on startup — "
+            "symbol=%s side=%s completed=%d/%d started_ts=%s. "
+            "State file cleared; operator should reconcile.",
+            _stale_twap.get("symbol"),
+            _stale_twap.get("side"),
+            len(_stale_twap.get("completed_slices", [])),
+            _stale_twap.get("total_slices"),
+            _stale_twap.get("started_ts"),
+        )
+        from execution.order_router import _twap_state_clear  # noqa: E402
+        _twap_state_clear()
 
 INTENT_TEST = _truthy_env("INTENT_TEST", "0")
 EXTERNAL_SIGNAL = _truthy_env("EXTERNAL_SIGNAL", "0")
@@ -1981,6 +2049,29 @@ def _startup_position_check(client: Any) -> None:
     LOG.info("[startup-sync] checking open positions …")
     retry_interval = 30
     first_warning = True
+
+    # AUDIT-1.3d: verify exchange connectivity before trusting position data.
+    # get_live_positions() returns [] on API failure, which would falsely
+    # clear TP/SL state.  We try a raw account call first; if it raises,
+    # we block startup until the exchange is reachable.
+    _exchange_retries = 0
+    _MAX_EXCHANGE_RETRIES = 5
+    while True:
+        try:
+            client.get_position_risk()  # probe — result discarded
+            break
+        except Exception as exc:
+            _exchange_retries += 1
+            if _exchange_retries > _MAX_EXCHANGE_RETRIES:
+                raise RuntimeError(
+                    f"[startup-sync] AUDIT-1.3d: exchange unreachable after "
+                    f"{_MAX_EXCHANGE_RETRIES} retries — cannot reconcile positions"
+                ) from exc
+            LOG.warning(
+                "[startup-sync] exchange probe failed (attempt %d/%d): %s — retrying in %ds",
+                _exchange_retries, _MAX_EXCHANGE_RETRIES, exc, retry_interval,
+            )
+            time.sleep(retry_interval)
 
     while True:
         live = get_live_positions(client)
@@ -3423,6 +3514,34 @@ def _check_notional_inflation_guard(
 
 # NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
+    # ZERO-SCORE INVARIANT — reject intents with explicit zero score (AUDIT-2.2a)
+    _score = None
+    _has_score_field = False
+    for _sk in ("hybrid_score", "score"):
+        _sv = intent.get(_sk)
+        if _sv is not None:
+            _has_score_field = True
+            _score = float(_sv)
+            if _score > 0.0:
+                break
+    if not intent.get("reduceOnly") and _has_score_field and (_score is None or _score <= 0.0):
+        LOG.warning(
+            "[zero-score] REJECT symbol=%s score=%s — no valid score at doctrine boundary",
+            intent.get("symbol"),
+            _score,
+        )
+        try:
+            append_jsonl(LOGS_ROOT / "execution" / "zero_score_audit.jsonl", {
+                "ts": time.time(),
+                "source": "executor_boundary",
+                "symbol": intent.get("symbol"),
+                "score": _score,
+                "hybrid_score": intent.get("hybrid_score"),
+            })
+        except Exception:
+            pass
+        return
+
     # DOCTRINE GATE — Supreme Authority Check
     doctrine_allowed, doctrine_reason, doctrine_details = _doctrine_gate(intent)
     if not doctrine_allowed:
@@ -3552,7 +3671,8 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
                 LOG.info("[churn_guard] ENTRY VETO %s %s: %s", symbol_upper, pos_side, cg_reason)
                 return
     except ImportError:
-        pass  # Module not yet available — safe to skip
+        # AUDIT-1.1e: churn_guard missing — log as disabled gate
+        LOG.warning("[churn_guard] GATE_DISABLED — module not available")
     except Exception as _cg_exc:
         LOG.debug("[churn_guard] check failed: %s", _cg_exc)
 
@@ -3777,6 +3897,9 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
     # min_entry_band is configured, veto entries below the minimum band.
     # Exits (reduce_only) are exempt.  Band ordering:
     #   very_low < low < medium < high < very_high
+    # NOTE (2026-04-12): Conviction authority FROZEN — mode set to "off" in
+    # config. This gate is inert until a replacement entry surface is
+    # validated. See config/CONVICTION_AUTHORITY_FROZEN.md.
     if not reduce_only:
         _BAND_ORDER = {"very_low": 0, "low": 1, "medium": 2, "high": 3, "very_high": 4}
         try:
@@ -5493,7 +5616,8 @@ def _loop_once(state: ExecutorState, i: int) -> None:
             )
             return  # Halt this cycle; next cycle starts with fresh baseline
     except ImportError:
-        pass  # Module not yet available — safe to skip
+        # AUDIT-1.1e: reset_guard missing — log as disabled gate
+        LOG.warning("[reset_guard] GATE_DISABLED — module not available")
     except Exception as _rg_exc:
         LOG.debug("[reset_guard] check failed: %s", _rg_exc)
 
@@ -5617,7 +5741,8 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                     )
                     continue  # skip this exit intent
             except ImportError:
-                pass  # module not available — fail-open
+                # AUDIT-1.1e: exit dedup missing — log as disabled gate
+                LOG.warning("[exit_dedup] GATE_DISABLED — module not available")
             except Exception as _dd_exc:
                 LOG.debug("[exit_dedup] check failed (proceeding): %s", _dd_exc)
             try:
@@ -5679,8 +5804,10 @@ def _loop_once(state: ExecutorState, i: int) -> None:
             try:
                 intents_raw = list(generate_intents(state.last_signal_pull))
             except Exception as e:
-                LOG.error("[screener] error: %s", e)
-                intents_raw = []
+                # AUDIT-1.1d: screener failure is a hard error — do NOT silently
+                # continue with zero intents (masks broken pipeline).
+                LOG.critical("[screener] FATAL error generating intents: %s", e, exc_info=True)
+                raise RuntimeError(f"Signal generation failed: {e}") from e
             section.symbols_processed = len(intents_raw)
 
         # --- Hydra multi-strategy injection (fail-open) ---
@@ -5812,6 +5939,28 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                     if isinstance(_mi, dict) and _mi.get("source") == "hydra"
                 )
                 _hydra_funnel.record("post_merge", _hydra_post_merge, regime=_funnel_regime)
+                # --- FPS feature enrichment for Hydra-sourced intents ---
+                try:
+                    from execution.exchange_utils import get_klines as _fps_get_klines
+                    from execution.signal_screener import _compute_fps_features
+                    for _hi in intents_raw:
+                        if not isinstance(_hi, dict) or _hi.get("source") != "hydra":
+                            continue
+                        _hi_meta = _hi.setdefault("metadata", {})
+                        if "fps_feature_source" in _hi_meta:
+                            continue  # already enriched
+                        _hi_sym = _hi.get("symbol", "")
+                        _hi_price = float(_hi.get("price", 0))
+                        if not _hi_sym or _hi_price <= 0:
+                            continue
+                        _hi_kl = _fps_get_klines(_hi_sym, "15m", limit=750)
+                        _hi_closes = [row[4] for row in _hi_kl]
+                        _hi_feats = _compute_fps_features(_hi_kl, _hi_closes, _hi_price)
+                        _hi_feats["fps_feature_source"] = "hydra_executor_enrich"
+                        for _fk, _fv in _hi_feats.items():
+                            _hi_meta.setdefault(_fk, _fv)
+                except Exception as _fps_enrich_err:
+                    LOG.debug("[hydra_fps_enrich] fail-open: %s", _fps_enrich_err)
         except Exception as _hydra_err:
             LOG.warning("[hydra] fail-open — error in pipeline, using legacy intents: %s", _hydra_err)
         LOG.info(
@@ -5939,6 +6088,16 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                     except Exception:
                         pass  # soak logging must never block
 
+                    # ── FPS v1 shadow evaluation (research only) ──
+                    try:
+                        from execution.futures_permit_surface_v1 import (
+                            evaluate_shadow_for_intent,
+                        )
+                        _fps_sentinel = _load_sentinel_x_state()
+                        evaluate_shadow_for_intent(intent, _fps_sentinel)
+                    except Exception:
+                        pass  # FPS shadow must never block execution
+
                     if _ecs_result["selected"] is None:
                         continue  # No candidate passed — skip this intent
                 except Exception as _ecs_err:
@@ -6034,6 +6193,10 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Hedge live executor")
     parser.parse_args(args_list)
 
+    # ── Startup gates (AUDIT-1.3b, 1.3c) ─────────────────────────────
+    _acquire_startup_lock()
+    _check_startup_twap_recovery()
+
     _sync_dry_run()
     # v7.9-CW: Log calibration window status at boot
     try:
@@ -6091,7 +6254,8 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         else:
             LOG.info("[startup] FILTER_DRIFT_OK — no MARKET_LOT_SIZE inflation detected")
     except ImportError:
-        pass
+        # AUDIT-1.1e: filter_drift missing — log as disabled gate
+        LOG.warning("[startup] GATE_DISABLED — filter drift module not available")
     except Exception as _fd_exc:
         LOG.debug("[startup] filter drift check failed: %s", _fd_exc)
 

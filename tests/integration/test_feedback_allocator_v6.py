@@ -7,7 +7,7 @@ def _risk_config():
     return {
         "global": {
             "max_trade_nav_pct": 0.2,
-            "symbol_notional_share_cap_pct": 25.0,
+            "symbol_notional_share_cap_pct": 0.25,
         },
         "per_symbol": {
             "BTCUSDT": {"max_nav_pct": 0.25},

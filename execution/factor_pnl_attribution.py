@@ -11,6 +11,7 @@ This module is analysis-only and does NOT affect trading decisions.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
 from execution.factor_diagnostics import load_factor_diagnostics_config
+
+LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Data Structures
@@ -255,7 +258,8 @@ def load_trades_from_orders_executed(
                     )
                 )
     except Exception:
-        pass
+        # AUDIT-1.1d: log PnL record parse failures for diagnostics
+        LOGGER.warning("[factor_pnl] failed to parse trade records from JSONL", exc_info=True)
 
     return trades
 
@@ -330,7 +334,7 @@ def write_factor_pnl_state(
             json.dump(snapshot.to_dict(), f, indent=2)
         tmp.replace(path)
     except Exception:
-        pass
+        LOGGER.error("[factor_pnl] failed to write snapshot to %s", path, exc_info=True)
 
 
 __all__ = [
