@@ -1,0 +1,72 @@
+{
+  "captured_ts": "2026-04-12T07:11:13.532360+00:00",
+  "current_state": {
+    "updated_ts": "2026-04-12T07:08:35.532737+00:00",
+    "cycle_count": 19906,
+    "primary_regime": "TREND_DOWN",
+    "secondary_regime": null,
+    "regime_probs": {
+      "TREND_UP": 0.0,
+      "TREND_DOWN": 0.588,
+      "MEAN_REVERT": 0.0676,
+      "BREAKOUT": 0.0,
+      "CHOPPY": 0.1378,
+      "CRISIS": 0.2066
+    },
+    "smoothed_probs": {
+      "TREND_UP": 0.0001,
+      "TREND_DOWN": 0.5873,
+      "MEAN_REVERT": 0.0682,
+      "BREAKOUT": 0.0001,
+      "CHOPPY": 0.1378,
+      "CRISIS": 0.2066
+    },
+    "features": {
+      "returns_mean": -0.00059,
+      "returns_std": 0.001996,
+      "returns_skew": -3.0221,
+      "returns_kurtosis": 12.655,
+      "atr_norm": 0.000944,
+      "vol_regime_z": 0.1494,
+      "trend_slope": -0.000748,
+      "trend_r2": 0.871,
+      "trend_acceleration": -0.000882,
+      "breakout_score": 0.0,
+      "range_position": 0.0559,
+      "mean_reversion_score": 0.4565,
+      "hl_spread": 0.002384,
+      "volume_z": -0.3322,
+      "volume_trend": -0.0014,
+      "realized_corr": 0.0,
+      "spread_vol": 0.0,
+      "data_quality": 1.0
+    },
+    "crisis_flag": false,
+    "crisis_reason": "",
+    "history_meta": {
+      "last_n_labels": [
+        "TREND_DOWN",
+        "TREND_DOWN",
+        "TREND_DOWN",
+        "TREND_DOWN",
+        "TREND_DOWN",
+        "TREND_DOWN",
+        "TREND_DOWN",
+        "TREND_DOWN",
+        "TREND_DOWN",
+        "TREND_DOWN"
+      ],
+      "consecutive_count": 18,
+      "pending_regime": null,
+      "last_primary": "TREND_DOWN"
+    },
+    "meta": {
+      "model_type": "gradient_boosting",
+      "lookback_bars": 240,
+      "feature_agg_bars": 48,
+      "data_points": 300
+    },
+    "notes": "",
+    "errors": []
+  }
+}

@@ -1,0 +1,13 @@
+metric,value
+brier_score,0.27232
+brier_baseline,0.198347
+brier_skill_score,-0.3729
+base_rate,0.2727
+reliability,0.088246
+resolution,0.01339
+uncertainty,0.198347
+ECE,0.2704
+MCE,0.4721
+pred_spread,0.1452
+pattern_verdict,overconfident_top|collapse_to_mean|severely_miscalibrated
+n,154
