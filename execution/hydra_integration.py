@@ -305,6 +305,17 @@ def merge_with_single_strategy_intents(
             primary["merge_conflict"] = True
             primary["merge_legacy_score"] = ls
             primary["merge_hydra_score"] = hs
+
+            # Propagate scoring decomposition fields from legacy (screener)
+            # to Hydra intents so diagnostics/factor-log can decompose scores.
+            _SCORE_PROPAGATE = (
+                "hybrid_components", "hybrid_weights_used",
+                "hybrid_carry_details", "hybrid_weighted",
+            )
+            for _spk in _SCORE_PROPAGATE:
+                if _spk not in primary and _spk in fallback:
+                    primary[_spk] = fallback[_spk]
+
             merged.append(primary)
             _selected_scores.append(_intent_score(primary))
             _rejected_scores.append(_intent_score(fallback))

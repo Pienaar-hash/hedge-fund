@@ -35,3 +35,7 @@ outputs/
 treasury/cointracker/*.csv
 treasury/cointracker/**/*.csv
 *.cointracker.csv
+
+# TLS certificates (Tailscale)
+*.crt
+*.key

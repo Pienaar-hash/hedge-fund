@@ -430,6 +430,27 @@
         "meta": "Dict - enabled, thin_symbols, crunch_symbols, throttling_active"
       }
     },
+    "determinism": {
+      "path": "logs/state/determinism.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "optional": true,
+      "description": "Execution determinism guard - environment health, swap/PSI violations, hysteresis state",
+      "fields": {
+        "updated_ts": "ISO timestamp",
+        "determinism_status": "str - OK | DEGRADED | HELD_DEGRADED",
+        "degraded": "bool - true if environment is non-deterministic",
+        "held_degraded": "bool - true if in hysteresis hold (violations cleared but hold period not elapsed)",
+        "executor_swap_kb": "int|null - executor process VmSwap in KB",
+        "executor_rss_kb": "int|null - executor process VmRSS in KB",
+        "system_swap_used_mb": "int|null - total system swap used in MB",
+        "mem_psi_avg10": "float|null - memory PSI some avg10 percentage",
+        "avail_mem_pct": "int|null - available memory as percentage of total",
+        "violations": "List[str] - active violation descriptions",
+        "proc_read_failures": "int - cumulative /proc read failure count",
+        "engine_version": "str - executor engine version"
+      }
+    },
     "fallback_metrics": {
       "path": "logs/state/fallback_metrics.json",
       "owner": "executor",
@@ -974,6 +995,127 @@
         "rv_score": "float|null"
       }
     },
+    "intent_factor_log": {
+      "path": "logs/execution/intent_factor_log.jsonl",
+      "owner": "executor",
+      "update_frequency": "per_order_attempt",
+      "optional": true,
+      "description": "Per-episode hybrid score decomposition with intent_id linkage — joinable to episode_ledger for exact factor attribution",
+      "fields": {
+        "ts": "ISO8601",
+        "intent_id": "str — deterministic linkage key (join to episode_ledger / orders_executed)",
+        "symbol": "str",
+        "side": "LONG|SHORT",
+        "hybrid_score": "float — final composite score",
+        "hybrid_score_reconstructed": "float — sum(weights × components) for per-row validation",
+        "carry_score": "float",
+        "trend_score": "float",
+        "expectancy_score": "float",
+        "router_score": "float",
+        "weights": "Dict[factor, weight] — must sum ≈ 1.0",
+        "funding_rate": "float — raw carry input",
+        "basis_pct": "float — raw carry input",
+        "conviction_band": "str",
+        "confidence": "float",
+        "score_version": "str — scoring model version (e.g. v6)"
+      }
+    },
+    "score_edge_diagnostic": {
+      "path": "logs/execution/score_edge_diagnostic.jsonl",
+      "owner": "executor",
+      "update_frequency": "per_order_attempt",
+      "optional": true,
+      "description": "P3 carry-neutral shadow — score→edge decomposition with counterfactual carry=0.5 for defect classification (Class A/B/C)",
+      "fields": {
+        "ts": "ISO8601",
+        "symbol": "str",
+        "side": "LONG|SHORT",
+        "intent_id": "str — join key to intent_factor_log / episode_ledger",
+        "hybrid_score": "float — final composite score",
+        "hybrid_score_reconstructed": "float — sum(weights × components)",
+        "post_modifier_delta": "float — hybrid_score minus reconstructed (negative = penalty)",
+        "carry_score": "float — [0,1] direction-aware",
+        "trend_score": "float",
+        "expectancy_score": "float",
+        "router_score": "float",
+        "weights": "Dict[factor, weight]",
+        "confidence": "float — conviction_score fed to true_edge",
+        "confidence_gap": "float — 0.5 minus confidence (positive = below threshold = zero edge)",
+        "expected_edge_pct": "float — output of true_edge (0 when confidence < 0.5)",
+        "fee_required_pct": "float — minimum edge as fraction of notional",
+        "fee_required_usd": "float",
+        "fee_rt_usd": "float — round-trip fee",
+        "notional_usd": "float",
+        "edge_source": "str — atr_conf_v1 | fallback_proxy | intent_expected_edge",
+        "adv": "float — clamp(confidence - 0.5, 0, 0.25)",
+        "atr_pct": "float — ATR/price",
+        "fallback_reason": "str — why true_edge used fallback",
+        "carry_neutral_score": "float — hybrid_score with carry=0.5",
+        "carry_neutral_reconstructed": "float — weighted sum with carry=0.5",
+        "carry_delta": "float|null — carry_neutral minus actual (positive = carry was penalizing)",
+        "veto_reason": "str — fee_gate | min_notional | pass",
+        "has_decomposition": "bool — true when hybrid_components are available for carry analysis",
+        "bridge_expected_edge_pct": "float|null — P4C empirical expectancy bridge shadow edge",
+        "bridge_band_key": "str|null — conviction band matched (e.g. 0.40-0.45)",
+        "bridge_n_episodes": "int|null — episodes in matched band/pool",
+        "bridge_sufficient": "bool|null — true if sample >= min_sample",
+        "bridge_lookup_tier": "str|null — band | global | cold_start",
+        "bridge_win_rate": "float|null — win rate in matched band/pool",
+        "bridge_would_pass": "bool|null — would bridge edge pass fee_gate?",
+        "bridge_vs_threshold_delta": "float|null — bridge_edge minus threshold_edge"
+      }
+    },
+    "expectancy_bridge": {
+      "path": "logs/state/expectancy_bridge.json",
+      "owner": "executor",
+      "update_frequency": "on_rebuild",
+      "optional": true,
+      "description": "P4B empirical conviction→edge band table. Maps conviction score bands to realized net expectancy from episode history. Shadow-only (does not gate execution).",
+      "fields": {
+        "version": "str — schema version",
+        "build_ts": "float — Unix timestamp of last rebuild",
+        "build_iso": "str — ISO8601 of last rebuild",
+        "n_episodes_total": "int — total episodes in ledger at build time",
+        "n_episodes_scored": "int — episodes with conviction > min_conviction",
+        "config": "Dict — BridgeConfig parameters",
+        "global": "Dict — pooled statistics across all scored episodes",
+        "bands": "Dict[band_key, BandEntry] — per-band avg_edge_pct, win_rate, n_episodes, sufficient"
+      }
+    },
+    "opportunity_surface": {
+      "path": "logs/state/opportunity_surface.json",
+      "owner": "opportunity_surface",
+      "update_frequency": "on_rebuild",
+      "optional": true,
+      "description": "P5A+C opportunity surface decomposition. Per-band composition audit (symbol, side, regime, exit_reason, duration breakdown) plus episode-quality audit (friction burden, exit class PnL, duration quality, symbol drag, regime mismatch cost, ordered loss drivers). Conservation invariants enforced at build time.",
+      "fields": {
+        "meta": "Dict — build metadata (timestamps, episode counts, total PnL, friction split)",
+        "band_audit": "Dict[band_key, BandDetail] — per-band composition with dimension breakdowns",
+        "friction_burden": "Dict — friction_dominated rate per symbol, regime",
+        "exit_class_pnl": "Dict[exit_reason, {n, gross_pnl, fees, net_pnl, share_of_total_loss, median_loss}]",
+        "duration_quality": "Dict[bucket, {n, gross_pnl, fees, net_pnl, avg_net_edge_pct}]",
+        "symbol_drag": "Dict[symbol, {n, gross_pnl, fees, net_pnl, share_of_total_loss}]",
+        "regime_mismatch": "Dict — regime_mismatch vs thesis_driven vs other PnL split",
+        "loss_drivers": "List[{driver, net_pnl, gross_pnl, fees, episode_count, share_of_total_loss, median_loss, coverage_pct}]"
+      }
+    },
+    "expectancy_bridge_regime": {
+      "path": "logs/state/expectancy_bridge_regime.json",
+      "owner": "expectancy_bridge",
+      "update_frequency": "on_rebuild",
+      "optional": true,
+      "description": "P5B regime-conditional expectancy bridge. Binary split (MEAN_REVERT vs OTHER) band tables for regime-aware edge lookup with 4-level cascade and full provenance.",
+      "fields": {
+        "version": "str — schema version",
+        "build_ts": "float — Unix timestamp",
+        "build_iso": "str — ISO8601 timestamp",
+        "regime_split": "str — split strategy (binary)",
+        "regime_keys": "List[str] — regime keys present",
+        "sufficiency_threshold": "int — min_sample for band sufficiency",
+        "config": "Dict — BridgeConfig parameters",
+        "tables": "Dict[regime_key, BandTable] — per-regime band tables with global entries"
+      }
+    },
     "sizing_snapshots": {
       "path": "logs/execution/sizing_snapshots.jsonl",
       "owner": "executor",
@@ -1383,6 +1525,44 @@
         "evaluated_at": "str \u2014 verification timestamp (ISO 8601)",
         "manifest_hash": "str \u2014 SHA-256 of v7_manifest.json at evaluation time",
         "recorded_at": "str \u2014 when verdict was persisted (ISO 8601)"
+      }
+    },
+    "p6_shadow_signals": {
+      "path": "logs/execution/p6_shadow_signals.jsonl",
+      "owner": "executor",
+      "update_frequency": "per_loop_iteration",
+      "optional": true,
+      "description": "P6 conviction-surface replacement shadow log. Records every candidate signal (C1 simple rules, C2 price-state) with bridge lookup provenance, fee gate verdict, and feature snapshot for replay. Append-only, observation-only — never gates execution.",
+      "fields": {
+        "ts": "str — ISO 8601 evaluation timestamp",
+        "signal_ts": "float — Unix timestamp of signal generation",
+        "candidate_id": "str — C1_TREND_NORMAL|C1_TREND_INVERTED|C1_MR_NORMAL|C1_MR_INVERTED|C2_REGION_NORMAL|C2_REGION_INVERTED",
+        "candidate_family": "str — C1|C2",
+        "rule_name": "str — trend_ema_crossover|mr_zscore_range|region_*",
+        "symbol": "str",
+        "side": "LONG|SHORT",
+        "polarity": "str — normal|inverted",
+        "regime": "str — Sentinel-X primary regime at signal time",
+        "region": "str — C2 region classifier output (empty for C1)",
+        "selected_for_eval": "bool — true if selected after suppression",
+        "conviction": "float — proxy conviction from candidate state (not fixed)",
+        "bridge_regime_key": "str — MEAN_REVERT|OTHER",
+        "bridge_expected_edge_pct": "float — bridge lookup edge",
+        "bridge_lookup_tier": "str — band_regime|band_pooled|global_regime|global_pooled|cold_start|no_bridge",
+        "bridge_band_key": "str — e.g. 0.45-0.50",
+        "bridge_sample_n": "int",
+        "bridge_is_sufficient": "bool",
+        "bridge_fallback_depth": "int — 0=direct hit, 1-4=cascade step",
+        "bridge_cold_start_reason": "str",
+        "bridge_would_pass": "bool — true if bridge edge exceeds fee threshold",
+        "fee_required_pct": "float — fee clearing threshold",
+        "fee_pass": "bool — alias for bridge_would_pass",
+        "control_conviction": "float — fixed 0.5 A/B control baseline",
+        "control_expected_edge_pct": "float — bridge edge at conviction=0.5",
+        "control_band_key": "str — band key at conviction=0.5",
+        "control_would_pass": "bool — fee pass at conviction=0.5",
+        "feature_snapshot": "Dict — input features for replay",
+        "suppressed_alternatives": "List[Dict] — alternatives that lost signal suppression"
       }
     }
   },

@@ -60,6 +60,9 @@ class ExecutorState:
     last_disk_check_ts: float = 0.0
     last_disk_alert_ts: float = 0.0
 
+    # ── execution determinism guard ───────────────────────────────────
+    last_determinism_alert_ts: float = 0.0
+
     # ── deferred fields (declared, NOT yet wired — Phase 6) ──────────
     last_signal_pull: float = 0.0
     last_queue_depth: int = 0
