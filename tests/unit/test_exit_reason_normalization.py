@@ -23,11 +23,9 @@ from pathlib import Path
 from execution.exit_reason_normalizer import (
     CanonicalExitReason,
     CANONICAL_VALUES,
-    NormalizedExitReason,
     normalize_exit_reason,
     reload_map,
     verify_doctrine_coverage,
-    get_unmapped_count,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -147,7 +145,7 @@ def test_yaml_no_duplicate_raw_entries():
                 dupes.append(f"{raw_val!r} in both {seen[raw_val]} and {canonical_key}")
             seen[raw_val] = canonical_key
 
-    assert not dupes, f"Duplicate raw mappings:\n" + "\n".join(dupes)
+    assert not dupes, "Duplicate raw mappings:\n" + "\n".join(dupes)
 
 
 # ---------------------------------------------------------------------------

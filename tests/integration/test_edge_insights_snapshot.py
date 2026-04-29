@@ -10,7 +10,6 @@ from typing import Any, Dict
 import pytest
 
 from execution.edge_scanner import (
-    EdgeInsights,
     EdgeScannerConfig,
     build_edge_insights_snapshot,
     load_edge_insights,

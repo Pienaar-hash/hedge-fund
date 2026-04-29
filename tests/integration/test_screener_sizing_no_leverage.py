@@ -1,11 +1,8 @@
 import math
-import json
-from pathlib import Path
 
 import pytest
 
 import execution.signal_screener as sc
-from execution.risk_limits import RiskState, check_order
 
 pytestmark = pytest.mark.skip(reason="vol_target strategy generates additional signals - test needs isolation")
 

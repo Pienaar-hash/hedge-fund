@@ -25,10 +25,6 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from prediction.round_observer import (
-    INTRAROUND_INTERVAL_S,
-    ORACLE_STALE_MS,
-    POLYMARKET_FEE_RATE,
-    SNAPSHOT_OFFSETS_S,
     RoundObserver,
     RoundState,
     TerminalSnapshot,
@@ -653,7 +649,6 @@ class TestCollectSpreads:
     def test_collects_spreads_within_window(self, tmp_path: Path) -> None:
         market_log = tmp_path / "clob.jsonl"
         start_ms = 1771833600000
-        end_ms = 1771834500000
 
         records = [
             # Outside window (before start) — must be first so reverse scan

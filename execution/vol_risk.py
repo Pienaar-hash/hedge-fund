@@ -628,7 +628,6 @@ def compute_portfolio_var_from_positions(
     symbol_weights = {}
     for i, sym in enumerate(symbols):
         if sym in valid_symbols:
-            idx = valid_symbols.index(sym)
             valid_weights.append(weights[i])
             symbol_weights[sym] = float(weights[i])
     

@@ -7,10 +7,7 @@ Tests:
 - State persistence across loads
 """
 
-import pytest
 import json
-import tempfile
-from pathlib import Path
 
 from execution.meta_scheduler import (
     MetaSchedulerConfig,

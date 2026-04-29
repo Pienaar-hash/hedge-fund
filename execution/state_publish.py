@@ -24,7 +24,6 @@ from execution.diagnostics_metrics import (
     _load_strategy_config,
 )
 from execution.router_metrics import RouterQualityConfig, load_router_quality_config
-from utils.firestore_client import get_db
 from execution.pnl_tracker import export_pnl_attribution_state
 from execution.versioning import read_version
 from execution.utils import get_usd_to_zar
@@ -1359,7 +1358,7 @@ def compute_and_write_factor_diagnostics_state(
             load_factor_diagnostics_config,
             extract_factor_vectors_from_hybrid_results,
             build_factor_diagnostics_snapshot,
-            FactorVector,
+            FactorVector,  # noqa: F401 - availability probe / typing re-export
         )
         from execution.intel.symbol_score_v6 import build_factor_vector
         
@@ -1544,7 +1543,7 @@ def compute_and_write_edge_insights(
         from execution.edge_scanner import (
             build_edge_insights_snapshot,
             write_edge_insights,
-            EdgeScannerConfig,
+            EdgeScannerConfig,  # noqa: F401 - availability probe / public re-export
         )
         
         sd = state_dir or STATE_DIR
@@ -1870,6 +1869,7 @@ def build_kpis_v7(
     slip_q75 = _avg([_safe_float(entry.get("slippage_p75") or entry.get("slip_q75")) for entry in router_entries])
     router_stats = risk_snap.get("router_stats") if isinstance(risk_snap.get("router_stats"), Mapping) else {}
     policy_quality = None
+    maker_first_flag: Optional[bool] = None
     if router_stats:
         fallback_ratio = (
             _safe_float(
@@ -1899,7 +1899,6 @@ def build_kpis_v7(
             policy_quality = max(quality_counts.items(), key=lambda kv: kv[1])[0]
         except Exception:
             policy_quality = None
-    maker_first_flag: Optional[bool] = None
     try:
         total = int(summary.get("count") or len(router_entries) or 0)
         enabled = _safe_float(summary.get("maker_first_enabled"))

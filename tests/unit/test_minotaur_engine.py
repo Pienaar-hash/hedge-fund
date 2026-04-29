@@ -12,7 +12,6 @@ Tests Minotaur Execution Engine core functionality:
 
 import pytest
 import time
-from typing import Dict, Any
 
 from execution.minotaur_engine import (
     # Constants
@@ -28,7 +27,6 @@ from execution.minotaur_engine import (
     MicrostructureSnapshot,
     ExecutionRegime,
     ExecutionPlan,
-    ChildOrder,
     MinotaurConfig,
     ExecutionQualityStats,
     # Config

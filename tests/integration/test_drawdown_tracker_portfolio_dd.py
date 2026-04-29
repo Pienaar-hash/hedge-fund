@@ -5,7 +5,6 @@ Tests the get_portfolio_dd_state function used by the portfolio_dd_circuit break
 """
 from __future__ import annotations
 
-import pytest
 
 from execution.drawdown_tracker import get_portfolio_dd_state, PortfolioDDState
 

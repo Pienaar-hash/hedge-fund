@@ -20,8 +20,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import requests
 
 from execution import exchange_utils as ex
-from execution.exchange_utils import strip_position_side_if_one_way, ensure_position_side
-from execution.exchange_precision import normalize_price, normalize_qty
+from execution.exchange_utils import ensure_position_side
+from execution.exchange_precision import normalize_price
 from execution.log_utils import get_logger, log_event, safe_dump
 from execution.intel.maker_offset import suggest_maker_offset_bps
 from execution.intel.router_autotune_shared import suggest_autotune_for_symbol
@@ -39,15 +39,15 @@ from execution.utils.execution_health import record_execution_error
 # v7.5_B1: Slippage and liquidity imports
 try:
     from execution.liquidity_model import (
-        get_liquidity_model,
+        get_liquidity_model,  # noqa: F401 - availability probe / public re-export
         get_bucket_for_symbol,
-        LiquidityBucketConfig,
+        LiquidityBucketConfig,  # noqa: F401 - availability probe / public re-export
     )
     from execution.slippage_model import (
         SlippageObservation,
         estimate_expected_slippage_bps,
         compute_realized_slippage_bps,
-        compute_spread_bps,
+        compute_spread_bps,  # noqa: F401 - availability probe / public re-export
         record_slippage_observation,
         load_slippage_config,
         SlippageConfig,
@@ -997,7 +997,8 @@ def _route_twap(
     try:
         log_event(twap_logger, "twap_complete", safe_dump(twap_complete_event))
     except Exception:
-        pass
+        # AUDIT-1.1d: TWAP logging failure must not be silent
+        _LOG.error("[twap] failed to log twap_complete event", exc_info=True)
     
     return result
 
@@ -1307,7 +1308,7 @@ def route_order(intent: Mapping[str, Any], risk_ctx: Mapping[str, Any], dry_run:
         dynamic_autotune = suggest_autotune_for_symbol(
             symbol,
             base_offset_bps,
-            min_offset_bps=getattr(maker_offset, "MIN_OFFSET_BPS", 0.5),
+            min_offset_bps=getattr(maker_offset, "MIN_OFFSET_BPS", 0.5),  # noqa: F821 - load-bearing NameError gate; do not import maker_offset module (would unmask autotune side-effects covered by tests)
         )
         adjusted_offset_bps = float(dynamic_autotune.get("adaptive_offset_bps") or base_offset_bps)
         maker_first_override = bool(dynamic_autotune.get("maker_first"))

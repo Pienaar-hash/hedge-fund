@@ -3,10 +3,7 @@ Tests for carry scoring and hybrid score integration (v7.4 B1).
 """
 from __future__ import annotations
 
-import json
 import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from execution.intel.symbol_score_v6 import (
     carry_score,

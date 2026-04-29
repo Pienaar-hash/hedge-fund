@@ -21,9 +21,9 @@ except Exception:  # pragma: no cover - fallback for tests without exchange clie
 # v7.7: Conviction sizing integration
 try:
     from execution.conviction_engine import (
-        ConvictionConfig,
+        ConvictionConfig,  # noqa: F401 - availability probe / public re-export
         ConvictionContext,
-        ConvictionResult,
+        ConvictionResult,  # noqa: F401 - availability probe / public re-export
         load_conviction_config,
         compute_conviction,
         apply_conviction_to_nav_pct,

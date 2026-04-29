@@ -15,10 +15,8 @@ Covers:
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
-import pytest
 from prediction.state_surface import build_prediction_state, write_prediction_state
 
 

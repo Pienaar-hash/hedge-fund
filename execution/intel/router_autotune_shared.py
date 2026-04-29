@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Mapping, MutableMapping
 
-from execution.router_metrics import compute_maker_reliability
 
 STATE_DIR = Path(os.getenv("HEDGE_STATE_DIR") or "logs/state")
 ROUTER_HEALTH_PATH = Path(os.getenv("ROUTER_HEALTH_STATE_PATH") or (STATE_DIR / "router_health.json"))

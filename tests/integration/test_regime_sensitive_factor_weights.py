@@ -5,8 +5,6 @@ PATCHSET_V7.7_P6
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
-from typing import Dict
 
 from execution.factor_diagnostics import (
     FactorRegimeCurvesConfig,

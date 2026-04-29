@@ -262,7 +262,7 @@ class TestCalibrationWindowCheck:
             check_calibration_window()
             check_calibration_window()  # second call
             # Only one doctrine event
-            lines = [l for l in doctrine.read_text().strip().split("\n") if l]
+            lines = [line for line in doctrine.read_text().strip().split("\n") if line]
             assert len(lines) == 1
 
         os.environ.pop("KILL_SWITCH", None)

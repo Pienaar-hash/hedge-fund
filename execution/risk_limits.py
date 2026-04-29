@@ -15,15 +15,13 @@ import time
 import execution.drawdown_tracker as drawdown_tracker
 from execution.drawdown_tracker import load_peak_state, save_peak_state, get_portfolio_dd_state
 from execution.nav import (
-    compute_trading_nav,
-    compute_gross_exposure_usd,
     get_confirmed_nav,
     get_nav_age as _nav_get_nav_age,
     nav_health_snapshot,
 )
-from execution.utils import load_json, get_live_positions
+from execution.utils import get_live_positions
 from execution.utils import vol as vol_utils
-from execution.universe_resolver import symbol_min_gross, universe_by_symbol
+from execution.universe_resolver import universe_by_symbol
 from .utils.metrics import (
     notional_7d_by_symbol,
     total_notional_7d,
@@ -32,7 +30,7 @@ from .utils.metrics import (
     fee_pnl_ratio,
 )
 from .utils.toggle import disable_symbol_temporarily, is_symbol_disabled
-from execution.exchange_utils import get_balances, is_dry_run
+from execution.exchange_utils import is_dry_run
 from execution.log_utils import get_logger, log_event, safe_dump
 from execution.risk_loader import (
     load_risk_config,
@@ -965,7 +963,6 @@ def check_order(
     cfg = _normalize_risk_cfg(cfg)
 
     detail_payload: Dict[str, Any] = {}
-    nav_fresh_flag: Optional[bool] = None
     sym = str(symbol)
     s_cfg = _cfg_get(cfg, ["per_symbol", sym], {}) or {}
     g_cfg = _cfg_get(cfg, ["global"], {}) or {}
@@ -1116,17 +1113,14 @@ def check_order(
         "fail_closed_on_nav_stale": nav_fail_closed,
     }
 
-    nav_age_val: Optional[float] = None
     try:
         if nav_age is not None:
-            nav_age_val = float(nav_age)
+            float(nav_age)
         elif nav_age_s is not None:
-            nav_age_val = float(nav_age_s)
+            float(nav_age_s)
     except Exception:
-        nav_age_val = None
-    nav_sources_bool = bool(nav_sources_ok) if nav_sources_ok is not None else False
+        pass
     nav_is_fresh = bool(nav_health.get("fresh")) if nav_health else False
-    nav_fresh_flag = nav_is_fresh
     detail_payload["nav_fresh"] = nav_is_fresh
     detail_payload["nav_health"] = nav_health
 
@@ -1158,7 +1152,6 @@ def check_order(
         if "nav_stale" not in warnings:
             warnings.append("nav_stale")
         detail_payload["nav_fresh"] = False
-        nav_fresh_flag = False
 
     # Portfolio Drawdown Circuit Breaker check
     cb_cfg = cfg.get("circuit_breakers") or {}

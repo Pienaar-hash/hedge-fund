@@ -5,11 +5,11 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, List, Tuple, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Sequence, Tuple, Mapping, Optional
 
 import os
 from .exchange_utils import get_klines, get_price, get_symbol_filters
-from .exchange_precision import normalize_qty, normalize_price
+from .exchange_precision import normalize_qty
 from .orderbook_features import evaluate_entry_gate
 from .signal_generator import (
     normalize_intent as generator_normalize_intent,
@@ -43,14 +43,12 @@ from execution.strategy_adaptation import (
 )
 from execution.position_sizing import compute_adaptive_weight
 from execution.v6_flags import get_flags, log_v6_flag_snapshot
-from execution.risk_limits import check_order
+from execution.risk_limits import check_order  # noqa: F401 - re-exported for tests/integration/test_screener_dedupe.py monkeypatching
 from execution.strategies.vol_target import generate_vol_target_intent
 from execution.utils.vol import (
-    atr_pct,
     compute_vol_regime_from_prices,
     load_vol_regime_config,
     get_sizing_multiplier,
-    build_vol_regime_snapshot,
 )
 from execution.intel.symbol_score_v6 import (
     load_expectancy_snapshot,
@@ -765,11 +763,6 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
         lev = float(params.get("leverage") or symbol_target_leverage(sym_key) or 1.0)
         if lev <= 0:
             lev = 1.0
-        per_symbol_cfg = {}
-        try:
-            per_symbol_cfg = ((rlc.get("per_symbol") or {}) if isinstance(rlc, Mapping) else {}).get(sym_key, {}) or {}
-        except Exception:
-            per_symbol_cfg = {}
         entry_forced = (params.get("entry", {}) or {}).get("type") == "always_on"
         if kill_switch:
             _log_screener_veto("KILL_SWITCH", sym, tf=tf)
@@ -843,13 +836,10 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
             continue
 
         # Trend filter: block counter-trend entries
-        is_counter_trend = False
         if signal == "SELL" and trend == "BULL":
-            is_counter_trend = True
             _log_screener_veto("COUNTER_TREND", sym, tf=tf, signal=signal, trend=trend)
             continue
         if signal == "BUY" and trend == "BEAR":
-            is_counter_trend = True
             _log_screener_veto("COUNTER_TREND", sym, tf=tf, signal=signal, trend=trend)
             continue
 

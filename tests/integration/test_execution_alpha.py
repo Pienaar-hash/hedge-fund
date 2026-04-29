@@ -10,16 +10,12 @@ Tests:
 
 import json
 import pytest
-import tempfile
 from pathlib import Path
-from typing import Dict, Any
 
 from execution.execution_alpha import (
     ExecutionAlphaConfig,
     load_execution_alpha_config,
     AlphaSample,
-    SymbolAlphaStats,
-    HeadAlphaStats,
     AlphaAggregator,
     save_execution_alpha_state,
     load_execution_alpha_state,

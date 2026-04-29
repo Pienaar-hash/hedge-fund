@@ -190,7 +190,6 @@ class TestDashboardGracefulAccess:
         """kpi_panel.render_kpis_overview handles missing frac fields."""
         # Just verify the import and function signature - actual rendering
         # requires Streamlit context which we can't easily test
-        from dashboard.kpi_panel import render_kpis_overview
 
         # This should not raise even with empty dict
         kpis: Dict[str, Any] = {}

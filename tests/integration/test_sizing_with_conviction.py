@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Dict
 
 from execution.conviction_engine import (
-    ConvictionConfig,
     ConvictionContext,
     compute_conviction,
     apply_conviction_to_nav_pct,

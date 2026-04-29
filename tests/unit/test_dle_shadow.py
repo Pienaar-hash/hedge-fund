@@ -4,7 +4,6 @@ Unit tests for DLE Shadow Gate (Phase A).
 CI-safe: no file I/O required when write_logs=False.
 """
 
-import pytest
 from execution.dle_shadow import (
     shadow_build_chain,
     derive_request_id,
@@ -297,7 +296,7 @@ class TestGlobalWriter:
 
     def test_reset_shadow_writer(self):
         """reset_shadow_writer clears global instance."""
-        from execution.dle_shadow import get_shadow_writer, reset_shadow_writer
+        from execution.dle_shadow import get_shadow_writer
         
         w1 = get_shadow_writer()
         reset_shadow_writer()

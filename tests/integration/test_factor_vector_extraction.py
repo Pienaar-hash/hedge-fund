@@ -6,8 +6,6 @@ Verifies:
 - build_factor_vector function
 - Factor vector inclusion in hybrid_score results
 """
-import pytest
-from typing import Dict, Any
 
 
 class TestFactorVectorDataclass:

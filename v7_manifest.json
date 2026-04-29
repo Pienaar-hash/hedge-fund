@@ -5,73 +5,97 @@
       "path": "logs/state/nav.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "NAV totals + exec stats with anomaly guard"
+      "description": "NAV totals + exec stats with anomaly guard",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "nav_state": {
       "path": "logs/state/nav_state.json",
       "owner": "sync_state",
       "update_frequency": "per_sync",
-      "description": "Dashboard-friendly NAV/AUM/drawdown snapshot with fallback"
+      "description": "Dashboard-friendly NAV/AUM/drawdown snapshot with fallback",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "positions_state": {
       "path": "logs/state/positions_state.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Live positions normalized with entry/mark/PnL"
+      "description": "Live positions normalized with entry/mark/PnL",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "positions_ledger": {
       "path": "logs/state/positions_ledger.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Unified ledger (positions + TP/SL registry)"
+      "description": "Unified ledger (positions + TP/SL registry)",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "kpis_v7": {
       "path": "logs/state/kpis_v7.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Portfolio + per-symbol KPIs"
+      "description": "Portfolio + per-symbol KPIs",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "runtime_diagnostics": {
       "path": "logs/state/diagnostics.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Veto counters, exit pipeline, liveness (updated_ts required)"
+      "description": "Veto counters, exit pipeline, liveness (updated_ts required)",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "engine_metadata": {
       "path": "logs/state/engine_metadata.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Engine version/build metadata for dashboards and preflight checks"
+      "description": "Engine version/build metadata for dashboards and preflight checks",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "risk_snapshot": {
       "path": "logs/state/risk_snapshot.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Risk KPIs (dd_state, risk_mode, VaR/CVaR, anomalies)"
+      "description": "Risk KPIs (dd_state, risk_mode, VaR/CVaR, anomalies)",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "router_health": {
       "path": "logs/state/router_health.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Router slippage/latency/TWAP stats with global & per-symbol quality scores"
+      "description": "Router slippage/latency/TWAP stats with global & per-symbol quality scores",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "symbol_scores": {
       "path": "logs/state/symbol_scores_v6.json",
       "owner": "executor",
       "update_frequency": "per_intel",
-      "description": "Hybrid scores with router/vol modifiers and factor diagnostics metadata"
+      "description": "Hybrid scores with router/vol modifiers and factor diagnostics metadata",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "rv_momentum": {
       "path": "logs/state/rv_momentum.json",
       "owner": "executor",
       "update_frequency": "per_intel",
-      "description": "Relative value momentum snapshots"
+      "description": "Relative value momentum snapshots",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "factor_diagnostics": {
       "path": "logs/state/factor_diagnostics.json",
       "owner": "executor",
       "update_frequency": "per_intel",
-      "description": "Normalized factor surface with covariance/IR, orthogonalization, weights, attribution"
+      "description": "Normalized factor surface with covariance/IR, orthogonalization, weights, attribution",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "edge_insights": {
       "path": "logs/state/edge_insights.json",
@@ -93,40 +117,40 @@
       "owner": "episode_ledger",
       "update_frequency": "on_demand",
       "optional": true,
-      "description": "Completed trade cycles derived from execution logs — read-only observability. V2 adds authority chain binding (B.4).",
+      "description": "Completed trade cycles derived from execution logs \u2014 read-only observability. V2 adds authority chain binding (B.4).",
       "fields": {
-        "episodes": "Array of V1 Episode objects (backward compatible — 21 fields)",
-        "schema_version": "str|absent — 'episode_ledger_v2' when V2 episodes present",
-        "episodes_v2": "Array|absent — V2 episodes with authority chain + deterministic UID",
+        "episodes": "Array of V1 Episode objects (backward compatible \u2014 21 fields)",
+        "schema_version": "str|absent \u2014 'episode_ledger_v2' when V2 episodes present",
+        "episodes_v2": "Array|absent \u2014 V2 episodes with authority chain + deterministic UID",
         "last_rebuild_ts": "ISO timestamp of last ledger rebuild",
         "stats": "Aggregate stats: total_net_pnl, win_rate, exit_reasons, reconciliation, authority",
         "episode_count": "Number of completed episodes (V1)"
       },
       "episode_v2_fields": {
-        "episode_id": "str — sequential EP_NNNN (backward compat, not stable across rebuilds)",
-        "episode_uid": "str — EP_<sha256_12> deterministic from (symbol, side, entry_ts, exit_ts, qty, prices)",
+        "episode_id": "str \u2014 sequential EP_NNNN (backward compat, not stable across rebuilds)",
+        "episode_uid": "str \u2014 EP_<sha256_12> deterministic from (symbol, side, entry_ts, exit_ts, qty, prices)",
         "authority": {
-          "entry": "{ request_id, decision_id, permit_id } — from nearest ENTRY LINK event",
-          "exit":  "{ request_id, decision_id, permit_id } — from nearest EXIT LINK event"
+          "entry": "{ request_id, decision_id, permit_id } \u2014 from nearest ENTRY LINK event",
+          "exit": "{ request_id, decision_id, permit_id } \u2014 from nearest EXIT LINK event"
         },
         "authority_flags": {
-          "entry_missing": "bool — no ENTRY LINK found within matching window",
-          "exit_missing": "bool — no EXIT LINK found within matching window",
-          "entry_ambiguous": "bool — multiple equidistant ENTRY LINK candidates",
-          "exit_ambiguous": "bool — multiple equidistant EXIT LINK candidates"
+          "entry_missing": "bool \u2014 no ENTRY LINK found within matching window",
+          "exit_missing": "bool \u2014 no EXIT LINK found within matching window",
+          "entry_ambiguous": "bool \u2014 multiple equidistant ENTRY LINK candidates",
+          "exit_ambiguous": "bool \u2014 multiple equidistant EXIT LINK candidates"
         },
-        "regime_at_entry": "str — from DECISION v2 context_snapshot.regime (or 'unknown')",
-        "regime_at_exit": "str — from DECISION v2 context_snapshot.regime (or 'unknown')",
-        "regime_bindable": "bool — true if at least one regime resolved from DECISION"
+        "regime_at_entry": "str \u2014 from DECISION v2 context_snapshot.regime (or 'unknown')",
+        "regime_at_exit": "str \u2014 from DECISION v2 context_snapshot.regime (or 'unknown')",
+        "regime_bindable": "bool \u2014 true if at least one regime resolved from DECISION"
       },
       "authority_stats": {
-        "entry_coverage_pct": "float — % of episodes with entry authority bound",
-        "exit_coverage_pct": "float — % of episodes with exit authority bound",
-        "ambiguous_count": "int — episodes with at least one ambiguous binding",
-        "missing_count": "int — episodes with at least one missing binding",
-        "permit_null_on_executed_entry_count": "int — SHADOW_INCONSISTENCY: permit_id null on executed entry",
-        "max_time_delta_s_entry": "float — worst-case time gap for entry binding",
-        "max_time_delta_s_exit": "float — worst-case time gap for exit binding"
+        "entry_coverage_pct": "float \u2014 % of episodes with entry authority bound",
+        "exit_coverage_pct": "float \u2014 % of episodes with exit authority bound",
+        "ambiguous_count": "int \u2014 episodes with at least one ambiguous binding",
+        "missing_count": "int \u2014 episodes with at least one missing binding",
+        "permit_null_on_executed_entry_count": "int \u2014 SHADOW_INCONSISTENCY: permit_id null on executed entry",
+        "max_time_delta_s_entry": "float \u2014 worst-case time gap for entry binding",
+        "max_time_delta_s_exit": "float \u2014 worst-case time gap for exit binding"
       },
       "matching_algorithm": {
         "method": "nearest-in-time binary search on LINK events",
@@ -158,7 +182,7 @@
       "description": "Dynamic capital allocation based on health, regime, and meta signals",
       "fields": {
         "updated_ts": "ISO timestamp",
-        "target_allocation": "float ∈ [0, 1] - portfolio allocation multiplier",
+        "target_allocation": "float \u2208 [0, 1] - portfolio allocation multiplier",
         "raw_components": "health_base, vol_penalty, dd_penalty, router_penalty, meta_adjustment",
         "smoothed": "bool - whether EMA smoothing was applied",
         "prev_allocation": "float - previous allocation for smoothing"
@@ -250,7 +274,7 @@
         "current.confidence": "float - confidence in current regime [0,1]",
         "current.dwell_time_hours": "float - hours since last regime change",
         "current.stability_distance": "int - cycles until stability threshold",
-        "pressure.confidence_velocity": "float - EMA-smoothed Δ confidence per cycle",
+        "pressure.confidence_velocity": "float - EMA-smoothed \u0394 confidence per cycle",
         "pressure.near_flip_count_24h": "int - times confidence was in [0.45, 0.55] band",
         "pressure.near_flip_count_7d": "int - near-flip events over 7 days",
         "churn.regime_changes_24h": "int - regime changes in last 24 hours",
@@ -266,10 +290,10 @@
       "owner": "executor",
       "update_frequency": "per_intel",
       "optional": true,
-      "description": "Per-symbol spot-futures basis snapshot from premiumIndex — carries basis_pct, mark, index prices",
+      "description": "Per-symbol spot-futures basis snapshot from premiumIndex \u2014 carries basis_pct, mark, index prices",
       "fields": {
         "updated_ts": "ISO timestamp",
-        "symbols": "Dict[str, BasisInfo] — per-symbol basis_pct (float), mark_price (float), index_price (float)"
+        "symbols": "Dict[str, BasisInfo] \u2014 per-symbol basis_pct (float), mark_price (float), index_price (float)"
       }
     },
     "alpha_decay": {
@@ -374,23 +398,27 @@
       "path": "logs/state/execution_health.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Per-symbol execution health — router, risk, vol, sizing diagnostics"
+      "description": "Per-symbol execution health \u2014 router, risk, vol, sizing diagnostics",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "expectancy_v6": {
       "path": "logs/state/expectancy_v6.json",
       "owner": "executor",
       "update_frequency": "per_intel",
-      "description": "Per-symbol expectancy and hourly breakdown from intel pipeline"
+      "description": "Per-symbol expectancy and hourly breakdown from intel pipeline",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "funding_snapshot": {
       "path": "logs/state/funding_snapshot.json",
       "owner": "executor",
       "update_frequency": "per_intel",
       "optional": true,
-      "description": "Per-symbol funding rate snapshot from premiumIndex — carries rate, funding_rate, next_funding_time",
+      "description": "Per-symbol funding rate snapshot from premiumIndex \u2014 carries rate, funding_rate, next_funding_time",
       "fields": {
         "updated_ts": "ISO timestamp",
-        "symbols": "Dict[str, FundingInfo] — per-symbol rate (float), funding_rate (float), next_funding_time (int epoch-ms)"
+        "symbols": "Dict[str, FundingInfo] \u2014 per-symbol rate (float), funding_rate (float), next_funding_time (int epoch-ms)"
       }
     },
     "leaderboard_state": {
@@ -419,7 +447,7 @@
       "owner": "executor",
       "update_frequency": "per_intel",
       "optional": true,
-      "description": "V6 pipeline comparison summary — shadow vs production scoring delta"
+      "description": "V6 pipeline comparison summary \u2014 shadow vs production scoring delta"
     },
     "pipeline_v6_shadow_head": {
       "path": "logs/state/pipeline_v6_shadow_head.json",
@@ -432,19 +460,25 @@
       "path": "logs/state/pnl_attribution.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "PnL attribution — per-symbol realized/unrealized breakdown"
+      "description": "PnL attribution \u2014 per-symbol realized/unrealized breakdown",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "position_tp_sl": {
       "path": "logs/state/position_tp_sl.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "TP/SL registry — per-position take-profit and stop-loss levels"
+      "description": "TP/SL registry \u2014 per-position take-profit and stop-loss levels",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "positions": {
       "path": "logs/state/positions.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Legacy positions snapshot — canonical source is positions_state.json"
+      "description": "Legacy positions snapshot \u2014 canonical source is positions_state.json",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "positions_state_sync": {
       "path": "logs/state/positions_state_sync.json",
@@ -478,20 +512,24 @@
       "path": "logs/state/synced_state.json",
       "owner": "executor",
       "update_frequency": "per_loop",
-      "description": "Aggregated sync-ready state snapshot for Firestore publish"
+      "description": "Aggregated sync-ready state snapshot for Firestore publish",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "universe": {
       "path": "logs/state/universe.json",
       "owner": "executor",
       "update_frequency": "per_intel",
-      "description": "Active trading universe — resolved symbol list"
+      "description": "Active trading universe \u2014 resolved symbol list",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "v6_runtime_probe": {
       "path": "logs/state/v6_runtime_probe.json",
       "owner": "executor",
       "update_frequency": "per_loop",
       "optional": true,
-      "description": "V6 runtime probe diagnostics — feature flag echoes and pipeline health"
+      "description": "V6 runtime probe diagnostics \u2014 feature flag echoes and pipeline health"
     }
   },
   "execution_logs": {
@@ -499,84 +537,112 @@
     "execution_events": {
       "path": "logs/execution/execution_events.jsonl",
       "owner": "minotaur_engine",
-      "description": "Minotaur microstructure execution events"
+      "description": "Minotaur microstructure execution events",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "execution_health_log": {
       "path": "logs/execution/execution_health.jsonl",
       "owner": "executor",
-      "description": "Per-loop execution health snapshots"
+      "description": "Per-loop execution health snapshots",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "execution_alerts": {
       "path": "logs/execution/execution_alerts.jsonl",
       "owner": "executor",
-      "description": "Execution alert events (anomalies, breaches)"
+      "description": "Execution alert events (anomalies, breaches)",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "loop_timing": {
       "path": "logs/execution/loop_timing.jsonl",
       "owner": "executor",
-      "description": "Per-loop timing breakdowns for performance tracking"
+      "description": "Per-loop timing breakdowns for performance tracking",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "order_metrics": {
       "path": "logs/execution/order_metrics.jsonl",
       "owner": "executor",
-      "description": "Per-order fill metrics — slippage, latency, notional"
+      "description": "Per-order fill metrics \u2014 slippage, latency, notional",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "orders_attempted": {
       "path": "logs/execution/orders_attempted.jsonl",
       "owner": "executor",
-      "description": "All order attempts (pre-fill) with sizing and doctrine context"
+      "description": "All order attempts (pre-fill) with sizing and doctrine context",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "orders_executed": {
       "path": "logs/execution/orders_executed.jsonl",
       "owner": "executor",
-      "description": "Confirmed filled orders — canonical trade record"
+      "description": "Confirmed filled orders \u2014 canonical trade record",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "position_state_log": {
       "path": "logs/execution/position_state.jsonl",
       "owner": "executor",
-      "description": "Per-loop position state snapshots"
+      "description": "Per-loop position state snapshots",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "risk_vetoes": {
       "path": "logs/execution/risk_vetoes.jsonl",
       "owner": "risk_limits",
-      "description": "Risk module veto events with reason codes"
+      "description": "Risk module veto events with reason codes",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "router_decisions": {
       "path": "logs/execution/router_decisions.jsonl",
       "owner": "order_router",
-      "description": "Router execution path decisions (maker/taker/TWAP)"
+      "description": "Router execution path decisions (maker/taker/TWAP)",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "router_metrics": {
       "path": "logs/execution/router_metrics.jsonl",
       "owner": "executor",
-      "description": "Router quality metrics — latency, slippage, fill rates"
+      "description": "Router quality metrics \u2014 latency, slippage, fill rates",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "signal_metrics": {
       "path": "logs/execution/signal_metrics.jsonl",
       "owner": "executor",
-      "description": "Signal quality metrics — score distributions, veto rates"
+      "description": "Signal quality metrics \u2014 score distributions, veto rates",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "sync_heartbeats": {
       "path": "logs/execution/sync_heartbeats.jsonl",
       "owner": "executor",
-      "description": "Sync heartbeat events for liveness monitoring"
+      "description": "Sync heartbeat events for liveness monitoring",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "telegram_heartbeat": {
       "path": "logs/telegram_heartbeat.jsonl",
       "owner": "telegram_daily_heartbeat",
-      "description": "Daily Telegram heartbeat send log — append-only, tracks every attempt",
+      "description": "Daily Telegram heartbeat send log \u2014 append-only, tracks every attempt",
       "optional": true
     },
     "twap_events": {
       "path": "logs/execution/twap_events.jsonl",
       "owner": "order_router",
-      "description": "TWAP slice lifecycle events (start, fill, complete, abort)"
+      "description": "TWAP slice lifecycle events (start, fill, complete, abort)",
+      "optional": true,
+      "lifecycle": "runtime_generated"
     },
     "dataset_rollback": {
       "path": "logs/execution/dataset_rollback.jsonl",
       "owner": "dataset_rollback",
       "optional": true,
-      "description": "Dataset rollback trigger events — temporal/replay anomalies"
+      "description": "Dataset rollback trigger events \u2014 temporal/replay anomalies"
     }
   },
   "prediction_layer": {
@@ -585,18 +651,18 @@
       "owner": "prediction",
       "update_frequency": "on_demand",
       "optional": true,
-      "description": "Append-only belief event log — DLE-gated probability updates from admitted sources",
+      "description": "Append-only belief event log \u2014 DLE-gated probability updates from admitted sources",
       "fields": {
         "belief_event_id": "BEL_<hex12> deterministic ID",
         "ts": "ISO timestamp",
         "dataset_id": "Source dataset identifier",
         "question_id": "Q_<id> question reference",
         "outcome_id": "O_<id> outcome reference",
-        "p": "float ∈ [0,1] — stated probability",
-        "confidence": "float ∈ [0,1] — source confidence",
+        "p": "float \u2208 [0,1] \u2014 stated probability",
+        "confidence": "float \u2208 [0,1] \u2014 source confidence",
         "evidence_hash": "sha256:<8> evidence fingerprint",
-        "dle": "{ decision_id, permit_id } — DLE authority chain",
-        "state_snapshot_hashes": "{ constraints, prior_aggregate, config } — frozen state at write time"
+        "dle": "{ decision_id, permit_id } \u2014 DLE authority chain",
+        "state_snapshot_hashes": "{ constraints, prior_aggregate, config } \u2014 frozen state at write time"
       }
     },
     "aggregate_state_log": {
@@ -608,10 +674,10 @@
       "fields": {
         "ts": "ISO timestamp",
         "question_id": "Q_<id>",
-        "probs": "Dict[outcome_id, float] — constrained probabilities",
-        "aggregate_hash": "sha256:<8> — deterministic hash of probs",
-        "inputs_window": "{ from, to } — time range of input events",
-        "solver": "{ name, status, residual } — solver diagnostics"
+        "probs": "Dict[outcome_id, float] \u2014 constrained probabilities",
+        "aggregate_hash": "sha256:<8> \u2014 deterministic hash of probs",
+        "inputs_window": "{ from, to } \u2014 time range of input events",
+        "solver": "{ name, status, residual } \u2014 solver diagnostics"
       }
     },
     "prediction_episodes_log": {
@@ -619,16 +685,16 @@
       "owner": "prediction",
       "update_frequency": "on_demand",
       "optional": true,
-      "description": "Prediction episodes — end-to-end lifecycle from belief updates to outcome resolution and scoring",
+      "description": "Prediction episodes \u2014 end-to-end lifecycle from belief updates to outcome resolution and scoring",
       "fields": {
         "episode_id": "PEP_<hex12> deterministic ID",
         "question_id": "Q_<id>",
         "state": "OPEN | RESOLVED | EXPIRED",
-        "belief_event_ids": "List[str] — linked belief events",
-        "decision_ids": "List[str] — linked DLE decisions",
-        "permit_ids": "List[str] — linked DLE permits",
+        "belief_event_ids": "List[str] \u2014 linked belief events",
+        "decision_ids": "List[str] \u2014 linked DLE decisions",
+        "permit_ids": "List[str] \u2014 linked DLE permits",
         "scoring": "{ scoring_rule, per_outcome, aggregate_score, resolved_outcome }",
-        "source_scores": "Dict[dataset_id, scoring_result] — per-source attribution"
+        "source_scores": "Dict[dataset_id, scoring_result] \u2014 per-source attribution"
       }
     },
     "dle_prediction_events_log": {
@@ -636,12 +702,12 @@
       "owner": "prediction",
       "update_frequency": "on_demand",
       "optional": true,
-      "description": "DLE authority events for prediction layer — decisions, permits, vetoes",
+      "description": "DLE authority events for prediction layer \u2014 decisions, permits, vetoes",
       "fields": {
         "schema_version": "dle_prediction_v1",
         "event_type": "DECISION | PERMIT | VETO",
         "ts": "ISO timestamp",
-        "payload": "Dict — decision/permit/veto details"
+        "payload": "Dict \u2014 decision/permit/veto details"
       }
     },
     "question_graph": {
@@ -656,14 +722,14 @@
       "owner": "prediction",
       "update_frequency": "on_demand",
       "optional": true,
-      "description": "Rollback trigger events — temporal restatement, replay divergence, latency breach, silent gap, regime corruption",
+      "description": "Rollback trigger events \u2014 temporal restatement, replay divergence, latency breach, silent gap, regime corruption",
       "fields": {
         "trigger_type": "TEMPORAL_RESTATEMENT | REPLAY_DIVERGENCE | LATENCY_BREACH | SILENT_GAP | REGIME_CORRUPTION",
         "dataset_id": "Source dataset that triggered",
         "suggested_action": "REVOKE | DOWNGRADE | LOG_ONLY",
         "severity": "HIGH | MEDIUM | LOW",
-        "evidence": "Dict — trigger-specific evidence payload",
-        "enforced": "bool — false in P0 (log-only)"
+        "evidence": "Dict \u2014 trigger-specific evidence payload",
+        "enforced": "bool \u2014 false in P0 (log-only)"
       }
     },
     "firewall_denials_log": {
@@ -671,12 +737,12 @@
       "owner": "prediction",
       "update_frequency": "on_demand",
       "optional": true,
-      "description": "Influence firewall denial log — every blocked consumer access attempt",
+      "description": "Influence firewall denial log \u2014 every blocked consumer access attempt",
       "fields": {
-        "consumer": "str — module requesting prediction data",
+        "consumer": "str \u2014 module requesting prediction data",
         "question_id": "Q_<id>",
         "verdict": "DENIED_PHASE | DENIED_DATASET | DENIED_BLACKLISTED | DENIED_DISABLED",
-        "reason": "str — human-readable denial reason"
+        "reason": "str \u2014 human-readable denial reason"
       }
     },
     "prediction_state": {
@@ -684,7 +750,7 @@
       "owner": "prediction",
       "update_frequency": "on_demand",
       "optional": true,
-      "description": "Dashboard state surface — belief counts, aggregate timestamps, dataset states, constraint violations, rollback triggers, alert ranking telemetry",
+      "description": "Dashboard state surface \u2014 belief counts, aggregate timestamps, dataset states, constraint violations, rollback triggers, alert ranking telemetry",
       "fields": {
         "phase": "P0_OBSERVE | P1_ADVISORY | P2_PRODUCTION",
         "enabled": "bool",
@@ -700,13 +766,13 @@
       "owner": "prediction",
       "update_frequency": "per_alert_batch",
       "optional": true,
-      "description": "P1 alert ranking telemetry — read by dashboard tile via logs/prediction/",
+      "description": "P1 alert ranking telemetry \u2014 read by dashboard tile via logs/prediction/",
       "fields": {
-        "alerts_count": "int — number of alerts in batch",
+        "alerts_count": "int \u2014 number of alerts in batch",
         "consumer": "alert_ranking",
         "firewall_verdicts": "Dict[question_id, verdict]",
-        "rankings_applied": "bool — whether prediction reordered alerts",
-        "reason": "str — ranking outcome description",
+        "rankings_applied": "bool \u2014 whether prediction reordered alerts",
+        "reason": "str \u2014 ranking outcome description",
         "ts": "ISO8601"
       }
     },
@@ -715,19 +781,19 @@
       "owner": "prediction",
       "update_frequency": "per_event",
       "optional": true,
-      "description": "CLOB market data events — Layer 2 binary sleeve data plane (best_bid_ask, last_trade_price, tick_size_change, market_resolved, book, price_change)",
+      "description": "CLOB market data events \u2014 Layer 2 binary sleeve data plane (best_bid_ask, last_trade_price, tick_size_change, market_resolved, book, price_change)",
       "fields": {
-        "ts_arrival_ms": "int — local arrival epoch ms",
-        "event_type": "str — best_bid_ask|last_trade_price|tick_size_change|market_resolved|book|price_change",
-        "asset_id": "str — CLOB token ID",
-        "seq": "int — local event sequence number",
+        "ts_arrival_ms": "int \u2014 local arrival epoch ms",
+        "event_type": "str \u2014 best_bid_ask|last_trade_price|tick_size_change|market_resolved|book|price_change",
+        "asset_id": "str \u2014 CLOB token ID",
+        "seq": "int \u2014 local event sequence number",
         "source": "CLOB",
-        "best_bid": "float|null — (best_bid_ask only)",
-        "best_ask": "float|null — (best_bid_ask only)",
-        "spread": "float|null — (best_bid_ask only)",
-        "price": "float|null — (last_trade_price, price_change)",
-        "side": "str|null — BUY|SELL (last_trade_price, price_change)",
-        "winning_outcome": "str|null — YES|NO (market_resolved only)"
+        "best_bid": "float|null \u2014 (best_bid_ask only)",
+        "best_ask": "float|null \u2014 (best_bid_ask only)",
+        "spread": "float|null \u2014 (best_bid_ask only)",
+        "price": "float|null \u2014 (last_trade_price, price_change)",
+        "side": "str|null \u2014 BUY|SELL (last_trade_price, price_change)",
+        "winning_outcome": "str|null \u2014 YES|NO (market_resolved only)"
       }
     },
     "clob_market_health": {
@@ -735,10 +801,10 @@
       "owner": "prediction",
       "update_frequency": "periodic_60s",
       "optional": true,
-      "description": "CLOB market client health summaries — event counts, spread stats, trade frequency",
+      "description": "CLOB market client health summaries \u2014 event counts, spread stats, trade frequency",
       "fields": {
         "ts": "ISO8601",
-        "window_s": "float — health window duration",
+        "window_s": "float \u2014 health window duration",
         "total_events": "int",
         "event_counts": "Dict[event_type, count]",
         "anomaly_count": "int",
@@ -753,14 +819,14 @@
       "owner": "prediction",
       "update_frequency": "per_tick",
       "optional": true,
-      "description": "RTDS Chainlink BTC/USD oracle price ticks — Layer 1 binary sleeve data plane",
+      "description": "RTDS Chainlink BTC/USD oracle price ticks \u2014 Layer 1 binary sleeve data plane",
       "fields": {
-        "ts_arrival_ms": "int — local arrival epoch ms",
-        "oracle_ts_ms": "int — Chainlink oracle epoch ms",
+        "ts_arrival_ms": "int \u2014 local arrival epoch ms",
+        "oracle_ts_ms": "int \u2014 Chainlink oracle epoch ms",
         "symbol": "BTC/USD",
-        "price": "float — oracle price",
-        "latency_ms": "int — arrival minus oracle ms",
-        "seq": "int — upstream or local sequence number",
+        "price": "float \u2014 oracle price",
+        "latency_ms": "int \u2014 arrival minus oracle ms",
+        "seq": "int \u2014 upstream or local sequence number",
         "source": "RTDS"
       }
     },
@@ -769,10 +835,10 @@
       "owner": "prediction",
       "update_frequency": "periodic_60s",
       "optional": true,
-      "description": "RTDS oracle client health summaries — latency, gap, frequency stats",
+      "description": "RTDS oracle client health summaries \u2014 latency, gap, frequency stats",
       "fields": {
         "ts": "ISO8601",
-        "window_s": "float — health window duration",
+        "window_s": "float \u2014 health window duration",
         "tick_count": "int",
         "anomaly_count": "int",
         "latency_ms": "{ mean, median, p95, max, min } or null",
@@ -785,28 +851,28 @@
       "owner": "prediction",
       "update_frequency": "per_round",
       "optional": true,
-      "description": "Layer 3 Round Observer — complete 15-minute BTC Up/Down round records with oracle boundaries, terminal snapshots, spread stats, bundle cost, and net EV",
+      "description": "Layer 3 Round Observer \u2014 complete 15-minute BTC Up/Down round records with oracle boundaries, terminal snapshots, spread stats, bundle cost, and net EV",
       "fields": {
-        "slug": "str — market identifier e.g. btc-updown-15m-{ts}",
-        "question": "str — market question text",
+        "slug": "str \u2014 market identifier e.g. btc-updown-15m-{ts}",
+        "question": "str \u2014 market question text",
         "timeframe": "15m|5m",
-        "condition_id": "str — market condition ID",
+        "condition_id": "str \u2014 market condition ID",
         "round_start": "ISO8601",
         "round_end": "ISO8601",
-        "oracle_start": "float|null — Chainlink BTC/USD at round start",
-        "oracle_end": "float|null — Chainlink BTC/USD at round end",
+        "oracle_start": "float|null \u2014 Chainlink BTC/USD at round start",
+        "oracle_end": "float|null \u2014 Chainlink BTC/USD at round end",
         "oracle_start_ts_ms": "int|null",
         "oracle_end_ts_ms": "int|null",
         "direction": "UP|DOWN|FLAT|null",
         "start_book": "{ best_bid_up, best_ask_up, best_bid_down, best_ask_down, spread_up, spread_down }",
         "spread_stats_up": "{ min, max, mean, samples }",
         "spread_stats_down": "{ min, max, mean, samples }",
-        "snapshots": "{ t_minus_30, t_minus_10, t_minus_3 } — terminal snapshots",
-        "bundle_cost": "float|null — ask_up + ask_down from terminal snapshot",
-        "net_ev_after_fee": "float|null — 1.0 - winning_ask - fee",
+        "snapshots": "{ t_minus_30, t_minus_10, t_minus_3 } \u2014 terminal snapshots",
+        "bundle_cost": "float|null \u2014 ask_up + ask_down from terminal snapshot",
+        "net_ev_after_fee": "float|null \u2014 1.0 - winning_ask - fee",
         "resolved_outcome": "Up|Down|null",
         "resolution_source": "oracle_direction|market_resolved",
-        "event_count": "int — CLOB events during round window",
+        "event_count": "int \u2014 CLOB events during round window",
         "logged_at": "ISO8601"
       }
     },
@@ -815,23 +881,23 @@
       "owner": "prediction",
       "update_frequency": "per_round",
       "optional": true,
-      "description": "Phase-1 round observer captured rounds (10-round window) — experimental subset of binary_rounds"
+      "description": "Phase-1 round observer captured rounds (10-round window) \u2014 experimental subset of binary_rounds"
     },
     "score_decomposition": {
       "path": "logs/execution/score_decomposition.jsonl",
       "owner": "signal_screener",
       "update_frequency": "per_screener_cycle",
       "optional": true,
-      "description": "Per-intent hybrid score decomposition — weights × factors for MHD auditability",
+      "description": "Per-intent hybrid score decomposition \u2014 weights \u00d7 factors for MHD auditability",
       "fields": {
         "ts": "ISO8601",
         "symbol": "str",
         "direction": "LONG|SHORT",
-        "hybrid_score": "float — final composite score",
+        "hybrid_score": "float \u2014 final composite score",
         "components": "Dict[factor, raw_score]",
-        "weighted": "Dict[factor, weight × score]",
+        "weighted": "Dict[factor, weight \u00d7 score]",
         "weights_used": "Dict[factor, weight]",
-        "conviction_band": "str — very_low|low|medium|high|very_high",
+        "conviction_band": "str \u2014 very_low|low|medium|high|very_high",
         "rq_score": "float|null",
         "rv_score": "float|null"
       }
@@ -841,34 +907,34 @@
       "owner": "executor",
       "update_frequency": "per_order_attempt",
       "optional": true,
-      "description": "Pre-order sizing decomposition — canonical audit of base_nav_pct × vol × adaptive × doctrine → final notional",
+      "description": "Pre-order sizing decomposition \u2014 canonical audit of base_nav_pct \u00d7 vol \u00d7 adaptive \u00d7 doctrine \u2192 final notional",
       "fields": {
         "ts": "Unix timestamp",
-        "attempt_id": "str — unique order attempt ID",
+        "attempt_id": "str \u2014 unique order attempt ID",
         "symbol": "str",
         "side": "BUY|SELL",
         "position_side": "LONG|SHORT",
-        "strategy": "str — source strategy head",
+        "strategy": "str \u2014 source strategy head",
         "tier": "CORE|SATELLITE|TACTICAL|ALT-EXT",
         "reduce_only": "bool",
-        "nav_usd": "float — NAV at time of sizing",
-        "base_nav_pct": "float — base per_trade_nav_pct (fractional)",
-        "vol_regime": "str — low|normal|high|crisis",
-        "vol_multiplier": "float — tier × vol regime sizing multiplier",
-        "adaptive_weight": "float — compute_adaptive_weight output",
-        "atr_factor": "float — ATR regime shrink factor",
-        "dd_factor": "float — drawdown regime shrink factor",
-        "risk_factor": "float — risk mode shrink factor",
-        "adaptive_factor": "float — atr × dd × risk combined",
-        "doctrine_multiplier": "float — doctrine composite multiplier (1.0 if no scaling)",
-        "final_nav_pct": "float — actual NAV % used (target_notional / nav)",
-        "target_notional_usd": "float — final notional sent to build_order_payload",
-        "final_qty": "float — estimated qty (notional / price)",
-        "price_hint": "float — price used for qty estimation",
-        "caps_applied": "List[str] — binding caps (PER_SYMBOL_CAP, MIN_NOTIONAL, RISK_ADJUSTED)",
-        "conviction_mult_shadow": "float|absent — shadow conviction size multiplier (present only when conviction.mode=shadow)",
-        "conviction_band_shadow": "str|absent — shadow conviction band (very_low..very_high)",
-        "conviction_score_shadow": "float|absent — shadow conviction score (0-1)"
+        "nav_usd": "float \u2014 NAV at time of sizing",
+        "base_nav_pct": "float \u2014 base per_trade_nav_pct (fractional)",
+        "vol_regime": "str \u2014 low|normal|high|crisis",
+        "vol_multiplier": "float \u2014 tier \u00d7 vol regime sizing multiplier",
+        "adaptive_weight": "float \u2014 compute_adaptive_weight output",
+        "atr_factor": "float \u2014 ATR regime shrink factor",
+        "dd_factor": "float \u2014 drawdown regime shrink factor",
+        "risk_factor": "float \u2014 risk mode shrink factor",
+        "adaptive_factor": "float \u2014 atr \u00d7 dd \u00d7 risk combined",
+        "doctrine_multiplier": "float \u2014 doctrine composite multiplier (1.0 if no scaling)",
+        "final_nav_pct": "float \u2014 actual NAV % used (target_notional / nav)",
+        "target_notional_usd": "float \u2014 final notional sent to build_order_payload",
+        "final_qty": "float \u2014 estimated qty (notional / price)",
+        "price_hint": "float \u2014 price used for qty estimation",
+        "caps_applied": "List[str] \u2014 binding caps (PER_SYMBOL_CAP, MIN_NOTIONAL, RISK_ADJUSTED)",
+        "conviction_mult_shadow": "float|absent \u2014 shadow conviction size multiplier (present only when conviction.mode=shadow)",
+        "conviction_band_shadow": "str|absent \u2014 shadow conviction band (very_low..very_high)",
+        "conviction_score_shadow": "float|absent \u2014 shadow conviction score (0-1)"
       }
     },
     "environment_events": {
@@ -876,16 +942,16 @@
       "owner": "reset_guard",
       "update_frequency": "on_event",
       "optional": true,
-      "description": "Testnet reset events and production balance anomalies — append-only",
+      "description": "Testnet reset events and production balance anomalies \u2014 append-only",
       "fields": {
         "ts": "Unix timestamp",
         "event_type": "TESTNET_RESET | BALANCE_ANOMALY_PRODUCTION",
-        "event": "str — event category",
-        "environment": "str — binance_futures_testnet | production",
-        "pre_reset_nav": "float — last logged NAV before reset",
-        "post_reset_balance": "float — exchange balance after reset",
-        "cycle_id": "str — new cycle identifier (CYCLE_TEST_NNN)",
-        "archive_path": "str — path to archived state files"
+        "event": "str \u2014 event category",
+        "environment": "str \u2014 binance_futures_testnet | production",
+        "pre_reset_nav": "float \u2014 last logged NAV before reset",
+        "post_reset_balance": "float \u2014 exchange balance after reset",
+        "cycle_id": "str \u2014 new cycle identifier (CYCLE_TEST_NNN)",
+        "archive_path": "str \u2014 path to archived state files"
       }
     },
     "dle_shadow_events": {
@@ -893,66 +959,74 @@
       "owner": "dle_shadow",
       "update_frequency": "per_cycle",
       "optional": true,
-      "description": "DLE shadow chain (REQUEST → DECISION → PERMIT → LINK) — observation-only, never blocks execution (Phase A). Append-only. Schema v2 adds context_snapshot + provenance.",
+      "description": "DLE shadow chain (REQUEST \u2192 DECISION \u2192 PERMIT \u2192 LINK) \u2014 observation-only, never blocks execution (Phase A). Append-only. Schema v2 adds context_snapshot + provenance.",
       "schema_version": "dle_shadow_v2",
-      "event_types": ["REQUEST", "DECISION", "PERMIT", "LINK"],
+      "event_types": [
+        "REQUEST",
+        "DECISION",
+        "PERMIT",
+        "LINK"
+      ],
       "fields": {
-        "schema_version": "str — dle_shadow_v1 | dle_shadow_v2",
-        "ts": "str — ISO 8601 timestamp",
-        "event_type": "str — REQUEST | DECISION | PERMIT | LINK",
-        "payload": "dict — event-type-specific payload (see below)"
+        "schema_version": "str \u2014 dle_shadow_v1 | dle_shadow_v2",
+        "ts": "str \u2014 ISO 8601 timestamp",
+        "event_type": "str \u2014 REQUEST | DECISION | PERMIT | LINK",
+        "payload": "dict \u2014 event-type-specific payload (see below)"
       },
       "payload_fields_decision": {
-        "decision_id": "str — DEC_<hex16> deterministic from (phase_id, action_class, constraints, policy_version)",
-        "authority_source": "str — DOCTRINE | MANUAL_OVERRIDE | ESCALATION_RESOLUTION",
-        "phase_id": "str — current cycle (e.g. CYCLE_004)",
-        "action_class": "str — ENTRY_ALLOW | ENTRY_DENY | EXIT_ALLOW",
-        "policy_version": "str — engine version string",
-        "scope": "dict — { symbol }",
-        "constraints": "dict — { verdict, reason? }",
-        "risk": "dict — doctrine decision details",
-        "verdict": "str — PERMIT | DENY (canonical shadow semantics)",
-        "deny_reason": "str|null — doctrine veto code when verdict=DENY",
-        "doctrine_verdict": "str — raw DoctrineVerdict enum value",
-        "context_snapshot": "dict — { regime, regime_confidence, nav_usd?, positions_hash, scores_hash? }",
-        "provenance": "dict — { engine_version, git_sha, docs_version }"
+        "decision_id": "str \u2014 DEC_<hex16> deterministic from (phase_id, action_class, constraints, policy_version)",
+        "authority_source": "str \u2014 DOCTRINE | MANUAL_OVERRIDE | ESCALATION_RESOLUTION",
+        "phase_id": "str \u2014 current cycle (e.g. CYCLE_004)",
+        "action_class": "str \u2014 ENTRY_ALLOW | ENTRY_DENY | EXIT_ALLOW",
+        "policy_version": "str \u2014 engine version string",
+        "scope": "dict \u2014 { symbol }",
+        "constraints": "dict \u2014 { verdict, reason? }",
+        "risk": "dict \u2014 doctrine decision details",
+        "verdict": "str \u2014 PERMIT | DENY (canonical shadow semantics)",
+        "deny_reason": "str|null \u2014 doctrine veto code when verdict=DENY",
+        "doctrine_verdict": "str \u2014 raw DoctrineVerdict enum value",
+        "context_snapshot": "dict \u2014 { regime, regime_confidence, nav_usd?, positions_hash, scores_hash? }",
+        "provenance": "dict \u2014 { engine_version, git_sha, docs_version }"
       },
       "payload_fields_request": {
-        "request_id": "str — attempt_id or REQ_<hex16> derived from payload",
-        "requested_action": "str — ENTRY | EXIT",
-        "symbol": "str — trading pair",
-        "side": "str — BUY | SELL",
-        "strategy": "str — strategy/head name",
-        "qty_intent": "float|null — intended USD notional",
-        "context": "dict — call-site-specific context"
+        "request_id": "str \u2014 attempt_id or REQ_<hex16> derived from payload",
+        "requested_action": "str \u2014 ENTRY | EXIT",
+        "symbol": "str \u2014 trading pair",
+        "side": "str \u2014 BUY | SELL",
+        "strategy": "str \u2014 strategy/head name",
+        "qty_intent": "float|null \u2014 intended USD notional",
+        "context": "dict \u2014 call-site-specific context"
       },
       "payload_fields_permit": {
-        "permit_id": "str — PERM_<hex16> derived from (decision_id, request_id, ts)",
-        "decision_id": "str — parent decision reference",
-        "request_id": "str — parent request reference",
-        "single_use": "bool — always true in Phase A",
-        "snapshots": "dict — { positions_state_hash, regime_state_hash, config_hash }",
-        "action": "dict|absent — v2 only: { type (ENTRY|EXIT), symbol, direction, qty? }",
-        "permit_ttl_s": "float|absent — v2 only: TTL seconds (30 entry, 60 exit). Recorded, not enforced in Phase A",
-        "expires_ts": "str|absent — v2 only: ISO 8601 expiry computed from ts + permit_ttl_s",
-        "state": "str|absent — v2 only: ISSUED (shadow always)",
-        "consumable": "bool|absent — v2 only: true",
-        "scope_snapshot": "dict|absent — v2 only: { regime, regime_confidence?, nav_usd?, positions_hash, scores_hash? }",
-        "provenance": "dict|absent — v2 only: { engine_version, git_sha, docs_version }"
+        "permit_id": "str \u2014 PERM_<hex16> derived from (decision_id, request_id, ts)",
+        "decision_id": "str \u2014 parent decision reference",
+        "request_id": "str \u2014 parent request reference",
+        "single_use": "bool \u2014 always true in Phase A",
+        "snapshots": "dict \u2014 { positions_state_hash, regime_state_hash, config_hash }",
+        "action": "dict|absent \u2014 v2 only: { type (ENTRY|EXIT), symbol, direction, qty? }",
+        "permit_ttl_s": "float|absent \u2014 v2 only: TTL seconds (30 entry, 60 exit). Recorded, not enforced in Phase A",
+        "expires_ts": "str|absent \u2014 v2 only: ISO 8601 expiry computed from ts + permit_ttl_s",
+        "state": "str|absent \u2014 v2 only: ISSUED (shadow always)",
+        "consumable": "bool|absent \u2014 v2 only: true",
+        "scope_snapshot": "dict|absent \u2014 v2 only: { regime, regime_confidence?, nav_usd?, positions_hash, scores_hash? }",
+        "provenance": "dict|absent \u2014 v2 only: { engine_version, git_sha, docs_version }"
       },
       "permit_behavior": {
         "deny_suppression": "When verdict=DENY, no PERMIT event is emitted. LINK.permit_id is null.",
-        "ttl_defaults": { "entry": 120.0, "exit": 120.0 },
+        "ttl_defaults": {
+          "entry": 120.0,
+          "exit": 120.0
+        },
         "ttl_enforcement": "Phase A: recorded only. Phase B: enforcement TBD."
       },
       "payload_fields_link": {
-        "ts": "str — ISO 8601 timestamp (redundant with top-level ts, added B.4 for join convenience)",
-        "request_id": "str — cross-reference",
-        "decision_id": "str — cross-reference",
-        "permit_id": "str|null — cross-reference (null when verdict=DENY, no permit issued)",
-        "symbol": "str — trading pair",
-        "requested_action": "str — ENTRY | EXIT",
-        "strategy": "str — strategy/head name"
+        "ts": "str \u2014 ISO 8601 timestamp (redundant with top-level ts, added B.4 for join convenience)",
+        "request_id": "str \u2014 cross-reference",
+        "decision_id": "str \u2014 cross-reference",
+        "permit_id": "str|null \u2014 cross-reference (null when verdict=DENY, no permit issued)",
+        "symbol": "str \u2014 trading pair",
+        "requested_action": "str \u2014 ENTRY | EXIT",
+        "strategy": "str \u2014 strategy/head name"
       }
     },
     "dle_enforcement_rehearsal": {
@@ -960,30 +1034,30 @@
       "owner": "enforcement_rehearsal",
       "update_frequency": "per_order",
       "optional": true,
-      "description": "B.5 counterfactual enforcement rehearsal — measures what would be blocked if PERMIT was required. Shadow-only, never blocks execution. Append-only.",
+      "description": "B.5 counterfactual enforcement rehearsal \u2014 measures what would be blocked if PERMIT was required. Shadow-only, never blocks execution. Append-only.",
       "fields": {
-        "ts": "str — ISO 8601 timestamp of evaluation",
-        "order_id": "str — attempt_id or intent reference",
-        "symbol": "str — trading pair",
-        "direction": "str — BUY | SELL",
-        "matched_permit_id": "str|null — PERM_<hex16> if found",
-        "permit_valid": "bool — true if valid permit covers this order",
-        "reason": "str — OK | NO_PERMIT | EXPIRED | MISMATCH_SYMBOL | MISMATCH_DIRECTION | REHEARSAL_DISABLED",
-        "would_block": "bool — true if enforcement would have rejected this order",
-        "phase_id": "str — current cycle identifier",
-        "engine_version": "str — engine version string",
-        "git_sha": "str — git commit sha"
+        "ts": "str \u2014 ISO 8601 timestamp of evaluation",
+        "order_id": "str \u2014 attempt_id or intent reference",
+        "symbol": "str \u2014 trading pair",
+        "direction": "str \u2014 BUY | SELL",
+        "matched_permit_id": "str|null \u2014 PERM_<hex16> if found",
+        "permit_valid": "bool \u2014 true if valid permit covers this order",
+        "reason": "str \u2014 OK | NO_PERMIT | EXPIRED | MISMATCH_SYMBOL | MISMATCH_DIRECTION | REHEARSAL_DISABLED",
+        "would_block": "bool \u2014 true if enforcement would have rejected this order",
+        "phase_id": "str \u2014 current cycle identifier",
+        "engine_version": "str \u2014 engine version string",
+        "git_sha": "str \u2014 git commit sha"
       },
       "runtime_metrics": {
-        "total_orders": "int — total orders evaluated",
-        "would_block_count": "int — orders that would have been blocked",
-        "would_block_pct": "float — percentage blocked",
-        "expired_permit_count": "int — blocked due to expired permit",
-        "missing_permit_count": "int — blocked due to no permit found",
-        "mismatch_count": "int — blocked due to symbol/direction mismatch",
-        "ok_count": "int — orders with valid permit",
-        "last_evaluation_ts": "str — ISO timestamp of last evaluation",
-        "enabled": "bool — whether rehearsal is active"
+        "total_orders": "int \u2014 total orders evaluated",
+        "would_block_count": "int \u2014 orders that would have been blocked",
+        "would_block_pct": "float \u2014 percentage blocked",
+        "expired_permit_count": "int \u2014 blocked due to expired permit",
+        "missing_permit_count": "int \u2014 blocked due to no permit found",
+        "mismatch_count": "int \u2014 blocked due to symbol/direction mismatch",
+        "ok_count": "int \u2014 orders with valid permit",
+        "last_evaluation_ts": "str \u2014 ISO timestamp of last evaluation",
+        "enabled": "bool \u2014 whether rehearsal is active"
       },
       "phase_c_gate": {
         "would_block_pct_threshold": 0.1,
@@ -1000,14 +1074,14 @@
       "optional": true,
       "description": "C.1 entry-only enforcement denial log. Append-only. Every blocked ENTRY order is recorded here. EXIT orders are never blocked and never appear in this log.",
       "fields": {
-        "event_type": "str — always ENTRY_DENIAL",
-        "ts": "str — ISO 8601 timestamp of denial",
-        "symbol": "str — trading pair",
-        "direction": "str — BUY | SELL",
-        "order_id": "str — attempt_id or intent reference",
-        "deny_reason": "str — ENTRY_DENIED_NO_PERMIT | ENTRY_DENIED_EXPIRED_PERMIT | ENTRY_DENIED_MISMATCH_SYMBOL | ENTRY_DENIED_MISMATCH_DIRECTION | ENTRY_DENIED_INDEX_UNAVAILABLE",
-        "matched_permit_id": "str|null — permit that was found but invalid (e.g. expired)",
-        "phase": "str — always C.1"
+        "event_type": "str \u2014 always ENTRY_DENIAL",
+        "ts": "str \u2014 ISO 8601 timestamp of denial",
+        "symbol": "str \u2014 trading pair",
+        "direction": "str \u2014 BUY | SELL",
+        "order_id": "str \u2014 attempt_id or intent reference",
+        "deny_reason": "str \u2014 ENTRY_DENIED_NO_PERMIT | ENTRY_DENIED_EXPIRED_PERMIT | ENTRY_DENIED_MISMATCH_SYMBOL | ENTRY_DENIED_MISMATCH_DIRECTION | ENTRY_DENIED_INDEX_UNAVAILABLE",
+        "matched_permit_id": "str|null \u2014 permit that was found but invalid (e.g. expired)",
+        "phase": "str \u2014 always C.1"
       }
     },
     "dle_permit_expired": {
@@ -1015,17 +1089,17 @@
       "owner": "enforcement_rehearsal",
       "update_frequency": "per_expired_permit_match",
       "optional": true,
-      "description": "Structured DLE_PERMIT_EXPIRED events — emitted every time a rehearsal evaluation finds a permit that matched but had expired. Used for latency analysis and TTL calibration. Append-only.",
+      "description": "Structured DLE_PERMIT_EXPIRED events \u2014 emitted every time a rehearsal evaluation finds a permit that matched but had expired. Used for latency analysis and TTL calibration. Append-only.",
       "fields": {
-        "event_type": "str — always DLE_PERMIT_EXPIRED",
-        "ts": "str — ISO 8601 timestamp of evaluation",
-        "symbol": "str — trading pair",
-        "direction": "str — BUY | SELL",
-        "order_id": "str — attempt_id or intent reference",
-        "permit_id": "str — matched expired permit ID",
-        "delta_s": "float — seconds between permit issuance and order evaluation",
-        "ttl_s": "float — permit TTL at time of issuance",
-        "overshoot_s": "float — how far past TTL the order was (delta_s - ttl_s)"
+        "event_type": "str \u2014 always DLE_PERMIT_EXPIRED",
+        "ts": "str \u2014 ISO 8601 timestamp of evaluation",
+        "symbol": "str \u2014 trading pair",
+        "direction": "str \u2014 BUY | SELL",
+        "order_id": "str \u2014 attempt_id or intent reference",
+        "permit_id": "str \u2014 matched expired permit ID",
+        "delta_s": "float \u2014 seconds between permit issuance and order evaluation",
+        "ttl_s": "float \u2014 permit TTL at time of issuance",
+        "overshoot_s": "float \u2014 how far past TTL the order was (delta_s - ttl_s)"
       }
     },
     "phase_c_readiness": {
@@ -1033,43 +1107,43 @@
       "owner": "enforcement_rehearsal",
       "update_frequency": "every_pub_tick",
       "optional": true,
-      "description": "Phase C enforcement readiness — gate criteria tracking for ops + dashboard",
+      "description": "Phase C enforcement readiness \u2014 gate criteria tracking for ops + dashboard",
       "fields": {
-        "window_days_required": "int — consecutive clean days required (14)",
-        "window_days_met": "int — consecutive clean days achieved so far",
-        "window_start_ts": "str|null — ISO 8601 when current clean window started",
-        "criteria_met": "bool — whether all thresholds satisfied right now",
-        "gate_satisfied": "bool — criteria_met AND window_days_met >= window_days_required",
-        "last_breach_ts": "str|null — ISO 8601 of last breach",
-        "breach_reason": "str|null — description of last breach",
+        "window_days_required": "int \u2014 consecutive clean days required (14)",
+        "window_days_met": "int \u2014 consecutive clean days achieved so far",
+        "window_start_ts": "str|null \u2014 ISO 8601 when current clean window started",
+        "criteria_met": "bool \u2014 whether all thresholds satisfied right now",
+        "gate_satisfied": "bool \u2014 criteria_met AND window_days_met >= window_days_required",
+        "last_breach_ts": "str|null \u2014 ISO 8601 of last breach",
+        "breach_reason": "str|null \u2014 description of last breach",
         "current_metrics": {
-          "would_block_pct": "float — percentage of orders that would have been blocked",
-          "expired_permit_count": "int — blocked due to expired permit",
-          "missing_permit_count": "int — blocked due to no permit found",
-          "total_orders": "int — total orders evaluated",
-          "ok_count": "int — orders with valid permit"
+          "would_block_pct": "float \u2014 percentage of orders that would have been blocked",
+          "expired_permit_count": "int \u2014 blocked due to expired permit",
+          "missing_permit_count": "int \u2014 blocked due to no permit found",
+          "total_orders": "int \u2014 total orders evaluated",
+          "ok_count": "int \u2014 orders with valid permit"
         },
         "thresholds": {
-          "would_block_pct": "float — max allowed (0.1%)",
-          "expired_permit_count": "int — max allowed (0)",
-          "missing_permit_count": "int — max allowed (0)"
+          "would_block_pct": "float \u2014 max allowed (0.1%)",
+          "expired_permit_count": "int \u2014 max allowed (0)",
+          "missing_permit_count": "int \u2014 max allowed (0)"
         },
-        "rehearsal_enabled": "bool — whether B.5 rehearsal is active",
+        "rehearsal_enabled": "bool \u2014 whether B.5 rehearsal is active",
         "enforcement": {
-          "entry_evaluated": "int — total ENTRY orders evaluated by C.1 gate",
-          "entry_permitted": "int — ENTRY orders with valid permit (passed)",
-          "entry_denied": "int — ENTRY orders blocked (no valid permit)",
-          "entry_blocks_pct": "float — denial rate percentage",
-          "exit_passthrough": "int — EXIT orders that bypassed enforcement (always pass)",
-          "deny_reasons": "dict — histogram of denial reason codes",
-          "last_denial_ts": "str — ISO 8601 of most recent denial",
-          "last_denial_symbol": "str — symbol of most recent denial",
-          "enforce_enabled": "bool — whether C.1 enforcement is active",
-          "split_brain_count": "int — divergences where enforcement denied but rehearsal would allow (expect ~0)",
-          "last_split_brain_ts": "str — ISO 8601 of most recent split-brain event",
-          "last_split_brain_symbol": "str — symbol of most recent split-brain event"
+          "entry_evaluated": "int \u2014 total ENTRY orders evaluated by C.1 gate",
+          "entry_permitted": "int \u2014 ENTRY orders with valid permit (passed)",
+          "entry_denied": "int \u2014 ENTRY orders blocked (no valid permit)",
+          "entry_blocks_pct": "float \u2014 denial rate percentage",
+          "exit_passthrough": "int \u2014 EXIT orders that bypassed enforcement (always pass)",
+          "deny_reasons": "dict \u2014 histogram of denial reason codes",
+          "last_denial_ts": "str \u2014 ISO 8601 of most recent denial",
+          "last_denial_symbol": "str \u2014 symbol of most recent denial",
+          "enforce_enabled": "bool \u2014 whether C.1 enforcement is active",
+          "split_brain_count": "int \u2014 divergences where enforcement denied but rehearsal would allow (expect ~0)",
+          "last_split_brain_ts": "str \u2014 ISO 8601 of most recent split-brain event",
+          "last_split_brain_symbol": "str \u2014 symbol of most recent split-brain event"
         },
-        "updated_ts": "str — ISO 8601 last write"
+        "updated_ts": "str \u2014 ISO 8601 last write"
       }
     },
     "environment_meta": {
@@ -1077,12 +1151,12 @@
       "owner": "reset_guard",
       "update_frequency": "on_reset",
       "optional": true,
-      "description": "Current test cycle watermark — dashboard-readable",
+      "description": "Current test cycle watermark \u2014 dashboard-readable",
       "fields": {
-        "cycle_id": "str — current CYCLE_TEST_NNN identifier",
-        "last_testnet_reset_ts": "float — Unix timestamp of last reset",
-        "last_testnet_reset_iso": "str — ISO 8601 timestamp of last reset",
-        "updated_ts": "float — last write timestamp"
+        "cycle_id": "str \u2014 current CYCLE_TEST_NNN identifier",
+        "last_testnet_reset_ts": "float \u2014 Unix timestamp of last reset",
+        "last_testnet_reset_iso": "str \u2014 ISO 8601 timestamp of last reset",
+        "updated_ts": "float \u2014 last write timestamp"
       }
     },
     "binary_lab_state": {
@@ -1090,25 +1164,25 @@
       "owner": "binary_lab_executor",
       "update_frequency": "per_round",
       "optional": true,
-      "description": "Binary lab satellite sleeve state — segregated from core NAV. Read-only for dashboard.",
+      "description": "Binary lab satellite sleeve state \u2014 segregated from core NAV. Read-only for dashboard.",
       "fields": {
-        "sleeve_id": "str — always binary_lab_s1",
-        "status": "str — DISABLED | NOT_DEPLOYED | ACTIVE | TERMINATED | COMPLETED",
-        "day": "int — current experiment day (0-30)",
-        "day_total": "int — total experiment days (30)",
-        "capital.current_nav_usd": "float — current sleeve NAV",
-        "capital.pnl_usd": "float — cumulative PnL",
-        "kill_line.distance_usd": "float — distance to kill line",
-        "kill_line.breached": "bool — true if kill line hit",
-        "metrics.total_trades": "int — total trades taken",
-        "metrics.wins": "int — winning trades",
-        "metrics.losses": "int — losing trades",
-        "metrics.win_rate": "float|null — overall win rate",
-        "metrics.by_conviction_band": "dict — per-band breakdown",
-        "rule_violations": "int — must be 0",
-        "freeze_intact": "bool — true if no parameter changes",
-        "config_hash": "str|null — SHA-256 of binary_lab_limits.json",
-        "last_checkpoint_utc_date": "str|null — last UTC date (YYYY-MM-DD) checkpoint counted"
+        "sleeve_id": "str \u2014 always binary_lab_s1",
+        "status": "str \u2014 DISABLED | NOT_DEPLOYED | ACTIVE | TERMINATED | COMPLETED",
+        "day": "int \u2014 current experiment day (0-30)",
+        "day_total": "int \u2014 total experiment days (30)",
+        "capital.current_nav_usd": "float \u2014 current sleeve NAV",
+        "capital.pnl_usd": "float \u2014 cumulative PnL",
+        "kill_line.distance_usd": "float \u2014 distance to kill line",
+        "kill_line.breached": "bool \u2014 true if kill line hit",
+        "metrics.total_trades": "int \u2014 total trades taken",
+        "metrics.wins": "int \u2014 winning trades",
+        "metrics.losses": "int \u2014 losing trades",
+        "metrics.win_rate": "float|null \u2014 overall win rate",
+        "metrics.by_conviction_band": "dict \u2014 per-band breakdown",
+        "rule_violations": "int \u2014 must be 0",
+        "freeze_intact": "bool \u2014 true if no parameter changes",
+        "config_hash": "str|null \u2014 SHA-256 of binary_lab_limits.json",
+        "last_checkpoint_utc_date": "str|null \u2014 last UTC date (YYYY-MM-DD) checkpoint counted"
       }
     },
     "binary_lab_trades": {
@@ -1116,28 +1190,32 @@
       "owner": "binary_lab_shadow",
       "update_frequency": "per_round",
       "optional": true,
-      "description": "Binary Lab S1 shadow sleeve trade log — append-only. Each round produces ENTRY + ROUND_CLOSED (or NO_TRADE) events. All events tagged execution_mode: SHADOW.",
-      "event_types": ["ENTRY", "ROUND_CLOSED", "NO_TRADE"],
+      "description": "Binary Lab S1 shadow sleeve trade log \u2014 append-only. Each round produces ENTRY + ROUND_CLOSED (or NO_TRADE) events. All events tagged execution_mode: SHADOW.",
+      "event_types": [
+        "ENTRY",
+        "ROUND_CLOSED",
+        "NO_TRADE"
+      ],
       "fields": {
-        "event_type": "str — ENTRY | ROUND_CLOSED | NO_TRADE",
-        "execution_mode": "str — always SHADOW",
-        "ts": "str — ISO 8601 timestamp",
-        "ts_ms": "int — millisecond timestamp",
-        "round_id": "str — R_YYYYMMDD_HHMM deterministic from round start",
-        "market_slug": "str — trading pair (e.g. BTCUSDT)",
-        "horizon_s": "int — always 900 (15 minutes)",
-        "side": "str — UP | DOWN",
-        "intent_direction": "str — UP | DOWN",
-        "p_fill": "float — simulated entry fill price",
-        "notional_usd": "float — always 20",
-        "conviction_band": "str — medium | high | very_high",
-        "conviction_score": "float — 0-1 conviction proxy",
-        "regime": "str — Sentinel-X regime at decision time",
-        "regime_confidence": "float — regime probability",
-        "status": "str — filled | no_fill | no_trade | resolved",
-        "resolved_outcome": "str|null — WIN | LOSS (on ROUND_CLOSED only)",
-        "pnl_usd": "float|null — net PnL after fees (on ROUND_CLOSED only)",
-        "deny_reason": "str|null — eligibility denial reason (on NO_TRADE only)"
+        "event_type": "str \u2014 ENTRY | ROUND_CLOSED | NO_TRADE",
+        "execution_mode": "str \u2014 always SHADOW",
+        "ts": "str \u2014 ISO 8601 timestamp",
+        "ts_ms": "int \u2014 millisecond timestamp",
+        "round_id": "str \u2014 R_YYYYMMDD_HHMM deterministic from round start",
+        "market_slug": "str \u2014 trading pair (e.g. BTCUSDT)",
+        "horizon_s": "int \u2014 always 900 (15 minutes)",
+        "side": "str \u2014 UP | DOWN",
+        "intent_direction": "str \u2014 UP | DOWN",
+        "p_fill": "float \u2014 simulated entry fill price",
+        "notional_usd": "float \u2014 always 20",
+        "conviction_band": "str \u2014 medium | high | very_high",
+        "conviction_score": "float \u2014 0-1 conviction proxy",
+        "regime": "str \u2014 Sentinel-X regime at decision time",
+        "regime_confidence": "float \u2014 regime probability",
+        "status": "str \u2014 filled | no_fill | no_trade | resolved",
+        "resolved_outcome": "str|null \u2014 WIN | LOSS (on ROUND_CLOSED only)",
+        "pnl_usd": "float|null \u2014 net PnL after fees (on ROUND_CLOSED only)",
+        "deny_reason": "str|null \u2014 eligibility denial reason (on NO_TRADE only)"
       }
     },
     "activation_window_state": {
@@ -1147,31 +1225,32 @@
       "optional": true,
       "description": "Full-stack activation window state (v8.0). 14-day time-bounded system certification protocol covering futures + DLE + Binary Lab + telemetry.",
       "fields": {
-        "active": "bool — whether activation window is active (dual-key confirmed)",
-        "ts": "str — last check timestamp (ISO 8601)",
-        "start_ts": "str — window start timestamp",
-        "end_ts": "str — computed window end timestamp",
-        "duration_days": "int — window duration (default 14)",
-        "elapsed_days": "float — days since start",
-        "remaining_days": "float — days until window end",
-        "window_expired": "bool — true if 14 days elapsed",
-        "halted": "bool — KILL_SWITCH triggered",
-        "halt_reason": "str|null — reason for halt (drawdown_kill, manifest_drift, config_drift, etc.)",
-        "manifest_intact": "bool — v7_manifest.json unchanged since boot",
-        "config_intact": "bool — runtime.yaml unchanged since boot",
-        "boot_manifest_hash": "str — SHA-256 captured at boot",
-        "current_manifest_hash": "str — current SHA-256",
-        "boot_config_hash": "str — SHA-256 captured at boot",
-        "current_config_hash": "str — current SHA-256",
-        "drawdown_pct": "float — current portfolio drawdown",
-        "drawdown_kill_pct": "float — kill threshold",
-        "dd_breached": "bool — drawdown >= kill threshold",
-        "nav_usd": "float — current NAV",
-        "episodes_completed": "int — episodes since start_ts",
-        "risk_veto_count": "int — risk vetoes since start_ts",
-        "dle_mismatches": "int — DLE shadow mismatches since start_ts",
-        "binary_lab_freeze_ok": "bool — Binary Lab config freeze intact",
-        "per_trade_nav_pct": "float — sizing cap during window"
+        "active": "bool \u2014 whether activation window is active (dual-key confirmed)",
+        "ts": "str \u2014 last check timestamp (ISO 8601)",
+        "start_ts": "str \u2014 window start timestamp",
+        "end_ts": "str \u2014 computed window end timestamp",
+        "duration_days": "int \u2014 window duration (default 14)",
+        "elapsed_days": "float \u2014 days since start",
+        "remaining_days": "float \u2014 days until window end",
+        "window_expired": "bool \u2014 true if 14 days elapsed",
+        "halted": "bool \u2014 KILL_SWITCH triggered",
+        "halt_reason": "str|null \u2014 reason for halt (drawdown_kill, manifest_drift, config_drift, etc.)",
+        "manifest_intact": "bool \u2014 v7_manifest.json unchanged since boot",
+        "config_intact": "bool \u2014 runtime.yaml unchanged since boot",
+        "boot_manifest_hash": "str \u2014 SHA-256 captured at boot",
+        "current_manifest_hash": "str \u2014 current SHA-256",
+        "boot_config_hash": "str \u2014 SHA-256 captured at boot",
+        "current_config_hash": "str \u2014 current SHA-256",
+        "drawdown_pct": "float \u2014 current portfolio drawdown",
+        "drawdown_kill_pct": "float \u2014 kill threshold",
+        "dd_breached": "bool \u2014 drawdown >= kill threshold",
+        "nav_usd": "float \u2014 current NAV",
+        "episodes_completed": "int \u2014 episodes since start_ts",
+        "risk_veto_count": "int \u2014 governance risk vetoes since start_ts (excludes plumbing)",
+        "plumbing_veto_count": "int \u2014 exchange plumbing vetoes since start_ts (min_notional etc, observability only)",
+        "dle_mismatches": "int \u2014 DLE shadow mismatches since start_ts",
+        "binary_lab_freeze_ok": "bool \u2014 Binary Lab config freeze intact",
+        "per_trade_nav_pct": "float \u2014 sizing cap during window"
       }
     },
     "activation_verification_verdict": {
@@ -1181,15 +1260,15 @@
       "optional": true,
       "description": "One-time verification verdict from 7-gate GO/NO-GO evaluation. Written by scripts/activation_verify.py. Used by production scale gate to authorize sizing increases.",
       "fields": {
-        "verdict": "str — GO|EXTEND|NO-GO",
-        "passed": "int — number of gates passed",
-        "total_gates": "int — total gates evaluated (7)",
-        "action": "str — recommended action text",
-        "gates": "dict — per-gate results with pass/value/note",
-        "window": "dict — window metadata (start_ts, elapsed_days, episodes)",
-        "evaluated_at": "str — verification timestamp (ISO 8601)",
-        "manifest_hash": "str — SHA-256 of v7_manifest.json at evaluation time",
-        "recorded_at": "str — when verdict was persisted (ISO 8601)"
+        "verdict": "str \u2014 GO|EXTEND|NO-GO",
+        "passed": "int \u2014 number of gates passed",
+        "total_gates": "int \u2014 total gates evaluated (7)",
+        "action": "str \u2014 recommended action text",
+        "gates": "dict \u2014 per-gate results with pass/value/note",
+        "window": "dict \u2014 window metadata (start_ts, elapsed_days, episodes)",
+        "evaluated_at": "str \u2014 verification timestamp (ISO 8601)",
+        "manifest_hash": "str \u2014 SHA-256 of v7_manifest.json at evaluation time",
+        "recorded_at": "str \u2014 when verdict was persisted (ISO 8601)"
       }
     }
   },

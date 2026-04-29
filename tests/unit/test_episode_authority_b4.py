@@ -14,8 +14,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest import mock
@@ -29,8 +27,6 @@ from execution.episode_ledger import (
     EpisodeLedger,
     EpisodeV2,
     EPISODE_LEDGER_SCHEMA_V2,
-    MATCH_WINDOW_NARROW_S,
-    MATCH_WINDOW_WIDE_S,
     _bind_authority,
     _compute_episode_uid,
     _find_nearest_link,
@@ -721,7 +717,7 @@ class TestEdgeCases:
         # Read back the LINK event
         with open(log_path, "r") as f:
             lines = f.readlines()
-        link_line = [json.loads(l) for l in lines if json.loads(l).get("event_type") == "LINK"]
+        link_line = [json.loads(line) for line in lines if json.loads(line).get("event_type") == "LINK"]
         assert len(link_line) == 1
         assert "ts" in link_line[0]["payload"]  # B.4: payload.ts present
         assert link_line[0]["payload"]["ts"] == link_line[0]["ts"]  # same value

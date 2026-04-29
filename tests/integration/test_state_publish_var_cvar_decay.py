@@ -3,8 +3,7 @@ Tests for state publishing of VaR, CVaR, and Alpha Decay (v7.5_A1)
 """
 
 import json
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 

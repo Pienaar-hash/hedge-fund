@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import types
 
-import pytest
 import requests
 
 import execution.exchange_utils as ex
@@ -42,7 +41,7 @@ def test_req_retries_on_transient_requesterror(monkeypatch):
             raise requests.RequestException("network glitch")
         return DummyResponse()
 
-    monkeypatch.setattr(ex, "_S", types.SimpleNamespace(request=fake_request))
+    monkeypatch.setattr(ex, "_session", lambda: types.SimpleNamespace(request=fake_request))
     monkeypatch.setattr(ex, "_BACKOFF_INITIAL", 0.0)
     monkeypatch.setattr(ex, "_BACKOFF_MAX", 0.0)
     monkeypatch.setattr(ex.time, "sleep", lambda _: None)

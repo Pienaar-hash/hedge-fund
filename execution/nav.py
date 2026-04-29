@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 """
 v7 AUM source: AUM = futures NAV (pure) + off-exchange holdings.
 Legacy reserves/treasury handling removed.
 """
+
+from __future__ import annotations
 
 import json
 import math
@@ -425,7 +425,6 @@ def _nav_sources(cfg: JSONDict) -> Tuple[str, str, bool, Any]:
 
 
 def compute_trading_nav(cfg: JSONDict) -> Tuple[float, JSONDict]:
-    nav_cfg = (cfg or {}).get("nav") or {}
     trading_source, _, _, manual = _nav_sources(cfg)
     if trading_source == "manual":
         if manual is not None:

@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """
 Router policy engine (v5.10.4).
 
 Decides whether to run maker-first and what taker bias to apply based on
 router effectiveness and volatility regimes.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional
@@ -161,6 +161,10 @@ def compute_router_summary(metrics: Iterable[Mapping[str, Any]]) -> Dict[str, Op
         slip = row.get("slippage_bps") or row.get("slippage")
         slip_val = _to_float(slip)
         if slip_val is not None:
+            # Cap extreme outliers — >50 bps is data-quality
+            # noise on futures.  Aligns with the "broken"
+            # quality threshold in classify_router_quality.
+            slip_val = max(-50.0, min(50.0, slip_val))
             slippage_values.append(slip_val)
 
         latency = row.get("ack_latency_ms") or row.get("latency_ms")

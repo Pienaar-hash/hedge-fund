@@ -13,7 +13,6 @@ Validates that:
 
 from __future__ import annotations
 
-import pytest
 
 from execution.strategies.vol_target import (
     TrendConfig,

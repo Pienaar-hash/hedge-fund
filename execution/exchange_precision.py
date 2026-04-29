@@ -15,7 +15,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 LOGGER = logging.getLogger("exchange_precision")
 
@@ -274,6 +274,13 @@ def refresh_precision_cache() -> bool:
                     entry["stepSize"] = f.get("stepSize")
                     entry["minQty"] = f.get("minQty")
                     entry["maxQty"] = f.get("maxQty")
+                elif ftype == "MARKET_LOT_SIZE":
+                    # v7.9-D1: Store MARKET_LOT_SIZE separately for drift
+                    # detection.  Testnet can return inflated minQty here
+                    # (e.g. 1 BTC) while LOT_SIZE has the correct 0.001.
+                    entry["marketStepSize"] = f.get("stepSize")
+                    entry["marketMinQty"] = f.get("minQty")
+                    entry["marketMaxQty"] = f.get("maxQty")
                 elif ftype == "MIN_NOTIONAL":
                     entry["minNotional"] = f.get("notional")
             

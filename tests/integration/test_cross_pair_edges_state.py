@@ -13,7 +13,6 @@ v7.8_P5: Cross-Pair Statistical Arbitrage Engine.
 import pytest
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 
 # ---------------------------------------------------------------------------

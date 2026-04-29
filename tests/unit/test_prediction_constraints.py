@@ -17,7 +17,6 @@ from __future__ import annotations
 import pytest
 from prediction.constraints import (
     Constraint,
-    SolverResult,
     SolverStatus,
     WeightedSource,
     aggregate_beliefs,

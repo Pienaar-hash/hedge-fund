@@ -8,7 +8,7 @@ import statistics
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from execution.log_utils import get_logger
 from execution.pipeline_v6_shadow import PIPELINE_SHADOW_LOG
@@ -168,7 +168,6 @@ def compare_pipeline_v6(
 ) -> Dict[str, Any]:
     shadow_entries = _load_jsonl(PIPELINE_SHADOW_LOG, limit=shadow_limit)
     orders = _load_jsonl(Path(orders_path or "logs/execution/orders_executed.jsonl"))
-    metrics = _load_jsonl(Path(metrics_path or "logs/execution/order_metrics.jsonl"))
     aligned = _align_events(shadow_entries, orders)
     diffs: List[Dict[str, Any]] = []
     sizing_deltas: List[float] = []
@@ -176,7 +175,6 @@ def compare_pipeline_v6(
     sizing_samples = 0
     for shadow_entry, live_entry in aligned:
         shadow_risk = shadow_entry.get("risk_decision") or {}
-        live_risk = live_entry or {}
         shadow_sized = _extract_shadow_sized(shadow_entry)
         live_gross = _extract_live_gross(live_entry)
         sizing_diff = None

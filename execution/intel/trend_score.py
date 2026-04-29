@@ -12,7 +12,7 @@ Returns 0.5 when data is insufficient or inconclusive.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Sequence
 
 
 # ---------------------------------------------------------------------------

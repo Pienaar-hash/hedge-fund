@@ -11,8 +11,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
-import textwrap
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict
@@ -25,8 +23,6 @@ from execution.activation_window import (
     _emit_dle_lifecycle_event,
     _reset_globals,
     check_activation_window,
-    collect_stack_health,
-    get_activation_sizing_override,
     get_scale_gate_cap,
     log_activation_boot_status,
     record_verification_verdict,
@@ -117,8 +113,6 @@ class TestDLELifecycleEvents:
 
     def test_emit_dle_lifecycle_event_writes_to_log(self, tmp_path):
         """STRUCTURAL_GUARD events are written to the shadow log."""
-        log_path = tmp_path / "execution" / "dle_shadow_events.jsonl"
-
         written_events = []
 
         class MockWriter:
@@ -160,7 +154,6 @@ class TestDLELifecycleEvents:
         manifest_path = _make_manifest(tmp_path)
 
         emitted = []
-        original_emit = _emit_dle_lifecycle_event
 
         def capture(action, details):
             emitted.append((action, details))

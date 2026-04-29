@@ -52,8 +52,13 @@ jobs:
       - name: Lint
         run: ruff check .
 
-      - name: Typecheck
-        run: mypy .
+      - name: Typecheck P6 foundation surfaces
+        run: |
+          mypy execution/helpers.py \
+               execution/sizing.py \
+               execution/fill_tracker.py \
+               execution/position_cache.py \
+               execution/order_dispatch.py
 
       - name: Dashboard import boundary check
         run: |

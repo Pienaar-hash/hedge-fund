@@ -18,8 +18,6 @@ Tests cover:
 from __future__ import annotations
 
 import json
-import os
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest import mock
@@ -33,8 +31,6 @@ from execution.enforcement_rehearsal import (
     enforce_entry_permit_or_deny,
     # Denial writer
     DenialWriter,
-    DENIAL_LOG_PATH,
-    # Denial reason codes
     DENY_NO_PERMIT,
     DENY_EXPIRED,
     DENY_MISMATCH_DIRECTION,
@@ -45,12 +41,7 @@ from execution.enforcement_rehearsal import (
     EnforcementMetrics,
     # Rehearsal lifecycle (needed for setup)
     init_rehearsal,
-    build_permit_index,
     reset_rehearsal,
-    rehearse_order,
-    # Reason codes (from B.5)
-    REASON_OK,
-    _normalize_direction,
 )
 
 pytestmark = pytest.mark.unit

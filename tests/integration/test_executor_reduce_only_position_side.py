@@ -22,7 +22,7 @@ else:
 
     _DOTENV.load_dotenv = _load_without_override  # type: ignore[attr-defined]
 
-from execution import executor_live
+from execution import executor_live  # noqa: E402 - intentional: must run after dotenv override
 
 if _DOTENV is not None and _ORIG_LOAD is not None:
     _DOTENV.load_dotenv = _ORIG_LOAD

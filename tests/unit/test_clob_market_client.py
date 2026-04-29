@@ -15,7 +15,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -614,7 +613,7 @@ class TestLogIntegrity:
 
         logged = _read_jsonl(tmp_logs["market"])
         assert len(logged) == 3
-        types = [l["event_type"] for l in logged]
+        types = [entry["event_type"] for entry in logged]
         assert types == ["best_bid_ask", "last_trade_price", "price_change"]
 
     def test_each_line_is_valid_json(self, client: CLOBMarketClient, tmp_logs):

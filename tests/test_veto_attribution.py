@@ -1,14 +1,13 @@
 import pathlib
 import sys
 
-import pytest
 
 
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 
-import veto_attribution  # type: ignore
+import veto_attribution  # type: ignore  # noqa: E402 - imported after sys.path bootstrap above
 
 
 def test_extract_fields_tolerates_non_dict_sections():

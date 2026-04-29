@@ -14,16 +14,16 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
     print(f"[sync] PYTHONPATH bootstrapped: {REPO_ROOT}", flush=True)
 
-from execution.risk_loader import load_risk_config
+from execution.risk_loader import load_risk_config  # noqa: E402 - imported after sys.path bootstrap above
 try:
-    from execution.firestore_utils import (
+    from execution.firestore_utils import (  # noqa: E402 - imported after sys.path bootstrap above
         get_db as _firestore_get_db,
         publish_heartbeat as _firestore_publish_heartbeat,
     )
 except ModuleNotFoundError:
     _firestore_get_db = None  # type: ignore
     _firestore_publish_heartbeat = None  # type: ignore
-from execution.v6_flags import log_v6_flag_snapshot
+from execution.v6_flags import log_v6_flag_snapshot  # noqa: E402 - imported after sys.path bootstrap above
 
 # --- Ensure repo root is importable & files are read from repo root ---
 # /root/hedge-fund/execution/sync_state.py -> repo_root=/root/hedge-fund
@@ -101,7 +101,6 @@ def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
     print(f"[{flags.get('prefix', 'live')}] Firestore heartbeat skipped (disabled)", flush=True)
 
 # --- Force package import path when launched via Supervisor ---
-import importlib.util  # noqa: E402
 
 class _NoopDoc:
     exists = False

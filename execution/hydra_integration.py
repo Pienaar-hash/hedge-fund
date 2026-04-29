@@ -277,7 +277,7 @@ def persist_head_contributions_for_position(
         True if persisted successfully
     """
     try:
-        from execution.position_tp_sl_registry import get_position_tp_sl, _make_key, _load_registry, _save_registry, _TP_SL_REGISTRY
+        from execution.position_tp_sl_registry import _make_key, _load_registry, _save_registry, _TP_SL_REGISTRY
         
         _load_registry()
         key = _make_key(symbol, side)

@@ -321,16 +321,13 @@ def _maybe_rank_alerts(alerts: Sequence[Dict[str, Any]]) -> Sequence[Dict[str, A
     """
     try:
         import os
-        from prediction.alert_ranker import rank_alerts, PredictionSnapshot
-        from prediction.state_surface import build_prediction_state
+        from prediction.alert_ranker import rank_alerts
 
         phase = os.environ.get("PREDICTION_PHASE", "P0_OBSERVE")
         enabled = os.environ.get("PREDICTION_DLE_ENABLED", "0") == "1"
         if not enabled:
             return alerts
 
-        # Build a lightweight state snapshot for ranking context
-        state = build_prediction_state()
         # Currently no question-level snapshots wired — pass empty so the
         # ranker returns alerts unchanged until prediction data flows in P1.
         result = rank_alerts(

@@ -12,22 +12,42 @@ import argparse
 import json
 import logging
 import shutil
-import subprocess
 import time
 import socket
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, cast
 
 from execution.log_utils import append_jsonl, get_logger, log_event, safe_dump
-from execution.firestore_utils import _safe_load_json
-from execution.events import now_utc, write_event
-from execution.pnl_tracker import CloseResult as PnlCloseResult, Fill as PnlFill, PositionTracker
+from execution.events import now_utc
+from execution.helpers import (
+    coerce_veto_reasons as _coerce_veto_reasons,
+    git_commit as _git_commit,
+    json_default as _json_default,
+    mk_id,
+    normalize_status as _normalize_status,
+    now_iso as _now_iso,
+    read_dry_run_flag as _read_dry_run_flag,
+    resolve_env as _resolve_env,
+    to_float as _to_float,
+    truthy_env as _truthy_env,
+)
+from execution.sizing import (
+    estimate_intent_qty as _estimate_intent_qty,
+    nav_pct_fraction as _nav_pct_fraction,  # noqa: F401 — re-exported for tests
+)
+from execution.fill_tracker import (
+    OrderAckInfo,
+    FillSummary,
+    POSITION_TRACKER as _FILL_TRACKER_POSITION_TRACKER,
+    emit_order_ack as _emit_order_ack,
+    start_fill_task as _start_fill_task,
+    wait_fill_task as _wait_fill_task,
+    poll_fill_task as _poll_fill_task,
+)
 from execution.universe_resolver import (
-    symbol_min_gross,
-    symbol_target_leverage,
+    symbol_min_gross,  # noqa: F401 — re-exported for tests
     symbol_tier,
     universe_by_symbol,
 )
@@ -40,7 +60,6 @@ from execution import router_metrics
 from execution.intel import maker_offset, router_autotune_shared
 from execution.exchange_utils import get_price
 
-import requests
 from execution.intel.router_policy import router_policy
 from execution.v6_flags import get_flags, flags_to_dict, log_v6_flag_snapshot
 from execution.dle_shadow import shadow_build_chain, DLEShadowWriter, hash_snapshot as _dle_hash_snapshot, DEFAULT_ENTRY_PERMIT_TTL_S, DEFAULT_EXIT_PERMIT_TTL_S
@@ -49,7 +68,6 @@ from execution.loop_timing import (
     start_loop as timing_start_loop,
     end_loop as timing_end_loop,
     timed_section,
-    get_timing_summary,
 )
 
 # Optional .env so Supervisor doesn't need to export everything
@@ -95,10 +113,10 @@ NAV_LOG_CACHE_PATH = LOGS_ROOT / "nav_log.json"
 SPOT_STATE_CACHE_PATH = LOGS_ROOT / "spot_state.json"
 NAV_LOG_MAX_POINTS = int(os.getenv("NAV_LOG_MAX_POINTS", "259200") or 259200)  # 90d @ 30s
 _INTENT_REGISTRY: Dict[str, Dict[str, Any]] = {}
-_POSITION_TRACKER = PositionTracker()
-_FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)
-_FILL_POLL_TIMEOUT = float(os.getenv("ORDER_FILL_POLL_TIMEOUT", "8.0") or 8.0)
-_FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
+_POSITION_TRACKER = _FILL_TRACKER_POSITION_TRACKER
+_FILL_POLL_INTERVAL = float(os.getenv("ORDER_FILL_POLL_INTERVAL", "0.5") or 0.5)  # kept for any direct refs
+_FILL_POLL_TIMEOUT = float(os.getenv("ORDER_FILL_POLL_TIMEOUT", "8.0") or 8.0)    # kept for any direct refs
+_FILL_FINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}               # kept for any direct refs
 _HEALTH_PUBLISH_INTERVAL_S = float(os.getenv("EXEC_HEALTH_PUBLISH_INTERVAL", "120") or 120)
 # Backwards compatibility: some call sites referred to EXEC_HEALTH_PUBLISH_INTERVAL_S.
 EXEC_HEALTH_PUBLISH_INTERVAL_S = _HEALTH_PUBLISH_INTERVAL_S
@@ -164,6 +182,10 @@ _SYMBOL_ERROR_COOLDOWN: Dict[str, float] = {}
 # Doctrine block summary — rate-limited per-cycle regime awareness
 _LAST_DOCTRINE_BLOCK_LOG = 0.0
 _DOCTRINE_BLOCK_LOG_INTERVAL_S = 120.0  # At most one summary line every 2 min
+
+# Episode ledger rebuild (observability — never gates execution)
+_EPISODE_LEDGER_REBUILD_INTERVAL_S = float(os.getenv("EPISODE_LEDGER_REBUILD_INTERVAL_S", "300") or 300)
+_LAST_EPISODE_LEDGER_REBUILD_TS = 0.0
 
 # Disk pressure guard (prevents silent IO-wait death from unbounded log growth)
 _DISK_CHECK_INTERVAL_S = float(os.getenv("DISK_CHECK_INTERVAL_S", "300") or 300)
@@ -270,11 +292,6 @@ def _dle_enrichment(
 
 def get_v6_flag_snapshot() -> Dict[str, bool]:
     return flags_to_dict(get_flags())
-
-
-def mk_id(prefix: str) -> str:
-    base = prefix.strip("_") or "id"
-    return f"{base}_{uuid.uuid4().hex[:10]}"
 
 
 def _append_signal_metrics(record: Mapping[str, Any]) -> None:
@@ -943,12 +960,11 @@ def _maybe_publish_execution_intel() -> None:
 
 # ---- Exchange utils (binance) ----
 from execution.exchange_utils import (
-    _req,
     _is_dual_side,
     build_order_payload,
+    classify_binance_error,
     get_balances,
     get_positions,
-    get_price,
     is_testnet,
     send_order,
     set_dry_run,
@@ -981,21 +997,30 @@ from execution.risk_limits import (
 from execution.risk_loader import load_risk_config
 from execution.risk_engine_v6 import OrderIntent, RiskEngineV6
 from execution.nav import compute_nav_pair, PortfolioSnapshot, nav_health_snapshot
+from execution.position_cache import POSITION_CACHE as _POSITION_CACHE
+from execution.order_dispatch import (
+    dispatch_to_exchange as _dispatch_to_exchange,
+    dispatch_with_retry as _dispatch_with_retry,
+    attempt_maker_first as _attempt_maker_first,
+    build_maker_metrics as _build_maker_metrics,
+    meta_float as _meta_float,
+    DispatchRetryContext as _DispatchRetryContext,
+)
 from execution import pipeline_v6_shadow
 # v7.X Doctrine Kernel — Supreme Trading Authority
 try:
     from execution.doctrine_kernel import (
         doctrine_entry_verdict,
-        doctrine_exit_verdict,
+        doctrine_exit_verdict,  # noqa: F401 - re-exported for callers
         build_regime_snapshot_from_state,
         build_execution_snapshot_from_state,
         DoctrineVerdict,
-        ExitReason,
-        RegimeSnapshot,
+        ExitReason,  # noqa: F401 - re-exported for callers
+        RegimeSnapshot,  # noqa: F401 - re-exported for callers
         IntentSnapshot,
-        ExecutionSnapshot,
+        ExecutionSnapshot,  # noqa: F401 - re-exported for callers
         PortfolioSnapshot as DoctrinePortfolioSnapshot,
-        AlphaHealthSnapshot,
+        AlphaHealthSnapshot,  # noqa: F401 - re-exported for callers
         log_doctrine_event,
     )
     _DOCTRINE_AVAILABLE = True
@@ -1007,14 +1032,12 @@ try:
     from execution.cycle_statistics import (
         record_entry_event as _record_entry_stat,
         record_regime_change as _record_regime_stat,
-        record_flag as _record_flag_stat,
     )
     _CYCLE_STATS_AVAILABLE = True
 except ImportError:
     _CYCLE_STATS_AVAILABLE = False
     def _record_entry_stat(*args, **kwargs): pass
     def _record_regime_stat(*args, **kwargs): pass
-    def _record_flag_stat(*args, **kwargs): pass
 
 # Regime pressure (observational only — never affects decisions)
 try:
@@ -1034,13 +1057,20 @@ from execution.utils import (
     save_json,
     get_live_positions,
 )
-from execution.utils.metrics import fee_pnl_ratio, router_effectiveness_7d
+from execution.utils.metrics import fee_pnl_ratio
 
 from execution.signal_generator import (
     normalize_intent as generator_normalize_intent,
 )
 from execution.signal_screener import generate_intents
 from execution import signal_doctor
+from execution.hydra_integration import (
+    run_hydra_pipeline,
+    convert_hydra_intents_to_execution,
+    merge_with_single_strategy_intents,
+    is_hydra_enabled,
+)
+from execution.cerberus_router import get_cerberus_all_multipliers
 from execution.state_publish import (
     build_synced_state_payload,
     write_nav_state,
@@ -1207,13 +1237,6 @@ def _binary_lab_tick(now_iso: str) -> bool:
         return False
 
 # ---- Firestore publisher handle (revisions differ) ----
-def _resolve_env(default: str = "dev") -> str:
-    raw = (os.getenv("ENV") or os.getenv("ENVIRONMENT") or "").strip()
-    if not raw:
-        return default
-    return raw
-
-
 ENV = _resolve_env()
 if ENV.lower() == "prod":
     allow_prod = os.getenv("ALLOW_PROD_WRITE", "0").strip().lower()
@@ -1340,63 +1363,11 @@ _RISK_STATE = RiskState()
 _PORTFOLIO_SNAPSHOT = PortfolioSnapshot(load_json("config/strategy_config.json"))
 
 
-def _nav_pct_fraction(value: Any) -> float:
-    """Interpret numeric percent inputs as fractions; 10 -> 0.10, 0.02 -> 0.02."""
-    try:
-        pct = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if pct <= 0.0:
-        return 0.0
-    if pct > 1.0:
-        return pct / 100.0
-    return pct
-
-
-def _normalize_pct_value(value: Any) -> float:
-    try:
-        pct = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if pct <= 0.0:
-        return 0.0
-    if pct > 1.0:
-        return pct / 100.0
-    return pct
-
-
-def _size_from_nav(symbol: str, nav_usd: float, pct: float) -> float:
-    """Compute gross notional from NAV * pct fraction."""
-    try:
-        return float(nav_usd) * float(pct)
-    except Exception:
-        return 0.0
-
-
-def _clamp_intent_gross(symbol: str, gross: float, nav_usd: float, floor_gross: float) -> float:
-    """Pass-through clamp: honor floor only (caps enforced in risk engine)."""
-    return max(float(gross), float(floor_gross))
-
 # ---- knobs ----
 SLEEP = int(os.getenv("LOOP_SLEEP", "60"))
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", "0") or 0)
 SCREENER_INTERVAL = int(os.getenv("SCREENER_INTERVAL", "300") or 300)
 _LAST_SCREENER_RUN = 0.0
-
-
-def _git_commit() -> str:
-    try:
-        return (
-            subprocess.check_output(["git", "describe", "--tags", "--always"])
-            .decode()
-            .strip()
-        )
-    except Exception:
-        return "unknown"
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _startup_flags() -> Dict[str, Any]:
@@ -1428,14 +1399,6 @@ def _log_startup_summary() -> Dict[str, Any]:
     )
     flags["prefix"] = prefix
     return flags
-
-
-def _read_dry_run_flag() -> bool:
-    return os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
-
-
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).lower() in ("1", "true", "yes")
 
 
 def _publish_startup_heartbeat(flags: Dict[str, Any]) -> None:
@@ -1572,16 +1535,6 @@ def _clean_testnet_caches() -> None:
     LOG.info("[executor][testnet] cleaned stale risk/nav cache for fresh start")
 
 
-def _coerce_veto_reasons(raw: Any) -> List[str]:
-    if not raw:
-        return []
-    if isinstance(raw, str):
-        return [raw]
-    if isinstance(raw, Sequence):
-        return [str(item) for item in raw if item]
-    return [str(raw)]
-
-
 def _normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
     normalized = generator_normalize_intent(intent)
     normalized.setdefault("tf", normalized.get("timeframe"))
@@ -1679,374 +1632,10 @@ def _log_order_error(
         LOG.debug("[health] record_execution_error_failed")
 
 
-@dataclass
-class OrderAckInfo:
-    symbol: str
-    side: str
-    order_type: str
-    request_qty: Optional[float]
-    position_side: Optional[str]
-    reduce_only: bool
-    order_id: Optional[int]
-    client_order_id: Optional[str]
-    status: str
-    latency_ms: Optional[float]
-    attempt_id: Optional[str] = None
-    intent_id: Optional[str] = None
-    ts_ack: str = ""
-
-
-@dataclass
-class FillSummary:
-    executed_qty: float
-    avg_price: Optional[float]
-    status: str
-    fee_total: float
-    fee_asset: Optional[str]
-    trade_ids: List[Any]
-    ts_fill_first: Optional[str]
-    ts_fill_last: Optional[str]
-    latency_ms: Optional[float] = None
-    is_maker: bool = False
-
-
-def _normalize_status(status: Any) -> str:
-    if not status:
-        return "UNKNOWN"
-    try:
-        value = str(status).upper()
-    except Exception:
-        return "UNKNOWN"
-    if value == "CANCELLED":
-        return "CANCELED"
-    return value
-
-
-def _to_float(value: Any) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _ms_to_iso(value: Any) -> Optional[str]:
-    try:
-        if value is None:
-            return None
-        val = float(value)
-    except (TypeError, ValueError):
-        return None
-    if val <= 0:
-        return None
-    if val > 1e12:
-        val /= 1000.0
-    try:
-        return datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
-    except Exception:
-        return None
-
-
-def _iso_to_ts(value: Optional[str]) -> Optional[float]:
-    if not value:
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    try:
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        dt = datetime.fromisoformat(text)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    except Exception:
-        return None
-
-
-def _fetch_order_status(symbol: str, order_id: Optional[int], client_order_id: Optional[str]) -> Dict[str, Any]:
-    params: Dict[str, Any] = {"symbol": symbol}
-    if order_id:
-        params["orderId"] = int(order_id)
-    elif client_order_id:
-        params["origClientOrderId"] = client_order_id
-    else:
-        return {}
-    try:
-        resp = _req("GET", "/fapi/v1/order", signed=True, params=params, timeout=6.0)
-        return resp.json() or {}
-    except Exception as exc:
-        LOG.debug("[fills] order_status_fetch_failed symbol=%s order_id=%s err=%s", symbol, order_id, exc)
-        return {}
-
-
-def _fetch_order_trades(symbol: str, order_id: Optional[int]) -> List[Dict[str, Any]]:
-    params: Dict[str, Any] = {"symbol": symbol}
-    if order_id:
-        params["orderId"] = int(order_id)
-    try:
-        resp = _req("GET", "/fapi/v1/userTrades", signed=True, params=params, timeout=6.0)
-        data = resp.json() or []
-        if not isinstance(data, list):
-            return []
-        return data
-    except Exception as exc:
-        LOG.debug("[fills] order_trades_fetch_failed symbol=%s order_id=%s err=%s", symbol, order_id, exc)
-        return []
-
-
-def _emit_order_ack(
-    symbol: str,
-    side: str,
-    order_type: str,
-    request_qty: Optional[float],
-    position_side: Optional[str],
-    reduce_only: bool,
-    resp: Mapping[str, Any],
-    *,
-    latency_ms: Optional[float],
-    attempt_id: Optional[str],
-    intent_id: Optional[str],
-) -> Optional[OrderAckInfo]:
-    status = _normalize_status(resp.get("status"))
-    order_id_raw = resp.get("orderId")
-    try:
-        order_id = int(order_id_raw) if order_id_raw is not None else None
-    except (TypeError, ValueError):
-        order_id = None
-    client_order_id = resp.get("clientOrderId") or resp.get("orderId")
-    if not order_id and not client_order_id:
-        return None
-    ts_ack = now_utc()
-
-    ack = OrderAckInfo(
-        symbol=symbol,
-        side=str(side).upper(),
-        order_type=str(order_type).upper(),
-        request_qty=_to_float(request_qty),
-        position_side=position_side,
-        reduce_only=bool(reduce_only),
-        order_id=order_id,
-        client_order_id=str(client_order_id) if client_order_id is not None else None,
-        status=status,
-        latency_ms=_to_float(latency_ms),
-        attempt_id=attempt_id,
-        intent_id=intent_id,
-        ts_ack=ts_ack,
-    )
-    payload: Dict[str, Any] = {
-        "symbol": ack.symbol,
-        "side": ack.side,
-        "ts_ack": ts_ack,
-        "orderId": ack.order_id,
-        "clientOrderId": ack.client_order_id,
-        "request_qty": ack.request_qty,
-        "order_type": ack.order_type,
-        "status": ack.status,
-    }
-    if ack.position_side:
-        payload["positionSide"] = ack.position_side
-    if ack.reduce_only:
-        payload["reduceOnly"] = True
-    if ack.latency_ms is not None:
-        payload["latency_ms"] = ack.latency_ms
-    if attempt_id:
-        payload["attempt_id"] = attempt_id
-    if intent_id:
-        payload["intent_id"] = intent_id
-    try:
-        write_event("order_ack", payload)
-    except Exception as exc:
-        LOG.debug("[events] ack_write_failed %s %s", payload.get("orderId"), exc)
-    return ack
-
-
-def _should_emit_close(ack: OrderAckInfo, close_results: List[PnlCloseResult]) -> bool:
-    if not close_results:
-        return False
-    if ack.reduce_only:
-        return True
-    pos_before = close_results[0].position_before
-    pos_after = close_results[-1].position_after
-    if abs(pos_after) < 1e-8:
-        return True
-    if pos_before == 0.0:
-        return False
-    return pos_before * pos_after <= 0.0
-
-
-def _confirm_order_fill(
-    ack: OrderAckInfo,
-    metadata: Optional[Mapping[str, Any]] = None,
-    strategy: Optional[str] = None,
-) -> Optional[FillSummary]:
-    if not ack.order_id and not ack.client_order_id:
-        return None
-    start = time.time()
-    seen_trade_ids: set[str] = set()
-    executed_qty = 0.0
-    cum_quote = 0.0
-    fee_total = 0.0
-    fee_asset: Optional[str] = None
-    ts_first: Optional[str] = None
-    ts_last: Optional[str] = None
-    status = ack.status
-    last_summary: Optional[FillSummary] = None
-    fill_latency_ms: Optional[float] = None
-
-    metadata_payload: Optional[Dict[str, Any]] = None
-    if isinstance(metadata, Mapping):
-        try:
-            metadata_payload = dict(metadata)
-        except Exception:
-            metadata_payload = None
-
-    while (time.time() - start) <= _FILL_POLL_TIMEOUT:
-        status_resp = _fetch_order_status(ack.symbol, ack.order_id, ack.client_order_id)
-        if status_resp:
-            status = _normalize_status(status_resp.get("status"))
-
-        trades = _fetch_order_trades(ack.symbol, ack.order_id)
-        new_trades: List[Dict[str, Any]] = []
-        for trade in trades:
-            trade_id = trade.get("id")
-            if trade_id is None:
-                continue
-            trade_id_str = str(trade_id)
-            if trade_id_str in seen_trade_ids:
-                continue
-            seen_trade_ids.add(trade_id_str)
-            new_trades.append(trade)
-            qty = _to_float(trade.get("qty")) or 0.0
-            price = _to_float(trade.get("price")) or 0.0
-            executed_qty += qty
-            cum_quote += qty * price
-            commission = _to_float(trade.get("commission")) or 0.0
-            fee_total += commission
-            fee_asset = fee_asset or trade.get("commissionAsset") or trade.get("marginAsset") or "USDT"
-            trade_ts = _ms_to_iso(trade.get("time"))
-            now_iso = now_utc()
-            if trade_ts:
-                if ts_first is None or trade_ts < ts_first:
-                    ts_first = trade_ts
-                if ts_last is None or trade_ts > ts_last:
-                    ts_last = trade_ts
-            else:
-                if ts_first is None:
-                    ts_first = now_iso
-                ts_last = now_iso
-
-        if new_trades:
-            avg_price = (cum_quote / executed_qty) if executed_qty else None
-            fill_payload: Dict[str, Any] = {
-                "symbol": ack.symbol,
-                "side": ack.side,
-                "ts_fill_first": ts_first or now_utc(),
-                "ts_fill_last": ts_last or now_utc(),
-                "orderId": ack.order_id,
-                "clientOrderId": ack.client_order_id,
-                "executedQty": executed_qty,
-                "avgPrice": avg_price,
-                "fee_total": fee_total,
-                "feeAsset": fee_asset or "USDT",
-                "tradeIds": sorted(seen_trade_ids),
-                "status": status,
-            }
-            if strategy:
-                fill_payload["strategy"] = strategy
-            if metadata_payload:
-                fill_payload["metadata"] = metadata_payload
-            if ack.position_side:
-                fill_payload["positionSide"] = ack.position_side
-            if ack.reduce_only:
-                fill_payload["reduceOnly"] = True
-            if ack.attempt_id:
-                fill_payload["attempt_id"] = ack.attempt_id
-            if ack.intent_id:
-                fill_payload["intent_id"] = ack.intent_id
-            try:
-                write_event("order_fill", fill_payload)
-            except Exception as exc:
-                LOG.debug("[events] fill_write_failed %s %s", ack.order_id, exc)
-
-            close_results: List[PnlCloseResult] = []
-            for trade in new_trades:
-                qty = _to_float(trade.get("qty")) or 0.0
-                if qty <= 0:
-                    continue
-                price = _to_float(trade.get("price")) or 0.0
-                commission = _to_float(trade.get("commission")) or 0.0
-                fill_obj = PnlFill(
-                    symbol=ack.symbol,
-                    side=ack.side,
-                    qty=qty,
-                    price=price,
-                    fee=commission,
-                    position_side=ack.position_side,
-                    reduce_only=ack.reduce_only,
-                )
-                close_res = _POSITION_TRACKER.apply_fill(fill_obj)
-                if close_res:
-                    close_results.append(close_res)
-
-            if _should_emit_close(ack, close_results):
-                total_realized = sum(r.realized_pnl for r in close_results)
-                total_fees = sum(r.fees for r in close_results)
-                pos_before = close_results[0].position_before if close_results else 0.0
-                pos_after = close_results[-1].position_after if close_results else 0.0
-                closed_qty = sum(r.closed_qty for r in close_results)
-                close_payload: Dict[str, Any] = {
-                    "symbol": ack.symbol,
-                    "ts_close": ts_last or now_utc(),
-                    "orderId": ack.order_id,
-                    "clientOrderId": ack.client_order_id,
-                    "realizedPnlUsd": total_realized,
-                    "fees_total": total_fees,
-                    "position_size_before": pos_before,
-                    "position_size_after": pos_after,
-                }
-                if strategy:
-                    close_payload["strategy"] = strategy
-                if metadata_payload:
-                    close_payload["metadata"] = metadata_payload
-                if ack.position_side:
-                    close_payload["positionSide"] = ack.position_side
-                if closed_qty > 0:
-                    close_payload["closed_qty"] = closed_qty
-                if ack.attempt_id:
-                    close_payload["attempt_id"] = ack.attempt_id
-                if ack.intent_id:
-                    close_payload["intent_id"] = ack.intent_id
-                try:
-                    write_event("order_close", close_payload)
-                except Exception as exc:
-                    LOG.debug("[events] close_write_failed %s %s", ack.order_id, exc)
-
-            if ts_last:
-                ack_ts = _iso_to_ts(ack.ts_ack)
-                fill_ts = _iso_to_ts(ts_last)
-                if ack_ts is not None and fill_ts is not None:
-                    fill_latency_ms = max(0.0, (fill_ts - ack_ts) * 1000.0)
-
-            last_summary = FillSummary(
-                executed_qty=executed_qty,
-                avg_price=avg_price,
-                status=status,
-                fee_total=fee_total,
-                fee_asset=fee_asset,
-                trade_ids=sorted(seen_trade_ids),
-                ts_fill_first=ts_first,
-                ts_fill_last=ts_last,
-                latency_ms=fill_latency_ms,
-            )
-
-        if status in _FILL_FINAL_STATUSES:
-            break
-        if not new_trades:
-            time.sleep(_FILL_POLL_INTERVAL)
-
-    return last_summary
+# ── Fill tracker (extracted to execution/fill_tracker.py) ────────────
+# OrderAckInfo, FillSummary, _fetch_order_status, _fetch_order_trades,
+# _emit_order_ack, _should_emit_close, _confirm_order_fill
+# imported at module top; backward-compat aliases preserved for tests.
 
 
 def _nav_snapshot() -> Dict[str, Any]:
@@ -2058,65 +1647,9 @@ def _nav_snapshot() -> Dict[str, Any]:
     return snapshot
 
 
-def _estimate_intent_qty(intent: Mapping[str, Any], gross_target: float, price_hint: float) -> float:
-    for key in ("quantity", "qty", "order_qty", "orderQty", "size", "units"):
-        if key in intent:
-            try:
-                return float(intent[key])
-            except Exception:
-                continue
-    try:
-        normalized = intent.get("normalized")
-        if isinstance(normalized, Mapping) and "qty" in normalized:
-            return float(normalized.get("qty") or 0.0)
-    except Exception:
-        pass
-    try:
-        if price_hint and price_hint > 0:
-            return float(gross_target) / float(price_hint)
-    except Exception:
-        pass
-    return float(intent.get("qty_estimate", 0.0) or 0.0)
-
-
-def compute_final_gross_for_test(
-    intent: Mapping[str, Any],
-    nav_usd: float,
-    size_risk_cfg: Mapping[str, Any],
-) -> float:
-    """Pure helper for tests to mirror the v6 sizing clamps without side effects."""
-    try:
-        symbol = str(intent.get("symbol") or intent.get("pair") or "").upper()
-    except Exception:
-        symbol = ""
-    lev = float(intent.get("leverage", 1.0) or 1.0)
-    per_trade_nav_pct = _nav_pct_fraction(intent.get("per_trade_nav_pct"))
-    intent_min_notional = _to_float(intent.get("min_notional")) or 0.0
-    try:
-        screener_gross = float(intent.get("gross_usd") or 0.0)
-    except Exception:
-        screener_gross = 0.0
-    gross_target = float(intent.get("gross_usd") or 0.0)
-    if nav_usd is None:
-        nav_usd = 0.0
-    floor_gross = max(
-        float(size_risk_cfg.get("min_notional_usd") or 0.0),
-        intent_min_notional,
-        symbol_min_gross(symbol),
-    )
-    if gross_target <= 0.0 and per_trade_nav_pct > 0.0:
-        gross_target = _size_from_nav(symbol, nav_usd, per_trade_nav_pct)
-    gross_target = max(gross_target, floor_gross)
-    if screener_gross > 0.0:
-        gross_target = min(gross_target, screener_gross)
-    if gross_target < floor_gross:
-        return 0.0
-    return float(gross_target)
-
-
 def _position_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
     try:
-        positions = list(get_positions() or [])
+        positions = list(_POSITION_CACHE.get(get_positions) or [])
     except Exception:
         positions = []
     symbol_upper = str(symbol).upper()
@@ -2536,22 +2069,6 @@ def _update_risk_state_counters(
     _RISK_STATE.daily_pnl_pct = 0.0
 
 
-def _current_bucket_gross(symbol_gross: Mapping[str, float], buckets: Mapping[str, str]) -> Dict[str, float]:
-    totals: Dict[str, float] = {}
-    for sym, gross in symbol_gross.items():
-        try:
-            bucket = buckets.get(str(sym).upper())
-        except Exception:
-            bucket = None
-        if not bucket:
-            continue
-        try:
-            totals[bucket] = totals.get(bucket, 0.0) + float(gross)
-        except Exception:
-            continue
-    return totals
-
-
 def _build_order_intent_for_executor(
     symbol: str,
     side: str,
@@ -2865,8 +2382,8 @@ def _maybe_compute_sentinel_x() -> None:
         from execution.sentinel_x import (
             run_sentinel_x_step,
             load_sentinel_x_config,
-            SentinelXState,
-            save_sentinel_x_state,
+            SentinelXState,  # noqa: F401 - availability probe
+            save_sentinel_x_state,  # noqa: F401 - availability probe
         )
         from execution.exchange_utils import get_klines
         from pathlib import Path
@@ -3224,6 +2741,374 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
     return True, "DOCTRINE_ALLOW", decision.to_dict()
 
 
+# ── Module-level veto persistence (promoted from _send_order closure) ──
+
+
+def _persist_veto(
+    reason: str,
+    price_hint: float,
+    extra: Dict[str, Any] | None = None,
+    *,
+    symbol: str,
+    side: str,
+    pos_side: str,
+    gross_target: float,
+) -> Dict[str, Any]:
+    """Persist a veto event to JSON file and structured log.
+
+    Previously a closure inside ``_send_order``; promoted to module-level
+    so that ``symbol``, ``side``, ``pos_side``, ``gross_target`` are
+    explicit parameters rather than captured variables.
+    """
+    payload: Dict[str, Any] = {
+        "symbol": symbol,
+        "side": side,
+        "positionSide": pos_side,
+        "reason": reason,
+        "gross_usd": gross_target,
+        "price": price_hint,
+        "ts": time.time(),
+    }
+    if extra:
+        payload.update(extra)
+    try:
+        save_json(f"logs/veto_exec_{symbol}.json", payload)
+    except Exception:
+        try:
+            import pathlib as _pl
+
+            _pl.Path("logs").mkdir(exist_ok=True)
+            _pl.Path(f"logs/veto_exec_{symbol}.json").write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    thresholds: Dict[str, Any] = {}
+    observations: Dict[str, Any] = {}
+    diag_gate = None
+    diagnostics: Dict[str, Any] = {}
+    if extra:
+        maybe_thresholds = extra.get("thresholds")
+        if isinstance(maybe_thresholds, Mapping):
+            thresholds = dict(maybe_thresholds)
+        maybe_diag = extra.get("diagnostics")
+        if isinstance(maybe_diag, Mapping):
+            diagnostics = dict(maybe_diag)
+            diag_gate = diagnostics.get("gate")
+            diag_thresholds = diagnostics.get("thresholds")
+            diag_obs = diagnostics.get("observations")
+            if isinstance(diag_thresholds, Mapping):
+                thresholds.update(diag_thresholds)
+            if isinstance(diag_obs, Mapping):
+                observations = dict(diag_obs)
+    log_payload = {
+        "symbol": symbol,
+        "side": side,
+        "position_side": pos_side,
+        "run_id": RUN_ID,
+        "hostname": HOSTNAME,
+        "veto_reason": reason,
+        "veto_detail": extra or {},
+        "thresholds": thresholds,
+        "observations": observations,
+        "gate": diag_gate or (extra or {}).get("gate"),
+        "ts": payload.get("ts"),
+    }
+    _record_structured_event(LOG_VETOES, "risk_veto", log_payload)
+    return payload
+
+
+# ── Fee-edge gate (extracted from _send_order inline block) ────────────
+
+
+def _check_fee_edge_gate(
+    *,
+    intent: Dict[str, Any],
+    symbol_upper: str,
+    side: str,
+    price: float,
+    price_hint: float,
+    gross_target: float,
+    intent_id: str,
+    attempt_id: str,
+) -> bool:
+    """Check fee-aware edge gate for entry orders.
+
+    Returns ``True`` if the order should proceed, ``False`` if vetoed.
+    Silently passes on import errors or unexpected failures.
+    """
+    try:
+        from execution.fee_gate import check_fee_edge, check_fee_edge_v2  # noqa: F401,F811 - availability probe
+        from execution.true_edge import compute_true_edge
+
+        _fg_notional = gross_target
+        _fg_meta = intent.get("metadata") or {}
+        _fg_hybrid = intent.get("hybrid_components") or {}
+        expected_edge_pct = float(
+            intent.get("expected_edge", 0)
+            or _fg_hybrid.get("expectancy", 0)
+            or _fg_meta.get("expectancy", 0)
+            or _fg_meta.get("expected_edge_pct", 0)
+            or 0
+        )
+        _fg_edge_source = "none"
+        if intent.get("expected_edge"):
+            _fg_edge_source = "expected_edge"
+        elif _fg_hybrid.get("expectancy"):
+            _fg_edge_source = "hybrid_expectancy"
+        elif _fg_meta.get("expectancy"):
+            _fg_edge_source = "metadata_expectancy"
+        elif _fg_meta.get("expected_edge_pct"):
+            _fg_edge_source = "metadata_expected_edge_pct"
+
+        if _fg_notional > 0:
+            _te_confidence = float(intent.get("confidence", 0) or 0)
+            _te_atr_raw: float | None = None
+            _te_timeframe: str | None = None
+            try:
+                _te_atr_raw = float(_fg_meta.get("atr", 0) or 0) or None
+            except (TypeError, ValueError):
+                _te_atr_raw = None
+            if _te_atr_raw is None:
+                try:
+                    from execution.utils.vol import atr_pct as _vol_atr_pct
+                    _atr_pct_val = _vol_atr_pct(symbol_upper, lookback_bars=50)
+                    if _atr_pct_val and _atr_pct_val > 0:
+                        _te_atr_raw = (_atr_pct_val / 100.0) * price
+                except Exception:
+                    _te_atr_raw = None
+            try:
+                _te_timeframe = str(
+                    intent.get("timeframe")
+                    or _fg_meta.get("timeframe")
+                    or intent.get("params", {}).get("timeframe")
+                    or ""
+                ) or None
+            except Exception:
+                _te_timeframe = None
+
+            if _te_confidence <= 0 and expected_edge_pct > 0:
+                _te_confidence = expected_edge_pct + 0.5
+
+            _te_result = compute_true_edge(
+                confidence=_te_confidence,
+                price=price,
+                atr=_te_atr_raw,
+                notional_usd=_fg_notional,
+                timeframe=_te_timeframe,
+            )
+
+            fg_allowed, fg_details = check_fee_edge_v2(_te_result)
+
+            if _te_result.fallback_reason == "atr_unit_suspect":
+                _record_structured_event(
+                    LOG_FEE_GATE,
+                    "TRUE_EDGE_ATR_UNIT_ANOMALY",
+                    {
+                        "symbol": symbol_upper,
+                        "side": side,
+                        "atr_raw": _te_atr_raw,
+                        "price": price,
+                        "atr_over_price": (
+                            round(_te_atr_raw / price, 4)
+                            if _te_atr_raw and price
+                            else None
+                        ),
+                        "intent_id": intent_id,
+                        "fallback_reason": "atr_unit_suspect",
+                    },
+                )
+
+            fg_details["edge_source"] = _te_result.source
+            fg_details["edge_components"] = {
+                "expected_edge": float(
+                    intent.get("expected_edge", 0) or 0
+                ),
+                "hybrid_expectancy": float(
+                    _fg_hybrid.get("expectancy", 0) or 0
+                ),
+                "hybrid_score": float(
+                    intent.get("hybrid_score", 0) or 0
+                ),
+                "conviction_score": float(
+                    intent.get("conviction_score", 0) or 0
+                ),
+            }
+            fg_details["symbol"] = symbol_upper
+            fg_details["side"] = side
+            fg_details["intent_id"] = intent_id
+            fg_details["attempt_id"] = attempt_id
+
+            if expected_edge_pct == 0.0:
+                _raw_ee = intent.get("expected_edge")
+                _raw_he = _fg_hybrid.get("expectancy")
+                if (
+                    (_raw_ee is not None and _raw_ee != 0 and _raw_ee != "")
+                    or (_raw_he is not None and _raw_he != 0 and _raw_he != "")
+                ):
+                    LOG.warning(
+                        "[fee_gate] EDGE_MISSING_ANOMALY %s: "
+                        "resolved_edge=0 but expected_edge=%s "
+                        "hybrid_expectancy=%s — possible schema drift",
+                        symbol_upper, _raw_ee, _raw_he,
+                    )
+                    _record_structured_event(
+                        LOG_FEE_GATE,
+                        "FEE_GATE_EDGE_MISSING_ANOMALY",
+                        {
+                            "symbol": symbol_upper,
+                            "side": side,
+                            "resolved_edge_pct": expected_edge_pct,
+                            "raw_expected_edge": _raw_ee,
+                            "raw_hybrid_expectancy": _raw_he,
+                            "intent_keys": sorted(intent.keys()),
+                            "metadata_keys": sorted(_fg_meta.keys()),
+                            "hybrid_component_keys": sorted(
+                                _fg_hybrid.keys()
+                            ),
+                        },
+                    )
+
+            if not fg_allowed:
+                LOG.info(
+                    "[fee_gate] ENTRY VETO %s: edge $%.4f < "
+                    "required $%.4f (source=%s, edge_pct=%.6f)",
+                    symbol_upper,
+                    fg_details.get("expected_edge_usd", 0),
+                    fg_details.get("required_edge_usd", 0),
+                    _te_result.source,
+                    _te_result.expected_edge_pct,
+                )
+                _record_structured_event(
+                    LOG_FEE_GATE,
+                    "FEE_GATE_VETO_DETAIL",
+                    fg_details,
+                )
+                return False
+            else:
+                LOG.debug(
+                    "[fee_gate] PASS %s: edge $%.4f >= "
+                    "required $%.4f (source=%s)",
+                    symbol_upper,
+                    fg_details.get("expected_edge_usd", 0),
+                    fg_details.get("required_edge_usd", 0),
+                    _te_result.source,
+                )
+    except ImportError:
+        pass
+    except Exception as _fg_exc:
+        LOG.debug("[fee_gate] check failed: %s", _fg_exc)
+
+    return True
+
+
+# ── Notional inflation guard (extracted from _send_order) ──────────────
+
+
+def _check_notional_inflation_guard(
+    *,
+    payload: Dict[str, Any],
+    symbol: str,
+    symbol_upper: str,
+    side: str,
+    pos_side: str,
+    price_hint: float,
+    gross_target: float,
+    meta: Dict[str, Any],
+    intent: Dict[str, Any],
+    nav_snapshot: Any,
+) -> bool:
+    """Check post-sizing notional inflation guard.
+
+    Returns ``True`` if the order should proceed, ``False`` if vetoed.
+    On unexpected failure, logs a warning and returns ``True`` (proceed).
+    """
+    try:
+        _actual_qty = float(payload.get("quantity", 0) or 0)
+        _actual_notional = (
+            _actual_qty * price_hint if price_hint > 0 else 0.0
+        )
+        _per_sym = (
+            (_RISK_CFG.get("per_symbol") or {}).get(symbol_upper) or {}
+        )
+        _max_order_notional = float(
+            _per_sym.get("max_order_notional", 0) or 0
+        )
+        _inflation_ratio = (
+            (_actual_notional / gross_target) if gross_target > 0 else 0.0
+        )
+
+        _notional_breach = False
+        _breach_reason = ""
+        if _max_order_notional > 0 and _actual_notional > _max_order_notional:
+            _notional_breach = True
+            _breach_reason = (
+                f"actual_notional={_actual_notional:.2f} > "
+                f"max_order_notional={_max_order_notional:.2f}"
+            )
+        elif gross_target > 0 and _inflation_ratio > 3.0:
+            _notional_breach = True
+            _breach_reason = (
+                f"inflation_ratio={_inflation_ratio:.1f}x "
+                f"(actual={_actual_notional:.2f} "
+                f"vs target={gross_target:.2f})"
+            )
+
+        if _notional_breach:
+            LOG.error(
+                "[sizing] NOTIONAL_INFLATION_GUARD %s side=%s "
+                "qty=%s price=%.2f actual_notional=%.2f "
+                "gross_target=%.2f reason=%s",
+                symbol, side, payload.get("quantity"), price_hint,
+                _actual_notional, gross_target, _breach_reason,
+            )
+            _persist_veto(
+                "notional_inflation_guard",
+                price_hint,
+                {
+                    "intent": intent,
+                    "nav_snapshot": nav_snapshot,
+                    "thresholds": {
+                        "actual_notional": _actual_notional,
+                        "gross_target": gross_target,
+                        "max_order_notional": _max_order_notional,
+                        "inflation_ratio": _inflation_ratio,
+                        "payload_qty": str(payload.get("quantity")),
+                        "meta": dict(meta),
+                    },
+                },
+                symbol=symbol,
+                side=side,
+                pos_side=pos_side,
+                gross_target=gross_target,
+            )
+            try:
+                publish_order_audit(
+                    symbol,
+                    {
+                        "phase": "blocked",
+                        "side": side,
+                        "positionSide": pos_side,
+                        "reason": "notional_inflation_guard",
+                        "actual_notional": _actual_notional,
+                        "gross_target": gross_target,
+                        "max_order_notional": _max_order_notional,
+                        "payload_qty": str(payload.get("quantity")),
+                    },
+                )
+            except Exception:
+                pass
+            return False
+    except Exception as _nig_exc:
+        LOG.warning(
+            "[sizing] notional_inflation_guard check failed: %s",
+            _nig_exc,
+        )
+
+    return True
+
+
 # NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     # DOCTRINE GATE — Supreme Authority Check
@@ -3390,7 +3275,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             except Exception as exc:
                 LOG.debug("[dle_shadow] entry_allow hook failed: %s", exc)
 
-    per_trade_nav_pct = _nav_pct_fraction(intent.get("per_trade_nav_pct"))
     try:
         screener_gross = float(intent.get("gross_usd") or 0.0)
     except Exception:
@@ -3401,7 +3285,6 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
         lev = 1.0
     gross_from_intent = float(intent.get("gross_usd") or 0.0)
     gross_target = float(gross_from_intent or (cap * lev))
-    intent_min_notional = _to_float(intent.get("min_notional")) or 0.0
     price_guess = 0.0
     try:
         price_guess = float(intent.get("price", 0.0) or 0.0)
@@ -3420,10 +3303,9 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     try:
         _PORTFOLIO_SNAPSHOT.refresh()
     except Exception:
-        pass
+        LOG.error("[PORTFOLIO_REFRESH] snapshot refresh failed", exc_info=True)
     nav_snapshot = _nav_snapshot()
     nav_usd = float(nav_snapshot.get("nav_usd", 0.0) or 0.0)
-    using_nav_pct = False
     symbol_gross_map: Dict[str, float] = {}
     try:
         raw_map = nav_snapshot.get("symbol_gross_usd") or {}
@@ -3435,81 +3317,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     continue
     except Exception:
         symbol_gross_map = {}
-    symbol_buckets: Dict[str, str] = {}
     tier_name = symbol_tier(symbol)
-    tier_gross_map: Dict[str, float] = {}
     current_tier_gross = 0.0
-    per_symbol_limits: Dict[str, Dict[str, Any]] = {}
-    sym_limits: Dict[str, Any] = {}
-    sym_max_order = 0.0
-    sym_max_nav_pct = 0.0
-
-    def _persist_veto(reason: str, price_hint: float, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "symbol": symbol,
-            "side": side,
-            "positionSide": pos_side,
-            "reason": reason,
-            "gross_usd": gross_target,
-            "price": price_hint,
-            "ts": time.time(),
-        }
-        if extra:
-            payload.update(extra)
-        try:
-            save_json(f"logs/veto_exec_{symbol}.json", payload)
-        except Exception:
-            try:
-                import pathlib as _pl
-
-                _pl.Path("logs").mkdir(exist_ok=True)
-                _pl.Path(f"logs/veto_exec_{symbol}.json").write_text(
-                    json.dumps(payload),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-        thresholds: Dict[str, Any] = {}
-        observations: Dict[str, Any] = {}
-        diag_gate = None
-        diagnostics: Dict[str, Any] = {}
-        if extra:
-            maybe_thresholds = extra.get("thresholds")
-            if isinstance(maybe_thresholds, Mapping):
-                thresholds = dict(maybe_thresholds)
-            maybe_diag = extra.get("diagnostics")
-            if isinstance(maybe_diag, Mapping):
-                diagnostics = dict(maybe_diag)
-                diag_gate = diagnostics.get("gate")
-                diag_thresholds = diagnostics.get("thresholds")
-                diag_obs = diagnostics.get("observations")
-                if isinstance(diag_thresholds, Mapping):
-                    thresholds.update(diag_thresholds)
-                if isinstance(diag_obs, Mapping):
-                    observations = dict(diag_obs)
-        log_payload = {
-            "symbol": symbol,
-            "side": side,
-            "position_side": pos_side,
-            "run_id": RUN_ID,
-            "hostname": HOSTNAME,
-            "veto_reason": reason,
-            "veto_detail": extra or {},
-            "thresholds": thresholds,
-            "observations": observations,
-            "gate": diag_gate or (extra or {}).get("gate"),
-            "ts": payload.get("ts"),
-        }
-        _record_structured_event(LOG_VETOES, "risk_veto", log_payload)
-        return payload
 
     cfg = load_json("config/strategy_config.json") or {}
-    sizing_cfg = (cfg.get("sizing") or {})
-    floor_gross = max(
-        symbol_min_gross(symbol.upper()),
-        intent_min_notional,
-        float((_RISK_CFG.get("global") or {}).get("min_notional_usdt", 0.0) or 0.0),
-    )
     gross_target = float(intent.get("gross_usd") or gross_target or 0.0)
     # --- Calibration window sizing cap ---
     # When active, cap gross_target to calibration per_trade_nav_pct * NAV.
@@ -3608,6 +3419,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "nav_snapshot": nav_snapshot,
                 "thresholds": {"strategy_required": True},
             },
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side,
+            gross_target=gross_target,
         )
         return None
 
@@ -3618,11 +3433,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     if not reduce_only:
         _BAND_ORDER = {"very_low": 0, "low": 1, "medium": 2, "high": 3, "very_high": 4}
         try:
-            _strat_cfg = _load_strategy_config() if "_load_strategy_config" in dir() else {}
-            if not _strat_cfg:
-                import json as _json
-                with open("config/strategy_config.json") as _f:
-                    _strat_cfg = _json.load(_f)
+            _strat_cfg = load_json("config/strategy_config.json") or {}
             _conv_cfg = _strat_cfg.get("conviction", {})
             _conv_mode = str(_conv_cfg.get("mode", "off")).lower()
             _min_band_str = str(_conv_cfg.get("min_entry_band", "")).lower()
@@ -3652,6 +3463,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                                 "actual_band": _intent_band or "none",
                             },
                         },
+                        symbol=symbol,
+                        side=side,
+                        pos_side=pos_side,
+                        gross_target=gross_target,
                     )
                     return None
                 else:
@@ -3680,7 +3495,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     attempt_payload["expected_edge"] = float(intent.get("expected_edge", 0.0) or 0.0)
     _record_structured_event(LOG_ATTEMPTS, "order_attempt", attempt_payload)
 
-    if os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on"):
+    # v7.9-KS: Doctrine exits (REGIME_FLIP, CRISIS, thesis-death) must NEVER
+    # be blocked by the kill switch.  Kill switch caps new entries; it does
+    # not override the Doctrine Kernel's authority to close positions whose
+    # thesis has died (Doctrine Law #5).
+    _is_doctrine_exit = bool(intent.get("doctrine_exit")) and bool(intent.get("reduceOnly"))
+    _kill_switch_on = os.environ.get("KILL_SWITCH", "0").lower() in ("1", "true", "yes", "on")
+    if _kill_switch_on and _is_doctrine_exit:
+        LOG.warning(
+            "[risk] kill switch active but DOCTRINE EXIT exempt — allowing %s %s (reason=%s)",
+            symbol, side, intent.get("metadata", {}).get("exit_reason", "?"),
+        )
+    if _kill_switch_on and not _is_doctrine_exit:
         price_hint = float(intent.get("price", 0.0) or 0.0)
         LOG.warning("[risk] kill switch active; veto %s %s", symbol, side)
         _persist_veto(
@@ -3691,6 +3517,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "nav_snapshot": nav_snapshot,
                 "thresholds": {"kill_switch": True},
             },
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side,
+            gross_target=gross_target,
         )
         try:
             publish_order_audit(
@@ -3722,41 +3552,12 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     # Risk gating handled centrally in risk_engine_v6; executor does not re-evaluate caps.
 
     try:
-        positions = list(get_positions() or [])
+        positions = list(_POSITION_CACHE.get(get_positions) or [])
     except Exception:
         positions = []
 
-    def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
-        request_payload = dict(payload)
-        order_type = str(request_payload.get("type") or "MARKET").upper()
-        convert_close, _close_qty = should_use_close_position(
-            request_payload.get("symbol"),
-            request_payload.get("side"),
-            request_payload.get("positionSide"),
-            request_payload.get("reduceOnly"),
-            order_type=order_type,
-            positions=positions,
-        )
-        if convert_close and order_type != "MARKET":
-            request_payload.pop("reduceOnly", None)
-            request_payload.pop("quantity", None)
-            request_payload["closePosition"] = True
-        ro_val = request_payload.get("reduceOnly")
-        if isinstance(ro_val, str):
-            ro_val = ro_val.lower() in ("1", "true", "yes", "on")
-        return send_order(
-            symbol=request_payload["symbol"],
-            side=request_payload["side"],
-            type=request_payload.get("type", "MARKET"),
-            quantity=request_payload.get("quantity"),
-            positionSide=request_payload.get("positionSide"),
-            reduceOnly=ro_val,
-            price=request_payload.get("price"),
-            closePosition=request_payload.get("closePosition"),
-            timeInForce=request_payload.get("timeInForce"),
-            newClientOrderId=request_payload.get("newClientOrderId"),
-            positions=positions,
-        )
+    def _dispatch_local(p: Dict[str, Any]) -> Dict[str, Any]:
+        return _dispatch_to_exchange(p, positions, send_order, should_use_close_position)
 
     force_direct_send = False
 
@@ -3798,7 +3599,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             )
             reduce_resp: Dict[str, Any] = {}
             try:
-                reduce_resp = _dispatch(reduce_payload)
+                reduce_resp = _dispatch_local(reduce_payload)
             except Exception as exc:
                 LOG.error("[executor] reduce_only_send_failed %s %s", symbol, exc)
                 return
@@ -3821,7 +3622,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     },
                 )
             except Exception:
-                pass
+                LOG.warning("[FLIP_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
             if reduce_resp:
                 reduce_latency_ms = max(
                     0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0
@@ -3840,12 +3641,24 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 )
                 reduce_fill: Optional[FillSummary] = None
                 if reduce_ack and not reduce_resp.get("dryRun"):
-                    reduce_fill = _confirm_order_fill(
+                    _reduce_fh = _start_fill_task(
                         reduce_ack,
                         intent.get("metadata"),
                         intent.get("strategy") or intent.get("strategy_id"),
                     )
-                if reduce_ack:
+                    # ── Overlap: log ack while fill polls in background ──
+                    if reduce_ack:
+                        LOG.info(
+                            "[executor] FLIP_ACK id=%s status=%s qty=%s",
+                            reduce_ack.order_id or reduce_ack.client_order_id,
+                            reduce_ack.status,
+                            reduce_ack.request_qty,
+                        )
+                    # Try non-blocking check first, then block for remainder
+                    reduce_fill = _poll_fill_task(_reduce_fh)
+                    if reduce_fill is None:
+                        reduce_fill = _wait_fill_task(_reduce_fh)
+                elif reduce_ack:
                     LOG.info(
                         "[executor] FLIP_ACK id=%s status=%s qty=%s",
                         reduce_ack.order_id or reduce_ack.client_order_id,
@@ -3864,11 +3677,12 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         try:
                             _RISK_STATE.note_fill(symbol, time.time())
                         except Exception:
-                            pass
+                            LOG.warning("[RISK_NOTE_FILL] note_fill failed for %s (flip)", symbol, exc_info=True)
                         _emit_position_snapshots(symbol)
+                        _POSITION_CACHE.invalidate()
 
             try:
-                positions = list(get_positions() or [])
+                positions = list(_POSITION_CACHE.get(get_positions) or [])
             except Exception:
                 positions = []
             opp_after_side, opp_after_qty, _ = _opposite_position(symbol, pos_side, positions)
@@ -3897,7 +3711,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     try:
         _RISK_STATE.note_attempt(time.time())
     except Exception:
-        pass
+        LOG.warning("[RISK_NOTE_ATTEMPT] note_attempt failed for %s", symbol, exc_info=True)
 
     risk_veto, details = _evaluate_order_risk(
         symbol,
@@ -3968,7 +3782,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 audit["cooldown_until"] = details.get("cooldown_until")
             publish_order_audit(symbol, audit)
         except Exception:
-            pass
+            LOG.warning("[RISK_BLOCK_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
         thresholds = {}
         if isinstance(details, Mapping):
             thresholds = dict(details.get("thresholds") or {})
@@ -3982,6 +3796,10 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 "thresholds": thresholds,
                 "diagnostics": details if isinstance(details, Mapping) else {},
             },
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side,
+            gross_target=gross_target,
         )
         return
 
@@ -3994,168 +3812,18 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             return
 
     # ── v7.9-E2: Fee-Aware Edge Gate (entries only) ───────────────────────
-    # Uses gross_target (= notional, not margin) computed at L2861.
     if not reduce_only:
-        try:
-            from execution.fee_gate import check_fee_edge, check_fee_edge_v2
-            from execution.true_edge import compute_true_edge
-
-            _fg_notional = gross_target  # notional USD = qty × price
-            # Priority chain for expected_edge_pct: (v7.9-W4 wiring fix)
-            # 1. intent["expected_edge"] — signal_generator confidence-0.5
-            # 2. intent["hybrid_components"]["expectancy"] — hybrid scoring factor
-            # 3. intent["metadata"]["expectancy"] — backward compat
-            # 4. intent["metadata"]["expected_edge_pct"] — backward compat
-            _fg_meta = intent.get("metadata") or {}
-            _fg_hybrid = intent.get("hybrid_components") or {}
-            expected_edge_pct = float(
-                intent.get("expected_edge", 0)
-                or _fg_hybrid.get("expectancy", 0)
-                or _fg_meta.get("expectancy", 0)
-                or _fg_meta.get("expected_edge_pct", 0)
-                or 0
-            )
-            # Track which source provided the edge value
-            _fg_edge_source = "none"
-            if intent.get("expected_edge"):
-                _fg_edge_source = "expected_edge"
-            elif _fg_hybrid.get("expectancy"):
-                _fg_edge_source = "hybrid_expectancy"
-            elif _fg_meta.get("expectancy"):
-                _fg_edge_source = "metadata_expectancy"
-            elif _fg_meta.get("expected_edge_pct"):
-                _fg_edge_source = "metadata_expected_edge_pct"
-
-            if _fg_notional > 0:
-                # ── v7.9-TE1: True Edge v1 — ATR × confidence mapping ────
-                # Attempt ATR-based edge; falls back to proxy if ATR missing.
-                _te_confidence = float(intent.get("confidence", 0) or 0)
-                _te_atr_raw: float | None = None
-                _te_timeframe: str | None = None
-                try:
-                    _te_atr_raw = float(_fg_meta.get("atr", 0) or 0) or None
-                except (TypeError, ValueError):
-                    _te_atr_raw = None
-                if _te_atr_raw is None:
-                    # Try to fetch ATR from vol utils
-                    try:
-                        from execution.utils.vol import atr_pct as _vol_atr_pct
-                        _atr_pct_val = _vol_atr_pct(symbol_upper, lookback_bars=50)
-                        if _atr_pct_val and _atr_pct_val > 0:
-                            # atr_pct returns percentage (×100), convert to price
-                            _te_atr_raw = (_atr_pct_val / 100.0) * price
-                    except Exception:
-                        _te_atr_raw = None
-                try:
-                    _te_timeframe = str(
-                        intent.get("timeframe")
-                        or _fg_meta.get("timeframe")
-                        or intent.get("params", {}).get("timeframe")
-                        or ""
-                    ) or None
-                except Exception:
-                    _te_timeframe = None
-
-                # Use confidence from intent if available, else derive from edge
-                if _te_confidence <= 0 and expected_edge_pct > 0:
-                    _te_confidence = expected_edge_pct + 0.5
-
-                _te_result = compute_true_edge(
-                    confidence=_te_confidence,
-                    price=price,
-                    atr=_te_atr_raw,
-                    notional_usd=_fg_notional,
-                    timeframe=_te_timeframe,
-                )
-
-                fg_allowed, fg_details = check_fee_edge_v2(_te_result)
-
-                # v7.9-TE1.1: Emit structured anomaly if ATR unit guard fired
-                if _te_result.fallback_reason == "atr_unit_suspect":
-                    _record_structured_event(
-                        LOG_FEE_GATE,
-                        "TRUE_EDGE_ATR_UNIT_ANOMALY",
-                        {
-                            "symbol": symbol_upper,
-                            "side": side,
-                            "atr_raw": _te_atr_raw,
-                            "price": price,
-                            "atr_over_price": round(_te_atr_raw / price, 4) if _te_atr_raw and price else None,
-                            "intent_id": intent_id,
-                            "fallback_reason": "atr_unit_suspect",
-                        },
-                    )
-
-                # Enrich details for structured event
-                fg_details["edge_source"] = _te_result.source
-                fg_details["edge_components"] = {
-                    "expected_edge": float(intent.get("expected_edge", 0) or 0),
-                    "hybrid_expectancy": float(_fg_hybrid.get("expectancy", 0) or 0),
-                    "hybrid_score": float(intent.get("hybrid_score", 0) or 0),
-                    "conviction_score": float(intent.get("conviction_score", 0) or 0),
-                }
-                fg_details["symbol"] = symbol_upper
-                fg_details["side"] = side
-                # v7.9-TE1.1: Emit join keys for exact episode attribution
-                fg_details["intent_id"] = intent_id
-                fg_details["attempt_id"] = attempt_id
-
-                # v7.9-W4: Schema-drift anomaly guard.  If the resolved
-                # edge is 0 but the intent *does* carry edge sources,
-                # something in the priority chain is broken.  Emit a
-                # warning event so we catch regressions immediately.
-                if expected_edge_pct == 0.0:
-                    _raw_ee = intent.get("expected_edge")
-                    _raw_he = _fg_hybrid.get("expectancy")
-                    if (_raw_ee is not None and _raw_ee != 0 and _raw_ee != "") or \
-                       (_raw_he is not None and _raw_he != 0 and _raw_he != ""):
-                        LOG.warning(
-                            "[fee_gate] EDGE_MISSING_ANOMALY %s: resolved_edge=0 but "
-                            "expected_edge=%s hybrid_expectancy=%s — possible schema drift",
-                            symbol_upper, _raw_ee, _raw_he,
-                        )
-                        _record_structured_event(
-                            LOG_FEE_GATE,
-                            "FEE_GATE_EDGE_MISSING_ANOMALY",
-                            {
-                                "symbol": symbol_upper,
-                                "side": side,
-                                "resolved_edge_pct": expected_edge_pct,
-                                "raw_expected_edge": _raw_ee,
-                                "raw_hybrid_expectancy": _raw_he,
-                                "intent_keys": sorted(intent.keys()),
-                                "metadata_keys": sorted(_fg_meta.keys()),
-                                "hybrid_component_keys": sorted(_fg_hybrid.keys()),
-                            },
-                        )
-
-                if not fg_allowed:
-                    LOG.info(
-                        "[fee_gate] ENTRY VETO %s: edge $%.4f < required $%.4f (source=%s, edge_pct=%.6f)",
-                        symbol_upper,
-                        fg_details.get("expected_edge_usd", 0),
-                        fg_details.get("required_edge_usd", 0),
-                        _te_result.source,
-                        _te_result.expected_edge_pct,
-                    )
-                    _record_structured_event(
-                        LOG_FEE_GATE,
-                        "FEE_GATE_VETO_DETAIL",
-                        fg_details,
-                    )
-                    return
-                else:
-                    LOG.debug(
-                        "[fee_gate] PASS %s: edge $%.4f >= required $%.4f (source=%s)",
-                        symbol_upper,
-                        fg_details.get("expected_edge_usd", 0),
-                        fg_details.get("required_edge_usd", 0),
-                        _te_result.source,
-                    )
-        except ImportError:
-            pass
-        except Exception as _fg_exc:
-            LOG.debug("[fee_gate] check failed: %s", _fg_exc)
+        if not _check_fee_edge_gate(
+            intent=intent,
+            symbol_upper=symbol_upper,
+            side=side,
+            price=price_hint,
+            price_hint=price_hint,
+            gross_target=gross_target,
+            intent_id=intent_id,
+            attempt_id=attempt_id,
+        ):
+            return
 
     # ── Sizing Snapshot: canonical pre-order audit record ──
     try:
@@ -4205,60 +3873,25 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 },
             )
         except Exception:
-            pass
+            LOG.warning("[SIZE_ERROR_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
         return
 
     payload["positionSide"] = pos_side
 
-    def _meta_float(val: Any, fallback: float) -> float:
-        try:
-            return float(val)
-        except (TypeError, ValueError):
-            return fallback
-
-    def _attempt_maker_first(px: float, qty: float) -> Optional[PlaceOrderResult]:
-        if submit_limit is None or effective_px is None or PlaceOrderResult is None:
-            return None
-        if px <= 0 or qty <= 0:
-            return None
-        try:
-            post_px = effective_px(px, side, is_maker=True) or px
-            return submit_limit(symbol, post_px, qty, side)
-        except Exception as exc:
-            LOG.warning("[executor] maker_first_failed symbol=%s err=%s", symbol, exc)
-            return None
-
-    def _maker_metrics(result: PlaceOrderResult) -> Dict[str, Any]:
-        avg_fill = result.price if result.price is not None else None
-        return {
-            "attempt_id": attempt_id,
-            "venue": "binance_futures",
-            "route": "maker_first",
-            "prices": {
-                "mark": price_hint,
-                "submitted": result.price,
-                "avg_fill": avg_fill,
-            },
-            "qty": {
-                "contracts": result.filled_qty or result.qty,
-                "notional_usd": (avg_fill or price_hint) * (result.filled_qty or result.qty or 0.0)
-                if (avg_fill or price_hint)
-                else None,
-            },
-            "timing_ms": {
-                "decision": decision_latency_ms,
-                "submit": None,
-                "ack": None,
-                "fill": None,
-            },
-            "result": {
-                "status": "FILLED" if (result.filled_qty or 0.0) > 0 else "NEW",
-                "retries": result.rejections,
-                "cancelled": False,
-            },
-            "fees_usd": None,
-            "slippage_bps": result.slippage_bps,
-        }
+    # ── v7.9-D1: Post-sizing notional inflation guard ──────────────────
+    if not _check_notional_inflation_guard(
+        payload=payload,
+        symbol=symbol,
+        symbol_upper=symbol_upper,
+        side=side,
+        pos_side=pos_side,
+        price_hint=price_hint,
+        gross_target=gross_target,
+        meta=meta,
+        intent=intent,
+        nav_snapshot=nav_snapshot,
+    ):
+        return
 
     if not reduce_only:
         # Ensure the opening order never carries the reduceOnly flag
@@ -4297,7 +3930,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             }
         )
     except Exception:
-        pass
+        LOG.warning("[INTENT_AUDIT] publish_intent_audit failed for %s", symbol, exc_info=True)
 
     if DRY_RUN:
         LOG.info("[executor] DRY_RUN — skipping SEND_ORDER")
@@ -4314,7 +3947,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 },
             )
         except Exception:
-            pass
+            LOG.warning("[REQUEST_AUDIT] publish_order_audit failed for %s (dry_run)", symbol, exc_info=True)
         return
 
     LOG.info("[executor] SEND_ORDER %s %s payload=%s meta=%s", symbol, side, payload_view, meta)
@@ -4332,7 +3965,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             },
         )
     except Exception:
-        pass
+        LOG.warning("[REQUEST_AUDIT] publish_order_audit failed for %s (request)", symbol, exc_info=True)
 
     resp: Dict[str, Any] = {}
     router_error: Optional[str] = None
@@ -4340,7 +3973,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
 
     if force_direct_send:
         try:
-            resp = _dispatch(payload)
+            resp = _dispatch_local(payload)
             router_metrics = {
                 "attempt_id": attempt_id,
                 "venue": "binance_futures",
@@ -4491,10 +4124,16 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 component="router",
             )
         if maker_ctx_enabled:
-            maker_result = _attempt_maker_first(norm_price, norm_qty)
+            maker_result = _attempt_maker_first(
+                norm_price, norm_qty, symbol, side,
+                submit_limit_fn=submit_limit,
+                effective_px_fn=effective_px,
+            )
             if maker_result:
                 resp = maker_result.raw or {}
-                router_metrics = router_metrics or _maker_metrics(maker_result)
+                router_metrics = router_metrics or _build_maker_metrics(
+                    maker_result, attempt_id, price_hint, decision_latency_ms,
+                )
                 LOG.info(
                     "[executor] maker_first_fallback symbol=%s side=%s is_maker=%s rejections=%s",
                     symbol,
@@ -4503,99 +4142,25 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     maker_result.rejections,
                 )
     if not resp:
-        dispatch_attempt = 0
-        while True:
-            try:
-                resp = _dispatch(payload)
-                break
-            except requests.HTTPError as exc:
-                dispatch_attempt += 1
-                try:
-                    _RISK_STATE.note_error(time.time())
-                except Exception:
-                    pass
-                err_code = None
-                try:
-                    if exc.response is not None:
-                        err_code = exc.response.json().get("code")
-                except Exception:
-                    err_code = None
-                classification = ex.classify_binance_error(exc, getattr(exc, "response", None))
-                LOG.error(
-                    "[executor] ORDER_ERR code=%s symbol=%s side=%s meta=%s payload=%s err=%s",
-                    err_code,
-                    symbol,
-                    side,
-                    meta,
-                    payload_view,
-                    exc,
-                )
-                retriable = bool(classification.get("retriable")) and dispatch_attempt <= _MAX_TRANSIENT_RETRIES
-                _log_order_error(
-                    symbol=symbol,
-                    side=side,
-                    notional=gross_target,
-                    reason="http_error",
-                    classification=classification,
-                    retried=retriable,
-                    exc=exc,
-                    component="exchange",
-                    context={"code": err_code, "payload": payload_view, "attempt": dispatch_attempt},
-                )
-                try:
-                    publish_order_audit(
-                        symbol,
-                        {
-                            "phase": "error",
-                            "side": side,
-                            "positionSide": pos_side,
-                            "error": str(exc),
-                            "code": err_code,
-                            "normalized": normalized_ctx,
-                            "payload": payload_view,
-                        },
-                    )
-                except Exception:
-                    pass
-                if err_code == -1111:
-                    LOG.error(
-                        "[executor] ORDER_PRECISION ctx=%s payload=%s",
-                        normalized_ctx,
-                        payload_view,
-                    )
-                    return
-                if retriable:
-                    time.sleep(_TRANSIENT_RETRY_BACKOFF_S)
-                    continue
-                raise
-            except Exception as exc:
-                try:
-                    _RISK_STATE.note_error(time.time())
-                except Exception:
-                    pass
-                _log_order_error(
-                    symbol=symbol,
-                    side=side,
-                    notional=gross_target,
-                    reason="dispatch_error",
-                    classification=None,
-                    retried=False,
-                    exc=exc,
-                    component="executor",
-                )
-                try:
-                    publish_order_audit(
-                        symbol,
-                        {
-                            "phase": "error",
-                            "side": side,
-                            "positionSide": pos_side,
-                            "error": str(exc),
-                        },
-                    )
-                except Exception:
-                    pass
-                raise
+        _retry_ctx = _DispatchRetryContext(
+            symbol=symbol,
+            side=side,
+            pos_side=pos_side,
+            gross_target=gross_target,
+            meta=meta,
+            payload_view=payload_view,
+            normalized_ctx=normalized_ctx,
+            max_retries=_MAX_TRANSIENT_RETRIES,
+            retry_backoff_s=_TRANSIENT_RETRY_BACKOFF_S,
+            note_error_fn=_RISK_STATE.note_error,
+            log_order_error_fn=_log_order_error,
+            publish_audit_fn=publish_order_audit,
+            classify_error_fn=classify_binance_error,
+        )
+        _retry_result = _dispatch_with_retry(_dispatch_local, payload, _retry_ctx)
+        if _retry_result is None:
+            return
+        resp = _retry_result
 
     latency_ms = max(0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0)
 
@@ -4616,11 +4181,23 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             intent_id=intent_id,
         )
         if ack_info and not resp.get("dryRun"):
-            fill_summary = _confirm_order_fill(
+            _fill_handle = _start_fill_task(
                 ack_info,
                 intent.get("metadata"),
                 intent.get("strategy") or intent.get("strategy_id"),
             )
+            # ── Overlap safe bookkeeping while fill polls in background ──
+            if ack_info:
+                LOG.info(
+                    "[executor] ORDER_ACK id=%s status=%s qty_req=%s",
+                    ack_info.order_id or ack_info.client_order_id,
+                    ack_info.status,
+                    ack_info.request_qty,
+                )
+            # Try non-blocking check first, then block for remainder
+            fill_summary = _poll_fill_task(_fill_handle)
+            if fill_summary is None:
+                fill_summary = _wait_fill_task(_fill_handle)
 
     avg_fill_price = (
         fill_summary.avg_price if fill_summary and fill_summary.avg_price is not None else _to_float(resp.get("avgPrice"))
@@ -4726,12 +4303,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     }
 
     if ack_info:
-        LOG.info(
-            "[executor] ORDER_ACK id=%s status=%s qty_req=%s",
-            ack_info.order_id or ack_info.client_order_id,
-            ack_info.status,
-            ack_info.request_qty,
-        )
+        pass  # ACK already logged above (overlapped with fill polling)
     else:
         LOG.info("[executor] ORDER_ACK missing response symbol=%s", symbol)
     if fill_summary:
@@ -4766,15 +4338,16 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
     try:
         publish_order_audit(symbol, audit_payload)
     except Exception:
-        pass
+        LOG.error("[ORDER_ACK_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
 
     executed_qty_float = executed_qty_val or 0.0
     if executed_qty_float > 0:
         try:
             _RISK_STATE.note_fill(symbol, time.time())
         except Exception:
-            pass
+            LOG.warning("[RISK_NOTE_FILL] note_fill failed for %s (post-execute)", symbol, exc_info=True)
         _emit_position_snapshots(symbol)
+        _POSITION_CACHE.invalidate()
 
         # ── v7.9-E2: Churn Guard fill recording ──────────────────────────
         try:
@@ -4838,7 +4411,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                     },
                 )
             except Exception:
-                pass
+                LOG.error("[CLOSE_AUDIT] publish_close_audit failed for %s", symbol, exc_info=True)
             close_record = {
                 "ts": time.time(),
                 "intent_id": intent_id,
@@ -4860,7 +4433,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                 from execution.position_tp_sl_registry import unregister_position_tp_sl
                 unregister_position_tp_sl(symbol, pos_side)
             except Exception:
-                pass
+                LOG.error("[TPSL_UNREGISTER] unregister_position_tp_sl failed for %s %s", symbol, pos_side, exc_info=True)
         elif not is_position_close:
             # V7.X_DOCTRINE: Register TP/SL and entry metadata for thesis-based exits
             try:
@@ -4889,7 +4462,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                                 entry_regime = regime_snap.primary_regime
                                 entry_regime_confidence = regime_snap.confidence
                     except Exception:
-                        pass
+                        LOG.error("[TPSL_REGISTER] regime snapshot fallback failed for %s", symbol, exc_info=True)
                 
                 if tp_price is not None or sl_price is not None or entry_regime is not None:
                     from execution.position_tp_sl_registry import register_position_tp_sl
@@ -4905,31 +4478,8 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
                         entry_head=entry_head,
                     )
             except Exception:
-                pass
+                LOG.error("[TPSL_REGISTER] register_position_tp_sl failed for %s %s", symbol, pos_side, exc_info=True)
 
-
-
-def _compute_nav_snapshot() -> Optional[float]:
-    try:
-        from execution.state_publish import compute_nav
-
-        return float(compute_nav())
-    except Exception as exc:
-        LOG.error("[executor] compute_nav not available: %s", exc)
-        try:
-            from execution.exchange_utils import get_account
-
-            acc = get_account()
-            return float(
-                acc.get("totalMarginBalance")
-                or (
-                    float(acc.get("totalWalletBalance", 0) or 0)
-                    + float(acc.get("totalUnrealizedProfit", 0) or 0)
-                )
-            )
-        except Exception as account_exc:
-            LOG.error("[executor] account NAV error: %s", account_exc)
-    return None
 
 
 def _collect_rows() -> List[Dict[str, Any]]:
@@ -5068,15 +4618,6 @@ def _write_positions_state(positions_rows: List[Dict[str, Any]], *, updated_ts: 
         path=POSITIONS_STATE_PATH,
         updated_at=ts_value,
     )
-
-
-def _json_default(value: Any) -> str:
-    try:
-        if isinstance(value, (datetime,)):
-            return value.isoformat()
-    except Exception:
-        pass
-    return str(value)
 
 
 def _write_json_cache(path: Path, payload: Any) -> None:
@@ -5489,8 +5030,19 @@ def _pub_tick() -> None:
         binary_lab_written = _binary_lab_tick(now_iso)
     except Exception as exc:
         LOG.debug("[telemetry] binary_lab_state_write_failed: %s", exc)
+    # Episode ledger rebuild (observability — fail-open, throttled)
+    episode_ledger_written = False
+    global _LAST_EPISODE_LEDGER_REBUILD_TS
+    if (now_ts - _LAST_EPISODE_LEDGER_REBUILD_TS) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:
+        try:
+            from execution.episode_ledger import rebuild_and_save as _episode_rebuild
+            _episode_rebuild()
+            episode_ledger_written = True
+            _LAST_EPISODE_LEDGER_REBUILD_TS = now_ts
+        except Exception as exc:
+            LOG.debug("[telemetry] episode_ledger_rebuild_failed: %s", exc)
     LOG.info(
-        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s binary_lab=%s",
+        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s binary_lab=%s episode_ledger=%s",
         nav_written,
         positions_state_written,
         positions_ledger_written,
@@ -5502,6 +5054,7 @@ def _pub_tick() -> None:
         synced_written,
         phase_c_written,
         binary_lab_written,
+        episode_ledger_written,
     )
     _LAST_NAV_STATE = nav_payload
     _LAST_POSITIONS_STATE = positions_state_payload
@@ -5523,7 +5076,7 @@ def _loop_once(i: int) -> None:
 
     with timed_section("get_positions", api_calls=1):
         try:
-            baseline_positions = list(get_positions() or [])
+            baseline_positions = list(_POSITION_CACHE.get(get_positions) or [])
         except Exception:
             baseline_positions = []
 
@@ -5583,8 +5136,8 @@ def _loop_once(i: int) -> None:
             scan_all_exits,
             build_doctrine_exit_intent,
             build_exit_intent,
-            DoctrineExitCandidate,
-            ExitCandidate,
+            DoctrineExitCandidate,  # noqa: F401 - re-exported for callers
+            ExitCandidate,  # noqa: F401 - re-exported for callers
         )
         
         # Build price map from positions (markPrice) or fetch live
@@ -5606,7 +5159,7 @@ def _loop_once(i: int) -> None:
                     price_map[sym] = float(get_price(sym))
                     _exit_api_calls += 1
                 except Exception:
-                    pass
+                    LOG.warning("[EXIT_PRICE_FETCH] get_price failed for %s", sym, exc_info=True)
         
         # Scan for ALL exits: doctrine-based first, then seatbelt (TP/SL)
         doctrine_exits, seatbelt_exits = scan_all_exits(baseline_positions, price_map)
@@ -5696,7 +5249,7 @@ def _loop_once(i: int) -> None:
                         qty=_exit_qty,
                     )
                 except Exception:
-                    pass
+                    LOG.warning("[EXIT_DEDUP] record_exit_sent failed for %s", candidate.symbol, exc_info=True)
             except Exception as exc:
                 LOG.error("[exit_scanner] failed to send doctrine exit %s: %s", candidate.symbol, exc)
         
@@ -5746,6 +5299,123 @@ def _loop_once(i: int) -> None:
                 LOG.error("[screener] error: %s", e)
                 intents_raw = []
             section.symbols_processed = len(intents_raw)
+
+        # --- Hydra multi-strategy injection (fail-open) ---
+        _hydra_count = 0
+        _legacy_count = len(intents_raw)
+        try:
+            _hydra_cfg = load_json("config/strategy_config.json") or {}
+            if is_hydra_enabled(_hydra_cfg):
+                _hydra_nav = _compute_nav()
+                _hydra_symbols = sorted(universe_by_symbol().keys())
+                _hydra_cerberus = get_cerberus_all_multipliers()
+                _hydra_prices: Dict[str, float] = {}
+                for _hs in _hydra_symbols:
+                    try:
+                        _hydra_prices[_hs] = float(get_price(_hs))
+                    except Exception:
+                        pass
+
+                # --- Load intel surfaces for Hydra heads ---
+                _intel_hybrid: Dict[str, float] = {}
+                _intel_zscore: Dict[str, float] = {}
+                _intel_universe: Dict[str, float] = {}
+                _intel_cat_scores: Dict[str, float] = {}
+                _intel_cat_map: Dict[str, str] = {}
+                try:
+                    _ss_data = load_json("logs/state/symbol_scores_v6.json") or {}
+                    for _entry in _ss_data.get("symbols", []):
+                        if isinstance(_entry, dict) and "symbol" in _entry:
+                            _sym = _entry["symbol"]
+                            _intel_hybrid[_sym] = float(
+                                _entry.get("score", 0.0),
+                            )
+                except Exception:
+                    pass
+                try:
+                    _rv_data = load_json("logs/state/rv_momentum.json") or {}
+                    for _sym, _rv_v in (_rv_data.get("per_symbol") or {}).items():
+                        if isinstance(_rv_v, dict):
+                            _intel_zscore[_sym] = float(_rv_v.get("raw_score", 0.0))
+                except Exception:
+                    pass
+                try:
+                    _uo_data = load_json("logs/state/universe_optimizer.json") or {}
+                    _u_scores = (
+                        _uo_data.get("symbol_scores") or {}
+                    )
+                    _intel_universe = {
+                        str(k): float(v)
+                        for k, v in _u_scores.items()
+                    }
+                    _c_scores = (
+                        _uo_data.get("category_scores") or {}
+                    )
+                    _intel_cat_scores = {
+                        str(k): float(v)
+                        for k, v in _c_scores.items()
+                    }
+                except Exception:
+                    pass
+                try:
+                    _sc_data = load_json("config/symbol_categories.json") or {}
+                    _cat_raw = (
+                        _sc_data.get("categories") or {}
+                    )
+                    _intel_cat_map = {
+                        str(k): str(v)
+                        for k, v in _cat_raw.items()
+                    }
+                except Exception:
+                    pass
+                LOG.debug(
+                    "[hydra] intel: h=%d z=%d u=%d"
+                    " cs=%d cm=%d",
+                    len(_intel_hybrid),
+                    len(_intel_zscore),
+                    len(_intel_universe),
+                    len(_intel_cat_scores),
+                    len(_intel_cat_map),
+                )
+                # --- end intel surface load ---
+
+                _hydra_merged, _hydra_state = run_hydra_pipeline(
+                    strategy_config=_hydra_cfg,
+                    cerberus_multipliers=_hydra_cerberus,
+                    symbols=_hydra_symbols,
+                    nav_usd=_hydra_nav,
+                    cycle_count=i,
+                    hybrid_scores=_intel_hybrid,
+                    zscore_map=_intel_zscore,
+                    universe_scores=_intel_universe,
+                    category_scores=_intel_cat_scores,
+                    symbol_categories=_intel_cat_map,
+                )
+                _hydra_exec = convert_hydra_intents_to_execution(
+                    _hydra_merged, _hydra_nav, _hydra_prices,
+                )
+                # Stamp provenance before merge
+                for _hi in _hydra_exec:
+                    _hi.setdefault("source", "hydra")
+                for _li in intents_raw:
+                    if isinstance(_li, dict):
+                        _li.setdefault("source", "legacy")
+                _hydra_count = len(_hydra_exec)
+                intents_raw = merge_with_single_strategy_intents(
+                    _hydra_exec, intents_raw, prefer_hydra=True,
+                )
+        except Exception as _hydra_err:
+            LOG.warning("[hydra] fail-open — error in pipeline, using legacy intents: %s", _hydra_err)
+        LOG.info(
+            "[hydra] enabled=%d hydra_intents=%d legacy_intents=%d merged=%d cycle=%d",
+            1 if _hydra_count > 0 else 0,
+            _hydra_count,
+            _legacy_count,
+            len(intents_raw),
+            i,
+        )
+        # --- end Hydra injection ---
+
         _LAST_QUEUE_DEPTH = len(intents_raw)
         attempted = getattr(intents_raw, "attempted", len(intents_raw))
         screener_emitted = getattr(intents_raw, "emitted", len(intents_raw))
@@ -5861,14 +5531,52 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         LOG.info("[executor] exchange precision cache refreshed")
     except Exception as exc:
         LOG.warning("[executor] precision cache refresh failed: %s", exc)
-    
+
+    # v7.9-D1: Filter drift detection — compare live API MARKET_LOT_SIZE
+    # against LOT_SIZE from the file-based precision cache.  Testnet can
+    # return MARKET_LOT_SIZE.minQty = 1 BTC while LOT_SIZE has 0.001,
+    # which caused the qty=1 BTC sizing breach (D1).
+    try:
+        from execution.exchange_utils import get_symbol_filters as _gsf
+        from execution.exchange_precision import load_precision_table
+
+        _pt = load_precision_table() or {}
+        _drift_warnings: list[str] = []
+        for _sym, _cached in _pt.items():
+            try:
+                _live = _gsf(_sym)
+            except Exception:
+                continue
+            _mls = _live.get("MARKET_LOT_SIZE") or {}
+            _mls_min = float(_mls.get("minQty", 0) or 0)
+            _cached_min = float(_cached.get("minQty", 0) or 0)
+            if _cached_min > 0 and _mls_min > 0 and (_mls_min / _cached_min) > 10:
+                _msg = (
+                    f"{_sym}: MARKET_LOT_SIZE.minQty={_mls_min} vs "
+                    f"LOT_SIZE.minQty={_cached_min} (ratio={_mls_min / _cached_min:.0f}x)"
+                )
+                _drift_warnings.append(_msg)
+                LOG.warning("[startup] FILTER_DRIFT %s", _msg)
+        if _drift_warnings:
+            LOG.warning(
+                "[startup] FILTER_DRIFT_SUMMARY: %d symbols with >10x MARKET_LOT_SIZE "
+                "inflation detected. Using LOT_SIZE preference (v7.9-D1 fix).",
+                len(_drift_warnings),
+            )
+        else:
+            LOG.info("[startup] FILTER_DRIFT_OK — no MARKET_LOT_SIZE inflation detected")
+    except ImportError:
+        pass
+    except Exception as _fd_exc:
+        LOG.debug("[startup] filter drift check failed: %s", _fd_exc)
+
     LOG.debug("[exutil] ENV context testnet=%s dry_run=%s", is_testnet(), DRY_RUN)
     log_v6_flag_snapshot(LOG)
     _maybe_write_v6_runtime_probe(force=True)
     
     # v7.9_P4: Cache position mode at startup for order sanitization
     try:
-        from execution.exchange_utils import refresh_dual_side_cache, is_hedge_mode
+        from execution.exchange_utils import refresh_dual_side_cache
         is_hedge = refresh_dual_side_cache()
         if is_hedge:
             LOG.info("[executor] Account is in HEDGE (dual-side) mode — positionSide required")
@@ -5909,32 +5617,54 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         LOG.warning("[startup] churn_guard bootstrap failed (non-fatal): %s", exc)
 
     i = 0
+    _consecutive_crashes = 0
     while True:
         global _LAST_CYCLE_TS
         _LAST_CYCLE_TS = time.time()
-        timing_start_loop(i)
-        
-        # v7.X_DOCTRINE: Compute Sentinel-X regime FIRST, before any trading logic
-        # Doctrine requires regime authority; without it, all trades are vetoed.
-        with timed_section("sentinel_compute", api_calls=1):
-            _maybe_compute_sentinel_x()
-        
-        with timed_section("loop_once"):
-            _loop_once(i)
-        
-        with timed_section("heartbeat_emit"):
-            _maybe_emit_heartbeat()
-        
-        with timed_section("internal_screener"):
-            _maybe_run_internal_screener()
-        
-        with timed_section("runtime_probe"):
-            _maybe_write_v6_runtime_probe()
-        
-        with timed_section("disk_guard"):
-            _maybe_check_disk_pressure()
-        
-        timing_end_loop()
+        try:
+            timing_start_loop(i)
+            
+            # v7.X_DOCTRINE: Compute Sentinel-X regime FIRST, before any trading logic
+            # Doctrine requires regime authority; without it, all trades are vetoed.
+            with timed_section("sentinel_compute", api_calls=1):
+                _maybe_compute_sentinel_x()
+            
+            with timed_section("loop_once"):
+                _loop_once(i)
+            
+            with timed_section("heartbeat_emit"):
+                _maybe_emit_heartbeat()
+            
+            with timed_section("internal_screener"):
+                _maybe_run_internal_screener()
+            
+            with timed_section("runtime_probe"):
+                _maybe_write_v6_runtime_probe()
+            
+            with timed_section("disk_guard"):
+                _maybe_check_disk_pressure()
+            
+            timing_end_loop()
+            _consecutive_crashes = 0
+        except KeyboardInterrupt:
+            LOG.info("[executor] KeyboardInterrupt — exiting.")
+            break
+        except Exception as _loop_exc:
+            _consecutive_crashes += 1
+            LOG.exception(
+                "[executor] LOOP_CRASH cycle=%d consecutive=%d err=%s",
+                i, _consecutive_crashes, _loop_exc,
+            )
+            # v7.9-D1: Exponential backoff on consecutive crashes.
+            # Cap at 60 s to avoid silent stalls while preventing the
+            # supervisor restart-loop that amplified the qty=1 BTC bug.
+            _backoff = min(60.0, 5.0 * _consecutive_crashes)
+            time.sleep(_backoff)
+            if _consecutive_crashes >= 10:
+                LOG.error(
+                    "[executor] 10 consecutive crashes — halting to prevent damage."
+                )
+                break
         i += 1
         if MAX_LOOPS and i >= MAX_LOOPS:
             LOG.info("[executor] MAX_LOOPS reached — exiting.")

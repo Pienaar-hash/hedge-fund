@@ -6,10 +6,7 @@ PATCHSET v7.4_C1 — TWAP Execution for Large Orders
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass
-from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -512,7 +509,7 @@ class TestRouteTWAP:
         def mock_sleep(seconds):
             sleep_calls.append(seconds)
         
-        result = _route_twap(
+        _route_twap(
             intent=intent,
             risk_ctx={},
             twap_cfg=cfg,

@@ -29,14 +29,11 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from execution.minotaur_engine import (
     # Config
     MinotaurConfig,
-    load_minotaur_config,
-    is_minotaur_enabled,
-    # Dataclasses
     MicrostructureSnapshot,
     ExecutionRegime,
     ExecutionPlan,
@@ -46,12 +43,8 @@ from execution.minotaur_engine import (
     # Constants
     REGIME_NORMAL,
     REGIME_THIN,
-    REGIME_WIDE_SPREAD,
-    REGIME_SPIKE,
     REGIME_CRUNCH,
     MODE_INSTANT,
-    MODE_TWAP,
-    # Functions
     build_microstructure_snapshot,
     classify_execution_regime,
     build_execution_plan,
@@ -142,7 +135,6 @@ def get_microstructure_for_symbol(
         if orderbook:
             bids = orderbook.get("bids", [])
             asks = orderbook.get("asks", [])
-            mid = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 1.0
             bid_depth_usd = sum(float(b[0]) * float(b[1]) for b in bids[:5]) if bids else 0.0
             ask_depth_usd = sum(float(a[0]) * float(a[1]) for a in asks[:5]) if asks else 0.0
     

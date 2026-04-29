@@ -9,7 +9,6 @@ Validates:
 """
 from __future__ import annotations
 
-import pytest
 
 from execution.intel.symbol_score_v6 import hybrid_score
 

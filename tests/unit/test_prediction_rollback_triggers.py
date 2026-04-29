@@ -17,11 +17,8 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
-import pytest
 from prediction.rollback_triggers import (
-    RollbackTriggerEvent,
     SuggestedAction,
     TriggerType,
     check_latency_breach,

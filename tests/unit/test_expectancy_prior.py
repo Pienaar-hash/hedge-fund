@@ -12,14 +12,13 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from execution.intel.expectancy_v6 import (
     compute_expectancy_prior,
     blend_expectancy,
     build_expectancy_snapshot,
-    MIN_EXPECTANCY_TRADES,
 )
+
+pytestmark = pytest.mark.unit
 
 
 class TestComputeExpectancyPrior:

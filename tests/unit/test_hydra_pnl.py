@@ -11,7 +11,6 @@ Tests Hydra PnL Attribution & Drawdown Engine:
 - Integration helpers
 """
 
-import json
 import pytest
 import tempfile
 from pathlib import Path
@@ -48,8 +47,6 @@ from execution.hydra_pnl import (
     update_gross_exposure,
     # Kill switch
     check_kill_switch,
-    evaluate_all_kill_switches,
-    # Throttling
     compute_throttle_scale,
     update_throttle_scales,
     # Integration helpers
@@ -458,7 +455,7 @@ class TestKillSwitch:
             cooldown_remaining=5,
         )
 
-        result = check_kill_switch(stats, cfg)
+        check_kill_switch(stats, cfg)
         assert stats.cooldown_remaining == 4
         assert stats.kill_switch_active is True
 
@@ -472,7 +469,7 @@ class TestKillSwitch:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "events.jsonl"
-            result = check_kill_switch(stats, cfg, log_path)
+            check_kill_switch(stats, cfg, log_path)
 
             assert stats.cooldown_remaining == 0
             assert stats.kill_switch_active is False

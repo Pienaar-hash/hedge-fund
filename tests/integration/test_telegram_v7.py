@@ -11,9 +11,7 @@ Tests verify:
 from __future__ import annotations
 
 import json
-import os
 import time
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -273,7 +271,6 @@ class TestTelegramAlertsV7:
         monkeypatch.setattr(ta7, "STATE_PATH", tmp_path / "telegram_state.json")
 
         now_ts = time.time()
-        bar_ts = int(now_ts // (4 * 3600)) * (4 * 3600)
 
         # First run should send
         ta7.run_alerts({

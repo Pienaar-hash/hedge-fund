@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 
 from execution import exit_scanner
 from execution.diagnostics_metrics import get_exit_status, reset_diagnostics

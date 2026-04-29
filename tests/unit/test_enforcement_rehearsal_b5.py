@@ -15,13 +15,10 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
 from execution.enforcement_rehearsal import (
     REASON_EXPIRED,
@@ -186,8 +183,6 @@ class TestEvaluateOrder:
 
     def test_valid_permit(self):
         """Order within permit window → OK."""
-        permit = _make_permit_event(offset_s=0, ttl_s=30)
-        idx = build_permit_index.__wrapped__ if hasattr(build_permit_index, '__wrapped__') else None
         # Build index manually
         rec = _PermitRecord(
             permit_id="PERM_001", ts_unix=_ts_unix(0), ts_iso=_ts(0),

@@ -6,7 +6,6 @@ Verifies:
 - Dashboard loaders consume state correctly
 - State write/read round-trip
 """
-import pytest
 import json
 import tempfile
 from pathlib import Path

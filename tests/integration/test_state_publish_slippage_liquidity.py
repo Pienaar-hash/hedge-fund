@@ -3,10 +3,9 @@ Tests for slippage and liquidity state publishing (v7.5_B1)
 """
 
 import json
-import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 # ===========================================================================
@@ -140,7 +139,7 @@ class TestComputeAndWriteSlippageState:
                 state_dir = Path(tmpdir)
                 # Should handle the exception without crashing
                 try:
-                    result = compute_and_write_slippage_state(state_dir)
+                    compute_and_write_slippage_state(state_dir)
                 except RuntimeError:
                     pass  # Expected exception propagation
 

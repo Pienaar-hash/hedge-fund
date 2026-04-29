@@ -5,7 +5,6 @@ Phase C readiness state surface — schema, writer, and computation tests.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -13,11 +12,8 @@ import pytest
 from execution.enforcement_rehearsal import (
     RehearsalMetrics,
     compute_phase_c_readiness,
-    get_rehearsal_metrics,
     init_rehearsal,
-    rehearse_order,
     reset_rehearsal,
-    REASON_OK,
 )
 
 pytestmark = pytest.mark.unit

@@ -143,7 +143,7 @@ exit_dedup:
 # DUAL-KEY: requires BOTH enabled=true AND env CALIBRATION_WINDOW_ACK=1
 # To activate: set enabled=true, start_ts, DRY_RUN=0, CALIBRATION_WINDOW_ACK=1, restart.
 calibration_window:
-  enabled: true
+  enabled: false                # graduated 2026-03-01 — cap 30/30 reached, phase → Activation Window
   episode_cap: 30               # halt after 30 new episodes
   start_ts: "2026-02-22T07:53:26Z"  # activation timestamp
   drawdown_kill_pct: 0.05       # 5% NAV drawdown → immediate halt
@@ -156,11 +156,11 @@ calibration_window:
 # Structural integrity kills: manifest drift, config hash mismatch, DLE bypass,
 # binary lab freeze violation, drawdown breach — not just sizing.
 activation_window:
-  enabled: true                         # ACTIVATED 2026-02-26T09:36:00Z
+  enabled: false                        # TERMINATED 2026-03-02 — architecture repair sprint
   duration_days: 14                     # 14 consecutive calendar days
   start_ts: "2026-02-26T09:36:00.378799+00:00"  # window start
   drawdown_kill_pct: 0.05              # 5% NAV drawdown → immediate halt
   per_trade_nav_pct: 0.005             # 0.5% NAV per trade (unchanged)
-  require_go_for_scale: true           # sizing cap persists until 7/7 GO verdict
+  require_go_for_scale: false          # sizing cap removed — full unconstrain
   # Scope: executor, risk, DLE veto, Binary Lab SHADOW, episode ledger,
   #        NAV accounting, manifest surface integrity

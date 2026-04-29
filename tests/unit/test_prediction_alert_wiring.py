@@ -12,10 +12,8 @@ Verifies:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Sequence
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
 
 
 def _sample_alerts() -> list[dict]:

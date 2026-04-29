@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Adaptive maker offset engine (v5.10.3).
 
@@ -7,8 +5,9 @@ Produces a bounded maker offset (bps) informed by router effectiveness,
 volatility regime, and time-of-day expectancy buckets.
 """
 
+from __future__ import annotations
+
 import datetime as dt
-from typing import Dict
 
 from execution.intel.router_autotune_shared import suggest_autotune_for_symbol
 from execution.utils.metrics import router_effectiveness_7d

@@ -4,7 +4,6 @@ import pytest
 import requests
 
 from execution import order_router
-import execution.exchange_utils as ex
 import execution.utils.execution_health as eh
 from execution.intel.router_policy import RouterPolicy
 

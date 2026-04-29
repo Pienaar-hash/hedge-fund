@@ -46,10 +46,10 @@ LOG = logging.getLogger("exit_scanner")
 try:
     from execution.doctrine_kernel import (
         ExitReason as DoctrineExitReason,
-        ExitUrgency,
+        ExitUrgency,  # noqa: F401 - availability probe / public re-export
         ExitDecision,
         PositionSnapshot,
-        RegimeSnapshot,
+        RegimeSnapshot,  # noqa: F401 - availability probe / public re-export
         AlphaHealthSnapshot,
         ExecutionSnapshot,
         doctrine_exit_verdict,

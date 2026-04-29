@@ -14,8 +14,7 @@ Covers:
 from __future__ import annotations
 
 import json
-import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 from unittest.mock import patch
 
 import pytest
@@ -24,9 +23,6 @@ from prediction.market_discovery import (
     DiscoveredMarket,
     DiscoverySnapshot,
     SLUG_15M,
-    SLUG_5M,
-    TITLE_FILTER,
-    _gamma_get,
     _parse_iso,
     _parse_outcomes,
     _parse_tokens,
@@ -538,10 +534,6 @@ class TestDiscoverBySlug:
         _discover_by_slug("15m", now, num_windows=4)
 
         assert mock_get.call_count == 4
-        slugs_queried = [
-            call.kwargs.get("params", call.args[1] if len(call.args) > 1 else {}).get("slug", "")
-            for call in mock_get.call_args_list
-        ]
         # Extract slug params from positional or keyword args
         actual_slugs = []
         for call in mock_get.call_args_list:

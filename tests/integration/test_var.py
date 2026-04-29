@@ -2,10 +2,9 @@
 Tests for vol_risk.py — VaR and CVaR calculations (v7.5_A1)
 """
 
-import math
 import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from execution.vol_risk import (
     VaRConfig,
@@ -199,7 +198,7 @@ class TestLoadVarConfig:
         with patch("builtins.open", side_effect=FileNotFoundError):
             config = load_var_config()
         
-        assert config.enabled == True
+        assert config.enabled is True
         assert config.confidence == 0.99
         assert config.lookback_bars == 500
 
@@ -230,7 +229,7 @@ class TestLoadCvarConfig:
         with patch("builtins.open", side_effect=FileNotFoundError):
             config = load_cvar_config()
         
-        assert config.enabled == True
+        assert config.enabled is True
         assert config.confidence == 0.95
         assert config.max_position_cvar_nav_pct == 0.04
 
@@ -249,7 +248,7 @@ class TestLoadCvarConfig:
         
         config = load_cvar_config(strategy_cfg)
         
-        assert config.enabled == False
+        assert config.enabled is False
         assert config.confidence == 0.99
         assert config.max_position_cvar_nav_pct == 0.05
 
@@ -273,7 +272,7 @@ class TestCheckPortfolioVarLimit:
         
         should_veto, details = check_portfolio_var_limit(var_result, var_config)
         
-        assert should_veto == False
+        assert should_veto is False
         assert details == {}
 
     def test_veto_when_exceeds_limit(self):
@@ -290,7 +289,7 @@ class TestCheckPortfolioVarLimit:
         
         should_veto, details = check_portfolio_var_limit(var_result, var_config)
         
-        assert should_veto == True
+        assert should_veto is True
         assert details["reason"] == "portfolio_var_limit"
         assert details["observed"]["portfolio_var_nav_pct"] == 0.15
 
@@ -305,7 +304,7 @@ class TestCheckPortfolioVarLimit:
         
         should_veto, details = check_portfolio_var_limit(var_result, var_config)
         
-        assert should_veto == False
+        assert should_veto is False
 
 
 class TestCheckPositionCvarLimit:
@@ -326,7 +325,7 @@ class TestCheckPositionCvarLimit:
         
         should_veto, details = check_position_cvar_limit(cvar_result, cvar_config)
         
-        assert should_veto == False
+        assert should_veto is False
 
     def test_veto_when_exceeds_limit(self):
         """Should veto when CVaR exceeds limit."""
@@ -345,6 +344,6 @@ class TestCheckPositionCvarLimit:
         
         should_veto, details = check_position_cvar_limit(cvar_result, cvar_config)
         
-        assert should_veto == True
+        assert should_veto is True
         assert details["reason"] == "position_cvar_limit"
         assert details["observed"]["symbol"] == "ETHUSDT"

@@ -7,7 +7,6 @@ Verifies:
 - Zero-weight factors receive zero PnL
 - Edge cases: empty trades, missing factors
 """
-import pytest
 import numpy as np
 
 

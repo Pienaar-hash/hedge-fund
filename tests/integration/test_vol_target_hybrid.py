@@ -10,8 +10,6 @@ from execution.strategies.vol_target import (
     compute_trend_bias,
     decide_hybrid_side,
     generate_vol_target_intent,
-    load_carry_inputs,
-    load_htf_trend_data,
 )
 
 

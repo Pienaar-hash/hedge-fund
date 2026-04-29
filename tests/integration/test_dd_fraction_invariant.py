@@ -9,9 +9,6 @@ This prevents future regressions from:
 - A telemetry change overwriting one field
 - Incorrect calculations in drawdown_tracker.py
 """
-import json
-import math
-from pathlib import Path
 
 
 # Mirror the production normalization used in risk_limits.py/state_publish.py

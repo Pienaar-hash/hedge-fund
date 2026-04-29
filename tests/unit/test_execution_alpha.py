@@ -11,9 +11,6 @@ Tests:
 """
 
 import pytest
-import json
-from pathlib import Path
-from typing import Dict, Any
 
 from execution.execution_alpha import (
     # Config
@@ -23,9 +20,6 @@ from execution.execution_alpha import (
     # Dataclasses
     AlphaSample,
     SymbolAlphaStats,
-    HeadAlphaStats,
-    RegimeBreakdown,
-    # Model price
     resolve_model_price,
     # Alpha computation
     compute_alpha,
@@ -35,8 +29,6 @@ from execution.execution_alpha import (
     # Penalties
     compute_penalty_multiplier,
     compute_symbol_multipliers,
-    compute_head_multipliers,
-    # Alerts
     check_and_generate_alerts,
 )
 

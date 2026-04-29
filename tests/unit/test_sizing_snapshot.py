@@ -11,11 +11,9 @@ Validates:
 from __future__ import annotations
 
 import json
-import math
 import time
-from pathlib import Path
 from typing import Any, Dict
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
