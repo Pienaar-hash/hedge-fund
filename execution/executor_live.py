@@ -41,8 +41,6 @@ from execution.fill_tracker import (
     OrderAckInfo,
     FillSummary,
     POSITION_TRACKER as _FILL_TRACKER_POSITION_TRACKER,
-    fetch_order_status as _fetch_order_status,
-    fetch_order_trades as _fetch_order_trades,
     emit_order_ack as _emit_order_ack,
     start_fill_task as _start_fill_task,
     wait_fill_task as _wait_fill_task,
@@ -1013,16 +1011,16 @@ from execution import pipeline_v6_shadow
 try:
     from execution.doctrine_kernel import (
         doctrine_entry_verdict,
-        doctrine_exit_verdict,
+        doctrine_exit_verdict,  # noqa: F401 - re-exported for callers
         build_regime_snapshot_from_state,
         build_execution_snapshot_from_state,
         DoctrineVerdict,
-        ExitReason,
-        RegimeSnapshot,
+        ExitReason,  # noqa: F401 - re-exported for callers
+        RegimeSnapshot,  # noqa: F401 - re-exported for callers
         IntentSnapshot,
-        ExecutionSnapshot,
+        ExecutionSnapshot,  # noqa: F401 - re-exported for callers
         PortfolioSnapshot as DoctrinePortfolioSnapshot,
-        AlphaHealthSnapshot,
+        AlphaHealthSnapshot,  # noqa: F401 - re-exported for callers
         log_doctrine_event,
     )
     _DOCTRINE_AVAILABLE = True
@@ -2384,8 +2382,8 @@ def _maybe_compute_sentinel_x() -> None:
         from execution.sentinel_x import (
             run_sentinel_x_step,
             load_sentinel_x_config,
-            SentinelXState,
-            save_sentinel_x_state,
+            SentinelXState,  # noqa: F401 - availability probe
+            save_sentinel_x_state,  # noqa: F401 - availability probe
         )
         from execution.exchange_utils import get_klines
         from pathlib import Path
@@ -2841,7 +2839,7 @@ def _check_fee_edge_gate(
     Silently passes on import errors or unexpected failures.
     """
     try:
-        from execution.fee_gate import check_fee_edge, check_fee_edge_v2  # noqa: F811
+        from execution.fee_gate import check_fee_edge, check_fee_edge_v2  # noqa: F401,F811 - availability probe
         from execution.true_edge import compute_true_edge
 
         _fg_notional = gross_target
@@ -3819,7 +3817,7 @@ def _send_order(intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
             intent=intent,
             symbol_upper=symbol_upper,
             side=side,
-            price=price,
+            price=price_hint,
             price_hint=price_hint,
             gross_target=gross_target,
             intent_id=intent_id,
@@ -5138,8 +5136,8 @@ def _loop_once(i: int) -> None:
             scan_all_exits,
             build_doctrine_exit_intent,
             build_exit_intent,
-            DoctrineExitCandidate,
-            ExitCandidate,
+            DoctrineExitCandidate,  # noqa: F401 - re-exported for callers
+            ExitCandidate,  # noqa: F401 - re-exported for callers
         )
         
         # Build price map from positions (markPrice) or fetch live

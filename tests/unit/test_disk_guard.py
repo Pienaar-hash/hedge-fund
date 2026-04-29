@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from collections import namedtuple
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

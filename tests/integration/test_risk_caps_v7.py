@@ -1,6 +1,3 @@
-import pytest
-
-from execution import risk_limits
 from execution.risk_limits import RiskState, check_order
 
 
