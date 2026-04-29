@@ -1,0 +1,10 @@
+{
+  "captured_ts": "2026-04-12T07:11:13.533470+00:00",
+  "phase": "between_phase1_and_phase2",
+  "purpose": "Pre-fix baseline for model correctness validation",
+  "files": [
+    "config_hash.json",
+    "regime_distribution.json",
+    "score_distribution.json"
+  ]
+}
