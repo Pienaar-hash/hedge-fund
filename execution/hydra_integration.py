@@ -33,6 +33,7 @@ from execution.hydra_engine import (
     hydra_merged_intent_to_execution_intent,
     is_hydra_enabled,
 )
+from execution.hybrid_component_propagation import trace_hybrid_component_propagation
 
 _LOG = logging.getLogger(__name__)
 
@@ -151,14 +152,57 @@ def convert_hydra_intents_to_execution(
     """
     execution_intents = []
 
+    # Telemetry helper (fail-open, append-only)
+    def _route_trace(stage: str, outcome: str, reason: str, **fields: Any) -> None:
+        try:
+            import time as _time
+            from execution.log_utils import append_jsonl as _aj
+            rec: Dict[str, Any] = {
+                "ts": _time.time(),
+                "stage": stage,
+                "outcome": outcome,
+                "reason": reason,
+            }
+            rec.update(fields)
+            _aj(Path("logs/execution/hydra_route_trace.jsonl"), rec)
+        except Exception:
+            pass
+
     for merged in merged_intents:
         if isinstance(merged, dict):
             symbol = merged.get("symbol", "")
+            net_side = merged.get("net_side", "")
+            nav_pct_v = merged.get("nav_pct", 0.0)
+            score_v = merged.get("score", 0.0)
+            heads_v = merged.get("heads", []) or []
         else:
             symbol = merged.symbol
+            net_side = getattr(merged, "net_side", "")
+            nav_pct_v = getattr(merged, "nav_pct", 0.0)
+            score_v = getattr(merged, "score", 0.0)
+            heads_v = getattr(merged, "heads", []) or []
+        source_head_v = heads_v[0] if heads_v else None
 
         price = prices.get(symbol, 0.0)
+        projected_notional_v = float(nav_usd or 0.0) * float(nav_pct_v or 0.0)
+
+        _common = {
+            "symbol": symbol,
+            "side": net_side,
+            "intent_id": None,
+            "source_head": source_head_v,
+            "strategy": "hydra",
+            "score": score_v,
+            "nav_pct": nav_pct_v,
+            "projected_notional": projected_notional_v,
+        }
+        _route_trace("merged_intent_seen", "ok", "", **_common)
+
         if price <= 0:
+            _route_trace(
+                "dropped_pre_intents_raw", "drop", "no_price",
+                **{**_common, "price_hint": price},
+            )
             continue
 
         intent = hydra_merged_intent_to_execution_intent(merged, nav_usd, price)
@@ -166,6 +210,15 @@ def convert_hydra_intents_to_execution(
             intent.setdefault("price", price)
             intent.setdefault("gross_usd", intent.get("notional_usd", 0.0))
             execution_intents.append(intent)
+            _route_trace(
+                "converted_to_execution_intent", "ok", "",
+                **{**_common, "projected_notional": float(intent.get("notional_usd") or projected_notional_v)},
+            )
+        else:
+            _route_trace(
+                "dropped_pre_intents_raw", "drop", "flat_or_zero_navpct",
+                **_common,
+            )
 
     return execution_intents
 
@@ -247,9 +300,25 @@ def merge_with_single_strategy_intents(
         Merged list of intents
     """
     if not hydra_intents:
+        for _lg in legacy_intents:
+            trace_hybrid_component_propagation(
+                origin_stage="legacy_merged",
+                intent=_lg,
+                source_head=str((_lg or {}).get("source_head", "") or ""),
+                merge_path="legacy_only_fastpath",
+                intent_type="merged_intent",
+            )
         return legacy_intents
 
     if not legacy_intents:
+        for _h in hydra_intents:
+            trace_hybrid_component_propagation(
+                origin_stage="hydra_merged",
+                intent=_h,
+                source_head=str((_h or {}).get("source_head", "") or ""),
+                merge_path="hydra_only_fastpath",
+                intent_type="merged_intent",
+            )
         return hydra_intents
 
     # Index both sides by symbol
@@ -317,6 +386,13 @@ def merge_with_single_strategy_intents(
                     primary[_spk] = fallback[_spk]
 
             merged.append(primary)
+            trace_hybrid_component_propagation(
+                origin_stage="hydra_merged" if primary is h else "legacy_merged",
+                intent=primary,
+                source_head=str(primary.get("source_head", "") or ""),
+                merge_path="conflict_selected_hydra" if primary is h else "conflict_selected_legacy",
+                intent_type="merged_intent",
+            )
             _selected_scores.append(_intent_score(primary))
             _rejected_scores.append(_intent_score(fallback))
             _LOG.debug(
@@ -326,8 +402,22 @@ def merge_with_single_strategy_intents(
             )
         elif h:
             merged.append(h)
+            trace_hybrid_component_propagation(
+                origin_stage="hydra_merged",
+                intent=h,
+                source_head=str(h.get("source_head", "") or ""),
+                merge_path="hydra_only",
+                intent_type="merged_intent",
+            )
         else:
             merged.append(lg)  # type: ignore[arg-type]
+            trace_hybrid_component_propagation(
+                origin_stage="legacy_merged",
+                intent=lg,  # type: ignore[arg-type]
+                source_head=str((lg or {}).get("source_head", "") or ""),
+                merge_path="legacy_only",
+                intent_type="merged_intent",
+            )
 
     if _conflicts:
         _avg_sel = sum(_selected_scores) / len(_selected_scores)
