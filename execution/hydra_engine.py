@@ -525,13 +525,34 @@ def log_hydra_intents(
 # ---------------------------------------------------------------------------
 
 
+def _load_min_notional_usd_cached(_cache: Dict[str, float] = {}) -> float:
+    """Load global ``min_notional_usdt`` from ``config/risk_limits.json``.
+
+    Returns ``0.0`` (= abstain disabled) on any failure. Cached after first
+    successful read; mutate ``_cache`` to ``{}`` to force reload in tests.
+    """
+    if "v" in _cache:
+        return _cache["v"]
+    try:
+        import json as _json
+        with open("config/risk_limits.json", "r", encoding="utf-8") as _f:
+            _data = _json.load(_f)
+        _g = _data.get("global") or {}
+        _v = float(_g.get("min_notional_usdt", 0.0) or 0.0)
+        _cache["v"] = _v
+        return _v
+    except Exception:
+        return 0.0
+
+
 def generate_trend_intents(
     symbols: List[str],
     hybrid_scores: Dict[str, float],
     cerberus_multiplier: float,
     head_cfg: HydraHeadConfig,
     nav_usd: float,
-    base_nav_pct: float = 0.02,
+    base_nav_pct: float = 0.06,
+    min_notional_usd: float = 0.0,
 ) -> List[HydraIntent]:
     """
     Generate TREND head intents from hybrid trend/carry scores.
@@ -543,6 +564,9 @@ def generate_trend_intents(
         head_cfg: Head configuration
         nav_usd: Current NAV in USD
         base_nav_pct: Base position size as NAV fraction
+        min_notional_usd: If > 0, abstain (do not emit) when projected
+            notional falls below this floor. Default 0.0 disables the gate
+            (preserves legacy/test behavior).
 
     Returns:
         List of HydraIntent for TREND head
@@ -552,10 +576,30 @@ def generate_trend_intents(
 
     intents: List[HydraIntent] = []
     direction = head_cfg.direction
+    _trace_path = Path("logs/execution/hydra_sizing_trace.jsonl")
+    _ts = time.time()
+    _n_syms = max(1, len(symbols))
+    _head_cap = head_cfg.max_nav_pct / _n_syms
 
     for symbol in symbols:
         score = hybrid_scores.get(symbol, 0.0)
         if abs(score) < 0.1:  # Minimum threshold
+            # Telemetry: log score-threshold abstain (fail-open)
+            try:
+                append_jsonl(_trace_path, {
+                    "ts": _ts,
+                    "head": "TREND",
+                    "symbol": symbol,
+                    "outcome": "abstain_score_threshold",
+                    "score": float(score),
+                    "score_threshold": 0.1,
+                    "base_nav_pct": float(base_nav_pct),
+                    "cerberus_multiplier": float(cerberus_multiplier),
+                    "head_cap_nav_pct": float(_head_cap),
+                    "nav_usd": float(nav_usd),
+                })
+            except Exception:
+                pass
             continue
 
         # Determine side
@@ -572,14 +616,72 @@ def generate_trend_intents(
         raw_nav_pct = base_nav_pct * abs(score) * cerberus_multiplier
         nav_pct = min(raw_nav_pct, head_cfg.max_nav_pct / len(symbols))
 
-        intents.append(HydraIntent(
+        # Abstain-before-risk: drop sub-floor intents instead of emitting
+        # them only to be vetoed downstream by min_notional. This is a
+        # logging-equivalent transformation — the order would never have
+        # filled — but converts a downstream veto into an upstream
+        # non-intent. No size uplift, no risk-appetite change.
+        _projected_notional = float(nav_pct) * float(nav_usd)
+        if min_notional_usd > 0.0 and _projected_notional < min_notional_usd:
+            try:
+                _denom = float(nav_usd) * float(base_nav_pct) * float(cerberus_multiplier)
+                _required_score = (min_notional_usd / _denom) if _denom > 0 else None
+                append_jsonl(_trace_path, {
+                    "ts": _ts,
+                    "head": "TREND",
+                    "symbol": symbol,
+                    "outcome": "abstain_sub_min_notional",
+                    "score": float(score),
+                    "score_abs": float(abs(score)),
+                    "score_threshold": 0.1,
+                    "base_nav_pct": float(base_nav_pct),
+                    "cerberus_multiplier": float(cerberus_multiplier),
+                    "raw_nav_pct": float(raw_nav_pct),
+                    "head_cap_nav_pct": float(_head_cap),
+                    "nav_pct": float(nav_pct),
+                    "nav_usd": float(nav_usd),
+                    "projected_notional": _projected_notional,
+                    "min_notional": float(min_notional_usd),
+                    "required_score_for_floor": _required_score,
+                })
+            except Exception:
+                pass
+            continue
+
+        intent = HydraIntent(
             head="TREND",
             symbol=symbol,
             side=side,
             nav_pct=nav_pct,
             score=abs(score),
             rationale=f"Trend score={score:.3f}, cerb_mult={cerberus_multiplier:.2f}",
-        ))
+        )
+        intents.append(intent)
+
+        # Telemetry: log full sizing trace per emitted intent (fail-open)
+        try:
+            _projected_notional = float(nav_pct) * float(nav_usd)
+            append_jsonl(_trace_path, {
+                "ts": _ts,
+                "head": "TREND",
+                "symbol": symbol,
+                "side": side,
+                "outcome": "intent_emitted",
+                "score_raw": float(score),
+                "score_abs": float(abs(score)),
+                "score_threshold": 0.1,
+                "base_nav_pct": float(base_nav_pct),
+                "cerberus_multiplier": float(cerberus_multiplier),
+                "raw_nav_pct": float(raw_nav_pct),
+                "head_cap_nav_pct": float(_head_cap),
+                "head_cap_clipped": bool(raw_nav_pct > _head_cap),
+                "final_nav_pct": float(nav_pct),
+                "nav_usd": float(nav_usd),
+                "projected_notional_usd": _projected_notional,
+                "rationale": intent.rationale,
+            })
+        except Exception:
+            pass
 
     return intents
 
@@ -590,7 +692,7 @@ def generate_mean_revert_intents(
     cerberus_multiplier: float,
     head_cfg: HydraHeadConfig,
     nav_usd: float,
-    base_nav_pct: float = 0.015,
+    base_nav_pct: float = 0.06,
     zscore_threshold: float = 1.5,
 ) -> List[HydraIntent]:
     """
@@ -1327,6 +1429,7 @@ def run_hydra_step(
             cerberus_multiplier=cerberus_multipliers.get("TREND", 1.0),
             head_cfg=cfg.heads["TREND"],
             nav_usd=nav_usd,
+            min_notional_usd=_load_min_notional_usd_cached(),
         )
         all_intents.extend(trend_intents)
         notes.append(f"TREND: {len(trend_intents)} intents")
