@@ -58,6 +58,20 @@ VOL_EXPANSION_BREAKOUT = "VOL_EXPANSION_BREAKOUT"
 EXHAUSTION_REVERSAL = "EXHAUSTION_REVERSAL"
 TREND_PULLBACK = "TREND_PULLBACK"
 
+# V2 calibration-seed variant of TREND_PULLBACK (shadow-only, additive).
+# See docs/active/TREND_PULLBACK_V2_SHADOW_SPEC.md. Adds three V1 conjuncts:
+#   pullback_atr_ratio <= 1.20 (tightened from 1.50)
+#   regime_confidence  >= 0.60 (new floor)
+#   volume_z           >= -1.50 (new floor)
+# Gate-2 / Gate-3 logic identical to V1 TREND_PULLBACK. V1 is unchanged and
+# emits in parallel; V2 records are distinguishable by setup_class string.
+TREND_PULLBACK_V2 = "TREND_PULLBACK_V2"
+
+# V1 evaluator universe (8 classes — capped by _MAX_SETUP_CLASSES below).
+# TREND_PULLBACK_V2 is intentionally NOT in this set: it is evaluated by a
+# separate parallel evaluator (evaluate_v2_shadow) and does not consume a
+# V1 taxonomy slot. This keeps the V1 sparsity cap and per-class invariants
+# unaffected by the V2 shadow experiment.
 _VALID_SETUP_CLASSES = frozenset({
     REGIME_TRANSITION_BREAK,
     POST_CRISIS_RESTABILIZATION,
@@ -451,6 +465,155 @@ def evaluate(ctx: FPSEvalContext, cfg: Optional[FPSv1Config] = None) -> FPSResul
 
 
 # ---------------------------------------------------------------------------
+# TREND_PULLBACK_V2 — shadow-only additive evaluator (calibration seed)
+# ---------------------------------------------------------------------------
+# Spec: docs/active/TREND_PULLBACK_V2_SHADOW_SPEC.md
+#
+# V2 is evaluated independently of V1's gate-1 taxonomy. It runs in parallel,
+# emits its own shadow records (setup_class="TREND_PULLBACK_V2"), and has zero
+# influence on V1's evaluation, on Doctrine, Risk, Hydra, Cerberus, Minotaur,
+# or the order router. Authority and mode are inherited from FPSv1Config and
+# remain structurally locked to "none" / "shadow_only".
+#
+# Predicate (Gate-1): all V1 TREND_PULLBACK conjuncts retained, with
+#   pullback_atr_ratio ceiling tightened (1.50 → 1.20)
+#   regime_confidence  >= 0.60 added
+#   volume_z           >= -1.50 added
+# Gate-2 / Gate-3 reuse V1 TREND_PULLBACK helpers verbatim.
+_TCP_V2_PULLBACK_MIN = 0.5
+_TCP_V2_PULLBACK_MAX = 1.20
+_TCP_V2_REGIME_CONF_FLOOR = 0.60
+_TCP_V2_VOLUME_Z_FLOOR = -1.50
+
+
+def _tcp_v2_predicate_match(ctx: FPSEvalContext) -> bool:
+    """Return True iff ctx satisfies the full V2 Gate-1 predicate."""
+    if not ctx.ema_aligned:
+        return False
+    if not (_TCP_V2_PULLBACK_MIN <= ctx.pullback_atr_ratio <= _TCP_V2_PULLBACK_MAX):
+        return False
+    if not ctx.momentum_reacceleration:
+        return False
+    if ctx.regime_current not in ("TREND_UP", "TREND_DOWN"):
+        return False
+    slope_coherent = (
+        (ctx.ema_slope > 0 and ctx.regime_current == "TREND_UP")
+        or (ctx.ema_slope < 0 and ctx.regime_current == "TREND_DOWN")
+    )
+    if not slope_coherent:
+        return False
+    if ctx.regime_confidence < _TCP_V2_REGIME_CONF_FLOOR:
+        return False
+    if ctx.volume_z < _TCP_V2_VOLUME_Z_FLOOR:
+        return False
+    return True
+
+
+def _tcp_v2_binding_constraints(ctx: FPSEvalContext) -> List[str]:
+    """Return list of V2-only conjuncts that fail given ctx.
+
+    Empty list when all V2-only conjuncts pass (regardless of V1 conjuncts).
+    Used in shadow telemetry to attribute V2 abstentions to specific filters.
+    """
+    binding: List[str] = []
+    if ctx.pullback_atr_ratio > _TCP_V2_PULLBACK_MAX:
+        binding.append("pullback_atr_ratio_ceiling")
+    if ctx.regime_confidence < _TCP_V2_REGIME_CONF_FLOOR:
+        binding.append("regime_confidence_floor")
+    if ctx.volume_z < _TCP_V2_VOLUME_Z_FLOOR:
+        binding.append("volume_z_floor")
+    return binding
+
+
+def evaluate_v2_shadow(
+    ctx: FPSEvalContext,
+    cfg: Optional[FPSv1Config] = None,
+) -> FPSResult:
+    """Evaluate the TREND_PULLBACK_V2 calibration-seed predicate.
+
+    Pure function. Independent of V1 evaluate(); both may be called on the
+    same context and produce independent FPSResults. Authority/mode locks
+    are inherited from cfg and remain structurally enforced.
+    """
+    if cfg is None:
+        cfg = FPSv1Config()
+
+    if not cfg.enabled:
+        return FPSResult(verdict=ABSTAIN, gate_trace=("disabled",))
+
+    gate_trace: List[str] = []
+    ctx_hash = _hash_context(ctx)
+
+    # Gate 1 — V2 predicate
+    if _tcp_v2_predicate_match(ctx):
+        setup_class: Optional[str] = TREND_PULLBACK_V2
+        gate_trace.append(f"g1:{TREND_PULLBACK_V2}")
+    else:
+        setup_class = None
+        gate_trace.append("g1:no_match")
+
+    # Gate 2 — reuse V1 TREND_PULLBACK direction logic verbatim
+    direction: Optional[str] = None
+    if setup_class is not None:
+        direction = _gate2_direction_validity(ctx, TREND_PULLBACK)
+        if direction is not None:
+            gate_trace.append(f"g2:{direction}")
+        else:
+            gate_trace.append("g2:direction_mismatch")
+
+    # Gate 3 — reuse V1 fee bridge
+    fee_clears = False
+    if direction is not None:
+        fee_clears = _gate3_fee_bridge(ctx, cfg)
+
+    # Gate 4 — emit verdict (reuses V1 routing; setup_class tag is V2)
+    result = _gate4_emit(setup_class, direction, fee_clears, gate_trace)
+    object.__setattr__(result, "snapshot_hash", ctx_hash)
+    return result
+
+
+def build_v2_telemetry(ctx: FPSEvalContext) -> Dict[str, Any]:
+    """Build V2-specific telemetry fields for shadow record emission.
+
+    Per spec §7, telemetry is observation-only and does not gate V2.
+    """
+    # tcp_v2_eligible_v1: would the same ctx have fired V1 TREND_PULLBACK?
+    # By construction V2 is strictly tighter than V1, but record explicitly.
+    v1_eligible = (
+        ctx.ema_aligned
+        and 0.5 <= ctx.pullback_atr_ratio <= 1.5
+        and ctx.momentum_reacceleration
+        and ctx.regime_current in ("TREND_UP", "TREND_DOWN")
+        and (
+            (ctx.ema_slope > 0 and ctx.regime_current == "TREND_UP")
+            or (ctx.ema_slope < 0 and ctx.regime_current == "TREND_DOWN")
+        )
+    )
+
+    # Hydra ↔ Sentinel-X agreement on this row (telemetry only).
+    required_dir_from_regime: Optional[str] = None
+    if ctx.regime_current == "TREND_UP":
+        required_dir_from_regime = LONG
+    elif ctx.regime_current == "TREND_DOWN":
+        required_dir_from_regime = SHORT
+    hydra_sentinel_agreement = (
+        required_dir_from_regime is not None
+        and ctx.proposed_direction == required_dir_from_regime
+    )
+
+    # Pocket id at emit time (UTC YYYY-MM-DD of ctx.timestamp).
+    pocket_id = time.strftime("%Y-%m-%d", time.gmtime(ctx.timestamp))
+
+    return {
+        "tcp_v2_eligible_v1": bool(v1_eligible),
+        "tcp_v2_delta_predicates": _tcp_v2_binding_constraints(ctx),
+        "hydra_sentinel_agreement": bool(hydra_sentinel_agreement),
+        "regime_confidence_at_eval": float(ctx.regime_confidence),
+        "pocket_id": pocket_id,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Shadow JSONL append (fail-open)
 # ---------------------------------------------------------------------------
 def append_shadow_record(
@@ -458,8 +621,15 @@ def append_shadow_record(
     ctx: FPSEvalContext,
     cfg: FPSv1Config,
     log_path: Optional[Path] = None,
+    extra_fields: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Append shadow evaluation record to JSONL. Fail-open: never raises."""
+    """Append shadow evaluation record to JSONL. Fail-open: never raises.
+
+    `extra_fields`, when provided, is merged into the record after the
+    standard schema. Used for additive shadow variants (e.g. TCP V2
+    telemetry per docs/active/TREND_PULLBACK_V2_SHADOW_SPEC.md §7).
+    Cannot override the schema or authority/mode fields.
+    """
     try:
         path = log_path or _SHADOW_LOG
         record = {
@@ -495,6 +665,16 @@ def append_shadow_record(
             "config_mode": cfg.mode,
             "config_authority": cfg.authority,
         }
+        if extra_fields:
+            # Merge non-overriding additive telemetry; protect schema/locks.
+            _protected = {
+                "schema", "ts", "symbol", "verdict", "setup_class",
+                "config_mode", "config_authority",
+            }
+            for k, v in extra_fields.items():
+                if k in _protected:
+                    continue
+                record[k] = v
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
@@ -964,6 +1144,20 @@ def evaluate_shadow_for_intent(
 
         result = evaluate(ctx, _FPS_CFG_CACHE)
         append_shadow_record(result, ctx, _FPS_CFG_CACHE)
+
+        # --- TREND_PULLBACK_V2 parallel shadow evaluation (additive, fail-open) ---
+        # Spec: docs/active/TREND_PULLBACK_V2_SHADOW_SPEC.md. V2 emits an
+        # independent record on the same shadow log, distinguishable by
+        # setup_class == "TREND_PULLBACK_V2". Authority remains "none".
+        try:
+            v2_result = evaluate_v2_shadow(ctx, _FPS_CFG_CACHE)
+            v2_telemetry = build_v2_telemetry(ctx)
+            append_shadow_record(
+                v2_result, ctx, _FPS_CFG_CACHE,
+                extra_fields=v2_telemetry,
+            )
+        except Exception as exc:
+            LOG.debug("[fps_v1] V2 shadow evaluation failed (non-blocking): %s", exc)
 
     except Exception as exc:
         LOG.debug("[fps_v1] shadow evaluation failed (non-blocking): %s", exc)
