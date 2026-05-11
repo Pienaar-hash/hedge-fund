@@ -625,6 +625,46 @@
       "optional": true,
       "lifecycle": "runtime_generated"
     },
+    "binary_lab_s2_state": {
+      "path": "logs/state/binary_lab_s2_state.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Binary Lab S2 runtime state snapshot",
+      "optional": true,
+      "lifecycle": "runtime_generated"
+    },
+    "binary_lab_s2_calibration": {
+      "path": "logs/state/binary_lab_s2_calibration.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Binary Lab S2 runtime calibration diagnostics",
+      "optional": true,
+      "lifecycle": "runtime_generated"
+    },
+    "futures_s2_proxy_state": {
+      "path": "logs/state/futures_s2_proxy_state.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Futures S2 proxy runtime state snapshot",
+      "optional": true,
+      "lifecycle": "runtime_generated"
+    },
+    "fps_rtb_reset_marker": {
+      "path": "logs/state/fps_rtb_reset_marker.json",
+      "owner": "executor",
+      "update_frequency": "on_demand",
+      "description": "Runtime marker file for FPS RTB reset coordination",
+      "optional": true,
+      "lifecycle": "runtime_generated"
+    },
+    "minimal_core_validation": {
+      "path": "logs/state/minimal_core_validation.json",
+      "owner": "executor",
+      "update_frequency": "per_loop",
+      "description": "Minimal-core runtime validation snapshot",
+      "optional": true,
+      "lifecycle": "runtime_generated"
+    },
     "v6_runtime_probe": {
       "path": "logs/state/v6_runtime_probe.json",
       "owner": "executor",
@@ -751,6 +791,76 @@
       "optional": true,
       "lifecycle": "runtime_generated",
       "description": "Fee-edge gate verdicts — entry veto/pass decisions with edge details"
+    },
+    "hybrid_component_propagation_trace": {
+      "path": "logs/execution/hybrid_component_propagation.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Telemetry-only stage propagation trace for hybrid component flow"
+    },
+    "hydra_route_trace": {
+      "path": "logs/execution/hydra_route_trace.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Telemetry-only routing trace across Hydra merge and downstream stages"
+    },
+    "hydra_sizing_trace": {
+      "path": "logs/execution/hydra_sizing_trace.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Telemetry-only sizing trace for Hydra candidate sizing decisions"
+    },
+    "risk_veto_trace": {
+      "path": "logs/execution/risk_veto_trace.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Telemetry-only pre-router veto/funnel trace for risk-stage attribution"
+    },
+    "router_dispatch_trace": {
+      "path": "logs/execution/router_dispatch_trace.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Telemetry-only dispatch trace for router and exchange handoff"
+    },
+    "selector_v2_shadow": {
+      "path": "logs/execution/selector_v2_shadow.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Selector v2 shadow-mode runtime emissions"
+    },
+    "passive_observations": {
+      "path": "logs/execution/passive_observations.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Passive observation runtime log for non-executing opportunities"
+    },
+    "binary_lab_s2_trades": {
+      "path": "logs/execution/binary_lab_s2_trades.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Binary Lab S2 runtime trade log"
+    },
+    "binary_lab_s2_paper_trades": {
+      "path": "logs/execution/binary_lab_s2_paper_trades.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Binary Lab S2 paper-trading runtime log"
+    },
+    "futures_s2_proxy_trades": {
+      "path": "logs/execution/futures_s2_proxy_trades.jsonl",
+      "owner": "executor",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Futures S2 proxy runtime trade log"
     }
   },
   "prediction_layer": {
