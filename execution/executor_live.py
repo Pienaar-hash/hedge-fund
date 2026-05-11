@@ -167,6 +167,8 @@ _V6_RUNTIME_PROBE_INTERVAL = float(os.getenv("V6_RUNTIME_PROBE_INTERVAL", "300")
 _LAST_V6_RUNTIME_PROBE = 0.0
 
 from execution.fallback_telemetry import FallbackTelemetry
+from execution.hybrid_component_propagation import trace_hybrid_component_propagation
+
 _FALLBACK_TELEMETRY = FallbackTelemetry()
 _PIPELINE_V6_HEARTBEAT_INTERVAL_S = float(os.getenv("PIPELINE_V6_SHADOW_HEARTBEAT_INTERVAL_S", "600") or 600)
 _LAST_PIPELINE_V6_HEARTBEAT = 0.0
@@ -1815,6 +1817,100 @@ def _normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _hydra_route_trace(stage: str, intent: Mapping[str, Any], outcome: str = "ok", reason: str = "") -> None:
+    """Append-only routing telemetry for hydra-sourced intents (fail-open)."""
+    try:
+        if not isinstance(intent, Mapping):
+            return
+        src = str(intent.get("source") or "").lower()
+        if src != "hydra":
+            return
+        meta = intent.get("metadata") if isinstance(intent.get("metadata"), Mapping) else {}
+        heads = intent.get("strategy_heads") or meta.get("strategy_heads") or []
+        source_head = (heads[0] if isinstance(heads, (list, tuple)) and heads else None) or intent.get("strategy_id")
+        score_v = intent.get("score") or intent.get("hybrid_score") or meta.get("score") or meta.get("hybrid_score")
+        nav_pct_v = intent.get("nav_pct") or meta.get("nav_pct")
+        notional_v = (
+            intent.get("notional_usd")
+            or intent.get("gross_usd")
+            or intent.get("capital_per_trade")
+        )
+        append_jsonl(Path("logs/execution/hydra_route_trace.jsonl"), {
+            "ts": time.time(),
+            "symbol": intent.get("symbol"),
+            "side": intent.get("side") or intent.get("net_side") or intent.get("positionSide"),
+            "intent_id": intent.get("intent_id") or intent.get("attempt_id"),
+            "source_head": source_head,
+            "strategy": intent.get("strategy") or intent.get("strategy_id") or "hydra",
+            "score": score_v,
+            "nav_pct": nav_pct_v,
+            "projected_notional": float(notional_v) if notional_v is not None else None,
+            "stage": stage,
+            "outcome": outcome,
+            "reason": reason,
+        })
+    except Exception:
+        pass
+
+
+def _router_dispatch_trace(
+    stage: str,
+    intent: Mapping[str, Any] | None = None,
+    *,
+    outcome: str = "ok",
+    reason: str = "",
+    extra: Mapping[str, Any] | None = None,
+) -> None:
+    """Append-only trace for the executor → router → dispatch path.
+
+    Logging-only. Never raises. Records every intent that enters
+    ``_send_order`` and the stage at which it exits or proceeds. Lets us
+    pinpoint silent suppression between doctrine ALLOW and exchange
+    submission.
+
+    Stages: send_order_entered, router_route_called, dispatch_called,
+    exchange_submit_attempted, exchange_submit_success,
+    exchange_submit_failed, dropped_pre_router, dropped_pre_dispatch,
+    cooldown_skip, position_skip, dedupe_skip.
+    """
+    try:
+        intent_d = intent if isinstance(intent, Mapping) else {}
+        meta = intent_d.get("metadata") if isinstance(intent_d.get("metadata"), Mapping) else {}
+        rec: Dict[str, Any] = {
+            "ts": time.time(),
+            "stage": stage,
+            "outcome": outcome,
+            "reason": reason,
+            "symbol": intent_d.get("symbol"),
+            "side": (
+                intent_d.get("side")
+                or intent_d.get("signal")
+                or intent_d.get("net_side")
+                or intent_d.get("positionSide")
+            ),
+            "intent_id": intent_d.get("intent_id") or intent_d.get("attempt_id"),
+            "attempt_id": intent_d.get("attempt_id"),
+            "source": intent_d.get("source"),
+            "strategy": intent_d.get("strategy") or intent_d.get("strategy_id"),
+            "reduce_only": bool(intent_d.get("reduceOnly", False)),
+            "position_side": intent_d.get("positionSide"),
+            "qty": intent_d.get("quantity") or intent_d.get("qty"),
+            "notional": (
+                intent_d.get("gross_usd")
+                or intent_d.get("notional_usd")
+                or (meta.get("notional") if isinstance(meta, Mapping) else None)
+            ),
+        }
+        if extra:
+            for k, v in extra.items():
+                # avoid clobbering required fields
+                if k not in rec or rec[k] is None:
+                    rec[k] = v
+        append_jsonl(Path("logs/execution/router_dispatch_trace.jsonl"), rec)
+    except Exception:
+        pass
+
+
 def _intent_score_for_log(intent: Mapping[str, Any]) -> float:
     """Extract a comparable score from an intent for attribution logging."""
     for key in ("hybrid_score", "score"):
@@ -2491,6 +2587,81 @@ def _evaluate_order_risk(
         current_tier_gross_notional=current_tier_gross,
         source_head=source_head,
     )
+    # Telemetry: log risk-veto trace for sizing diagnostics (fail-open, no logic change)
+    if risk_veto:
+        try:
+            _trace_path = Path("logs/execution/risk_veto_trace.jsonl")
+            _price = float(intent.get("price") or 0.0)
+            _implied_qty = (gross_target / _price) if _price > 0 else None
+            _min_notional = None
+            try:
+                _min_notional = float(
+                    (details or {}).get("thresholds", {}).get("min_notional")
+                )
+            except Exception:
+                _min_notional = None
+            _reasons = []
+            try:
+                _reasons = list((details or {}).get("reasons") or [])
+            except Exception:
+                _reasons = []
+            _meta_local = (
+                intent.get("metadata")
+                if isinstance(intent.get("metadata"), dict)
+                else {}
+            )
+            _score = (
+                intent.get("hybrid_score")
+                or intent.get("score")
+                or _meta_local.get("hybrid_score")
+                or _meta_local.get("score")
+            )
+            _base_nav_pct = (
+                intent.get("nav_pct")
+                or _meta_local.get("nav_pct")
+                or _meta_local.get("base_nav_pct")
+            )
+            _cerb_mult = (
+                intent.get("cerberus_multiplier")
+                or _meta_local.get("cerberus_multiplier")
+            )
+            _implied_nav_pct = (
+                (gross_target / nav) if (nav and nav > 0) else None
+            )
+            append_jsonl(_trace_path, {
+                "ts": time.time(),
+                "symbol": symbol,
+                "side": side,
+                "intent_id": intent.get("intent_id"),
+                "attempt_id": intent.get("attempt_id"),
+                "strategy": intent.get("strategy") or intent.get("strategy_id"),
+                "source_head": source_head,
+                "tier": tier_name,
+                "risk_veto": True,
+                "veto_reasons": _reasons,
+                "min_notional_floor": _min_notional,
+                "requested_notional": float(gross_target),
+                "implied_nav_pct": _implied_nav_pct,
+                "implied_qty_from_price": _implied_qty,
+                "intent_qty": intent.get("qty"),
+                "price_hint": _price,
+                "nav_usd": float(nav),
+                "current_symbol_gross": float(current_symbol_gross),
+                "current_tier_gross": float(current_tier_gross),
+                "open_positions_count": int(open_positions_count),
+                "lev": float(lev),
+                "score": _score,
+                "intent_nav_pct_hint": _base_nav_pct,
+                "cerberus_multiplier_hint": _cerb_mult,
+                # Dead-band probe: required score for floor at given base/cerb/nav
+                "required_score_for_floor": (
+                    (_min_notional / (nav * float(_base_nav_pct or 0.02) * float(_cerb_mult or 1.0)))
+                    if (_min_notional and nav and nav > 0 and float(_base_nav_pct or 0.02) > 0 and float(_cerb_mult or 1.0) > 0)
+                    else None
+                ),
+            })
+        except Exception:
+            pass
     return risk_veto, details
 
 
@@ -3178,6 +3349,14 @@ def _check_fee_edge_gate(
         _fg_notional = gross_target
         _fg_meta = intent.get("metadata") or {}
         _fg_hybrid = intent.get("hybrid_components") or {}
+        trace_hybrid_component_propagation(
+            origin_stage="fee_gate_received",
+            intent=intent,
+            source_head=str(intent.get("source_head", "") or ""),
+            merge_path=str(intent.get("merge_path", "") or ""),
+            intent_type="fee_gate_input",
+            hybrid_components=_fg_hybrid,
+        )
 
         # ── Resolve intent expected_edge (conviction-derived) ─────────
         # Precedence: intent["expected_edge"] > hybrid expectancy > metadata
@@ -3207,9 +3386,17 @@ def _check_fee_edge_gate(
             _INTENT_EDGE_CAP = 0.25  # Cap at 25% to guard runaway values
             _te_result = None
 
+            # v7.9-FG-A: Accept any resolved intent expectancy source.
+            # Previously this branch only fired for "intent_expected_edge",
+            # silently dropping the hybrid_components.expectancy and
+            # metadata.expectancy values into the ATR fallback path.
             if (
                 _intent_edge_pct > 0
-                and _fg_edge_source == "intent_expected_edge"
+                and _fg_edge_source in (
+                    "intent_expected_edge",
+                    "hybrid_expectancy",
+                    "metadata_expectancy",
+                )
                 and _intent_edge_pct == _intent_edge_pct  # finite check (NaN != NaN)
             ):
                 from execution.true_edge import TrueEdgeResult
@@ -3223,7 +3410,7 @@ def _check_fee_edge_gate(
                     adv=round(_capped_edge, 6),
                     confidence=_te_confidence,
                     notional_usd=_fg_notional,
-                    source="intent_expected_edge",
+                    source=_fg_edge_source,
                 )
 
             # ── Fallback: ATR-based edge model ────────────────────────
@@ -3514,6 +3701,14 @@ def _check_notional_inflation_guard(
 
 # NOTE: _send_order must only pass canonical order fields into send_order.
 def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool = False) -> None:
+    _router_dispatch_trace("send_order_entered", intent, extra={"skip_flip": skip_flip})
+    trace_hybrid_component_propagation(
+        origin_stage="executor_received",
+        intent=intent,
+        source_head=str(intent.get("source_head", "") or ""),
+        merge_path=str(intent.get("merge_path", "") or ""),
+        intent_type="executor_input",
+    )
     # ZERO-SCORE INVARIANT — reject intents with explicit zero score (AUDIT-2.2a)
     _score = None
     _has_score_field = False
@@ -3540,6 +3735,11 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             })
         except Exception:
             pass
+        _router_dispatch_trace(
+            "dropped_pre_router", intent,
+            outcome="drop", reason="zero_score",
+            extra={"score": _score},
+        )
         return
 
     # DOCTRINE GATE — Supreme Authority Check
@@ -3592,6 +3792,11 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
                 )
             except Exception as exc:
                 LOG.debug("[dle_shadow] entry_deny hook failed: %s", exc)
+        _router_dispatch_trace(
+            "dropped_pre_router", intent,
+            outcome="drop", reason=f"doctrine_veto:{doctrine_reason}",
+            extra={"doctrine_details": doctrine_details},
+        )
         return  # Hard stop — no further processing
     
     # --- Hydra Funnel: stage 4 (post_doctrine) ---
@@ -3663,12 +3868,20 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             )
             if not cg_allowed:
                 LOG.info("[churn_guard] EXIT VETO %s %s: %s", symbol_upper, pos_side, cg_reason)
+                _router_dispatch_trace(
+                    "dropped_pre_router", intent,
+                    outcome="drop", reason=f"churn_guard_exit:{cg_reason}",
+                )
                 return
         else:
             # Entry gate: cooldown check
             cg_allowed, cg_reason = check_entry_allowed(symbol_upper, pos_side or "")
             if not cg_allowed:
                 LOG.info("[churn_guard] ENTRY VETO %s %s: %s", symbol_upper, pos_side, cg_reason)
+                _router_dispatch_trace(
+                    "cooldown_skip", intent,
+                    outcome="drop", reason=f"churn_guard_entry:{cg_reason}",
+                )
                 return
     except ImportError:
         # AUDIT-1.1e: churn_guard missing — log as disabled gate
@@ -3891,6 +4104,10 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             pos_side=pos_side,
             gross_target=gross_target,
         )
+        _router_dispatch_trace(
+            "dropped_pre_router", intent,
+            outcome="drop", reason="no_strategy_attribution",
+        )
         return None
 
     # v7.9-S1: Conviction band gate.  If conviction.mode="live" and
@@ -3937,6 +4154,11 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
                         side=side,
                         pos_side=pos_side,
                         gross_target=gross_target,
+                    )
+                    _router_dispatch_trace(
+                        "dropped_pre_router", intent,
+                        outcome="drop", reason="conviction_band_below_minimum",
+                        extra={"band": _intent_band, "min_band": _min_band_str},
                     )
                     return None
                 else:
@@ -4005,6 +4227,10 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             )
         except Exception:
             pass
+        _router_dispatch_trace(
+            "dropped_pre_router", intent,
+            outcome="drop", reason="kill_switch_on",
+        )
         return
 
     LOG.info(
@@ -4271,6 +4497,11 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             pos_side=pos_side,
             gross_target=gross_target,
         )
+        _router_dispatch_trace(
+            "dropped_pre_router", intent,
+            outcome="drop", reason=f"risk_veto:{reason}",
+            extra={"reasons": reasons, "gross_target": gross_target},
+        )
         return
 
     price_hint = float(intent.get("price", 0.0) or 0.0)
@@ -4279,6 +4510,10 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             price_hint = float(get_price(symbol))
         except Exception as exc:
             LOG.error("[executor] price_fetch_err %s %s", symbol, exc)
+            _router_dispatch_trace(
+                "dropped_pre_router", intent,
+                outcome="drop", reason=f"price_fetch_err:{exc}",
+            )
             return
 
     # ── v7.9-E2: Fee-Aware Edge Gate (entries only) ───────────────────────
@@ -4293,6 +4528,11 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             intent_id=intent_id,
             attempt_id=attempt_id,
         ):
+            _router_dispatch_trace(
+                "dropped_pre_router", intent,
+                outcome="drop", reason="fee_edge_gate",
+                extra={"gross_target": gross_target},
+            )
             return
 
     # ── Sizing Snapshot: canonical pre-order audit record ──
@@ -4344,6 +4584,10 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             )
         except Exception:
             LOG.warning("[SIZE_ERROR_AUDIT] publish_order_audit failed for %s", symbol, exc_info=True)
+        _router_dispatch_trace(
+            "dropped_pre_router", intent,
+            outcome="drop", reason=f"size_error:{exc}",
+        )
         return
 
     payload["positionSide"] = pos_side
@@ -4361,6 +4605,11 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
         intent=intent,
         nav_snapshot=nav_snapshot,
     ):
+        _router_dispatch_trace(
+            "dropped_pre_router", intent,
+            outcome="drop", reason="notional_inflation_guard",
+            extra={"gross_target": gross_target},
+        )
         return
 
     if not reduce_only:
@@ -4418,6 +4667,11 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
             )
         except Exception:
             LOG.warning("[REQUEST_AUDIT] publish_order_audit failed for %s (dry_run)", symbol, exc_info=True)
+        _router_dispatch_trace(
+            "dropped_pre_dispatch", intent,
+            outcome="drop", reason="dry_run",
+            extra={"gross_target": gross_target},
+        )
         return
 
     LOG.info("[executor] SEND_ORDER %s %s payload=%s meta=%s", symbol, side, payload_view, meta)
@@ -4442,7 +4696,20 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
     router_metrics: Optional[Dict[str, Any]] = None
 
     if force_direct_send:
+        _router_dispatch_trace(
+            "dispatch_called", intent,
+            outcome="ok", reason="force_direct_send_flip_open",
+            extra={
+                "router_path": "force_direct",
+                "qty": payload.get("quantity"),
+                "type": payload.get("type"),
+            },
+        )
         try:
+            _router_dispatch_trace(
+                "exchange_submit_attempted", intent,
+                extra={"router_path": "force_direct"},
+            )
             resp = _dispatch_local(payload)
             router_metrics = {
                 "attempt_id": attempt_id,
@@ -4470,6 +4737,11 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
         except Exception as exc:
             router_error = str(exc)
             LOG.error("[executor] flip open send_failed %s %s", symbol, exc)
+            _router_dispatch_trace(
+                "exchange_submit_failed", intent,
+                outcome="error", reason=f"force_direct_exception:{exc}",
+                extra={"router_path": "force_direct", "exception_class": exc.__class__.__name__},
+            )
             return
         try:
             publish_order_audit(
@@ -4528,15 +4800,45 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
         )
         if maker_ctx_enabled:
             router_payload["route"] = "maker_first"
+        _router_dispatch_trace(
+            "router_route_called", intent,
+            extra={
+                "router_path": "_route_intent",
+                "maker_first": bool(maker_ctx_enabled),
+                "policy_quality": policy.quality,
+                "policy_maker_first": policy.maker_first,
+                "policy_reason": policy.reason,
+                "qty": payload.get("quantity"),
+                "type": payload.get("type"),
+            },
+        )
         try:
             result, router_metrics = _route_intent(router_payload, attempt_id)
         except Exception as exc:
             router_error = str(exc)
+            _router_dispatch_trace(
+                "exchange_submit_failed", intent,
+                outcome="error", reason=f"route_intent_exception:{exc}",
+                extra={"router_path": "_route_intent", "exception_class": exc.__class__.__name__},
+            )
         else:
             if result.get("accepted"):
                 resp = result.get("raw") or {}
+                _router_dispatch_trace(
+                    "exchange_submit_success", intent,
+                    extra={
+                        "router_path": "_route_intent",
+                        "order_id": resp.get("orderId"),
+                        "status": resp.get("status"),
+                    },
+                )
             else:
                 router_error = str(result.get("reason") or "router_reject")
+                _router_dispatch_trace(
+                    "exchange_submit_failed", intent,
+                    outcome="reject", reason=f"router_reject:{router_error}",
+                    extra={"router_path": "_route_intent", "result": dict(result) if isinstance(result, Mapping) else None},
+                )
     elif _route_order is not None and not force_direct_send:
         router_intent = {
             **intent,
@@ -4569,15 +4871,45 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
                     "maker_qty": norm_qty,
                 }
             )
+        _router_dispatch_trace(
+            "router_route_called", intent,
+            extra={
+                "router_path": "_route_order",
+                "maker_first": bool(maker_ctx_enabled),
+                "policy_quality": policy.quality,
+                "policy_maker_first": policy.maker_first,
+                "policy_reason": policy.reason,
+                "qty": payload.get("quantity"),
+                "type": payload.get("type"),
+            },
+        )
         try:
             result = _route_order(router_intent, router_ctx, DRY_RUN)
         except Exception as exc:
             router_error = str(exc)
+            _router_dispatch_trace(
+                "exchange_submit_failed", intent,
+                outcome="error", reason=f"route_order_exception:{exc}",
+                extra={"router_path": "_route_order", "exception_class": exc.__class__.__name__},
+            )
         else:
             if result.get("accepted"):
                 resp = result.get("raw") or {}
+                _router_dispatch_trace(
+                    "exchange_submit_success", intent,
+                    extra={
+                        "router_path": "_route_order",
+                        "order_id": resp.get("orderId"),
+                        "status": resp.get("status"),
+                    },
+                )
             else:
                 router_error = str(result.get("reason") or "router_reject")
+                _router_dispatch_trace(
+                    "exchange_submit_failed", intent,
+                    outcome="reject", reason=f"router_reject:{router_error}",
+                    extra={"router_path": "_route_order", "result": dict(result) if isinstance(result, Mapping) else None},
+                )
 
     if not resp:
         if router_error and not force_direct_send:
@@ -4611,7 +4943,24 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
                     maker_result.is_maker,
                     maker_result.rejections,
                 )
+                _router_dispatch_trace(
+                    "exchange_submit_success", intent,
+                    extra={
+                        "router_path": "maker_first_fallback",
+                        "is_maker": maker_result.is_maker,
+                        "rejections": maker_result.rejections,
+                    },
+                )
     if not resp:
+        _router_dispatch_trace(
+            "dispatch_called", intent,
+            extra={
+                "router_path": "dispatch_with_retry",
+                "router_available": _route_intent is not None or _route_order is not None,
+                "force_direct_send": force_direct_send,
+                "router_error": router_error,
+            },
+        )
         _retry_ctx = _DispatchRetryContext(
             symbol=symbol,
             side=side,
@@ -4629,8 +4978,21 @@ def _send_order(state: ExecutorState, intent: Dict[str, Any], *, skip_flip: bool
         )
         _retry_result = _dispatch_with_retry(_dispatch_local, payload, _retry_ctx)
         if _retry_result is None:
+            _router_dispatch_trace(
+                "exchange_submit_failed", intent,
+                outcome="error", reason="dispatch_with_retry_returned_none",
+                extra={"router_path": "dispatch_with_retry"},
+            )
             return
         resp = _retry_result
+        _router_dispatch_trace(
+            "exchange_submit_success", intent,
+            extra={
+                "router_path": "dispatch_with_retry",
+                "order_id": resp.get("orderId") if isinstance(resp, Mapping) else None,
+                "status": resp.get("status") if isinstance(resp, Mapping) else None,
+            },
+        )
 
     latency_ms = max(0.0, (time.monotonic() - attempt_start_monotonic) * 1000.0)
 
@@ -5994,12 +6356,15 @@ def _loop_once(state: ExecutorState, i: int) -> None:
         submitted = 0
         for idx, raw_intent in enumerate(intents_raw):
             intent = _normalize_intent(raw_intent)
+            _hydra_route_trace("intents_raw_seen", intent)
             symbol = cast(Optional[str], intent.get("symbol"))
             if not symbol:
                 LOG.warning("[screener] missing symbol in intent %s", intent)
+                _hydra_route_trace("dropped_pre_send_order", intent, outcome="drop", reason="missing_symbol")
                 continue
             now_ts = time.time()
             if _symbol_on_cooldown(symbol, now_ts):
+                _hydra_route_trace("dropped_pre_send_order", intent, outcome="drop", reason="cooldown")
                 continue
 
             # --- Phase 4 Commit 5: ECS Selector (authoritative) ---
@@ -6099,14 +6464,23 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                         pass  # FPS shadow must never block execution
 
                     if _ecs_result["selected"] is None:
+                        _hydra_route_trace(
+                            "dropped_pre_send_order", intent, outcome="drop",
+                            reason=f"ecs_rejected:{_ecs_result.get('selection_reason','')}",
+                        )
                         continue  # No candidate passed — skip this intent
                 except Exception as _ecs_err:
                     LOG.warning("[ecs_selector] fail-open, skipping intent: %s", _ecs_err)
+                    _hydra_route_trace("dropped_pre_send_order", intent, outcome="drop", reason="ecs_exception")
                     continue  # No legacy fallback — skip on selector failure
 
             veto_reasons = _coerce_veto_reasons(intent.get("veto"))
             if veto_reasons:
                 _publish_veto_exec(symbol, veto_reasons, intent)
+                _hydra_route_trace(
+                    "dropped_pre_send_order", intent, outcome="drop",
+                    reason=f"intent_veto:{','.join(veto_reasons)[:80]}",
+                )
                 continue
 
             attempt_id = mk_id("sig")
@@ -6143,6 +6517,10 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                     symbol,
                     ",".join(doctor_verdict.get("reasons", [])),
                 )
+                _hydra_route_trace(
+                    "dropped_pre_send_order", intent, outcome="drop",
+                    reason=f"signal_doctor:{','.join(doctor_verdict.get('reasons', []))[:80]}",
+                )
                 continue
 
             submitted += 1
@@ -6155,6 +6533,7 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                 intent_with_attempt.pop("_fallback", None)
                 intent_with_attempt["attempt_id"] = attempt_id
                 _FALLBACK_TELEMETRY.record_attempt(intent_with_attempt)
+                _hydra_route_trace("send_order_reached", intent_with_attempt)
                 _send_order(state, intent_with_attempt)
             except Exception as exc:
                 LOG.error("[executor] failed to send intent %s %s", symbol, exc)

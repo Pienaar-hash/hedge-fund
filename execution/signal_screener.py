@@ -58,6 +58,7 @@ from execution.intel.symbol_score_v6 import (
     rank_intents_by_hybrid_score,
 )
 from execution.diagnostics_metrics import record_signal_emitted
+from execution.hybrid_component_propagation import trace_hybrid_component_propagation
 
 # v7.5_B2: Router quality imports
 try:
@@ -1453,6 +1454,18 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                             _conviction_cfg = None
                     
                     for result in ranked_results:
+                        _result_map = result if isinstance(result, dict) else {}
+                        trace_hybrid_component_propagation(
+                            origin_stage="ranked_result_created",
+                            intent=_result_map.get("intent"),
+                            symbol=str(_result_map.get("symbol", "") or "").upper(),
+                            strategy="screener_hybrid_rank",
+                            source_head=str(_result_map.get("source_head", "") or ""),
+                            merge_path="rank_by_hybrid",
+                            intent_type="ranked_result",
+                            hybrid_components=_result_map.get("components"),
+                        )
+
                         # Get original intent and add hybrid_score metadata
                         intent = result.get("intent", {})
                         symbol = str(intent.get("symbol", "")).upper()
@@ -1494,6 +1507,14 @@ def generate_signals_from_config() -> Iterable[Dict[str, Any]]:
                         intent["hybrid_carry_details"] = result.get("carry_details", {})
                         intent["router_quality_score"] = rq_score
                         intent["rv_momentum_score"] = rv_score_val
+                        trace_hybrid_component_propagation(
+                            origin_stage="intent_constructed",
+                            intent=intent,
+                            strategy="screener_hybrid_rank",
+                            source_head=str(intent.get("source_head", "") or ""),
+                            merge_path="rank_by_hybrid",
+                            intent_type="execution_intent_candidate",
+                        )
                         
                         # v7.9_C1: Compute conviction score + band for every ranked intent
                         # This ensures the executor's conviction gate (min_entry_band) can pass.
