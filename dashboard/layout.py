@@ -361,20 +361,21 @@ def render_diagnostics_block(
     
     # Core state files to monitor
     state_files = [
-        ("nav.json", Path("logs/state/nav.json")),
-        ("nav_state.json", Path("logs/state/nav_state.json")),
-        ("risk_snapshot.json", Path("logs/state/risk_snapshot.json")),
-        ("router_health.json", Path("logs/state/router_health.json")),
-        ("positions_state.json", Path("logs/state/positions_state.json")),
-        ("diagnostics.json", Path("logs/state/diagnostics.json")),
-        ("sentinel_x.json", Path("logs/state/sentinel_x.json")),
-        ("regime_pressure.json", Path("logs/state/regime_pressure.json")),
-        ("kpis_v7.json", Path("logs/state/kpis_v7.json")),
-        ("engine_metadata.json", Path("logs/state/engine_metadata.json")),
-        ("episode_ledger.json", Path("logs/state/episode_ledger.json")),
+        ("nav.json", Path("logs/state/nav.json"), 300),
+        ("nav_state.json", Path("logs/state/nav_state.json"), 300),
+        ("risk_snapshot.json", Path("logs/state/risk_snapshot.json"), 300),
+        ("router_health.json", Path("logs/state/router_health.json"), 300),
+        ("positions_state.json", Path("logs/state/positions_state.json"), 300),
+        ("diagnostics.json", Path("logs/state/diagnostics.json"), 300),
+        ("sentinel_x.json", Path("logs/state/sentinel_x.json"), 300),
+        ("regime_pressure.json", Path("logs/state/regime_pressure.json"), 300),
+        ("kpis_v7.json", Path("logs/state/kpis_v7.json"), 300),
+        ("engine_metadata.json", Path("logs/state/engine_metadata.json"), 300),
+        ("episode_ledger.json", Path("logs/state/episode_ledger.json"), 1800),
+        ("risk_vetoes.jsonl", Path("logs/execution/risk_vetoes.jsonl"), 86400),
     ]
-    
-    for name, path in state_files:
+
+    for name, path, stale_after_s in state_files:
         if not path.exists():
             state_health.append({
                 "name": name,
@@ -383,16 +384,15 @@ def render_diagnostics_block(
                 "size_bytes": None,
             })
             continue
-        
+
         try:
             stat = path.stat()
             size = stat.st_size
             mtime = stat.st_mtime
             age_s = time.time() - mtime
-            
-            # Status based on age (5 min = stale for most files)
-            status = "stale" if age_s > 300 else "ok"
-            
+
+            status = "stale" if age_s > stale_after_s else "ok"
+
             state_health.append({
                 "name": name,
                 "status": status,

@@ -95,7 +95,7 @@ def build_kpi_cards(
             "value_class": "",
         },
         {
-            "label": "All-Time PnL",
+            "label": "NAV Delta PnL",
             "value_html": ("+" if _at_pnl >= 0 else "") + _fmt_usd(_at_pnl),
             "value_class": _value_class(_at_pnl),
         },

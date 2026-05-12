@@ -84,7 +84,7 @@ def render_performance_block(
         <div class="performance-grid">
             <!-- PnL cards row -->
             <div class="perf-card">
-                <div class="perf-label">24h PnL{d_sub}</div>
+                <div class="perf-label">NAV Delta PnL (24h){d_sub}</div>
                 <div class="perf-value {d_cls}">{d_val}</div>
             </div>
             <div class="perf-card">
@@ -96,7 +96,7 @@ def render_performance_block(
                 <div class="perf-value {m_cls}">{m_val}</div>
             </div>
             <div class="perf-card perf-card-highlight">
-                <div class="perf-label">All-Time PnL</div>
+                <div class="perf-label">NAV Delta PnL (All-Time)</div>
                 <div class="perf-value {t_cls}">{t_val}</div>
             </div>
             

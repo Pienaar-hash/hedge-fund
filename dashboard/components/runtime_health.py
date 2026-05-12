@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 import streamlit as st
 
 _RISK_VETOES_PATH = Path(os.getenv("RISK_VETOES_PATH") or "logs/execution/risk_vetoes.jsonl")
+_DOCTRINE_EVENTS_PATH = Path(os.getenv("DOCTRINE_EVENTS_PATH") or "logs/doctrine_events.jsonl")
 
 
 def _status_class(status: str) -> str:
@@ -102,6 +103,42 @@ def _load_veto_counts_24h() -> Dict[str, int]:
     return counts
 
 
+def _count_doctrine_vetoes_24h() -> int:
+    """Count doctrine entry veto events in the last 24 hours."""
+    total = 0
+    try:
+        if not _DOCTRINE_EVENTS_PATH.exists():
+            return 0
+        cutoff = datetime.now(timezone.utc).timestamp() - 86400
+        with _DOCTRINE_EVENTS_PATH.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                ts_raw = rec.get("ts")
+                if ts_raw is None:
+                    continue
+                if isinstance(ts_raw, (int, float)):
+                    ts_epoch = float(ts_raw)
+                else:
+                    try:
+                        ts_epoch = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        continue
+                if ts_epoch < cutoff:
+                    continue
+                event_type = str(rec.get("event_type") or "").upper()
+                if event_type in ("ENTRY_VETO", "DOCTRINE_ENTRY_VETO"):
+                    total += 1
+    except Exception:
+        return 0
+    return total
+
+
 def build_risk_state(risk_snapshot: Dict[str, Any], nav_value: float, gross_exposure: float) -> Dict[str, Any]:
     """Build normalized risk state for rendering."""
     dd_state = risk_snapshot.get("dd_state", "normal")
@@ -112,6 +149,10 @@ def build_risk_state(risk_snapshot: Dict[str, Any], nav_value: float, gross_expo
     if not veto_counts:
         veto_counts = _load_veto_counts_24h()
     total_vetoes = sum(veto_counts.values()) if isinstance(veto_counts, dict) else 0
+    min_notional_blocks = 0
+    if isinstance(veto_counts, dict):
+        min_notional_blocks = int(veto_counts.get("min_notional", 0)) + int(veto_counts.get("below_min_notional", 0))
+    doctrine_vetoes = _count_doctrine_vetoes_24h()
     
     # Handle nested dicts
     if isinstance(dd_state, dict):
@@ -128,6 +169,8 @@ def build_risk_state(risk_snapshot: Dict[str, Any], nav_value: float, gross_expo
         "atr_regime": str(atr_regime),
         "risk_mode": str(risk_mode),
         "total_vetoes": total_vetoes,
+        "doctrine_vetoes": doctrine_vetoes,
+        "min_notional_blocks": min_notional_blocks,
         "gross_exposure": gross_exposure,
         "exposure_pct": exposure_pct,
     }
@@ -195,6 +238,8 @@ def render_risk_engine_panel(risk_state: Dict[str, Any]) -> None:
     atr_regime = risk_state["atr_regime"]
     risk_mode = risk_state["risk_mode"]
     total_vetoes = risk_state["total_vetoes"]
+    doctrine_vetoes = risk_state["doctrine_vetoes"]
+    min_notional_blocks = risk_state["min_notional_blocks"]
     gross_exposure = risk_state["gross_exposure"]
     exposure_pct = risk_state["exposure_pct"]
     
@@ -220,8 +265,16 @@ def render_risk_engine_panel(risk_state: Dict[str, Any]) -> None:
                 <span>${gross_exposure:,.0f} <span class="text-muted">({exposure_pct:.0f}%)</span></span>
             </div>
             <div class="panel-footer-row">
-                <span class="text-muted">Vetoes (24h)</span>
+                <span class="text-muted">Risk Vetoes (24h)</span>
                 <span>{total_vetoes}</span>
+            </div>
+            <div class="panel-footer-row">
+                <span class="text-muted">Doctrine Vetoes (24h)</span>
+                <span>{doctrine_vetoes}</span>
+            </div>
+            <div class="panel-footer-row">
+                <span class="text-muted">Min Notional Blocks (24h)</span>
+                <span>{min_notional_blocks}</span>
             </div>
         </div>
     </div>

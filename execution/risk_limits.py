@@ -43,6 +43,7 @@ from execution.correlation_groups import (
     compute_hypothetical_group_exposure_nav_pct,
 )
 from execution.diagnostics_metrics import record_veto
+from execution.min_notional_planner import MinNotionalAction, plan_min_notional_action
 
 
 def _normalize_observed_pct(value: float) -> float:
@@ -1632,9 +1633,28 @@ def check_order(
     max_order_notional = float(s_cfg.get("max_order_notional", 0.0) or 0.0)
     req_notional = float(requested_notional)
 
-    if min_notional > 0.0 and req_notional < min_notional:
+    planner_max_nav_pct = normalize_percentage(
+        s_cfg.get("max_nav_pct", g_cfg.get("max_trade_nav_pct", 0.0))
+    )
+    planner_fee_rate = float(g_cfg.get("taker_fee_rate", 0.0004) or 0.0004)
+    planner_mark_price = float(price or 0.0)
+    planner_intended_qty = (req_notional / planner_mark_price) if planner_mark_price > 0 else 0.0
+    min_notional_plan = plan_min_notional_action(
+        symbol=sym,
+        intended_qty=planner_intended_qty,
+        mark_price=planner_mark_price,
+        intended_notional=req_notional,
+        min_notional=min_notional,
+        nav_usd=nav_f,
+        max_nav_pct=planner_max_nav_pct,
+        leverage=float(lev or 0.0),
+        fee_rate=planner_fee_rate,
+    )
+    detail_payload.update(min_notional_plan.to_log_fields())
+
+    if min_notional_plan.action != MinNotionalAction.PASS:
         reasons.append("min_notional")
-        thresholds.setdefault("min_notional", float(min_notional))
+        thresholds.setdefault("min_notional", float(min_notional_plan.min_notional_required))
 
     if max_order_notional > 0.0 and req_notional > max_order_notional:
         reasons.append("symbol_cap")
@@ -1928,6 +1948,14 @@ def check_order(
     nav_flag_snapshot = detail_payload.get("nav_fresh")
     # Preserve constraint_geometry if it was set during symbol_cap check
     constraint_geometry = detail_payload.get("constraint_geometry")
+    # Preserve planner fields so they survive the detail_payload reassignment
+    _planner_keys = (
+        "min_notional_action",
+        "min_notional_required",
+        "intended_notional",
+        "adjusted_notional",
+    )
+    _planner_fields = {k: detail_payload[k] for k in _planner_keys if k in detail_payload}
     detail_payload = {
         "gate": "risk_limits",
         "limit": reasons[0],
@@ -1939,6 +1967,9 @@ def check_order(
     # Restore constraint_geometry after reassignment
     if constraint_geometry is not None:
         detail_payload["constraint_geometry"] = constraint_geometry
+    # Restore planner fields after reassignment
+    if _planner_fields:
+        detail_payload.update(_planner_fields)
     detail_payload.setdefault("nav_total", nav_f)
     detail_payload.setdefault("dd_state", dd_state)
     detail_payload.setdefault("atr_regime", atr_snapshot.get("atr_regime"))

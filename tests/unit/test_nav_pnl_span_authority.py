@@ -152,7 +152,7 @@ class TestKpiStripSpanAuthority:
     """KPI strip shows All-Time PnL from episode ledger (always real data)."""
 
     def test_kpi_strip_shows_all_time_pnl(self):
-        """KPI strip should show All-Time PnL from episode ledger."""
+        """KPI strip should show NAV Delta PnL from episode ledger."""
         from dashboard.components.kpi_strip import build_kpi_cards
         entries = _make_nav_log(span_hours=12)
         with patch("dashboard.components.nav_pnl._load_nav_log", return_value=entries):
@@ -163,12 +163,12 @@ class TestKpiStripSpanAuthority:
                 risk_snapshot={},
                 episode_ledger={"stats": {"total_net_pnl": -500, "win_rate": 12.0}},
             )
-        pnl_card = next(c for c in cards if c["label"] == "All-Time PnL")
+        pnl_card = next(c for c in cards if c["label"] == "NAV Delta PnL")
         assert "$-500" in pnl_card["value_html"] or "-$500" in pnl_card["value_html"]
         assert pnl_card["value_class"] == "negative"
 
     def test_kpi_strip_has_no_24h_card(self):
-        """24h PnL card is removed — replaced by All-Time PnL."""
+        """24h PnL card is removed — replaced by NAV Delta PnL."""
         from dashboard.components.kpi_strip import build_kpi_cards
         entries = _make_nav_log(span_hours=25)
         with patch("dashboard.components.nav_pnl._load_nav_log", return_value=entries):
@@ -180,4 +180,4 @@ class TestKpiStripSpanAuthority:
             )
         labels = [c["label"] for c in cards]
         assert "24h PnL" not in labels
-        assert "All-Time PnL" in labels
+        assert "NAV Delta PnL" in labels
