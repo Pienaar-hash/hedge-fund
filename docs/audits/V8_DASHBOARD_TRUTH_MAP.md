@@ -37,6 +37,11 @@ Phase 1 is observability-only. No execution behavior is changed.
 | Min Notional Blocks (24h) | Runtime Health | logs/state/risk_snapshot.json or logs/execution/risk_vetoes.jsonl | veto_counts[min_notional] + veto_counts[below_min_notional] | Plumbing veto subclass of risk vetoes. |
 | Maker Fill Rate | Runtime Health | logs/state/router_health.json | maker_count / order_count aggregate | Router health aggregate. |
 | Fallback Ratio | Runtime Health | logs/state/router_health.json | fallback_count / order_count aggregate | Router degradation indicator. |
+| Shadow Soak Verdict | Research Observability | logs/state/shadow_soak_state.json | verdict | Read-only phase 5 status surface. |
+| Shadow Soak Sample Size | Research Observability | logs/state/shadow_soak_state.json | sample_size | Displays processed shadow soak observations. |
+| Shadow Soak Match Rates | Research Observability | logs/state/shadow_soak_state.json | symbol_match_rate, direction_match_rate, quantity_bucket_match_rate | Display-only alignment metrics. |
+| Shadow Soak Slippage | Research Observability | logs/state/shadow_soak_state.json | slippage_model_error_r, median_abs_slippage_error_bps, p95_abs_slippage_error_bps | Read-only calibration metrics. |
+| Shadow Soak Latency | Research Observability | logs/state/shadow_soak_state.json | fill_latency_p99_s | Read-only runtime latency metric. |
 
 ## PnL Authority Split
 
@@ -80,6 +85,16 @@ The dashboard now includes these labels explicitly:
 3. Risk Vetoes
 4. Doctrine Vetoes
 5. Min Notional Blocks
+
+## Shadow Soak Monitoring
+
+Read-only dashboard queries for Phase 5 should use `logs/state/shadow_soak_state.json` for the current snapshot and `logs/research/shadow_soak_events.jsonl` for event history. The dashboard may surface the following queries without changing execution behavior:
+
+- Current verdict, sample size, and consecutive failed checks from `shadow_soak_state.json`
+- Match-rate trio: `symbol_match_rate`, `direction_match_rate`, `quantity_bucket_match_rate`
+- Slippage calibration: `slippage_model_error_r`, `median_abs_slippage_error_bps`, `p95_abs_slippage_error_bps`
+- Latency view: `fill_latency_p99_s`
+- Recent catastrophic mismatches from `shadow_soak_events.jsonl` where `catastrophic_mismatch == true`
 
 ## Phase 1 Guardrail
 

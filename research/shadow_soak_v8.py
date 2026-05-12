@@ -15,6 +15,7 @@ No imports from execution/ allowed.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import sys
@@ -794,14 +795,31 @@ def run_shadow_soak(
     return runner.run()
 
 
+def _parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse both positional and flag-based CLI forms for the runner script."""
+    parser = argparse.ArgumentParser(prog='python -m research.shadow_soak_v8')
+    parser.add_argument('run_id', nargs='?', help='Observer run id')
+    parser.add_argument('logs_dir', nargs='?', default=None, help='Logs root directory')
+    parser.add_argument('replay_dir', nargs='?', default=None, help='Replay certification directory')
+    parser.add_argument('--run-id', dest='run_id_flag', help='Observer run id')
+    parser.add_argument('--logs-root', dest='logs_root_flag', help='Logs root directory')
+    parser.add_argument('--certification-dir', dest='certification_dir_flag', help='Replay certification directory')
+    return parser.parse_args(argv)
+
+
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print('Usage: python -m research.shadow_soak_v8 <run_id> [logs_dir] [replay_dir]')
+    args = _parse_cli_args(sys.argv[1:])
+
+    run_id = args.run_id_flag or args.run_id
+    if not run_id:
+        print(
+            'Usage: python -m research.shadow_soak_v8 <run_id> [logs_dir] [replay_dir] '
+            'or python -m research.shadow_soak_v8 --run-id <run_id> --logs-root <logs_dir> --certification-dir <replay_dir>'
+        )
         sys.exit(1)
-    
-    run_id = sys.argv[1]
-    logs_dir = sys.argv[2] if len(sys.argv) > 2 else 'logs'
-    replay_dir = sys.argv[3] if len(sys.argv) > 3 else None
+
+    logs_dir = args.logs_root_flag or args.logs_dir or 'logs'
+    replay_dir = args.certification_dir_flag or args.replay_dir
     
     state = run_shadow_soak(run_id=run_id, logs_dir=logs_dir, replay_dir=replay_dir)
     

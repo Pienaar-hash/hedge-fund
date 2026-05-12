@@ -157,7 +157,10 @@ def run_shadow_soak():
    - At least 95% of shadow signals have corresponding live orders (or intentional vetoes)
 
 2. ✅ **Slippage Calibration R ≥ 0.80**  
-   - Actual slippage vs. model 5 bps assumption correlates r ≥ 0.80
+  - Actual slippage vs. model 5 bps assumption correlates r ≥ 0.80
+  - Median absolute slippage error must be <= 3 bps
+  - P95 absolute slippage error must be <= 10 bps
+  - Wider observed values may be recorded, but they do not qualify the gate
 
 3. ✅ **No Catastrophic Mismatches**  
    - Zero instances of:
@@ -177,6 +180,7 @@ def run_shadow_soak():
 **Any of these trigger shadow soak pause pending investigation:**
 
 - Signal correlation drops below 0.75 (2 consecutive checks)
+- Correlation remains below 0.95 at the Phase 5 gate review point
 - Slippage r < 0.60 (indicates model assumption invalid)
 - Direction mismatch detected
 - Unexplained message sequencing (out-of-order acks)
@@ -214,7 +218,7 @@ def run_shadow_soak():
 1. Run shadow soak in background (non-blocking)
 2. Collect metrics every 1000 events
 3. Publish shadow_soak_state.json to dashboard
-4. Investigate any correlation < 0.90
+5. Investigate any correlation < 0.95
 
 ### Gate Decision (End of Day 14)
 - **PASS**: All 5 success criteria met → recommend Phase 6 (live activation proposal)
@@ -269,8 +273,10 @@ python -c "
 **If shadow soak encounters fatal errors during Phase 5:**
 1. Set `shadow_soak_enabled = false` in runtime.yaml
 2. Stop `research/shadow_soak_v8.py` process
-3. Preserve all event logs in `logs/execution/shadow_soak_events.jsonl` (append-only)
-4. Post-mortem: analyze logs, update strategy, redeploy in soak mode
+3. Archive `logs/research/shadow_soak_events.jsonl` to `logs/research/archive/`
+4. Write `logs/state/shadow_soak_state.json` with `status=PAUSED` and `reason=operator_disabled`
+5. Executor continues unchanged
+6. Post-mortem: analyze logs, update strategy, redeploy in soak mode
 
 **No executor changes required** (shadow layer is independent).
 
