@@ -173,7 +173,16 @@ class ShadowSoakState:
     fill_latency_p99_s: float | None
     catastrophic_mismatch_count: int
     consecutive_failed_checks: int
+    live_orders_read: int
+    shadow_signals_read: int
+    live_ts_min: str | None
+    live_ts_max: str | None
+    shadow_ts_min: str | None
+    shadow_ts_max: str | None
+    timestamp_overlap: bool
     verdict: str  # VerdictType enum value
+    pairing_source_files: list[str] = field(default_factory=list)
+    reason: str | None = None
     failed_criteria: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -214,9 +223,28 @@ def _read_live_orders(logs_dir: Path, order_type: str = 'executed') -> list[dict
     return orders
 
 
+def _discover_shadow_signal_files(replay_dir: Path) -> list[Path]:
+    """Discover supported shadow signal artifacts under a certification directory."""
+    candidates = [
+        replay_dir / 'trades.csv',
+        replay_dir / 'permit_trace.csv',
+        *sorted((replay_dir / 'replay_runs').glob('*/trades.csv')),
+        *sorted((replay_dir / 'replay_runs').glob('*/permit_trace.csv')),
+    ]
+
+    discovered: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if path.exists() and path not in seen:
+            discovered.append(path)
+            seen.add(path)
+
+    return discovered
+
+
 def _read_shadow_signals(
     replay_dir: Path,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """
     Read shadow signal stream (candidate entries from backtest trades).
     
@@ -227,46 +255,107 @@ def _read_shadow_signals(
         List of signal dicts with keys: symbol, side, qty, price, ts, reason
     """
     signals = []
-    trades_file = replay_dir / 'trades.csv'
-    
-    if not trades_file.exists():
-        return signals
-    
-    try:
-        with trades_file.open('r', encoding='utf-8', newline='') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                signals.append({
-                    'symbol': row.get('symbol'),
-                    'side': row.get('side'),  # LONG / SHORT
-                    'qty': float(row.get('qty', 0)),
-                    'entry_price': float(row.get('entry_price', 0)),
-                    'entry_ts': row.get('entry_ts'),
-                    'reason': row.get('entry_reason', ''),
-                })
-    except Exception:
-        pass
-    
-    return signals
+    source_files = _discover_shadow_signal_files(replay_dir)
+
+    for source_file in source_files:
+        try:
+            with source_file.open('r', encoding='utf-8', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if source_file.name == 'trades.csv':
+                        signals.append({
+                            'symbol': row.get('symbol'),
+                            'side': row.get('side'),
+                            'qty': float(row.get('qty', 0) or 0),
+                            'entry_price': float(row.get('entry_price') or row.get('entry_px') or 0),
+                            'entry_ts': row.get('entry_ts') or row.get('ts'),
+                            'reason': row.get('entry_reason') or row.get('exit_reason') or '',
+                        })
+                    elif source_file.name == 'permit_trace.csv':
+                        signals.append({
+                            'symbol': row.get('symbol'),
+                            'side': row.get('signal'),
+                            'qty': float(row.get('qty', 0) or 0),
+                            'entry_price': float(row.get('entry_price') or row.get('entry_px') or 0),
+                            'entry_ts': row.get('entry_ts') or row.get('ts'),
+                            'reason': row.get('reason', ''),
+                        })
+        except Exception:
+            pass
+
+    return signals, [str(path) for path in source_files]
 
 
-def _side_to_order_side(side: str) -> str | None:
-    """Convert LONG/SHORT to BUY/SELL."""
-    if side == 'LONG':
+def _side_to_order_side(side: str | None) -> str | None:
+    """Convert signal-side values to BUY/SELL."""
+    if side in {'LONG', 'ENTER_LONG', 'EXIT_SHORT', 'BUY'}:
         return 'BUY'
-    elif side == 'SHORT':
+    elif side in {'SHORT', 'ENTER_SHORT', 'EXIT_LONG', 'SELL'}:
         return 'SELL'
     return None
 
 
-def _parse_iso(ts: str | None) -> datetime | None:
-    """Parse ISO8601 timestamp to datetime."""
+def _parse_iso(ts: str | int | float | None) -> datetime | None:
+    """Parse ISO8601 or epoch-second timestamps to datetime."""
     if not ts:
         return None
+    if isinstance(ts, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        except Exception:
+            return None
+
+    ts_str = str(ts).strip()
     try:
-        return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
     except Exception:
+        try:
+            return datetime.fromtimestamp(float(ts_str), tz=timezone.utc)
+        except Exception:
+            return None
+
+
+def _iso_or_none(dt: datetime | None) -> str | None:
+    """Convert datetime to ISO8601 string."""
+    if dt is None:
         return None
+    return dt.isoformat()
+
+
+def _orders_timestamp_bounds(orders: list[dict[str, Any]]) -> tuple[str | None, str | None]:
+    """Return min/max live-order timestamps."""
+    timestamps = [_parse_iso(order.get('timestamp')) for order in orders]
+    timestamps = [ts for ts in timestamps if ts is not None]
+    if not timestamps:
+        return None, None
+    return _iso_or_none(min(timestamps)), _iso_or_none(max(timestamps))
+
+
+def _signals_timestamp_bounds(signals: list[dict[str, Any]]) -> tuple[str | None, str | None]:
+    """Return min/max shadow-signal timestamps."""
+    timestamps = [_parse_iso(signal.get('entry_ts')) for signal in signals]
+    timestamps = [ts for ts in timestamps if ts is not None]
+    if not timestamps:
+        return None, None
+    return _iso_or_none(min(timestamps)), _iso_or_none(max(timestamps))
+
+
+def _timestamp_ranges_overlap(
+    live_min: str | None,
+    live_max: str | None,
+    shadow_min: str | None,
+    shadow_max: str | None,
+) -> bool:
+    """Return true when live and shadow timestamp windows overlap."""
+    live_min_dt = _parse_iso(live_min)
+    live_max_dt = _parse_iso(live_max)
+    shadow_min_dt = _parse_iso(shadow_min)
+    shadow_max_dt = _parse_iso(shadow_max)
+
+    if not all([live_min_dt, live_max_dt, shadow_min_dt, shadow_max_dt]):
+        return False
+
+    return not (shadow_max_dt < live_min_dt or live_max_dt < shadow_min_dt)
 
 
 def _timestamp_delta(ts1: str | None, ts2: str | None) -> float | None:
@@ -339,6 +428,15 @@ class ShadowSoakRunner:
         self.state: ShadowSoakState | None = None
         self.status = SoakStatus.RUNNING
         self.consecutive_failed_checks = 0
+        self.live_orders_read = 0
+        self.shadow_signals_read = 0
+        self.live_ts_min: str | None = None
+        self.live_ts_max: str | None = None
+        self.shadow_ts_min: str | None = None
+        self.shadow_ts_max: str | None = None
+        self.timestamp_overlap = False
+        self.pairing_source_files: list[str] = []
+        self.preflight_reason: str | None = None
         
         # Metrics accumulators
         self.symbol_matches = 0
@@ -354,10 +452,23 @@ class ShadowSoakRunner:
         try:
             # Step 1: Read inputs
             live_orders = _read_live_orders(self.logs_dir, 'executed')
-            shadow_signals = _read_shadow_signals(self.replay_dir)
+            shadow_signals, pairing_source_files = _read_shadow_signals(self.replay_dir)
+
+            # Step 1a: Publish read-only pairing diagnostics
+            self._record_pairing_diagnostics(live_orders, shadow_signals, pairing_source_files)
             
             # Step 2: Process matches
-            self._process_matches(live_orders, shadow_signals)
+            if self.shadow_signals_read == 0:
+                for live_order in live_orders:
+                    self._emit_nomatch_event(live_order)
+            elif not self.timestamp_overlap:
+                for live_order in live_orders:
+                    self._emit_nomatch_event(
+                        live_order,
+                        reason='no timestamp overlap between live orders and shadow signals',
+                    )
+            else:
+                self._process_matches(live_orders, shadow_signals)
             
             # Step 3: Compute metrics
             self._compute_metrics()
@@ -380,6 +491,30 @@ class ShadowSoakRunner:
             raise
         
         return self.state
+
+    def _record_pairing_diagnostics(
+        self,
+        live_orders: list[dict[str, Any]],
+        shadow_signals: list[dict[str, Any]],
+        pairing_source_files: list[str],
+    ) -> None:
+        """Capture preflight pairing diagnostics for the state surface."""
+        self.live_orders_read = len(live_orders)
+        self.shadow_signals_read = len(shadow_signals)
+        self.live_ts_min, self.live_ts_max = _orders_timestamp_bounds(live_orders)
+        self.shadow_ts_min, self.shadow_ts_max = _signals_timestamp_bounds(shadow_signals)
+        self.timestamp_overlap = _timestamp_ranges_overlap(
+            self.live_ts_min,
+            self.live_ts_max,
+            self.shadow_ts_min,
+            self.shadow_ts_max,
+        )
+        self.pairing_source_files = pairing_source_files
+
+        if self.shadow_signals_read == 0:
+            self.preflight_reason = 'no_shadow_signals_found'
+        elif not self.timestamp_overlap:
+            self.preflight_reason = 'no_timestamp_overlap'
     
     def _process_matches(
         self,
@@ -519,7 +654,7 @@ class ShadowSoakRunner:
         
         self.events.append(event)
     
-    def _emit_nomatch_event(self, live_order: dict[str, Any]) -> None:
+    def _emit_nomatch_event(self, live_order: dict[str, Any], reason: str = 'no shadow signal found for live order') -> None:
         """Emit event for live order with no shadow signal."""
         event = ShadowSoakEvent(
             ts=_now_iso(),
@@ -542,7 +677,7 @@ class ShadowSoakRunner:
             slippage_bps_model=5.0,
             slippage_error_bps=None,
             catastrophic_mismatch=False,
-            reason="no shadow signal found for live order",
+            reason=reason,
         )
         
         self.events.append(event)
@@ -628,6 +763,15 @@ class ShadowSoakRunner:
             fill_latency_p99_s=fill_latency_p99,
             catastrophic_mismatch_count=self.catastrophic_count,
             consecutive_failed_checks=self.consecutive_failed_checks,
+            live_orders_read=self.live_orders_read,
+            shadow_signals_read=self.shadow_signals_read,
+            live_ts_min=self.live_ts_min,
+            live_ts_max=self.live_ts_max,
+            shadow_ts_min=self.shadow_ts_min,
+            shadow_ts_max=self.shadow_ts_max,
+            timestamp_overlap=self.timestamp_overlap,
+            pairing_source_files=self.pairing_source_files,
+            reason=self.preflight_reason,
             verdict=VerdictType.PENDING.value,
         )
     
@@ -704,6 +848,8 @@ class ShadowSoakRunner:
         
         if self.status == SoakStatus.PAUSED or self.status == SoakStatus.FAILED:
             self.state.verdict = VerdictType.FAIL.value
+        elif self.preflight_reason is not None:
+            self.state.verdict = VerdictType.CONDITIONAL.value
         elif passed == total:
             self.state.verdict = VerdictType.PASS.value
         elif passed >= total - 2:
@@ -729,6 +875,9 @@ class ShadowSoakRunner:
         self.state.failed_criteria = [
             failed_names[i] for i, passed in enumerate(criteria) if not passed
         ]
+
+        if self.preflight_reason is not None and self.preflight_reason not in self.state.failed_criteria:
+            self.state.failed_criteria.append(self.preflight_reason)
     
     def _publish_events(self) -> None:
         """Write events to logs/research/shadow_soak_events.jsonl (append-only)."""

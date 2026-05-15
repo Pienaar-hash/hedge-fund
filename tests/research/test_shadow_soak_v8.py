@@ -93,6 +93,13 @@ def test_shadow_soak_state_schema():
         fill_latency_p99_s=0.95,
         catastrophic_mismatch_count=0,
         consecutive_failed_checks=0,
+        live_orders_read=50,
+        shadow_signals_read=48,
+        live_ts_min='2026-05-12T12:00:00Z',
+        live_ts_max='2026-05-12T12:10:00Z',
+        shadow_ts_min='2026-05-12T12:00:00Z',
+        shadow_ts_max='2026-05-12T12:09:00Z',
+        timestamp_overlap=True,
         verdict='pending',
     )
     
@@ -104,7 +111,9 @@ def test_shadow_soak_state_schema():
         'timestamp_alignment_p95_s', 'slippage_model_error_r',
         'median_abs_slippage_error_bps', 'p95_abs_slippage_error_bps',
         'fill_latency_p99_s', 'catastrophic_mismatch_count',
-        'consecutive_failed_checks', 'verdict', 'failed_criteria',
+        'consecutive_failed_checks', 'live_orders_read', 'shadow_signals_read',
+        'live_ts_min', 'live_ts_max', 'shadow_ts_min', 'shadow_ts_max',
+        'timestamp_overlap', 'pairing_source_files', 'reason', 'verdict', 'failed_criteria',
     ]
     
     for field in required_fields:
@@ -296,6 +305,164 @@ def test_missing_logs_do_not_crash():
         # Should not crash, state should be empty
         assert state is not None
         assert state.sample_size == 0
+
+
+def test_finds_top_level_trades_csv():
+    """Verify top-level trades.csv is discovered and read."""
+    from research.shadow_soak_v8 import _read_shadow_signals
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        replay_dir.mkdir(parents=True)
+        (replay_dir / 'trades.csv').write_text(
+            'symbol,entry_ts,exit_ts,entry_px,exit_px,qty,gross_pnl,fees,net_pnl,exit_reason\n'
+            'BTCUSDT,1767226500,1767231900,66096.81,68206.60,0.02,1,1,1,signal\n'
+        )
+
+        signals, source_files = _read_shadow_signals(replay_dir)
+
+        assert len(signals) == 1
+        assert len(source_files) == 1
+        assert source_files[0].endswith('trades.csv')
+
+
+def test_finds_nested_replay_runs_trades_csv():
+    """Verify nested replay_runs/*/trades.csv files are discovered."""
+    from research.shadow_soak_v8 import _read_shadow_signals
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        nested_dir = replay_dir / 'replay_runs' / 'test_run_001_a'
+        nested_dir.mkdir(parents=True)
+        (nested_dir / 'trades.csv').write_text(
+            'symbol,entry_ts,exit_ts,entry_px,exit_px,qty,gross_pnl,fees,net_pnl,exit_reason\n'
+            'BTCUSDT,1767226500,1767231900,66096.81,68206.60,0.02,1,1,1,signal\n'
+        )
+
+        signals, source_files = _read_shadow_signals(replay_dir)
+
+        assert len(signals) == 1
+        assert len(source_files) == 1
+        assert 'replay_runs' in source_files[0]
+
+
+def test_reports_zero_shadow_signals_when_no_signal_files_exist():
+    """Verify state diagnostics report zero shadow signals when no files exist."""
+    from research.shadow_soak_v8 import ShadowSoakRunner
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / 'execution').mkdir()
+        (tmpdir_path / 'execution' / 'orders_executed.jsonl').write_text(
+            json.dumps({
+                'order_id': '1',
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65000.0,
+                'timestamp': '2026-05-12T12:00:00Z',
+            }) + '\n'
+        )
+
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        replay_dir.mkdir(parents=True)
+
+        runner = ShadowSoakRunner(
+            run_id='test_run_001',
+            logs_dir=tmpdir_path,
+            replay_dir=replay_dir,
+            output_base_dir=tmpdir_path,
+        )
+
+        state = runner.run()
+
+        assert state.shadow_signals_read == 0
+        assert state.reason == 'no_shadow_signals_found'
+        assert state.verdict == 'conditional'
+        assert state.catastrophic_mismatch_count == 0
+
+
+def test_reports_timestamp_overlap_false_for_non_overlapping_windows():
+    """Verify non-overlapping live and shadow windows are reported in state."""
+    from research.shadow_soak_v8 import ShadowSoakRunner
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / 'execution').mkdir()
+        (tmpdir_path / 'execution' / 'orders_executed.jsonl').write_text(
+            json.dumps({
+                'order_id': '1',
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65000.0,
+                'timestamp': '2026-05-12T12:00:00Z',
+            }) + '\n'
+        )
+
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        nested_dir = replay_dir / 'replay_runs' / 'test_run_001_a'
+        nested_dir.mkdir(parents=True)
+        (nested_dir / 'trades.csv').write_text(
+            'symbol,entry_ts,exit_ts,entry_px,exit_px,qty,gross_pnl,fees,net_pnl,exit_reason\n'
+            'BTCUSDT,1767226500,1767231900,66096.81,68206.60,0.02,1,1,1,signal\n'
+        )
+
+        runner = ShadowSoakRunner(
+            run_id='test_run_001',
+            logs_dir=tmpdir_path,
+            replay_dir=replay_dir,
+            output_base_dir=tmpdir_path,
+        )
+
+        state = runner.run()
+
+        assert state.shadow_signals_read == 1
+        assert state.timestamp_overlap is False
+        assert state.reason == 'no_timestamp_overlap'
+        assert state.verdict == 'conditional'
+
+
+def test_no_overlap_is_not_catastrophic_mismatch():
+    """Verify no-overlap pairing stays non-catastrophic and emits no matched events."""
+    from research.shadow_soak_v8 import EventType, ShadowSoakRunner
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / 'execution').mkdir()
+        (tmpdir_path / 'execution' / 'orders_executed.jsonl').write_text(
+            json.dumps({
+                'order_id': '1',
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65000.0,
+                'timestamp': '2026-05-12T12:00:00Z',
+            }) + '\n'
+        )
+
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        nested_dir = replay_dir / 'replay_runs' / 'test_run_001_a'
+        nested_dir.mkdir(parents=True)
+        (nested_dir / 'permit_trace.csv').write_text(
+            'ts,symbol,signal,permit,reason\n'
+            '1767226500,BTCUSDT,ENTER_LONG,True,allowed\n'
+        )
+
+        runner = ShadowSoakRunner(
+            run_id='test_run_001',
+            logs_dir=tmpdir_path,
+            replay_dir=replay_dir,
+            output_base_dir=tmpdir_path,
+        )
+
+        state = runner.run()
+
+        assert state.catastrophic_mismatch_count == 0
+        assert all(event.catastrophic_mismatch is False for event in runner.events)
+        assert all(event.event_type != EventType.LIVE_ORDER_MATCH.value for event in runner.events)
 
 
 def test_state_file_written():
