@@ -89,6 +89,14 @@ This gate is superseded by the Phase 5 hard-fail postmortem in `docs/audits/V8_P
 3. Capture the first divergence event (signal, regime, doctrine decision, side mapping).
 4. Keep executor, doctrine, risk, and live authority unchanged until root cause is documented.
 
+Initial trace helper:
+
+```bash
+python -m research.phase5_divergence_trace \
+  --logs-dir logs \
+  --replay-dir data/replay_certifications/<run_id>
+```
+
 ## Rollback / disable
 
 Do not delete append-only logs.
