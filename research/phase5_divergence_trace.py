@@ -9,6 +9,8 @@ from typing import Any
 
 from research.shadow_soak_v8 import _parse_iso, _read_live_orders, _read_shadow_signals, _side_to_order_side
 
+_SORT_TS_FALLBACK = datetime.max.replace(tzinfo=timezone.utc)
+
 
 @dataclass
 class _SignalPoint:
@@ -50,7 +52,7 @@ def _normalize_live_orders(logs_dir: Path) -> dict[str, list[_SignalPoint]]:
             )
         )
     for symbol in streams:
-        streams[symbol].sort(key=lambda p: (p.ts is None, p.ts or datetime.max.replace(tzinfo=timezone.utc)))
+        streams[symbol].sort(key=lambda p: (p.ts is None, p.ts or _SORT_TS_FALLBACK))
     return streams
 
 
@@ -74,8 +76,16 @@ def _normalize_shadow_signals(replay_dir: Path) -> dict[str, list[_SignalPoint]]
             )
         )
     for symbol in streams:
-        streams[symbol].sort(key=lambda p: (p.ts is None, p.ts or datetime.max.replace(tzinfo=timezone.utc)))
+        streams[symbol].sort(key=lambda p: (p.ts is None, p.ts or _SORT_TS_FALLBACK))
     return streams
+
+
+def _candidate_ts(candidate: dict[str, Any] | None) -> datetime:
+    if candidate is None:
+        return _SORT_TS_FALLBACK
+    live = candidate.get("live") or {}
+    shadow = candidate.get("shadow") or {}
+    return _parse_iso(live.get("ts")) or _parse_iso(shadow.get("ts")) or _SORT_TS_FALLBACK
 
 
 def find_first_divergence(logs_dir: str | Path, replay_dir: str | Path) -> dict[str, Any]:
@@ -101,16 +111,14 @@ def find_first_divergence(logs_dir: str | Path, replay_dir: str | Path) -> dict[
                     "shadow": {"side": sp.side, "ts": _to_iso(sp.ts), "ts_raw": sp.ts_raw},
                     "abs_ts_delta_s": abs((lp.ts - sp.ts).total_seconds()) if lp.ts and sp.ts else None,
                 }
-                if first is None:
+                if first is None or _candidate_ts(candidate) < _candidate_ts(first):
                     first = candidate
                 break
 
-        if first is not None:
-            continue
-
+        candidate: dict[str, Any] | None = None
         if len(live) > len(shadow):
             lp = live[len(shadow)]
-            first = {
+            candidate = {
                 "type": "missing_shadow_event",
                 "symbol": symbol,
                 "stream_index": len(shadow),
@@ -120,7 +128,7 @@ def find_first_divergence(logs_dir: str | Path, replay_dir: str | Path) -> dict[
             }
         elif len(shadow) > len(live):
             sp = shadow[len(live)]
-            first = {
+            candidate = {
                 "type": "missing_live_event",
                 "symbol": symbol,
                 "stream_index": len(live),
@@ -128,6 +136,8 @@ def find_first_divergence(logs_dir: str | Path, replay_dir: str | Path) -> dict[
                 "shadow": {"side": sp.side, "ts": _to_iso(sp.ts), "ts_raw": sp.ts_raw},
                 "abs_ts_delta_s": None,
             }
+        if candidate is not None and (first is None or _candidate_ts(candidate) < _candidate_ts(first)):
+            first = candidate
 
     return {
         "divergence_found": first is not None,
