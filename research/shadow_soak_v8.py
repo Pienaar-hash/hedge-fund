@@ -315,6 +315,22 @@ def _parse_iso(ts: str | int | float | None) -> datetime | None:
             return None
 
 
+LIVE_ORDER_TIMESTAMP_KEYS = [
+    'timestamp',
+    'ts',
+    'event_ts',
+    'executed_at',
+    'filled_at',
+    'ts_fill_last',
+    'ts_fill_first',
+    'order_ts',
+    'created_at',
+    'exchange_timestamp',
+    'client_order_ts',
+    'ts_ack',
+]
+
+
 def _iso_or_none(dt: datetime | None) -> str | None:
     """Convert datetime to ISO8601 string."""
     if dt is None:
@@ -322,9 +338,18 @@ def _iso_or_none(dt: datetime | None) -> str | None:
     return dt.isoformat()
 
 
+def _extract_live_order_timestamp(order: dict[str, Any]) -> str | None:
+    """Return the first parseable live-order timestamp from known schema keys."""
+    for key in LIVE_ORDER_TIMESTAMP_KEYS:
+        parsed = _parse_iso(order.get(key))
+        if parsed is not None:
+            return _iso_or_none(parsed)
+    return None
+
+
 def _orders_timestamp_bounds(orders: list[dict[str, Any]]) -> tuple[str | None, str | None]:
     """Return min/max live-order timestamps."""
-    timestamps = [_parse_iso(order.get('timestamp')) for order in orders]
+    timestamps = [_parse_iso(_extract_live_order_timestamp(order)) for order in orders]
     timestamps = [ts for ts in timestamps if ts is not None]
     if not timestamps:
         return None, None
@@ -555,14 +580,14 @@ class ShadowSoakRunner:
         if not shadow_signals:
             return None
         
-        live_ts = _parse_iso(live_order.get('timestamp'))
+        live_ts = _parse_iso(_extract_live_order_timestamp(live_order))
         if not live_ts:
             return None
         
         best = min(
             shadow_signals,
             key=lambda sig: abs(
-                (_parse_iso(sig.get('entry_ts')) or live_ts - live_ts).total_seconds()
+                ((_parse_iso(sig.get('entry_ts')) or live_ts) - live_ts).total_seconds()
             )
             if _parse_iso(sig.get('entry_ts'))
             else float('inf'),
@@ -588,7 +613,7 @@ class ShadowSoakRunner:
         live_price = float(live_order.get('filled_price', 0))
         shadow_price = shadow_signal.get('entry_price', 0)
         
-        live_ts = live_order.get('timestamp')
+        live_ts = _extract_live_order_timestamp(live_order)
         shadow_ts = shadow_signal.get('entry_ts')
         
         # Check matches
@@ -667,7 +692,7 @@ class ShadowSoakRunner:
             shadow_qty=None,
             live_price=float(live_order.get('filled_price', 0)),
             shadow_price=None,
-            live_order_ts=live_order.get('timestamp'),
+            live_order_ts=_extract_live_order_timestamp(live_order),
             shadow_signal_ts=None,
             symbol_match=False,
             direction_match=None,

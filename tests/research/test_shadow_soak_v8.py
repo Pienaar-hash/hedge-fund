@@ -160,6 +160,19 @@ def test_timestamp_delta():
     assert delta == 5.0
 
 
+def test_extract_live_timestamp_from_observed_field() -> None:
+    """Verify live order timestamps are extracted from observed log schema fields."""
+    from research.shadow_soak_v8 import _extract_live_order_timestamp
+
+    order = {
+        'symbol': 'SOLUSDT',
+        'event_type': 'order_fill',
+        'ts_fill_first': '2026-04-18T04:33:10.614000+00:00',
+    }
+
+    assert _extract_live_order_timestamp(order) == '2026-04-18T04:33:10.614000+00:00'
+
+
 def test_shadow_soak_pass_verdict():
     """Verify PASS verdict when all criteria met."""
     from research.shadow_soak_v8 import ShadowSoakRunner
@@ -423,6 +436,185 @@ def test_reports_timestamp_overlap_false_for_non_overlapping_windows():
         assert state.timestamp_overlap is False
         assert state.reason == 'no_timestamp_overlap'
         assert state.verdict == 'conditional'
+
+
+def test_live_timestamp_bounds_populated_from_ts_field() -> None:
+    """Verify live timestamp bounds use observed ts fields when timestamp is absent."""
+    from research.shadow_soak_v8 import ShadowSoakRunner
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / 'execution').mkdir()
+        (tmpdir_path / 'execution' / 'orders_executed.jsonl').write_text(
+            json.dumps({
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65000.0,
+                'ts': '2026-05-12T12:00:00Z',
+            })
+            + '\n'
+            + json.dumps({
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65010.0,
+                'ts': '2026-05-12T12:10:00Z',
+            })
+            + '\n'
+        )
+
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        replay_dir.mkdir(parents=True)
+        (replay_dir / 'trades.csv').write_text(
+            'symbol,side,qty,entry_price,entry_ts,entry_reason\n'
+            'BTCUSDT,LONG,1.0,65000.0,2026-05-12T12:05:00Z,test\n'
+        )
+
+        runner = ShadowSoakRunner(
+            run_id='test_run_001',
+            logs_dir=tmpdir_path,
+            replay_dir=replay_dir,
+            output_base_dir=tmpdir_path,
+        )
+
+        state = runner.run()
+
+        assert state.live_ts_min == '2026-05-12T12:00:00+00:00'
+        assert state.live_ts_max == '2026-05-12T12:10:00+00:00'
+
+
+def test_timestamp_overlap_true_when_live_and_shadow_windows_overlap() -> None:
+    """Verify overlap turns true when live ts fields overlap the shadow window."""
+    from research.shadow_soak_v8 import ShadowSoakRunner
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / 'execution').mkdir()
+        (tmpdir_path / 'execution' / 'orders_executed.jsonl').write_text(
+            json.dumps({
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65000.0,
+                'ts': '2026-05-12T12:00:00Z',
+            })
+            + '\n'
+            + json.dumps({
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65010.0,
+                'ts': '2026-05-12T12:10:00Z',
+            })
+            + '\n'
+        )
+
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        replay_dir.mkdir(parents=True)
+        (replay_dir / 'trades.csv').write_text(
+            'symbol,side,qty,entry_price,entry_ts,entry_reason\n'
+            'BTCUSDT,LONG,1.0,65000.0,2026-05-12T12:05:00Z,test\n'
+        )
+
+        runner = ShadowSoakRunner(
+            run_id='test_run_001',
+            logs_dir=tmpdir_path,
+            replay_dir=replay_dir,
+            output_base_dir=tmpdir_path,
+        )
+
+        state = runner.run()
+
+        assert state.timestamp_overlap is True
+        assert state.reason is None
+
+
+def test_timestamp_parsing_does_not_create_catastrophic_mismatch() -> None:
+    """Verify a parseable live ts field does not create a catastrophic mismatch by itself."""
+    from research.shadow_soak_v8 import ShadowSoakRunner
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / 'execution').mkdir()
+        (tmpdir_path / 'execution' / 'orders_executed.jsonl').write_text(
+            json.dumps({
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65000.0,
+                'ts': '2026-05-12T12:00:00Z',
+            })
+            + '\n'
+            + json.dumps({
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65020.0,
+                'ts': '2026-05-12T12:10:00Z',
+            })
+            + '\n'
+        )
+
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        replay_dir.mkdir(parents=True)
+        (replay_dir / 'trades.csv').write_text(
+            'symbol,side,qty,entry_price,entry_ts,entry_reason\n'
+            'BTCUSDT,LONG,1.0,65000.0,2026-05-12T12:05:00Z,test\n'
+        )
+
+        runner = ShadowSoakRunner(
+            run_id='test_run_001',
+            logs_dir=tmpdir_path,
+            replay_dir=replay_dir,
+            output_base_dir=tmpdir_path,
+        )
+
+        state = runner.run()
+
+        assert state.timestamp_overlap is True
+        assert state.catastrophic_mismatch_count == 0
+        assert all(event.catastrophic_mismatch is False for event in runner.events)
+
+
+def test_missing_live_timestamp_remains_conditional_and_non_catastrophic() -> None:
+    """Verify missing live timestamps still produce a conditional non-catastrophic result."""
+    from research.shadow_soak_v8 import ShadowSoakRunner
+
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / 'execution').mkdir()
+        (tmpdir_path / 'execution' / 'orders_executed.jsonl').write_text(
+            json.dumps({
+                'symbol': 'BTCUSDT',
+                'side': 'BUY',
+                'quantity': 1.0,
+                'filled_price': 65000.0,
+            }) + '\n'
+        )
+
+        replay_dir = tmpdir_path / 'replay' / 'test_run_001'
+        replay_dir.mkdir(parents=True)
+        (replay_dir / 'trades.csv').write_text(
+            'symbol,side,qty,entry_price,entry_ts,entry_reason\n'
+            'BTCUSDT,LONG,1.0,65000.0,2026-05-12T12:00:30Z,test\n'
+        )
+
+        runner = ShadowSoakRunner(
+            run_id='test_run_001',
+            logs_dir=tmpdir_path,
+            replay_dir=replay_dir,
+            output_base_dir=tmpdir_path,
+        )
+
+        state = runner.run()
+
+        assert state.live_ts_min is None
+        assert state.live_ts_max is None
+        assert state.timestamp_overlap is False
+        assert state.reason == 'no_timestamp_overlap'
+        assert state.verdict == 'conditional'
+        assert state.catastrophic_mismatch_count == 0
 
 
 def test_no_overlap_is_not_catastrophic_mismatch():
