@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from research.shadow_soak_v8 import _parse_iso, _read_live_orders, _read_shadow_signals, _side_to_order_side
+from research.shadow_soak_v8 import (
+    _extract_live_order_timestamp,
+    _parse_iso,
+    _read_live_orders,
+    _read_shadow_signals,
+    _side_to_order_side,
+)
 
 _SORT_TS_FALLBACK = datetime.max.replace(tzinfo=timezone.utc)
 
@@ -34,13 +40,7 @@ def _normalize_live_orders(logs_dir: Path) -> dict[str, list[_SignalPoint]]:
         side = _side_to_order_side(str(order.get("side") or "").strip().upper())
         if not symbol or side is None:
             continue
-        ts_raw = (
-            order.get("timestamp")
-            or order.get("ts")
-            or order.get("event_ts")
-            or order.get("executed_at")
-            or order.get("filled_at")
-        )
+        ts_raw = _extract_live_order_timestamp(order)
         ts = _parse_iso(ts_raw)
         streams.setdefault(symbol, []).append(
             _SignalPoint(

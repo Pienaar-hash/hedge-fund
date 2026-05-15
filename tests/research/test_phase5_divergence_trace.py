@@ -135,3 +135,41 @@ def test_find_first_divergence_prefers_earliest_timestamp_across_symbols(tmp_pat
     assert result["divergence_found"] is True
     assert result["first_divergence"]["symbol"] == "ETHUSDT"
     assert result["first_divergence"]["live"]["ts"] == "2026-05-15T10:00:00+00:00"
+
+
+def test_find_first_divergence_reads_live_ts_from_ts_fill_first(tmp_path: Path) -> None:
+    _write_orders(
+        tmp_path / "logs" / "execution" / "orders_executed.jsonl",
+        [
+            {"symbol": "BTCUSDT", "side": "BUY", "ts_fill_first": "2026-05-15T09:00:00Z"},
+            {"symbol": "BTCUSDT", "side": "SELL", "ts_fill_first": "2026-05-15T09:05:00Z"},
+        ],
+    )
+    _write_trades(
+        tmp_path / "replay" / "trades.csv",
+        [
+            {
+                "symbol": "BTCUSDT",
+                "side": "SHORT",
+                "qty": 1.0,
+                "entry_price": 100.0,
+                "entry_ts": "2026-05-15T09:00:00Z",
+                "entry_reason": "x",
+            },
+            {
+                "symbol": "BTCUSDT",
+                "side": "SHORT",
+                "qty": 1.0,
+                "entry_price": 99.0,
+                "entry_ts": "2026-05-15T09:05:00Z",
+                "entry_reason": "x",
+            },
+        ],
+    )
+
+    result = find_first_divergence(tmp_path / "logs", tmp_path / "replay")
+
+    assert result["divergence_found"] is True
+    assert result["first_divergence"]["type"] == "side_mismatch"
+    assert result["first_divergence"]["live"]["ts_raw"] == "2026-05-15T09:00:00+00:00"
+    assert result["first_divergence"]["live"]["ts"] == "2026-05-15T09:00:00+00:00"
