@@ -26,6 +26,7 @@ venv/
 nohup.out
 google-chrome-stable_current_amd64.deb
 data/ohlcv/
+data/hypothesis_a*.json
 .env
 __pycache__/
 outputs/
