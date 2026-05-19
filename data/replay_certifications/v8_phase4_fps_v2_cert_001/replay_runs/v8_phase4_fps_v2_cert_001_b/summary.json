@@ -1,0 +1,20 @@
+{
+  "conviction_authority": "frozen",
+  "doctrine_mutated": false,
+  "ending_nav": 10154.66182525,
+  "fees": 1.43473658,
+  "gross_pnl": 156.09656183,
+  "live_exchange_calls": false,
+  "net_pnl": 154.66182525,
+  "permit_count": 15,
+  "starting_nav": 10000.0,
+  "strategy": "TREND_PULLBACK_V2_REPLAY_CANDIDATE",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "timeframe": "15m",
+  "trade_count": 9,
+  "veto_count": 0
+}

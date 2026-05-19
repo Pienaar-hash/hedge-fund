@@ -1,0 +1,20 @@
+{
+  "completed_at": "2026-05-12T12:57:44.762496Z",
+  "config_hash": "ad2f656ac1666b538829e1bb8da027b72961ad59e77bf80d334681582a0cd373",
+  "conviction_authority": "frozen",
+  "doctrine_mutated": false,
+  "fee_model": "fixed_bps:10.0",
+  "git_sha": "eea42a1a30a4116a9d67867bbb722962bae5fe3f",
+  "input_data_hash": "f04ae0d4aa8f44d28ec3d5e52ffc5979a29b918cfc3b0af1c580454be34d40a3",
+  "live_exchange_calls": false,
+  "output_hash": "8d90533f09902bcbeed7bd9c4984e315b72fd6bcaf4ffbb401089d31417b8f4d",
+  "run_id": "v8_phase4_fps_v2_cert_003_a",
+  "slippage_model": "fixed_close_bps:5.0",
+  "started_at": "2026-05-12T12:57:44.483260Z",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "timeframe": "15m"
+}

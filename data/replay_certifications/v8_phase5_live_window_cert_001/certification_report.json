@@ -1,0 +1,23 @@
+{
+  "completed_at": "2026-05-15T10:50:11.239448Z",
+  "conviction_authority": "frozen",
+  "doctrine_mutated": false,
+  "fees": 79.8380557,
+  "gross_pnl": -51.6126978,
+  "live_exchange_calls": false,
+  "max_drawdown": 1.32020217,
+  "net_pnl": -131.45075355,
+  "output_hash": "31333c53dedde0514d44d37ab7ef0e29cf67db017983fd022c50f741be5faf87",
+  "output_hash_stable": true,
+  "sample_size": 536,
+  "setup_class": "TREND_PULLBACK_V2_REPLAY_CANDIDATE",
+  "started_at": "2026-05-15T10:50:11.239428Z",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "verdict": "FAIL",
+  "veto_count": 0,
+  "win_rate": 19.7761194
+}
