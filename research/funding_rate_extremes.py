@@ -67,7 +67,9 @@ class Bar:
 class AnalysisResult:
     symbol: str
     n: int = 0
+    n_before_filter: int = 0
     horizon_h: int = 4
+    min_signal_abs: float = 0.0
     rho: float = 0.0
     pvalue: float = 1.0
     q5_minus_q1: float = 0.0
@@ -237,11 +239,12 @@ def spearman_rho(x: list[float], y: list[float]) -> tuple[float, float]:
 # Core analysis
 # ---------------------------------------------------------------------------
 
-def analyse_symbol(symbol: str, days: int, horizon_h: int) -> AnalysisResult:
-    result = AnalysisResult(symbol=symbol, horizon_h=horizon_h)
+def analyse_symbol(symbol: str, days: int, horizon_h: int, min_signal_abs: float = 0.0) -> AnalysisResult:
+    result = AnalysisResult(symbol=symbol, horizon_h=horizon_h, min_signal_abs=min_signal_abs)
 
+    filter_label = f"  |  |signal|≥{min_signal_abs}" if min_signal_abs > 0 else ""
     print(f"\n{'='*60}")
-    print(f"  {symbol}  |  {days}d  |  {horizon_h}h forward return")
+    print(f"  {symbol}  |  {days}d  |  {horizon_h}h forward return{filter_label}")
     print(f"{'='*60}")
 
     print("  Fetching funding rate history ...")
@@ -282,6 +285,9 @@ def analyse_symbol(symbol: str, days: int, horizon_h: int) -> AnalysisResult:
 
         anti_signal = -(fr / mean_abs)
 
+        if min_signal_abs > 0 and abs(anti_signal) < min_signal_abs:
+            continue
+
         px_now = price_at(ts)
         px_fwd = price_at(ts + horizon_h * 3_600_000)
         if px_now is None or px_fwd is None or px_now <= 0:
@@ -290,8 +296,12 @@ def analyse_symbol(symbol: str, days: int, horizon_h: int) -> AnalysisResult:
         signals.append(anti_signal)
         returns.append((px_fwd - px_now) / px_now)
 
+    result.n_before_filter = result.n  # placeholder — set below
     result.n = len(signals)
-    print(f"  Usable pairs: {result.n}")
+    if min_signal_abs > 0:
+        print(f"  Pairs after |signal|≥{min_signal_abs} filter: {result.n}")
+    else:
+        print(f"  Usable pairs: {result.n}")
 
     if result.n < 50:
         result.verdict = "INSUFFICIENT_PAIRS"
@@ -361,6 +371,9 @@ def main() -> None:
                         help="Calendar days of history to fetch")
     parser.add_argument("--horizon", type=int, default=4,
                         help="Forward return horizon in hours")
+    parser.add_argument("--min-signal", type=float, default=0.0,
+                        help="Only include observations where |anti_signal| >= this value "
+                             "(0 = all; 2.0 = extremes only, funding > 2× rolling mean)")
     parser.add_argument("--out", default="data/hypothesis_a_results.json",
                         help="Path to write JSON results")
     args = parser.parse_args()
@@ -373,11 +386,13 @@ def main() -> None:
     print(f"  Fee-adjusted ρ                        > 0.0")
     print(f"\n  Signal: anti_signal = -(fr_t / rolling_30d_mean_abs)")
     print(f"  Rationale: high +funding → longs unwind → price falls → short earns")
+    if args.min_signal > 0:
+        print(f"  Filter: |anti_signal| >= {args.min_signal} (extreme events only)")
 
     results = []
     for sym in args.symbols:
         try:
-            r = analyse_symbol(sym, args.days, args.horizon)
+            r = analyse_symbol(sym, args.days, args.horizon, args.min_signal)
         except Exception as exc:
             r = AnalysisResult(symbol=sym, verdict="ERROR", error=str(exc))
             print(f"\nERROR for {sym}: {exc}")
@@ -411,6 +426,7 @@ def main() -> None:
             "symbol": r.symbol,
             "n": r.n,
             "horizon_h": r.horizon_h,
+            "min_signal_abs": r.min_signal_abs,
             "rho": r.rho,
             "pvalue": r.pvalue,
             "q5_minus_q1": r.q5_minus_q1,

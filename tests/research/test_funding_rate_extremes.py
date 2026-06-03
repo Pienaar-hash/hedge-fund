@@ -141,3 +141,17 @@ def test_anti_signal_negative_funding():
     anti_signal = -(fr / mean_abs)
     # Negative funding → anti_signal positive → expect price to rise (short squeeze unwind)
     assert anti_signal == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# AnalysisResult min_signal_abs field
+# ---------------------------------------------------------------------------
+
+def test_analysis_result_min_signal_abs_default():
+    r = AnalysisResult(symbol="BTCUSDT")
+    assert r.min_signal_abs == 0.0
+
+
+def test_analysis_result_min_signal_abs_stored():
+    r = AnalysisResult(symbol="BTCUSDT", min_signal_abs=2.0)
+    assert r.min_signal_abs == 2.0
