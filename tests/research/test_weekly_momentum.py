@@ -92,6 +92,17 @@ def test_spearman_too_short_returns_zero():
     assert p == 1.0
 
 
+def test_spearman_near_zero_rho_not_significant():
+    # n=100 alternating signal, ρ ≈ 0 → p must be >> 0.05, not 0.0000
+    import random
+    rng = random.Random(42)
+    x = [rng.gauss(0, 1) for _ in range(100)]
+    y = [rng.gauss(0, 1) for _ in range(100)]
+    rho, p = spearman_rho(x, y)
+    assert abs(rho) < 0.3
+    assert p > 0.05, f"Near-zero ρ={rho:.4f} should not be significant, got p={p:.6f}"
+
+
 def test_spearman_known_value():
     # x=[1,2,3,4,5], y=[1,3,2,5,4] → ρ=0.8 by formula
     x = [1.0, 2.0, 3.0, 4.0, 5.0]

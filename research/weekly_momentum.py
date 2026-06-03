@@ -166,14 +166,14 @@ def spearman_rho(x: list[float], y: list[float]) -> tuple[float, float]:
     x_val = df / (df + t * t)
 
     def _ibeta_cf(x_v: float, a: float, b: float, max_iter: int = 200) -> float:
+        """Regularised incomplete beta via Lentz continued fraction."""
         if x_v <= 0:
             return 0.0
         if x_v >= 1:
             return 1.0
         lbeta = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
         front = math.exp(lbeta + a * math.log(x_v) + b * math.log(1 - x_v)) / a
-        f = C = 1.0
-        D = 0.0
+        f, C, D = 1.0, 1.0, 0.0
         for m in range(max_iter):
             for step in (0, 1):
                 if m == 0 and step == 0:
@@ -182,18 +182,13 @@ def spearman_rho(x: list[float], y: list[float]) -> tuple[float, float]:
                     d = m * (b - m) * x_v / ((a + 2 * m - 1) * (a + 2 * m))
                 else:
                     d = -(a + m) * (a + b + m) * x_v / ((a + 2 * m) * (a + 2 * m + 1))
-                D = 1.0 / max(abs(1.0 + d * D), 1e-30) * (1 if (1.0 + d * D) >= 0 else -1)
-                C = max(abs(1.0 + d / C), 1e-30) * (1 if (1.0 + d / C) >= 0 else -1)
-                D = 1.0 / (1.0 + d * (1.0 / f - 1.0) / f) if abs(f) > 1e-30 else 1.0
-                # Simplified: use standard Lentz
-                D_raw = 1.0 + d * D
-                if abs(D_raw) < 1e-30:
-                    D_raw = 1e-30
-                C_raw = 1.0 + d / C if abs(C) > 1e-30 else 1e-30
-                if abs(C_raw) < 1e-30:
-                    C_raw = 1e-30
-                D = 1.0 / D_raw
-                C = C_raw
+                D = 1.0 + d * D
+                if abs(D) < 1e-30:
+                    D = 1e-30
+                C = 1.0 + d / C
+                if abs(C) < 1e-30:
+                    C = 1e-30
+                D = 1.0 / D
                 delta = C * D
                 f *= delta
                 if abs(delta - 1.0) < 1e-10:
