@@ -279,3 +279,20 @@ def test_build_forward_return_direction_matches_trend():
     _, returns = build_signal_return_pairs(bars, 4, 1, False)
     assert len(returns) > 0
     assert all(r > 0 for r in returns), "Rising market should have positive forward returns"
+
+
+def test_spearman_near_zero_large_n_non_significant():
+    """Regression test: two independent deterministic sequences of length 100
+    should produce a near-zero Spearman rho and a non-significant p-value.
+    This would catch a broken p-value implementation that returns 0.0 for all inputs.
+    """
+    import random
+
+    rnd_x = random.Random(42)
+    rnd_y = random.Random(4242)
+    n = 100
+    x = [rnd_x.random() for _ in range(n)]
+    y = [rnd_y.random() for _ in range(n)]
+    rho, p = spearman_rho(x, y)
+    assert abs(rho) < 0.15
+    assert p > 0.05

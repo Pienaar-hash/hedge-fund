@@ -173,6 +173,7 @@ def spearman_rho(x: list[float], y: list[float]) -> tuple[float, float]:
             return 1.0
         lbeta = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
         front = math.exp(lbeta + a * math.log(x_v) + b * math.log(1 - x_v)) / a
+        # Continued fraction via Lentz's method
         f, C, D = 1.0, 1.0, 0.0
         for m in range(max_iter):
             for step in (0, 1):
