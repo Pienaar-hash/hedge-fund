@@ -521,3 +521,116 @@ The Tier 1 test answers: "Does the signal rank outcomes in the region where it t
 The Tier 2 test — when data accumulates — answers the harder question: "Should it be trading that region at all?"
 
 Until Tier 2 data exists, any verdict issued from this audit is provisional.
+
+<!-- BEGIN: Phase 1a Verdict Appendix (auto-generated) -->
+## Appendix A — Phase 1a Verdict (auto-generated)
+
+_Generated 2026-05-19T09:55:48+00:00 — `research/signal_causality_audit.py`_
+
+**Source:** `logs/state/episode_ledger.json` (377 scored episodes of 1037 total)
+
+**Score field:** `hybrid_score`. Return = raw side-aware return on `avg_entry_price`/`avg_exit_price` (gross of fees).
+
+
+### A.1 Verdict
+
+| Criterion | Threshold | Observed | Pass? |
+|---|---|---|---|
+| Spearman $\rho$ | > 0.15 | -0.082003 | ❌ |
+| $p$-value | < 0.05 | 0.1118 | ❌ |
+| Q5 − Q1 spread | > 0.0 | -0.001999 | ❌ |
+
+**Overall verdict: `FAIL`**
+
+> Signal does not satisfy the causality gate on the current executed-trade cohort. Resume blocked on Phase 1a alone. Per `/memories/session/plan.md`, thresholds are locked — no auto-loosening. Escalate to user.
+
+
+### A.2 Quintile table (pooled)
+
+| Bucket | Score range | $\bar{S}$ | $\bar{O}$ (mean return) | Hit rate (%) | $N$ | Avg hold (hrs) | Std hold (hrs) |
+|---|---|---|---|---|---|---|---|
+| Q1 | [0.2933, 0.4184] | 0.3884 | -0.000456 | 24.0 | 75 | 0.76 | 2.547 |
+| Q2 | [0.4186, 0.4408] | 0.4297 | -0.001053 | 20.0 | 75 | 1.132 | 3.676 |
+| Q3 | [0.4412, 0.4606] | 0.4518 | -0.001258 | 40.0 | 75 | 3.497 | 10.398 |
+| Q4 | [0.4606, 0.4946] | 0.4759 | -0.002059 | 22.67 | 75 | 1.838 | 3.214 |
+| Q5 | [0.4947, 0.6011] | 0.5201 | -0.002455 | 23.38 | 77 | 1.422 | 2.837 |
+
+### A.3 Summary statistics (pooled)
+
+| Metric | Value |
+|---|---|
+| $N$ | 377 |
+| Spearman $\rho$ (raw) | -0.082003 |
+| Spearman $\rho$ $p$-value (asymptotic, two-sided) | 0.1118 |
+| Q5 − Q1 spread | -0.001999 |
+| Q5 − Q1 bootstrap $p$ (2000 iter) | 1.0000 |
+| Mean return (cohort) | -0.001461 |
+| Hit rate (%) | 25.99 |
+| Avg hold (hrs) | 1.728 |
+
+### A.4 Temporal stability
+
+| Slice | Date range | $N$ | $\rho$ | $p$ | Q5−Q1 | Slope |
+|---|---|---|---|---|---|---|
+| T1 | 2026-02-24 → 2026-03-19 | 125 | -0.047786 | 0.5946 | -0.003788 | flat |
+| T2 | 2026-03-19 → 2026-05-10 | 125 | -0.063492 | 0.4796 | -0.00144 | inverted |
+| T3 | 2026-05-10 → 2026-05-10 | 127 | 0.005787 | 0.9482 | -0.000203 | flat |
+
+### A.5 Duration confound check
+
+| Bucket | Avg hold (hrs) | Std hold (hrs) |
+|---|---|---|
+| Q1 | 0.76 | 2.547 |
+| Q5 | 1.422 | 2.837 |
+
+### A.6 Per-symbol breakdown (≥25 episodes)
+
+| Symbol | $N$ | $\rho$ | $p$ | Q5−Q1 | Hit rate (%) | Mean return |
+|---|---|---|---|---|---|---|
+| SOLUSDT | 136 | -0.094719 | 0.2711 | -0.003331 | 25.74 | -0.00207 |
+| ETHUSDT | 132 | -0.171758 | 0.0493 | -0.001616 | 25.0 | -0.00176 |
+| BTCUSDT | 109 | -0.212636 | 0.0271 | -0.00268 | 27.52 | -0.000341 |
+
+<!-- END: Phase 1a Verdict Appendix -->
+
+<!-- BEGIN: Appendix B Sign-Flip (auto-generated) -->
+## Appendix B — Sign-Flip Counterfactual (auto-generated)
+
+_Generated 2026-05-19T09:55:53+00:00 — `research/signal_causality_audit.py --sign-flip`_
+
+**Hypothesis:** If the live signal is statistically anti-predictive (Appendix A: BTC ρ=-0.213 p=0.027, ETH ρ=-0.172 p=0.049), then trading the *opposite* side of every intent would have produced positive ρ on the same episode set. This appendix tests that counterfactual on the *same closed episodes* by negating the realized return per episode (algebraically equivalent to side-inversion).
+
+**Fee assumption:** 0.080% round-trip cost per trade (approximated from sample fee/notional ratios in the ledger).
+
+
+### B.1 Verdict — flipped vs baseline
+
+| Metric | Baseline (live signal) | Sign-flipped | Δ |
+|---|---:|---:|---:|
+| Pooled ρ | -0.082003 | 0.082003 | 0.164 |
+| Pooled $p$ | 0.1118 | 0.1118 | (symmetric) |
+| Mean return | -0.001461 | 0.001461 | 0.002922 |
+| Hit rate (%) | 25.99 | 73.47 | 47.48 |
+| Q5 − Q1 | -0.001999 | 0.001999 | 0.003998 |
+| Verdict | FAIL | FAIL | — |
+
+### B.2 Per-symbol gate-pass under sign-flip
+
+| Symbol | N | Baseline ρ (p) | Flipped ρ (p) | Flipped passes ρ>0.15 & p<0.05? |
+|---|---:|---:|---:|:-:|
+| SOLUSDT | 136 | -0.094719 (0.2711) | 0.094724 (0.2711) | ❌ |
+| ETHUSDT | 132 | -0.171758 (0.0493) | 0.171758 (0.0493) | ✅ |
+| BTCUSDT | 109 | -0.212636 (0.0271) | 0.212645 (0.0271) | ✅ |
+
+### B.3 Economic implication
+
+Per-trade gross return (flipped): **+0.1461%**. Subtracting assumed round-trip fee (0.080%) → per-trade net: **+0.0661%**. Across the 377 scored episodes this corresponds to a cumulative arithmetic edge of **+24.92 bps × avg-notional**.
+
+⚠️ Caveat: this is a counterfactual on *executed* trades only (left-truncated above the score threshold). It does not prove that naive sign-flipping would have been profitable in live execution — slippage, fee tiering, position sizing and risk gates would all behave differently. The result is *evidence of anti-prediction*, not a recommendation to invert the production signal.
+
+
+### B.4 Conclusion
+
+Even under sign-flip the **pooled** ρ does not clear the 0.15 gate (observed: 0.082003, p=0.1118). Per-symbol BTC and ETH would clear the gate under inversion, but the universe-level signal does not. Interpretation: the anti-prediction is concentrated in the two highest-volume symbols; on the broader universe the signal is mostly noise. Naive inversion would not fix the model — the scoring system needs a redesign, not a sign change.
+
+<!-- END: Appendix B Sign-Flip -->
