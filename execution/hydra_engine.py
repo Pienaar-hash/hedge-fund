@@ -1679,6 +1679,7 @@ def hydra_merged_intent_to_execution_intent(
         "price": price,
         "capital_per_trade": notional_usd,
         "gross_usd": notional_usd,
+        "expected_edge": _INVERT_HYBRID_SCORE.get(symbol, 0.0),
     }
 
 
