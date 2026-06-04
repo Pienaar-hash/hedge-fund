@@ -28,6 +28,7 @@ google-chrome-stable_current_amd64.deb
 data/ohlcv/
 data/hypothesis_a*.json
 data/hypothesis_d*.json
+data/hypothesis_e*.json
 .env
 __pycache__/
 outputs/
