@@ -466,8 +466,9 @@ class TestTrendGenerator:
         )
 
         assert len(intents) == 2  # SOLUSDT below threshold
-        assert any(i.symbol == "BTCUSDT" and i.side == "long" for i in intents)
-        assert any(i.symbol == "ETHUSDT" and i.side == "short" for i in intents)
+        # BTC and ETH scores are inverted: score=+0.7 → SHORT, score=−0.6 → LONG
+        assert any(i.symbol == "BTCUSDT" and i.side == "short" for i in intents)
+        assert any(i.symbol == "ETHUSDT" and i.side == "long" for i in intents)
 
     def test_respects_direction_constraint(self):
         """Test direction filtering."""
@@ -482,8 +483,10 @@ class TestTrendGenerator:
             nav_usd=10000,
         )
 
+        # BTC score=+0.7 inverts to −0.7 → SHORT → filtered by direction="long"
+        # ETH score=−0.6 inverts to +0.6 → LONG → passes
         assert len(intents) == 1
-        assert intents[0].symbol == "BTCUSDT"
+        assert intents[0].symbol == "ETHUSDT"
         assert intents[0].side == "long"
 
     def test_disabled_head_returns_empty(self):

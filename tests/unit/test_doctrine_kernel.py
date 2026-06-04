@@ -43,7 +43,7 @@ def unstable_regime():
     return RegimeSnapshot(
         primary_regime="TREND_UP",
         confidence=0.70,
-        cycles_stable=1,  # Below REGIME_STABILITY_CYCLES
+        cycles_stable=0,  # Below REGIME_STABILITY_CYCLES (now 1)
         crisis_flag=False,
         updated_ts=time.time(),
     )
