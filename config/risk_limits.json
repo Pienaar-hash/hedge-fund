@@ -12,7 +12,7 @@
     "max_leverage": 4,
     "min_notional_usdt": 25,
     "max_trade_nav_pct": 0.12,
-    "trade_equity_nav_pct": 0.04,
+    "trade_equity_nav_pct": 0.12,
     "symbol_notional_share_cap_pct": 0.25,
     "symbol_drawdown_cap_pct": 0.03,
     "tiers": {
