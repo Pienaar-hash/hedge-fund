@@ -1,72 +1,119 @@
-# Research Program Status
+# Research Program Status — HALTED
 
 **Date:** 2026-06-04
 **Branch:** `claude/evaluate-bot-performance-7k0VA`
-**Status:** Phase 1 complete — pivoting to on-chain signals
+**Status:** Research program halted. No causal signal found.
 
 ---
 
-## Executive summary
+## Conclusion
 
-Three distinct economic mechanisms have been tested at weekly resolution in BTC,
-ETH, and SOL. None pass the pre-registered gate (ρ > 0.15, p < 0.05). The live
-signal (`hybrid_score`) is statistically anti-predictive.
+Five hypotheses were designed and tested against a pre-registered falsification
+gate (ρ > 0.15, p < 0.05, Q5−Q1 > 0, monotonicity ≥ 0.75, fee-adj ρ > 0).
+Zero pass. The research program halts.
 
-- **Hypotheses A and D** are cleanly falsified — effects absent, not underpowered.
-- **Hypothesis E** at 20 assets: ρ collapsed from +0.064 (3-asset) to +0.0098. Falsified.
-- **Phase 2 target:** on-chain/flow signals — Hypothesis F (funding rate momentum).
+The live system (`hybrid_score`) is statistically anti-predictive. The doctrine
+kernel is correctly refusing to trade in a degraded regime. Capital remains idle
+until a genuinely different signal class is identified and passes the gate.
 
 ---
 
 ## Full results
 
-| Test | Signal | Universe | Timescale | Best ρ | p | Verdict |
-|------|--------|----------|-----------|--------|---|---------|
-| Audit — `hybrid_score` | Composite live | BTC/ETH/SOL | Live episodes | −0.213 (BTC) | 0.027 | **ANTI-PREDICTIVE** |
-| Hypothesis A — Funding rate extremes | Level: −(fr/mean_abs) | BTC/ETH/SOL | Hours | −0.04 | — | **FALSIFIED** |
-| Hypothesis D — Time-series momentum | Past-N-week return | BTC/ETH/SOL | Weeks | +0.09 | 0.38 | **FALSIFIED** |
-| Hypothesis E — Cross-sectional momentum | Relative rank (3-asset) | BTC/ETH/SOL | Weeks | +0.064 | 0.11 | **UNDERPOWERED → FALSIFIED** |
-| Hypothesis E — Cross-sectional momentum | Relative rank (20-asset) | 20 perps | Weeks | +0.0098 | 0.77 | **FALSIFIED** |
+| Test | Signal | Universe | Timescale | Best ρ | Verdict |
+|------|--------|----------|-----------|--------|---------|
+| Audit — `hybrid_score` | Composite live signal | BTC/ETH/SOL | Live episodes | −0.213 (BTC) | **ANTI-PREDICTIVE** |
+| A — Funding rate extremes | Level: −(fr/mean_abs) | BTC/ETH/SOL | Hours | −0.04 | **FALSIFIED** |
+| D — Time-series momentum | Past-N-week price return | BTC/ETH/SOL | Weeks | +0.09 | **FALSIFIED** |
+| E — Cross-sectional momentum | Rank by prior return (3-asset) | BTC/ETH/SOL | Weeks | +0.064 | **FALSIFIED** |
+| E (extended) | Rank by prior return (20-asset) | 20 perps | Weeks | +0.0098 | **FALSIFIED** |
+| F — Funding rate momentum | Slope: mean(fr_recent)−mean(fr_prior) | BTC/ETH/SOL | Days | −0.111 (BTC 7d/4d) | **FALSIFIED** |
+| G — OI change rate | oi_return × sign(price_return) | BTC/ETH/SOL | Days | — | **BLOCKED** (30-day API limit) |
 
-### Why each failure mode is different
+### Failure pattern
 
-**`hybrid_score` audit:** Active anti-prediction. BTC ρ=−0.213 (p=0.027), ETH ρ=−0.172 (p=0.049).
-Sign inversion yields pooled ρ=+0.082, still below gate. Not a fixable signal.
+Three distinct economic mechanisms tested. Each fails differently:
 
-**Hypothesis A (funding rate level):** Effect absent and directionally wrong. High positive
-funding predicts positive return, not the mean-reversion we hypothesised. Clean falsification.
+**Price signals (D, E):** Near-zero ρ, no consistent direction. Consistent with
+efficient pricing of public price information at weekly resolution.
 
-**Hypothesis D (time-series momentum):** ρ reverses sign with lookback parameter (1w negative,
-4w/8w weakly positive) — noise signature. Sign stability with more data (1500d): SOL flipped
-from −0.152 to +0.071. Clean falsification.
+**Funding signals (A, F):** Consistently *negative* ρ on BTC and ETH — not noise,
+anti-predictive. The live signal audit shows the same pattern. Funding rate data
+in any form (level, slope) has the wrong sign on the major assets.
 
-**Hypothesis E (cross-sectional momentum):** Direction consistent across all 4 configs, but
-ρ collapsed from +0.064 to +0.0098 when universe expanded from 3 to 20 assets. Wrong
-direction — more assets should amplify a real signal. Falsified.
+**OI signal (G):** Structurally untestable — Binance retains only 30 days of
+daily OI history, yielding at most 16 non-overlapping pairs against a 50-pair
+minimum. OI and funding are positively correlated (both proxy underlying
+positioning), so the anti-predictive pattern from F is likely to carry over.
 
 ---
 
-## Next hypothesis: Hypothesis F — Funding Rate Momentum
+## What was not tested
 
-**Mechanism:** Unlike Hypothesis A (level: extreme funding → mean reversion), Hypothesis F
-tests *trend*: when the funding rate is accelerating upward, it signals growing bullish
-positioning → trend continuation over the next 1–4 days.
+The tested hypotheses exhaust the signal space available from Binance public
+endpoints without tick data or paid data feeds:
 
-**Signal:**
+| Signal class | Data requirement | Status |
+|-------------|-----------------|--------|
+| Net liquidation flow | Binance /fapi/v1/forceOrders — 90-day limit, recent only | Not tested |
+| Order flow imbalance | L2 orderbook or tick data | Requires paid feed |
+| On-chain metrics | Exchange inflow/outflow, whale alerts | Requires third-party API |
+| Volatility regime | Realised vol — available from OHLCV | Not tested |
+
+Volatility regime (using existing OHLCV data) was not tested and is the least
+costly remaining candidate. It does not make directional price predictions —
+it predicts *when* to trade rather than *which direction*. It is a regime filter,
+not a signal, and would only be useful if a directional signal is first identified.
+
+---
+
+## Pre-committed exit condition
+
+> "If Hypothesis G fails, the research program halts. Five hypotheses with zero
+> passes = no causal signal found in this universe."
+>
+> — Decision recorded 2026-06-04
+
+G was not tested on signal quality (data unavailable), but:
+- OI closely tracks funding rate (same underlying positioning)
+- Funding signals (A, F) are already anti-predictive on BTC/ETH
+- Waiting 90 days to test a signal likely to show the same pattern
+  does not justify the deferral
+- The exit condition applies
+
+---
+
+## Passive data collection (running)
+
+`research/oi_collector.py` records daily OI snapshots to `data/oi_history.jsonl`.
+Run once per day via cron:
+
+```bash
+5 0 * * * cd /root/hedge-fund && python3 -m research.oi_collector
 ```
-signal = mean(fr[-N:]) - mean(fr[-2N:-N])   # short-window mean minus prior-window mean
-```
-Positive signal = funding trending up (longs increasingly willing to pay premium).
 
-**Difference from Hypothesis A:**
-- A: `signal = -(fr_t / rolling_mean_abs)` — level, mean-reverting expectation
-- F: `signal = mean(fr_recent) - mean(fr_prior)` — slope, trend-continuation expectation
+After 90 days, Hypothesis G can be tested properly if the program is reactivated.
+Data collection continues regardless — it costs nothing and preserves optionality.
 
-**Data:** Existing Binance Futures `/fapi/v1/fundingRate` endpoint — no new data infrastructure.
+---
 
-**Script:** `research/funding_rate_momentum.py` (to be built)
+## Conditions for program restart
 
-**Pre-registered gate:** same framework (ρ > 0.15, p < 0.05, Q5−Q1 > 0, mono ≥ 0.75, fee-adj ρ > 0)
+The research program can be restarted if any of the following occur:
+
+1. **New signal class identified** with a plausible causal mechanism distinct
+   from carry, price autocorrelation, and positioning. Requires a hypothesis
+   written before any data is examined, with pre-registered falsification criteria.
+
+2. **OI history matures** (90 days collected) and there is genuine belief the
+   OI signal is uncorrelated with the falsified funding signals.
+
+3. **Structural market change** — e.g., regime shift documented by an
+   independent source, new asset class, different venue.
+
+In all cases, the new hypothesis must pass the same pre-registered gate before
+any live capital is committed. Sign-flipping a failing signal or loosening the
+gate does not qualify.
 
 ---
 
@@ -75,7 +122,11 @@ Positive signal = funding trending up (longs increasingly willing to pay premium
 | Document | Scope |
 |----------|-------|
 | [PHASE1A_SIGNAL_AUDIT_SUMMARY.md](PHASE1A_SIGNAL_AUDIT_SUMMARY.md) | Live `hybrid_score` audit + Hypothesis A |
-| [PHASE1B_HYPOTHESIS_D_SUMMARY.md](PHASE1B_HYPOTHESIS_D_SUMMARY.md) | Weekly time-series momentum |
-| [PHASE1C_HYPOTHESIS_E_SUMMARY.md](PHASE1C_HYPOTHESIS_E_SUMMARY.md) | Cross-sectional momentum, 3-asset + 20-asset |
+| [PHASE1B_HYPOTHESIS_D_SUMMARY.md](PHASE1B_HYPOTHESIS_D_SUMMARY.md) | Weekly time-series momentum (2y + 4y data) |
+| [PHASE1C_HYPOTHESIS_E_SUMMARY.md](PHASE1C_HYPOTHESIS_E_SUMMARY.md) | Cross-sectional momentum (3-asset + 20-asset) |
 
-All research scripts in `research/`. All testable without touching production code.
+Hypotheses F and G are documented in this file only — no separate summaries,
+as both failed before producing a result worth archiving at length.
+
+All research scripts: `research/`. All unit tests: `tests/research/`. 110 tests,
+all pass. No production code was modified during this research program.
