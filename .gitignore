@@ -30,6 +30,7 @@ data/hypothesis_a*.json
 data/hypothesis_d*.json
 data/hypothesis_e*.json
 data/hypothesis_f*.json
+data/hypothesis_g*.json
 .env
 __pycache__/
 outputs/
