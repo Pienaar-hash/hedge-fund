@@ -9,7 +9,7 @@
     "marketStepSize": "0.0001",
     "marketMinQty": "0.0001",
     "marketMaxQty": "120",
-    "minNotional": "100"
+    "minNotional": "50"
   },
   "ETHUSDT": {
     "tickSize": "0.01",
@@ -144,9 +144,9 @@
     "minNotional": "5"
   },
   "XTZUSDT": {
-    "tickSize": "0.001",
-    "minPrice": "0.001",
-    "maxPrice": "100000",
+    "tickSize": "0.000100",
+    "minPrice": "0.000100",
+    "maxPrice": "200",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "10000",
@@ -180,9 +180,9 @@
     "minNotional": "5"
   },
   "ONTUSDT": {
-    "tickSize": "0.0001",
-    "minPrice": "0.0001",
-    "maxPrice": "100000",
+    "tickSize": "0.000010",
+    "minPrice": "0.000010",
+    "maxPrice": "200",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
@@ -288,9 +288,9 @@
     "minNotional": "5"
   },
   "ZILUSDT": {
-    "tickSize": "0.00001",
-    "minPrice": "0.00001",
-    "maxPrice": "100",
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -396,9 +396,9 @@
     "minNotional": "5"
   },
   "SNXUSDT": {
-    "tickSize": "0.001",
-    "minPrice": "0.001",
-    "maxPrice": "1144",
+    "tickSize": "0.000100",
+    "minPrice": "0.000100",
+    "maxPrice": "200",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
@@ -432,9 +432,9 @@
     "minNotional": "5"
   },
   "CRVUSDT": {
-    "tickSize": "0.001",
-    "minPrice": "0.001",
-    "maxPrice": "1000",
+    "tickSize": "0.000100",
+    "minPrice": "0.000100",
+    "maxPrice": "200",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
@@ -504,9 +504,9 @@
     "minNotional": "5"
   },
   "ICXUSDT": {
-    "tickSize": "0.0001",
-    "minPrice": "0.0001",
-    "maxPrice": "400",
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -756,9 +756,9 @@
     "minNotional": "5"
   },
   "RVNUSDT": {
-    "tickSize": "0.00001",
-    "minPrice": "0.00001",
-    "maxPrice": "20000",
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -792,9 +792,9 @@
     "minNotional": "5"
   },
   "CHRUSDT": {
-    "tickSize": "0.0001",
-    "minPrice": "0.0031",
-    "maxPrice": "100000",
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
@@ -816,9 +816,9 @@
     "minNotional": "5"
   },
   "ALICEUSDT": {
-    "tickSize": "0.001",
-    "minPrice": "0.001",
-    "maxPrice": "100000",
+    "tickSize": "0.000100",
+    "minPrice": "0.000100",
+    "maxPrice": "200",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
@@ -840,9 +840,9 @@
     "minNotional": "5"
   },
   "ONEUSDT": {
-    "tickSize": "0.00001",
-    "minPrice": "0.00001",
-    "maxPrice": "20000",
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -852,9 +852,9 @@
     "minNotional": "5"
   },
   "DENTUSDT": {
-    "tickSize": "0.000001",
-    "minPrice": "0.000001",
-    "maxPrice": "2000",
+    "tickSize": "0.0000001",
+    "minPrice": "0.0000001",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -864,9 +864,9 @@
     "minNotional": "5"
   },
   "CELRUSDT": {
-    "tickSize": "0.00001",
-    "minPrice": "0.00001",
-    "maxPrice": "20000",
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -876,9 +876,9 @@
     "minNotional": "5"
   },
   "HOTUSDT": {
-    "tickSize": "0.000001",
-    "minPrice": "0.000001",
-    "maxPrice": "2000",
+    "tickSize": "0.0000001",
+    "minPrice": "0.0000001",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -900,9 +900,9 @@
     "minNotional": "5"
   },
   "OGNUSDT": {
-    "tickSize": "0.0001",
-    "minPrice": "0.0001",
-    "maxPrice": "100000",
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
@@ -960,9 +960,9 @@
     "minNotional": "5"
   },
   "IOTXUSDT": {
-    "tickSize": "0.00001",
-    "minPrice": "0.00050",
-    "maxPrice": "20000",
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -972,9 +972,9 @@
     "minNotional": "5"
   },
   "C98USDT": {
-    "tickSize": "0.0001",
-    "minPrice": "0.0010",
-    "maxPrice": "100000",
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
@@ -1020,9 +1020,9 @@
     "minNotional": "5"
   },
   "GALAUSDT": {
-    "tickSize": "0.00001",
-    "minPrice": "0.00050",
-    "maxPrice": "20000",
+    "tickSize": "0.0000010",
+    "minPrice": "0.0000010",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "10000000",
@@ -1032,9 +1032,9 @@
     "minNotional": "5"
   },
   "CELOUSDT": {
-    "tickSize": "0.001",
-    "minPrice": "0.010",
-    "maxPrice": "100000",
+    "tickSize": "0.000100",
+    "minPrice": "0.000100",
+    "maxPrice": "200",
     "stepSize": "0.1",
     "minQty": "0.1",
     "maxQty": "1000000",
@@ -1068,9 +1068,9 @@
     "minNotional": "5"
   },
   "CTSIUSDT": {
-    "tickSize": "0.0001",
-    "minPrice": "0.0010",
-    "maxPrice": "100000",
+    "tickSize": "0.0000100",
+    "minPrice": "0.0000100",
+    "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
     "maxQty": "1000000",
@@ -1811,18 +1811,6 @@
     "marketMaxQty": "1000000",
     "minNotional": "5"
   },
-  "OXTUSDT": {
-    "tickSize": "0.0000100",
-    "minPrice": "0.0000100",
-    "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "100000000",
-    "marketStepSize": "1",
-    "marketMinQty": "1",
-    "marketMaxQty": "1000000",
-    "minNotional": "5"
-  },
   "SEIUSDT": {
     "tickSize": "0.0001000",
     "minPrice": "0.0001000",
@@ -1851,9 +1839,9 @@
     "tickSize": "0.0001000",
     "minPrice": "0.0001000",
     "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "10000000",
+    "stepSize": "3",
+    "minQty": "3",
+    "maxQty": "3333",
     "marketStepSize": "1",
     "marketMinQty": "1",
     "marketMaxQty": "1000000",
@@ -2160,8 +2148,8 @@
     "minNotional": "5"
   },
   "1000SATSUSDT": {
-    "tickSize": "0.0000001",
-    "minPrice": "0.0000010",
+    "tickSize": "0.00000001",
+    "minPrice": "0.00000001",
     "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
@@ -2820,8 +2808,8 @@
     "minNotional": "5"
   },
   "DOGSUSDT": {
-    "tickSize": "0.0000001",
-    "minPrice": "0.0000001",
+    "tickSize": "0.00000001",
+    "minPrice": "0.00000001",
     "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",
@@ -3491,18 +3479,6 @@
     "marketMaxQty": "40000",
     "minNotional": "5"
   },
-  "DEGOUSDT": {
-    "tickSize": "0.0001000",
-    "minPrice": "0.0001000",
-    "maxPrice": "2000",
-    "stepSize": "0.1",
-    "minQty": "0.1",
-    "maxQty": "300000",
-    "marketStepSize": "0.1",
-    "marketMinQty": "0.1",
-    "marketMaxQty": "30000",
-    "minNotional": "5"
-  },
   "VELODROMEUSDT": {
     "tickSize": "0.0000100",
     "minPrice": "0.0000100",
@@ -3957,18 +3933,6 @@
     "marketStepSize": "0.1",
     "marketMinQty": "0.1",
     "marketMaxQty": "100000",
-    "minNotional": "5"
-  },
-  "B3USDT": {
-    "tickSize": "0.0000010",
-    "minPrice": "0.0000100",
-    "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "8000000",
-    "marketStepSize": "1",
-    "marketMinQty": "1",
-    "marketMaxQty": "800000",
     "minNotional": "5"
   },
   "IPUSDT": {
@@ -5051,18 +5015,6 @@
     "marketMaxQty": "300000",
     "minNotional": "5"
   },
-  "A2ZUSDT": {
-    "tickSize": "0.0000010",
-    "minPrice": "0.0000010",
-    "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "150000000",
-    "marketStepSize": "1",
-    "marketMinQty": "1",
-    "marketMaxQty": "15000000",
-    "minNotional": "5"
-  },
   "PLAYUSDT": {
     "tickSize": "0.0000100",
     "minPrice": "0.0000100",
@@ -5426,18 +5378,6 @@
   "TAKEUSDT": {
     "tickSize": "0.0000100",
     "minPrice": "0.0000100",
-    "maxPrice": "200",
-    "stepSize": "1",
-    "minQty": "1",
-    "maxQty": "10000000",
-    "marketStepSize": "1",
-    "marketMinQty": "1",
-    "marketMaxQty": "1000000",
-    "minNotional": "5"
-  },
-  "BDXNUSDT": {
-    "tickSize": "0.00001",
-    "minPrice": "0.00001",
     "maxPrice": "200",
     "stepSize": "1",
     "minQty": "1",

@@ -661,7 +661,7 @@
     "min_history_days": 30,
     "regimes": ["TREND_UP", "TREND_DOWN", "MEAN_REVERT", "BREAKOUT", "CHOPPY", "CRISIS"],
     "prob_thresholds": {
-      "primary": 0.55,
+      "primary": 0.45,
       "secondary": 0.25
     },
     "crisis_hard_rules": {
@@ -675,7 +675,7 @@
     },
     "smoothing": {
       "prob_alpha": 0.30,
-      "label_stickiness": 3
+      "label_stickiness": 1
     },
     "run_interval_cycles": 5,
     "scoring_thresholds": {
