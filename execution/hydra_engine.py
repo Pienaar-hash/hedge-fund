@@ -55,7 +55,13 @@ DEFAULT_CONFIG_PATH = Path("config/strategy_config.json")
 # Symbols for which the hybrid_score signal is empirically anti-predictive
 # (Spearman ρ = −0.21 BTC, −0.17 ETH on live episodes). Invert direction
 # so the TREND head trades the opposite side on these symbols.
-_INVERT_HYBRID_SCORE_SYMBOLS: frozenset[str] = frozenset({"BTCUSDT", "ETHUSDT"})
+# Value = Phase 1A empirical gross edge pct (inverted signal, 377 episodes).
+# ETH=0.0: edge below fee floor after inversion — fee gate correctly vetoes it.
+# BTC=0.00146: 0.146% gross clears the 0.12% fee-buffer gate (0.08% × 1.5).
+_INVERT_HYBRID_SCORE: Dict[str, float] = {
+    "BTCUSDT": 0.00146,
+    "ETHUSDT": 0.00000,
+}
 
 _LOG = logging.getLogger(__name__)
 
@@ -212,6 +218,7 @@ class HydraIntent:
     nav_pct: float
     score: float  # 0–1, head-specific signal strength
     rationale: str
+    expected_edge_pct: float = 0.0  # empirical gross edge; feeds fee gate primary path
     timestamp: float = field(default_factory=time.time)
 
     def __post_init__(self) -> None:
@@ -230,6 +237,7 @@ class HydraIntent:
             "nav_pct": round(self.nav_pct, 6),
             "score": round(self.score, 4),
             "rationale": self.rationale,
+            "expected_edge": round(self.expected_edge_pct, 8),
             "timestamp": self.timestamp,
         }
 
@@ -608,7 +616,8 @@ def generate_trend_intents(
             continue
 
         # Invert direction for symbols where the hybrid_score is anti-predictive
-        effective_score = -score if symbol in _INVERT_HYBRID_SCORE_SYMBOLS else score
+        empirical_edge_pct = _INVERT_HYBRID_SCORE.get(symbol, 0.0)
+        effective_score = -score if symbol in _INVERT_HYBRID_SCORE else score
 
         # Determine side
         if effective_score > 0:
@@ -662,6 +671,7 @@ def generate_trend_intents(
             side=side,
             nav_pct=nav_pct,
             score=abs(score),
+            expected_edge_pct=empirical_edge_pct,
             rationale=f"Trend score={score:.3f}, cerb_mult={cerberus_multiplier:.2f}",
         )
         intents.append(intent)
