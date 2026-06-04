@@ -79,47 +79,36 @@ Three distinct economic mechanisms tested. Zero signal detected above noise in a
 
 ---
 
-## Next valid paths
+## 20-asset result (2026-06-04)
 
-**Path 1 — Expand the cross-section (extends Hypothesis E)**
-Add perpetual futures for 15–20 liquid tokens (BNB, ADA, DOT, AVAX, LINK, UNI,
-MATIC, etc.). This does not change the hypothesis — only the universe size. All
-existing `research/cross_sectional_momentum.py` code generalises via `--symbols`.
-A 20-asset run over 4 years produces n≈4,000 pairs with adequate power.
+| Config | n_total | ρ | p | T3−T1 | Mono | Verdict |
+|--------|---------|---------|-------|---------|------|---------|
+| 20 assets / 4w lookback / 1w fwd | 920 | +0.0098 | 0.766 | +0.009 | 1.00 | CONDITIONAL 3/5 |
 
-This is the highest-probability next step because:
-- ρ was consistently positive across all 4 Hypothesis E configs (not noise-style)
-- The failure mode is diagnosed (3-asset underpowering), not signal absence
-- No code changes needed — one CLI flag change
+ρ collapsed from +0.064 (3-asset) to +0.0098 (20-asset). This is the wrong
+direction for a pure underpowering diagnosis — more assets should have amplified
+the signal, not reduced it. The test window was constrained to ~46 periods per
+asset because newer tokens required all 20 symbols to be concurrently available.
 
-**Path 2 — Abandon and redesign (if broader cross-section also fails)**
-If a 20-asset cross-sectional test at 4w/1w also returns ρ < 0.15, the conclusion
-is that weekly-resolution price return signals do not predict future returns in
-perpetuals. At that point, the research program would pivot to:
-- On-chain signals (funding, open interest change, net liquidation flow)
-- Volatility regime signals (realised vol spread, VIX analog for crypto)
-- Microstructure signals (order flow imbalance) — requires tick data
+**Conclusion: HYPOTHESIS FALSIFIED.** Weekly cross-sectional price return rank
+does not predict next-week return in perpetual futures. The program pivots to
+on-chain signals.
 
 ---
 
-## Recommended immediate action
+## Next valid paths
 
-Run Hypothesis E with a 20-asset universe before concluding:
+**Path 1 — Expand the cross-section (extends Hypothesis E)**
+~~Run Hypothesis E with a 20-asset universe before concluding.~~
 
-```bash
-python3 -m research.cross_sectional_momentum \
-    --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT ADAUSDT DOGEUSDT \
-              AVAXUSDT LINKUSDT DOTUSDT MATICUSDT UNIUSDT LTCUSDT \
-              XRPUSDT ATOMUSDT NEARUSDT APTUSDT ARBUSDT OPUSDT \
-              FILUSDT INJUSDT \
-    --days 1095 \
-    --lookback-weeks 4 --horizon-weeks 1 \
-    --out data/hypothesis_e_20asset_4w1w.json
-```
+*Completed 2026-06-04 — see 20-asset result above. Pivot to on-chain signals.*
 
-Three years of data (not four) because some tokens lack 4-year history on Binance
-Futures. The script handles missing bars via tolerance-based snapping. If any
-symbol returns zero bars, remove it and re-run.
+**Path 2 — On-chain/flow signals**
+Weekly-resolution price return signals do not predict future returns in
+perpetuals. Next signal class rotation:
+- **Hypothesis F — Funding rate momentum** (trending fr predicts continuation)
+- Open interest change rate (OI growth predicts price continuation)
+- Net liquidation flow (cascade risk when liq volume spikes)
 
 ---
 
@@ -130,6 +119,14 @@ python3 -m research.cross_sectional_momentum --days 1500 --lookback-weeks 4 --ho
 python3 -m research.cross_sectional_momentum --days 1500 --lookback-weeks 1 --horizon-weeks 1
 python3 -m research.cross_sectional_momentum --days 1500 --lookback-weeks 8 --horizon-weeks 2
 python3 -m research.cross_sectional_momentum --days 1500 --lookback-weeks 12 --horizon-weeks 4
+
+# 20-asset run
+python3 -m research.cross_sectional_momentum \
+    --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT ADAUSDT DOGEUSDT \
+              AVAXUSDT LINKUSDT DOTUSDT MATICUSDT UNIUSDT LTCUSDT \
+              XRPUSDT ATOMUSDT NEARUSDT APTUSDT ARBUSDT OPUSDT \
+              FILUSDT INJUSDT \
+    --days 1095 --lookback-weeks 4 --horizon-weeks 1
 ```
 
 | Artifact | Path |

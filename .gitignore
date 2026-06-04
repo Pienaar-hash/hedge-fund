@@ -29,6 +29,7 @@ data/ohlcv/
 data/hypothesis_a*.json
 data/hypothesis_d*.json
 data/hypothesis_e*.json
+data/hypothesis_f*.json
 .env
 __pycache__/
 outputs/
