@@ -52,6 +52,11 @@ DEFAULT_STATE_PATH = Path("logs/state/hydra_state.json")
 DEFAULT_INTENT_LOG_PATH = Path("logs/hydra/hydra_intents.jsonl")
 DEFAULT_CONFIG_PATH = Path("config/strategy_config.json")
 
+# Symbols for which the hybrid_score signal is empirically anti-predictive
+# (Spearman ρ = −0.21 BTC, −0.17 ETH on live episodes). Invert direction
+# so the TREND head trades the opposite side on these symbols.
+_INVERT_HYBRID_SCORE_SYMBOLS: frozenset[str] = frozenset({"BTCUSDT", "ETHUSDT"})
+
 _LOG = logging.getLogger(__name__)
 
 # Canonical strategy heads (same as Cerberus)
@@ -551,7 +556,7 @@ def generate_trend_intents(
     cerberus_multiplier: float,
     head_cfg: HydraHeadConfig,
     nav_usd: float,
-    base_nav_pct: float = 0.06,
+    base_nav_pct: float = 0.12,
     min_notional_usd: float = 0.0,
 ) -> List[HydraIntent]:
     """
@@ -602,8 +607,11 @@ def generate_trend_intents(
                 pass
             continue
 
+        # Invert direction for symbols where the hybrid_score is anti-predictive
+        effective_score = -score if symbol in _INVERT_HYBRID_SCORE_SYMBOLS else score
+
         # Determine side
-        if score > 0:
+        if effective_score > 0:
             if direction == "short":
                 continue
             side = "long"
@@ -692,7 +700,7 @@ def generate_mean_revert_intents(
     cerberus_multiplier: float,
     head_cfg: HydraHeadConfig,
     nav_usd: float,
-    base_nav_pct: float = 0.06,
+    base_nav_pct: float = 0.12,
     zscore_threshold: float = 1.5,
 ) -> List[HydraIntent]:
     """

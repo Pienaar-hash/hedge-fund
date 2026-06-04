@@ -51,7 +51,7 @@ _LOG = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Regime must be stable for at least N cycles before entry is permitted
-REGIME_STABILITY_CYCLES = 2
+REGIME_STABILITY_CYCLES = 1
 
 # Minimum regime confidence to permit any entry
 REGIME_CONFIDENCE_FLOOR = 0.45

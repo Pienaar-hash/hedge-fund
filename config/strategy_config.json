@@ -2,7 +2,7 @@
   "version": "v6.4",
   "use_futures": true,
   "poll_seconds": 300,
-  "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+  "universe": ["BTCUSDT", "ETHUSDT"],
   "dry_run": {
     "simulated_nav_usdt": 10000.0,
     "simulated_balances": {
@@ -317,10 +317,10 @@
   "vol_target": {
     "enabled": true,
     "timeframes": ["15m"],
-    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-    "base_per_trade_nav_pct": 0.015,
-    "min_per_trade_nav_pct": 0.005,
-    "max_per_trade_nav_pct": 0.03,
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "base_per_trade_nav_pct": 0.06,
+    "min_per_trade_nav_pct": 0.02,
+    "max_per_trade_nav_pct": 0.12,
     "target_vol": 0.015,
     "min_vol": 0.003,
     "max_vol": 0.08,
