@@ -138,7 +138,7 @@
     {
       "id": "eth_m15",
       "label": "ETH 15m momentum",
-      "enabled": true,
+      "enabled": false,
       "symbol": "ETHUSDT",
       "timeframe": "15m",
       "params": {
@@ -163,7 +163,7 @@
     {
       "id": "sol_m15",
       "label": "SOL 15m momentum",
-      "enabled": true,
+      "enabled": false,
       "symbol": "SOLUSDT",
       "timeframe": "15m",
       "params": {

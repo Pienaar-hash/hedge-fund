@@ -2046,6 +2046,33 @@ def _position_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
     return rows
 
 
+def _has_open_position_in_direction(symbol: str, intent_side: str) -> bool:
+    """Return True if there is already a non-zero position in the same direction.
+
+    Prevents repeated entry submissions when a position is already open, which
+    was the primary driver of the 80-orders/day churn event (2026-06-04).
+    Only consulted for entry (non-reduceOnly) intents.
+    """
+    rows = _position_rows_for_symbol(symbol)
+    if not rows:
+        return False
+    side_upper = str(intent_side).upper()
+    want_long = side_upper in ("BUY", "LONG")
+    want_short = side_upper in ("SELL", "SHORT")
+    for pos in rows:
+        try:
+            qty = float(pos.get("qty", pos.get("positionAmt", 0)) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if qty == 0.0:
+            continue
+        if want_long and qty > 0:
+            return True
+        if want_short and qty < 0:
+            return True
+    return False
+
+
 def _emit_position_snapshots(symbol: str) -> None:
     rows = _position_rows_for_symbol(symbol)
     ts = time.time()
@@ -3586,9 +3613,13 @@ def _check_fee_edge_gate(
                     fg_details,
                 )
     except ImportError:
+        # Module not available in this environment — fail-open intentionally.
         pass
     except Exception as _fg_exc:
-        LOG.debug("[fee_gate] check failed: %s", _fg_exc)
+        # Runtime failure in fee gate logic — fail-CLOSED to prevent unthrottled
+        # order submission. Log at WARNING so it's visible in production logs.
+        LOG.warning("[fee_gate] check raised unexpectedly, vetoing: %s", _fg_exc, exc_info=True)
+        return False
 
     return True
 
@@ -6366,6 +6397,18 @@ def _loop_once(state: ExecutorState, i: int) -> None:
             if _symbol_on_cooldown(symbol, now_ts):
                 _hydra_route_trace("dropped_pre_send_order", intent, outcome="drop", reason="cooldown")
                 continue
+
+            # Skip entry if a position is already open in the same direction.
+            # Prevents repeated submissions on the same open position every loop tick.
+            if not intent.get("reduceOnly"):
+                _intent_side = str(intent.get("side") or intent.get("net_side") or "")
+                if _intent_side and _has_open_position_in_direction(symbol, _intent_side):
+                    LOG.debug(
+                        "[dedup] skipping entry %s %s — position already open in this direction",
+                        symbol, _intent_side,
+                    )
+                    _hydra_route_trace("dropped_pre_send_order", intent, outcome="drop", reason="position_dedup")
+                    continue
 
             # --- Phase 4 Commit 5: ECS Selector (authoritative) ---
             # ReduceOnly exits bypass the selector (doctrine safety).
