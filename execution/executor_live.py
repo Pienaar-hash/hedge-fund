@@ -6222,7 +6222,7 @@ def _loop_once(state: ExecutorState, i: int) -> None:
                 _elapsed_since_pull, _poll_seconds,
             )
             state.last_queue_depth = 0
-            continue  # exits already ran above; skip entry generation this tick
+            return  # exits already ran above; skip entry generation this tick
 
         # Record pull time only when we actually regenerate.
         state.last_signal_pull = _now
