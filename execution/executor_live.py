@@ -2034,6 +2034,14 @@ def _position_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
         positions = list(_POSITION_CACHE.get(get_positions) or [])
     except Exception:
         positions = []
+    # Fall back to positions.json if cache is empty (not yet warmed after startup)
+    if not positions:
+        try:
+            import json as _json
+            _state = _json.load(open("logs/state/positions.json"))
+            positions = _state.get("rows", [])
+        except Exception:
+            pass
     symbol_upper = str(symbol).upper()
     rows: List[Dict[str, Any]] = []
     for pos in positions:
