@@ -6200,7 +6200,32 @@ def _loop_once(state: ExecutorState, i: int) -> None:
         state.last_signal_pull = time.time()
         state.last_queue_depth = 0
     else:
-        state.last_signal_pull = time.time()
+        # ── Poll gate ─────────────────────────────────────────────────────
+        # LOOP_SLEEP=30 is appropriate for exit scanning and fill polling.
+        # Entry signal generation should only run when poll_seconds has
+        # elapsed — there is no new information in a 15m bar strategy
+        # between consecutive 30s ticks.  Without this gate every tick
+        # re-evaluates identical signals and re-submits the same intents.
+        _poll_seconds = 300
+        try:
+            _poll_cfg = load_json("config/strategy_config.json") or {}
+            _poll_seconds = int(_poll_cfg.get("poll_seconds", 300))
+        except Exception:
+            pass
+        _now = time.time()
+        _elapsed_since_pull = _now - state.last_signal_pull
+        _should_regenerate = _elapsed_since_pull >= _poll_seconds
+
+        if not _should_regenerate:
+            LOG.debug(
+                "[poll_gate] skipping signal regen — %.0fs < %ds poll_seconds",
+                _elapsed_since_pull, _poll_seconds,
+            )
+            state.last_queue_depth = 0
+            continue  # exits already ran above; skip entry generation this tick
+
+        # Record pull time only when we actually regenerate.
+        state.last_signal_pull = _now
         with timed_section("generate_intents") as section:
             try:
                 intents_raw = list(generate_intents(state.last_signal_pull))
