@@ -49,9 +49,9 @@ if not LOGGER.handlers:
     LOGGER.setLevel(logging.INFO)
 
 try:
-    load_dotenv(override=True)
-    load_dotenv("/root/hedge-fund/.env", override=True)
-    LOGGER.info("[exutil] .env loaded (override=True)")
+    load_dotenv(override=False)
+    load_dotenv("/root/hedge-fund/.env", override=False)
+    LOGGER.info("[exutil] .env loaded (override=False)")
 except Exception:
     LOGGER.info("[exutil] .env not found — using existing environment")
 

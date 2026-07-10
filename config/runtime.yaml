@@ -113,7 +113,7 @@ fee_gate:
   taker_fee_rate: 0.0004     # Binance futures taker fee (0.04%)
   maker_fee_rate: 0.0002     # Binance futures maker fee (0.02%)
   fee_buffer_mult: 1.5       # Require 1.5x round-trip fee as edge
-  enabled: false  # true_edge always returns 0 (conviction < 0.5 → adv=0, CLASS_B defect)
+  enabled: true
 
 # v7.9-TE1: True Edge v1 — ATR × confidence mapping
 # Replaces proxy edge (confidence-0.5) with expected dollar edge.

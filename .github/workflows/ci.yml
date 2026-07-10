@@ -16,7 +16,7 @@ env:
   PYTHONPATH: "."
 
 jobs:
-  ci:
+  core:
     runs-on: ubuntu-latest
 
     steps:
@@ -70,5 +70,44 @@ jobs:
       - name: Manifest audit
         run: python scripts/manifest_audit.py ci
 
-      - name: Test (unit + integration)
-        run: pytest tests/unit tests/integration -q --tb=short
+      - name: Doc invariants check
+        run: python scripts/doc_invariants_check.py
+
+      - name: Test Core Suite With Coverage
+        run: |
+          pytest tests/unit tests/integration tests/dashboard tests/scripts \
+            --cov=execution --cov=dashboard --cov=prediction --cov=treasury \
+            --cov-report=term --cov-report=xml:coverage-core.xml \
+            -q --tb=short
+
+      - name: Upload Coverage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-core
+          path: coverage-core.xml
+          if-no-files-found: error
+
+  research:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+
+      - name: Test Research Suite
+        run: pytest tests/research -q --tb=short

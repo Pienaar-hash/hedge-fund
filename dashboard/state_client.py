@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from utils.jsonl_tail import read_tail_jsonl
+
 LOG = logging.getLogger("dash.state_client")
 
 STATE_DIR = Path(os.getenv("STATE_DIR") or "logs/state")
@@ -197,34 +199,12 @@ _MIRROR_MAX_ITEMS = 200
 
 def _tail_jsonl(path: Path, *, max_lines: int = _MIRROR_TAIL_MAX_LINES) -> List[Dict[str, Any]]:
     """Read recent records from a JSONL file (last N lines)."""
-    if not path.exists():
-        return []
-    try:
-        with path.open("rb") as fh:
-            size = path.stat().st_size
-            fh.seek(max(0, size - _MIRROR_TAIL_MAX_BYTES))
-            chunk = fh.read()
-    except Exception:
-        return []
-    import time
-    cutoff = time.time() - _MIRROR_WINDOW_SECONDS
-    records: List[Dict[str, Any]] = []
-    for line in chunk.decode(errors="ignore").splitlines()[-max_lines:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(rec, dict):
-            ts = rec.get("ts") or rec.get("timestamp") or 0
-            try:
-                if float(ts) >= cutoff:
-                    records.append(rec)
-            except (TypeError, ValueError):
-                records.append(rec)
-    return records
+    return read_tail_jsonl(
+        path,
+        max_bytes=_MIRROR_TAIL_MAX_BYTES,
+        max_lines=max_lines,
+        window_seconds=_MIRROR_WINDOW_SECONDS,
+    )
 
 
 def build_mirror_payloads(log_dir: Path) -> Dict[str, Any]:

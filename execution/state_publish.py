@@ -7,7 +7,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 # Publishes read-only state to Firestore (positions + NAV).
-# - Loads .env from repo root (override=True) so ad-hoc runs see keys.
+# - Loads .env from repo root without overriding explicit shell exports.
 # - Filters positions to non-zero qty and to symbols in pairs_universe.json (if present).
 # - Debounces writes (executor can call this every loop safely).
 # - Writes dashboard-facing state files under logs/state/* including kpis_v7.json
@@ -33,7 +33,7 @@ ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(ROOT_DIR / ".env", override=True)
+    load_dotenv(ROOT_DIR / ".env", override=False)
 except Exception:
     pass
 

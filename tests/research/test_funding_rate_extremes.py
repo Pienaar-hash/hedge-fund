@@ -1,8 +1,6 @@
 """Tests for research/funding_rate_extremes.py — unit tests only, no network calls."""
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from research.funding_rate_extremes import (

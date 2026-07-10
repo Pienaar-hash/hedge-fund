@@ -8,7 +8,7 @@ A lightweight, read-only **Streamlit** dashboard fronted by **NGINX** with Basic
 
 * Server: Ubuntu @ `{{DASHBOARD_HOST}}`
 * Reverse proxy: NGINX → Streamlit on `127.0.0.1:8501` (Basic Auth)
-* Supervisor programs: `hedge-executor`, `hedge-dashboard` (no extras)
+* Supervisor programs: `hedge-executor`, `hedge-sync_state`, `hedge-dashboard`
 * Firestore pathing: `hedge/prod/state/*` (docs: `nav`, `positions`, `leaderboard` if present)
 * Local read-only state: `peak_state.json`, `synced_state.json`, optional `trade_log.json`
 * Exchange mode: **Hedge (dual-side)**; `positionSide` set on every order
@@ -29,9 +29,9 @@ A lightweight, read-only **Streamlit** dashboard fronted by **NGINX** with Basic
 
 2. **Preflight (status-only):**
    ```bash
-   ENV=prod PYTHONPATH=. ./venv/bin/python scripts/binance_auth_doctor.py
+   curl -fsS https://fapi.binance.com/fapi/v1/ping
    ```
-   Expect **200** on `/fapi/v2/account` and `/fapi/v2/positionRisk`. Fix 401/-2015 via key, futures permission, or IP whitelist.
+   Expect an empty JSON response (`{}`). If DNS/egress is blocked, fix that before continuing.
 
 3. **Warmup & gates (45s, safe to rerun):**
    ```bash
@@ -47,6 +47,12 @@ A lightweight, read-only **Streamlit** dashboard fronted by **NGINX** with Basic
    bash scripts/quick_watch.sh
    ```
    `go_live_now.sh` enables `EVENT_GUARD=1` and **disables Firestore** until ADC is configured.
+
+5. **Post-launch state check:**
+   ```bash
+   ENV=prod PYTHONPATH=. ./venv/bin/python scripts/smoke_test.py
+   ENV=prod PYTHONPATH=. ./venv/bin/python scripts/exec_debug.py
+   ```
 
 5. **Post-event revert (optional):**
    Restore day-1 caps & ML threshold in `config/strategy_config.json` and relaunch with `EVENT_GUARD=0`.
@@ -85,8 +91,6 @@ Publishing is disabled by default in live runs:
 ---
 
 ## Troubleshooting (common)
-**401 / -2015** — Invalid API key/IP or missing **Futures** permission. Check whitelist and toggle “Enable Futures” on the key.
-
 **NameResolutionError** — Host DNS/egress blocked; verify `curl https://fapi.binance.com/fapi/v1/ping`.
 
 **`-1130` on klines** — Lookback > 1500. Lower `ml.lookback_bars` (1500) or paginate.

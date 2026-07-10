@@ -14,9 +14,11 @@ export EVENT_GUARD="${EVENT_GUARD:-1}"
 export FIRESTORE_ENABLED="${FIRESTORE_ENABLED:-0}"
 export PYTHONUNBUFFERED=1
 
-# Basic connectivity and auth diagnostics
-echo "== Auth Doctor =="
-./venv/bin/python scripts/binance_auth_doctor.py || true
+# Basic exchange reachability
+echo "== Exchange reachability =="
+curl -fsS https://fapi.binance.com/fapi/v1/ping >/dev/null \
+  && echo "exchange ping OK" \
+  || echo "exchange ping failed"
 
 # Optional margin mode helper
 if [[ -x "scripts/margin_mode_once.py" ]]; then

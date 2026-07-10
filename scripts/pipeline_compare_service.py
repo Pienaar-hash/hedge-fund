@@ -7,7 +7,7 @@ import logging
 import os
 import time
 
-from execution.intel import pipeline_v6_compare
+from execution import pipeline_v6_compare
 
 LOG = logging.getLogger("pipeline_compare_service")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

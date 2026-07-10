@@ -11,4 +11,4 @@ Refer to `AGENTS.md` for development workflows and sandbox rules.
 
 ## Smoke Tests
 
-- `make smoke`: Runs `scripts/smoke_test.py` to assert Firestore heartbeats are fresh and `scripts.doctor` reports OK freshness. Export `ENV` (e.g. `ENV=prod`) before running to target the desired namespace.
+- `make smoke`: Runs `scripts/smoke_test.py` to verify canonical state surfaces are present/fresh and `execution_health.json` telemetry is current.

@@ -25,13 +25,15 @@ _DAY_MS = 24 * 3_600_000
 
 def _make_oi(n: int, start_ms: int = 0, oi_fn=None) -> list[OIRecord]:
     if oi_fn is None:
-        oi_fn = lambda i: 1_000_000.0 + i * 1000  # type: ignore[misc]
+        def oi_fn(i: int) -> float:
+            return 1_000_000.0 + i * 1000
     return [OIRecord(ts_ms=start_ms + i * _DAY_MS, oi=oi_fn(i)) for i in range(n)]
 
 
 def _make_bars(n: int, start_ms: int = 0, price_fn=None) -> list[Bar]:
     if price_fn is None:
-        price_fn = lambda i: 1000.0 + i  # type: ignore[misc]
+        def price_fn(i: int) -> float:
+            return 1000.0 + i
     return [Bar(ts_ms=start_ms + i * _DAY_MS, close=price_fn(i)) for i in range(n)]
 
 

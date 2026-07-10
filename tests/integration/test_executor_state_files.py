@@ -3,11 +3,15 @@ from __future__ import annotations
 import pytest
 
 from execution import executor_live
+from execution.log_utils import get_logger
 
 pytestmark = pytest.mark.integration
 
 
-def test_pub_tick_writes_state(monkeypatch):
+def test_pub_tick_writes_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        executor_live, "_PUB_TICK_HEARTBEAT_LOG", get_logger(str(tmp_path / "pub_tick_heartbeat.jsonl"))
+    )
     nav_values = []
     positions_values = []
     synced_values = []

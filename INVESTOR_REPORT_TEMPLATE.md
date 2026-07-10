@@ -1,0 +1,178 @@
+# INVESTOR REPORT TEMPLATE
+
+**Cadence:** Weekly (every Monday, covering the prior Mon–Sun period)  
+**Distribution:** Email + Telegram (when enabled)  
+**Author:** Fund operator — do not auto-generate without human review of every metric  
+**Last updated:** 2026-06-05
+
+---
+
+## How to generate source data
+
+Before filling in the template, pull the canonical figures:
+
+```bash
+# Current NAV and AUM
+python -m json.tool logs/state/nav.json
+
+# Drawdown and risk mode
+python -m json.tool logs/state/risk_snapshot.json
+
+# Open positions
+python -m json.tool logs/state/positions_state.json
+
+# Router quality (slippage, fill ratio)
+python -m json.tool logs/state/router_health.json
+
+# Last 10 executed orders  (JSONL = one JSON object per line — pipe each line separately)
+tail -10 logs/execution/orders_executed.jsonl | while IFS= read -r line; do echo "$line" | python -m json.tool; echo; done
+
+# NAV history for the week  (nav_log.json is a single JSON array — slice it with Python)
+python3 - <<'EOF'
+import json, time
+with open("logs/nav_log.json") as f:
+    entries = json.load(f)
+week_ago = time.time() - 7 * 86400
+# entries use key "t" (unix timestamp), not "ts"
+week = [e for e in entries if e.get("t", 0) >= week_ago]
+print(f"{len(week)} points over last 7 days")
+print("First:", week[0] if week else None)
+print("Last:", week[-1] if week else None)
+EOF
+```
+
+---
+
+## Report Template
+
+---
+
+**[FUND NAME] — Weekly Update**  
+**Period:** [YYYY-MM-DD] to [YYYY-MM-DD]  
+**Report date:** [YYYY-MM-DD]  
+**Report #:** [N]
+
+---
+
+### 1. NAV & AUM Summary
+
+| Metric | Value |
+|--------|-------|
+| Opening NAV (trading) | $XX,XXX.XX |
+| Closing NAV (trading) | $XX,XXX.XX |
+| Net change | +/- $X,XXX.XX (+/- X.XX%) |
+| AUM (trading + treasury) | $XX,XXX.XX |
+| Treasury holdings (off-exchange) | BTC: X.XXXX, ETH: X.XXXX, USDC: $X,XXX |
+| Unrealized PnL (open positions) | +/- $X,XXX.XX |
+| Inception baseline NAV | $10,760.00 |
+| Cumulative return (from inception) | +/- X.XX% |
+
+*NAV reflects Binance UM Futures equity only. AUM includes off-exchange treasury.*
+
+---
+
+### 2. Risk Metrics
+
+| Metric | Value | Limit |
+|--------|-------|-------|
+| Week drawdown | X.XX% | 3% weekly loss |
+| Peak-to-trough drawdown | X.XX% | 30% max DD |
+| Current risk mode | OK / WARN / DEFENSIVE / HALTED | — |
+| Days in DEFENSIVE or HALTED | N | — |
+| Max leverage used (week) | X.X× | 4× |
+
+---
+
+### 3. Execution Summary
+
+| Metric | Value |
+|--------|-------|
+| Total orders placed | N |
+| Orders filled | N (XX%) |
+| Orders vetoed by risk/doctrine | N |
+| Avg slippage (bps) | X.X |
+| Avg fill ratio | XX% |
+| TWAP orders | N |
+| Forced exits (SEATBELT / CRISIS) | N |
+
+---
+
+### 4. Trade Log (last 10 fills)
+
+| # | Symbol | Side | Size (USD) | Entry price | Exit price | Net PnL | Hold time | Exit reason |
+|---|--------|------|-----------|-------------|------------|---------|-----------|-------------|
+| 1 | | | | | | | | |
+| … | | | | | | | | |
+
+*Source: `logs/execution/orders_executed.jsonl`*
+
+---
+
+### 5. Strategy Performance
+
+| Strategy | Trades | Win rate | Avg PnL/trade | Contribution to NAV |
+|----------|--------|----------|---------------|---------------------|
+| btc_micro | N | XX% | +/- $XX | +/- X.XX% |
+| eth_micro | N | XX% | +/- $XX | +/- X.XX% |
+| (others) | | | | |
+
+---
+
+### 6. Regime & Signal Environment
+
+| Asset | Dominant regime | Avg confidence | Signal direction |
+|-------|----------------|----------------|-----------------|
+| BTCUSDT | TREND_UP / TREND_DOWN / MEAN_REVERT / BREAKOUT / CHOPPY / CRISIS | X.XX | LONG / SHORT / FLAT |
+| ETHUSDT | | | |
+
+Notable regime transitions this week: [describe any CRISIS_OVERRIDE or major flip events]
+
+---
+
+### 7. Operational Notes
+
+- System uptime this week: XX.X%
+- Unplanned restarts: N
+- Telegram alerts fired: N
+- Any manual interventions: [describe or "none"]
+- Config changes made this week: [describe or "none"]
+
+---
+
+### 8. Open Positions (as of report date)
+
+| Symbol | Side | Size (USD) | Entry price | Current price | Unrealized PnL | Age (bars) |
+|--------|------|-----------|-------------|---------------|----------------|-----------|
+| | | | | | | |
+
+---
+
+### 9. Next Week Focus
+
+- [ ] [Planned operational work — e.g., audit item, config change, strategy addition]
+- [ ] [Risk item to monitor]
+- [ ] [Any investor communication planned]
+
+---
+
+### 10. Disclaimers
+
+*This report is for informational purposes only and does not constitute investment advice. Past performance is not indicative of future results. The fund is currently operating in testnet mode; no real capital is at risk in the live exchange environment until the investor-readiness checklist in `PROJECT_BRIEF.md` is completed. All NAV figures are estimates based on mark prices at the time of the report and may differ from actual liquidation values. Crypto futures carry significant risk including the potential for total loss of invested capital.*
+
+---
+
+*Report generated by: [name]*  
+*Reviewed by: [name]*  
+*Sent to: [distribution list]*
+
+---
+
+## Filling-in Guidelines
+
+1. **Never estimate or interpolate** NAV — always pull from `logs/state/nav.json`. If the file is stale, note it explicitly.
+2. **Drawdown from inception peak**, not just the weekly period.
+3. **Win rate** = trades closed in profit / total closed trades. Do not include open positions.
+4. **Slippage** = average of `(fill_price - expected_price) / expected_price` across all fills, in basis points.
+5. **Operational notes** must mention any unplanned restarts or manual supervisor interventions.
+6. **Disclaimers** section is non-negotiable — always include verbatim.
+7. If any metric is unavailable (log gap, service outage), write `N/A — [reason]`. Do not leave blanks or substitute 0.

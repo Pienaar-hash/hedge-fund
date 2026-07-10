@@ -1,4 +1,4 @@
-PYTHON ?= python
+PYTHON ?= $(shell if [ -x venv/bin/python ]; then echo venv/bin/python; else echo python; fi)
 
 .PHONY: smoke
 smoke:
@@ -6,19 +6,29 @@ smoke:
 
 .PHONY: test
 test:
-	@PYTHONPATH=. pytest tests/unit tests/integration -q
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/unit tests/integration tests/dashboard tests/scripts -q
 
 .PHONY: test-fast
 test-fast:
-	@PYTHONPATH=. pytest tests/unit tests/integration -m "not runtime and not legacy" -q
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/unit tests/integration tests/dashboard tests/scripts -m "not runtime and not legacy" -q
 
 .PHONY: test-runtime
 test-runtime:
-	@PYTHONPATH=. pytest tests/integration -m "runtime" -q
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/integration -m "runtime" -q
+
+.PHONY: test-research
+test-research:
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/research -q
 
 .PHONY: test-all
 test-all:
-	@PYTHONPATH=. pytest -q
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/unit tests/integration tests/dashboard tests/scripts tests/research tests/legacy -q
+
+.PHONY: cov-core
+cov-core:
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/unit tests/integration tests/dashboard tests/scripts \
+		--cov=execution --cov=dashboard --cov=prediction --cov=treasury \
+		--cov-report=term --cov-report=xml:coverage-core.xml -q
 
 .PHONY: lint
 lint:

@@ -452,8 +452,25 @@ class TestIntentLogging:
 class TestTrendGenerator:
     """Tests for TREND head generator."""
 
+    def test_generates_non_inverted_sides_directly(self):
+        """Positive scores go long and negative scores go short for normal symbols."""
+        cfg = HydraHeadConfig(name="TREND", enabled=True, direction="both")
+        hybrid_scores = {"SOLUSDT": 0.7, "ADAUSDT": -0.6}
+
+        intents = generate_trend_intents(
+            symbols=["SOLUSDT", "ADAUSDT"],
+            hybrid_scores=hybrid_scores,
+            cerberus_multiplier=1.0,
+            head_cfg=cfg,
+            nav_usd=10000,
+        )
+
+        assert len(intents) == 2
+        assert any(i.symbol == "SOLUSDT" and i.side == "long" for i in intents)
+        assert any(i.symbol == "ADAUSDT" and i.side == "short" for i in intents)
+
     def test_generates_intents_from_scores(self):
-        """Test intent generation from hybrid scores."""
+        """Explicit inversion map still flips BTC/ETH TREND direction."""
         cfg = HydraHeadConfig(name="TREND", enabled=True, direction="both")
         hybrid_scores = {"BTCUSDT": 0.7, "ETHUSDT": -0.6, "SOLUSDT": 0.05}
 

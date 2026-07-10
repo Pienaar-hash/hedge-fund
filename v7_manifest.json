@@ -319,6 +319,62 @@
         "meta": "Dict - sentinel regime, universe size, config echoes"
       }
     },
+    "funding_rate_extremes_180d_2h": {
+      "path": "logs/state/funding_rate_extremes_180d_2h.json",
+      "owner": "research",
+      "update_frequency": "manual",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Research output from funding_rate_extremes.py for 180-day, 2h horizon analysis"
+    },
+    "funding_rate_extremes_180d_4h": {
+      "path": "logs/state/funding_rate_extremes_180d_4h.json",
+      "owner": "research",
+      "update_frequency": "manual",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Research output from funding_rate_extremes.py for 180-day, 4h horizon analysis"
+    },
+    "funding_rate_extremes_180d_4h_extreme": {
+      "path": "logs/state/funding_rate_extremes_180d_4h_extreme.json",
+      "owner": "research",
+      "update_frequency": "manual",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Research output from funding_rate_extremes.py for 180-day, 4h extreme-signal analysis"
+    },
+    "funding_rate_extremes_180d_8h": {
+      "path": "logs/state/funding_rate_extremes_180d_8h.json",
+      "owner": "research",
+      "update_frequency": "manual",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Research output from funding_rate_extremes.py for 180-day, 8h horizon analysis"
+    },
+    "shadow_soak_state": {
+      "path": "logs/state/shadow_soak_state.json",
+      "owner": "research",
+      "update_frequency": "manual",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Phase 5 shadow soak observer summary consumed by research dashboards"
+    },
+    "signal_causality_audit": {
+      "path": "logs/state/signal_causality_audit.json",
+      "owner": "research",
+      "update_frequency": "manual",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Primary signal-outcome causality audit report emitted by research.signal_causality_audit"
+    },
+    "signal_causality_audit_signflip": {
+      "path": "logs/state/signal_causality_audit_signflip.json",
+      "owner": "research",
+      "update_frequency": "manual",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Counterfactual sign-flip causality audit report emitted by research.signal_causality_audit"
+    },
     "cerberus_state": {
       "path": "logs/state/cerberus_state.json",
       "owner": "executor",
@@ -720,9 +776,11 @@
     "orders_executed": {
       "path": "logs/execution/orders_executed.jsonl",
       "owner": "executor",
-      "description": "Confirmed filled orders \u2014 canonical trade record",
+      "description": "Exchange lifecycle event log containing order_ack, order_fill, and order_close events; primary local record for acknowledged and filled orders, with known crash-window gaps unless startup reconciliation is enabled.",
       "optional": true,
-      "lifecycle": "runtime_generated"
+      "lifecycle": "runtime_generated",
+      "event_types": ["order_ack", "order_fill", "order_close", "reconciliation_summary"],
+      "known_gaps": "crash-window: if executor restarts after order_ack but before order_fill is written, the fill is missing until startup_reconciliation.reconcile_unresolved_acks() backfills it"
     },
     "position_state_log": {
       "path": "logs/execution/position_state.jsonl",
@@ -765,6 +823,14 @@
       "description": "Sync heartbeat events for liveness monitoring",
       "optional": true,
       "lifecycle": "runtime_generated"
+    },
+    "pub_tick_heartbeat": {
+      "path": "logs/execution/pub_tick_heartbeat.jsonl",
+      "owner": "executor",
+      "description": "Diagnostic boundary trace for _pub_tick() (CARD-HEDGE-PUBTICK-BOUNDARY-HEARTBEAT-INSTRUMENTATION-001) — proves whether the state-publication call is reached, entered, completed, or abandoned each loop; never used as a trading-authority input.",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "event_types": ["CALL_REACHED", "ENTERED", "LEDGER_REBUILD_STARTED", "LEDGER_REBUILD_COMPLETED", "COMPLETED", "FAILED", "ABORTED"]
     },
     "telegram_heartbeat": {
       "path": "logs/telegram_heartbeat.jsonl",

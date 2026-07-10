@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from utils.jsonl_tail import file_signature, read_tail_jsonl
 
 
 TAIL_MAX_BYTES = 128 * 1024
@@ -29,43 +30,19 @@ _SNAPSHOT_CACHE: Tuple[
 ] | None = None
 
 
-def _file_signature(path: Path) -> Tuple[float, int]:
-    try:
-        stat = path.stat()
-        return (stat.st_mtime, stat.st_size)
-    except FileNotFoundError:
-        return (0.0, 0)
-
-
 def _load_tail_jsonl(path: Path, *, max_lines: int = TAIL_MAX_LINES) -> List[Dict[str, Any]]:
-    sig = _file_signature(path)
+    sig = file_signature(path)
     cached = _TAIL_CACHE.get(path)
     if cached and cached[0] == sig[0] and cached[1] == sig[1]:
         return cached[2]
     if sig[1] == 0:
         _TAIL_CACHE[path] = (sig[0], sig[1], [])
         return []
-    try:
-        with path.open("rb") as handle:
-            size = sig[1]
-            seek = max(0, size - TAIL_MAX_BYTES)
-            handle.seek(seek)
-            chunk = handle.read()
-    except FileNotFoundError:
-        _TAIL_CACHE.pop(path, None)
-        return []
-    lines = chunk.decode(errors="ignore").splitlines()
-    records: List[Dict[str, Any]] = []
-    for line in lines[-max_lines:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(obj, dict):
-            records.append(obj)
+    records = read_tail_jsonl(
+        path,
+        max_bytes=TAIL_MAX_BYTES,
+        max_lines=max_lines,
+    )
     _TAIL_CACHE[path] = (sig[0], sig[1], records)
     return records
 
@@ -322,10 +299,10 @@ def build_mirror_payloads(log_root: Optional[Path] = None) -> MirrorPayloads:
     signal_metrics_path = exec_dir / "signal_metrics.jsonl"
 
     signatures = (
-        _file_signature(attempts_path),
-        _file_signature(executed_path),
-        _file_signature(risk_path),
-        _file_signature(signal_metrics_path),
+        file_signature(attempts_path),
+        file_signature(executed_path),
+        file_signature(risk_path),
+        file_signature(signal_metrics_path),
     )
     if _SNAPSHOT_CACHE and _SNAPSHOT_CACHE[0] == signatures:
         return _SNAPSHOT_CACHE[1]

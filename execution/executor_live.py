@@ -56,6 +56,24 @@ from execution.universe_resolver import (
 from execution.runtime_config import load_runtime_config
 from execution.versioning import read_version
 from execution import telegram_alerts_v7
+from execution.doctrine_bridge import (
+    collect_doctrine_dependency_health,
+    resolve_doctrine_entry_inputs,
+)
+from execution.executor_shadow_services import (
+    maybe_emit_execution_health_snapshot as _shadow_maybe_emit_execution_health_snapshot,
+    maybe_run_pipeline_v6_compare as _shadow_maybe_run_pipeline_v6_compare,
+    maybe_run_pipeline_v6_shadow as _shadow_maybe_run_pipeline_v6_shadow,
+    maybe_run_pipeline_v6_shadow_heartbeat as _shadow_maybe_run_pipeline_v6_shadow_heartbeat,
+)
+from execution.executor_startup import (
+    acquire_startup_lock as _startup_acquire_startup_lock,
+    check_startup_twap_recovery as _startup_check_startup_twap_recovery,
+    clean_testnet_caches as _startup_clean_testnet_caches,
+    run_order_reconciliation as _startup_run_order_reconciliation,
+    startup_position_check as _startup_position_check_impl,
+    sync_dry_run as _startup_sync_dry_run,
+)
 from execution.utils.execution_health import record_execution_error, summarize_atr_regimes
 from execution.utils.metrics import router_effectiveness_7d
 from execution import router_metrics
@@ -77,8 +95,9 @@ from execution.loop_timing import (
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(override=True)
-    load_dotenv("/root/hedge-fund/.env", override=True)
+    # Respect explicit shell exports for runtime safety switches like DRY_RUN.
+    load_dotenv(override=False)
+    load_dotenv("/root/hedge-fund/.env", override=False)
 except Exception:
     pass
 
@@ -947,26 +966,23 @@ def _maybe_emit_risk_snapshot(force: bool = False) -> None:
 
 def _maybe_emit_execution_health_snapshot(force: bool = False) -> None:
     global _LAST_EXEC_HEALTH_PUBLISH, _LAST_EXECUTION_HEALTH
-    now = time.time()
-    if not force and (now - _LAST_EXEC_HEALTH_PUBLISH) < _HEALTH_PUBLISH_INTERVAL_S:
-        return
+    doctrine_inputs = None
     try:
-        snapshot = _collect_execution_health()
+        doctrine_inputs = collect_doctrine_dependency_health()
     except Exception as exc:
-        LOG.debug("[metrics] execution_health_collect_failed: %s", exc)
-        return
-    try:
-        snapshot.setdefault("type", "execution_health")
-        snapshot.setdefault("context", "executor")
-        EXEC_HEALTH_LOG.write(snapshot)
-    except Exception as exc:
-        LOG.debug("[metrics] execution_health_log_failed: %s", exc)
-    try:
-        write_execution_health_state(snapshot)
-    except Exception as exc:
-        LOG.debug("[metrics] execution_health_state_write_failed: %s", exc)
-    _LAST_EXECUTION_HEALTH = snapshot
-    _LAST_EXEC_HEALTH_PUBLISH = now
+        LOG.debug("[metrics] doctrine_inputs_collect_failed: %s", exc)
+    _LAST_EXEC_HEALTH_PUBLISH, snapshot = _shadow_maybe_emit_execution_health_snapshot(
+        force=force,
+        last_publish_ts=_LAST_EXEC_HEALTH_PUBLISH,
+        interval_s=_HEALTH_PUBLISH_INTERVAL_S,
+        collect_execution_health=_collect_execution_health,
+        exec_health_log=EXEC_HEALTH_LOG,
+        write_execution_health_state=write_execution_health_state,
+        logger=LOG,
+        doctrine_inputs=doctrine_inputs,
+    )
+    if snapshot is not None:
+        _LAST_EXECUTION_HEALTH = snapshot
 
 
 def _maybe_emit_v7_kpis(force: bool = False) -> None:
@@ -1215,7 +1231,7 @@ from execution.order_dispatch import (
     meta_float as _meta_float,
     DispatchRetryContext as _DispatchRetryContext,
 )
-from execution import pipeline_v6_shadow
+from execution import pipeline_v6_compare, pipeline_v6_shadow
 # v7.X Doctrine Kernel — Supreme Trading Authority
 try:
     from execution.doctrine_kernel import (
@@ -1667,7 +1683,7 @@ _executor_lock_fd: int | None = None
 def _acquire_startup_lock() -> None:
     """Acquire PID lock. Called from main(), not at import time."""
     global _executor_lock_fd
-    _executor_lock_fd = acquire_executor_lock()
+    _executor_lock_fd = _startup_acquire_startup_lock(acquire_executor_lock)
 
 
 # ── AUDIT-1.3c: TWAP crash recovery check ────────────────────────────
@@ -1676,20 +1692,13 @@ from execution.order_router import check_twap_recovery  # noqa: E402
 
 def _check_startup_twap_recovery() -> None:
     """Check for incomplete TWAP state. Called from main(), not at import time."""
-    _stale_twap = check_twap_recovery()
-    if _stale_twap:
-        LOG.warning(
-            "[executor] TWAP_RECOVERY: incomplete TWAP found on startup — "
-            "symbol=%s side=%s completed=%d/%d started_ts=%s. "
-            "State file cleared; operator should reconcile.",
-            _stale_twap.get("symbol"),
-            _stale_twap.get("side"),
-            len(_stale_twap.get("completed_slices", [])),
-            _stale_twap.get("total_slices"),
-            _stale_twap.get("started_ts"),
-        )
-        from execution.order_router import _twap_state_clear  # noqa: E402
-        _twap_state_clear()
+    from execution.order_router import _twap_state_clear  # noqa: E402
+
+    _startup_check_startup_twap_recovery(
+        check_twap_recovery=check_twap_recovery,
+        clear_twap_state=_twap_state_clear,
+        logger=LOG,
+    )
 
 INTENT_TEST = _truthy_env("INTENT_TEST", "0")
 EXTERNAL_SIGNAL = _truthy_env("EXTERNAL_SIGNAL", "0")
@@ -1764,51 +1773,31 @@ except Exception as exc:
 def _sync_dry_run() -> None:
     global DRY_RUN
     current = _read_dry_run_flag()
-    if current != DRY_RUN:
-        LOG.info("[executor] DRY_RUN flag changed -> %s", current)
-        DRY_RUN = current
-    set_dry_run(DRY_RUN)
-    # v7.9-CW: Calibration window episode-cap check
     try:
         from execution.calibration_window import check_calibration_window
-        cw_status = check_calibration_window()
-        if cw_status.get("halted"):
-            LOG.info(
-                "[calibration_window] episode cap reached (%d/%d) — KILL_SWITCH active",
-                cw_status.get("episodes_completed", 0),
-                cw_status.get("episode_cap", 0),
-            )
     except Exception:
-        pass  # fail-open: calibration check must never block executor
-    # v8.0: Activation Window — full-stack integrity check
+        check_calibration_window = None
     try:
         from execution.activation_window import check_activation_window
-        _aw_status = check_activation_window()
-        if _aw_status.get("halted"):
-            LOG.info(
-                "[activation_window] HALT — %s (day %.1f/%d)",
-                _aw_status.get("halt_reason", "unknown"),
-                _aw_status.get("elapsed_days", 0),
-                _aw_status.get("duration_days", 14),
-            )
     except Exception:
-        pass  # fail-open: activation check must never block executor
+        check_activation_window = None
+    DRY_RUN = _startup_sync_dry_run(
+        current=current,
+        previous=DRY_RUN,
+        logger=LOG,
+        set_dry_run=set_dry_run,
+        check_calibration_window=check_calibration_window,
+        check_activation_window=check_activation_window,
+    )
 
 
 def _clean_testnet_caches() -> None:
     flag = str(os.getenv("BINANCE_TESTNET", "0")).strip().lower()
-    if flag not in {"1", "true", "yes", "on"}:
-        return
-    cache_paths = [
-        Path(repo_root) / "logs" / "cache" / "risk_state.json",
-        Path(repo_root) / "logs" / "cache" / "nav_confirmed.json",
-    ]
-    for path in cache_paths:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            LOG.debug("[executor][testnet] cache cleanup skipped for %s", path)
-    LOG.info("[executor][testnet] cleaned stale risk/nav cache for fresh start")
+    _startup_clean_testnet_caches(
+        repo_root=repo_root,
+        testnet_enabled=flag in {"1", "true", "yes", "on"},
+        logger=LOG,
+    )
 
 
 def _normalize_intent(intent: Mapping[str, Any]) -> Dict[str, Any]:
@@ -2170,75 +2159,14 @@ def _sync_tp_sl_registry(positions: list) -> None:
 
 
 def _startup_position_check(client: Any) -> None:
-    if client is None or getattr(client, "is_stub", False):
-        LOG.info("[startup-sync] unable to check positions (client unavailable)")
-        return
-    
-    # Allow skipping the blocking check if ALLOW_OPEN_POSITIONS=1
-    allow_open = os.getenv("ALLOW_OPEN_POSITIONS", "0") == "1"
-    
-    LOG.info("[startup-sync] checking open positions …")
-    retry_interval = 30
-    first_warning = True
-
-    # AUDIT-1.3d: verify exchange connectivity before trusting position data.
-    # get_live_positions() returns [] on API failure, which would falsely
-    # clear TP/SL state.  We try a raw account call first; if it raises,
-    # we block startup until the exchange is reachable.
-    _exchange_retries = 0
-    _MAX_EXCHANGE_RETRIES = 5
-    while True:
-        try:
-            client.get_position_risk()  # probe — result discarded
-            break
-        except Exception as exc:
-            _exchange_retries += 1
-            if _exchange_retries > _MAX_EXCHANGE_RETRIES:
-                raise RuntimeError(
-                    f"[startup-sync] AUDIT-1.3d: exchange unreachable after "
-                    f"{_MAX_EXCHANGE_RETRIES} retries — cannot reconcile positions"
-                ) from exc
-            LOG.warning(
-                "[startup-sync] exchange probe failed (attempt %d/%d): %s — retrying in %ds",
-                _exchange_retries, _MAX_EXCHANGE_RETRIES, exc, retry_interval,
-            )
-            time.sleep(retry_interval)
-
-    while True:
-        live = get_live_positions(client)
-        if not live:
-            if not first_warning:
-                LOG.info("[startup-sync] all positions cleared -> resuming trading loop")
-            else:
-                LOG.info("[startup-sync] no open positions detected")
-            # V7.4_C2: Sync registry even when no positions (cleanup stale entries)
-            _sync_tp_sl_registry([])
-            return
-
-        LOG.warning(
-            "[startup-sync] open positions detected (n=%d) -> trading init paused; will retry every %ss",
-            len(live),
-            retry_interval,
-        )
-        for pos in live:
-            LOG.warning(
-                "[startup-sync] %s side=%s amt=%.6f entry=%.4f upnl=%.2f",
-                pos.get("symbol"),
-                pos.get("positionSide"),
-                pos.get("positionAmt"),
-                pos.get("entryPrice"),
-                pos.get("unRealizedProfit"),
-            )
-        
-        # If ALLOW_OPEN_POSITIONS=1, proceed with existing positions
-        if allow_open:
-            LOG.info("[startup-sync] ALLOW_OPEN_POSITIONS=1 -> proceeding with %d open positions", len(live))
-            # V7.4_C2: Sync TP/SL registry with current positions
-            _sync_tp_sl_registry(live)
-            return
-        
-        first_warning = False
-        time.sleep(retry_interval)
+    _startup_position_check_impl(
+        client,
+        logger=LOG,
+        get_live_positions=get_live_positions,
+        sync_tp_sl_registry=_sync_tp_sl_registry,
+        allow_open_positions=os.getenv("ALLOW_OPEN_POSITIONS", "0") == "1",
+        sleep_fn=time.sleep,
+    )
 
 
 def _maybe_run_internal_screener(state: ExecutorState) -> None:
@@ -2744,124 +2672,62 @@ def _maybe_run_pipeline_v6_shadow(
     positions: Iterable[Mapping[str, Any]],
     sizing_cfg: Mapping[str, Any],
 ) -> None:
-    if not PIPELINE_V6_SHADOW_ENABLED:
-        return
-    try:
-        nav_state = dict(nav_snapshot or {})
-        nav_state.setdefault("nav_usd", nav)
-        nav_state.setdefault("portfolio_gross_usd", current_gross)
-        nav_state.setdefault("symbol_open_qty", sym_open_qty)
-        signal_payload = {
-            "side": side,
-            "notional": gross_target,
-            "price": float(intent.get("price") or 0.0),
-            "leverage": lev,
-            "tier": tier_name,
-            "open_positions_count": open_positions_count,
-            "tier_gross_notional": current_tier_gross,
-            "current_gross_notional": current_gross,
-            "symbol_open_qty": sym_open_qty,
-            "signal_strength": intent.get("signal_strength") or intent.get("confidence"),
-        }
-        positions_state = {"positions": list(positions or [])}
-        result = pipeline_v6_shadow.run_pipeline_v6_shadow(
-            symbol,
-            signal_payload,
-            nav_state,
-            positions_state,
-            _RISK_CFG,
-            _PAIRS_CFG,
-            sizing_cfg,
-            risk_engine=_get_risk_engine_v6() if RISK_ENGINE_V6_ENABLED else None,
-        )
-        _record_shadow_decision(result)
-    except Exception as exc:
-        LOG.debug("[shadow] pipeline_v6_failed symbol=%s err=%s", symbol, exc)
+    _shadow_maybe_run_pipeline_v6_shadow(
+        enabled=PIPELINE_V6_SHADOW_ENABLED,
+        symbol=symbol,
+        side=side,
+        gross_target=gross_target,
+        nav=nav,
+        sym_open_qty=sym_open_qty,
+        current_gross=current_gross,
+        open_positions_count=open_positions_count,
+        tier_name=tier_name,
+        current_tier_gross=current_tier_gross,
+        lev=lev,
+        intent=intent,
+        nav_snapshot=nav_snapshot,
+        positions=positions,
+        sizing_cfg=sizing_cfg,
+        risk_cfg=_RISK_CFG,
+        pairs_cfg=_PAIRS_CFG,
+        run_pipeline_v6_shadow=pipeline_v6_shadow.run_pipeline_v6_shadow,
+        record_shadow_decision=_record_shadow_decision,
+        risk_engine=_get_risk_engine_v6() if RISK_ENGINE_V6_ENABLED else None,
+        logger=LOG,
+    )
 
 
 def _maybe_run_pipeline_v6_shadow_heartbeat() -> None:
     global _LAST_PIPELINE_V6_HEARTBEAT
-    if not PIPELINE_V6_SHADOW_ENABLED:
-        return
-    if not _LAST_NAV_STATE or not _LAST_POSITIONS_STATE:
-        return
-    now = time.time()
-    if (now - _LAST_PIPELINE_V6_HEARTBEAT) < _PIPELINE_V6_HEARTBEAT_INTERVAL_S:
-        return
-    raw_positions = _LAST_POSITIONS_STATE.get("items") or _LAST_POSITIONS_STATE.get("positions") or []
-    positions_rows = list(raw_positions)
-    symbol = _select_shadow_symbol(positions_rows)
-    if not symbol:
-        return
-    nav_state = dict(_LAST_NAV_STATE)
-    nav_state.setdefault(
-        "nav_usd",
-        float(nav_state.get("nav_usd") or nav_state.get("nav") or 0.0),
+    sizing_cfg = _RISK_CFG.get("sizing", {}) if isinstance(_RISK_CFG, Mapping) else {}
+    _LAST_PIPELINE_V6_HEARTBEAT = _shadow_maybe_run_pipeline_v6_shadow_heartbeat(
+        enabled=PIPELINE_V6_SHADOW_ENABLED,
+        last_nav_state=_LAST_NAV_STATE,
+        last_positions_state=_LAST_POSITIONS_STATE,
+        last_heartbeat_ts=_LAST_PIPELINE_V6_HEARTBEAT,
+        interval_s=_PIPELINE_V6_HEARTBEAT_INTERVAL_S,
+        select_shadow_symbol=_select_shadow_symbol,
+        sizing_cfg=sizing_cfg,
+        risk_cfg=_RISK_CFG,
+        pairs_cfg=_PAIRS_CFG,
+        run_pipeline_v6_shadow=pipeline_v6_shadow.run_pipeline_v6_shadow,
+        record_shadow_decision=_record_shadow_decision,
+        record_execution_error=record_execution_error,
+        risk_engine=_get_risk_engine_v6() if RISK_ENGINE_V6_ENABLED else None,
+        logger=LOG,
     )
-    nav_state.setdefault("portfolio_gross_usd", nav_state.get("portfolio_gross_usd") or 0.0)
-    nav_state.setdefault("symbol_open_qty", 0.0)
-    signal_payload = {
-        "side": "BUY",
-        "notional": 0.0,
-        "price": 0.0,
-        "leverage": 1.0,
-        "tier": None,
-        "open_positions_count": len(positions_rows),
-        "tier_gross_notional": 0.0,
-        "current_gross_notional": nav_state.get("portfolio_gross_usd") or 0.0,
-        "symbol_open_qty": 0.0,
-        "signal_strength": 0.0,
-    }
-    try:
-        sizing_cfg = _RISK_CFG.get("sizing", {}) if isinstance(_RISK_CFG, Mapping) else {}
-        result = pipeline_v6_shadow.run_pipeline_v6_shadow(
-            symbol,
-            signal_payload,
-            nav_state,
-            {"positions": positions_rows},
-            _RISK_CFG,
-            _PAIRS_CFG,
-            sizing_cfg,
-            risk_engine=_get_risk_engine_v6() if RISK_ENGINE_V6_ENABLED else None,
-        )
-        heartbeat_result = dict(result)
-        heartbeat_result["heartbeat"] = True
-        _record_shadow_decision(heartbeat_result)
-        _LAST_PIPELINE_V6_HEARTBEAT = now
-    except Exception as exc:
-        LOG.debug("[shadow] pipeline_v6_heartbeat_failed symbol=%s err=%s", symbol, exc)
-        try:
-            record_execution_error(
-                "pipeline_shadow",
-                symbol=symbol,
-                message="heartbeat_failed",
-                context={"error": str(exc)},
-            )
-        except Exception:
-            pass
 
 
 def _maybe_run_pipeline_v6_compare(force: bool = False) -> None:
     global _LAST_PIPELINE_V6_COMPARE
-    now = time.time()
-    if not force and (now - _LAST_PIPELINE_V6_COMPARE) < _PIPELINE_V6_COMPARE_INTERVAL_S:
-        return
-    try:
-        from execution.intel import pipeline_v6_compare
-
-        pipeline_v6_compare.compare_pipeline_v6()
-        _LAST_PIPELINE_V6_COMPARE = now
-    except Exception as exc:
-        LOG.debug("[shadow] pipeline_v6_compare_failed: %s", exc)
-        try:
-            record_execution_error(
-                "pipeline_compare",
-                symbol=None,
-                message="compare_failed",
-                context={"error": str(exc)},
-            )
-        except Exception:
-            pass
+    _LAST_PIPELINE_V6_COMPARE = _shadow_maybe_run_pipeline_v6_compare(
+        force=force,
+        last_compare_ts=_LAST_PIPELINE_V6_COMPARE,
+        interval_s=_PIPELINE_V6_COMPARE_INTERVAL_S,
+        compare_pipeline_v6=pipeline_v6_compare.compare_pipeline_v6,
+        record_execution_error=record_execution_error,
+        logger=LOG,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3223,22 +3089,45 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
     # Build execution snapshot
     exec_state = _load_execution_quality_state()
     execution = build_execution_snapshot_from_state(exec_state)
-    
-    # Build portfolio snapshot (minimal — head budgets would come from Hydra)
-    portfolio = DoctrinePortfolioSnapshot(
-        head_budget_remaining={head: 1.0},  # TODO: Wire to Hydra head budgets
-        total_exposure_pct=getattr(_RISK_STATE, "gross_exposure_pct", 0.0),
-        drawdown_pct=getattr(_RISK_STATE, "current_dd_pct", 0.0),
-        risk_mode=getattr(_RISK_STATE, "risk_mode", "OK"),
+
+    doctrine_inputs = resolve_doctrine_entry_inputs(
+        symbol=symbol,
+        head=head,
+        total_exposure_pct=float(getattr(_RISK_STATE, "gross_exposure_pct", 0.0) or 0.0),
+        drawdown_pct=float(getattr(_RISK_STATE, "current_dd_pct", 0.0) or 0.0),
+        risk_mode=str(getattr(_RISK_STATE, "risk_mode", "OK") or "OK"),
     )
-    
+    if doctrine_inputs.degraded:
+        degraded = doctrine_inputs.degraded_details or {}
+        log_doctrine_event(
+            "ENTRY_VETO",
+            symbol,
+            DoctrineVerdict.VETO_ENVIRONMENT_DEGRADED,
+            {
+                "intent": intent,
+                "dependency_code": degraded.get("code"),
+                "dependency_reason": degraded.get("reason"),
+                "doctrine_inputs": doctrine_inputs.telemetry,
+            },
+        )
+        LOG.warning(
+            "[doctrine] VETO symbol=%s reason=ENVIRONMENT_DEGRADED code=%s details=%s",
+            symbol,
+            degraded.get("code"),
+            degraded.get("reason"),
+        )
+        return False, "ENVIRONMENT_DEGRADED", degraded
+
+    portfolio = cast(DoctrinePortfolioSnapshot, doctrine_inputs.portfolio)
+    alpha_health = doctrine_inputs.alpha_health
+
     # Call doctrine
     decision = doctrine_entry_verdict(
         regime=regime,
         intent=intent_snap,
         execution=execution,
         portfolio=portfolio,
-        alpha_health=None,  # TODO: Wire to Alpha Decay
+        alpha_health=alpha_health,
     )
     
     # Log the decision with head attribution (Phase A.3)
@@ -3254,6 +3143,8 @@ def _doctrine_gate(intent: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
             "direction": direction,
             "multiplier": decision.composite_multiplier,
             "source_head": head,  # Phase A.3: attribution
+            "head_budget_remaining": doctrine_inputs.telemetry.get("head_budget_remaining"),
+            "alpha_survival_probability": doctrine_inputs.telemetry.get("alpha_survival_probability"),
         },
     )
     
@@ -5671,302 +5562,413 @@ def _persist_spot_state() -> None:
     _write_json_cache(SPOT_STATE_CACHE_PATH, payload)
 
 
-def _pub_tick(state: ExecutorState) -> None:
+# ── Publication heartbeat (CARD-HEDGE-PUBTICK-BOUNDARY-HEARTBEAT-INSTRUMENTATION-001) ──
+# Behavior-neutral diagnostic stream that proves whether _pub_tick() is
+# reached, entered, completed, or abandoned. Never allowed to influence
+# trading, publication cadence, or publication payloads.
+_PUB_TICK_HEARTBEAT_LOG = get_logger("logs/execution/pub_tick_heartbeat.jsonl")
+_PUB_TICK_LAST_COMPLETED_TS: str | None = None
+_PUB_TICK_LAST_COMPLETED_DURATION_MS: float | None = None
+_PUB_TICK_HEARTBEAT_LAST_FAILURE_LOG_TS = 0.0
+_PUB_TICK_HEARTBEAT_FAILURE_LOG_INTERVAL_S = 60.0
+
+
+def _pub_tick_heartbeat(
+    event: str,
+    *,
+    loop_id: int,
+    duration_ms: float | None = None,
+    episode_ledger_due: bool | None = None,
+    episode_ledger_duration_ms: float | None = None,
+    outcome: str | None = None,
+    exception_type: str | None = None,
+    exception_message: str | None = None,
+) -> None:
+    """Emit one heartbeat event for the _pub_tick() publication boundary.
+
+    Fail-open by design: a telemetry write failure must never raise into the
+    caller and is rate-limited to the existing executor log rather than
+    generating a warning storm of its own.
+    """
+    global _PUB_TICK_HEARTBEAT_LAST_FAILURE_LOG_TS
+    try:
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "monotonic_s": time.monotonic(),
+            "event": event,
+            "loop_id": loop_id,
+            "duration_ms": duration_ms,
+            "episode_ledger_due": episode_ledger_due,
+            "episode_ledger_duration_ms": episode_ledger_duration_ms,
+            "last_completed_ts": _PUB_TICK_LAST_COMPLETED_TS,
+            "last_completed_duration_ms": _PUB_TICK_LAST_COMPLETED_DURATION_MS,
+            "outcome": outcome,
+            "exception_type": exception_type,
+            "exception_message": exception_message,
+            "engine_version": _ENGINE_VERSION,
+            "git_sha": _git_commit(),
+        }
+        _PUB_TICK_HEARTBEAT_LOG.write(record)
+    except Exception as exc:
+        now = time.time()
+        if (now - _PUB_TICK_HEARTBEAT_LAST_FAILURE_LOG_TS) >= _PUB_TICK_HEARTBEAT_FAILURE_LOG_INTERVAL_S:
+            _PUB_TICK_HEARTBEAT_LAST_FAILURE_LOG_TS = now
+            LOG.debug("[pub_tick_heartbeat] write_failed: %s", exc)
+
+
+def _pub_tick(state: ExecutorState, loop_id: int = -1) -> None:
     global _LAST_NAV_STATE, _LAST_POSITIONS_STATE
-    if state.last_cycle_ts <= 0:
-        LOG.debug("[pub_tick] last_cycle_ts_uninitialized")
-    nav_val, nav_detail = _compute_nav_with_detail()
-    rows = _collect_rows()
-    _persist_positions_cache(rows)
-    _persist_nav_log(nav_val, rows)
-    _persist_spot_state()
-    now = time.time()
-    now_iso = datetime.now(timezone.utc).isoformat()
-    nav_float = float(nav_val) if nav_val is not None else 0.0
-    nav_payload = {"nav": nav_float, "nav_usd": nav_float, "updated_ts": now_iso}
-    if isinstance(nav_detail, Mapping):
-        nav_payload["nav_detail"] = dict(nav_detail)
-        # Flatten a few helpful fields for dashboard/state readers
-        for key in ("assets", "mark_prices", "nav_mode", "freshness"):
-            if key in nav_detail:
-                nav_payload[key] = nav_detail.get(key)
-    nav_written = False
-    positions_state_written = False
-    positions_snapshot_written = False
-    positions_ledger_written = False
-    risk_written = False
-    scores_written = False
-    diagnostics_written = False
-    synced_written = False
-    binary_lab_written = False
+    global _PUB_TICK_LAST_COMPLETED_TS, _PUB_TICK_LAST_COMPLETED_DURATION_MS
+    _pub_tick_started_monotonic = time.monotonic()
+    _pub_tick_heartbeat("ENTERED", loop_id=loop_id)
+    _pub_tick_terminal_emitted = False
+    _pub_tick_episode_ledger_due = False
+    _pub_tick_episode_ledger_duration_ms: float | None = None
     try:
-        write_nav_state(nav_payload)
-        nav_written = True
-    except Exception as exc:
-        LOG.error("[telemetry] nav_state_write_failed: %s", exc)
-    positions_state_rows = _build_positions_state_rows(rows)
-    positions_state_ts = now_iso
-    positions_state_payload = {
-        "positions": positions_state_rows,
-        "updated_at": positions_state_ts,
-        "updated_ts": positions_state_ts,
-    }
-    try:
-        _write_positions_state(positions_state_rows, updated_ts=positions_state_ts)
-        positions_state_written = True
-    except Exception as exc:
-        LOG.error("[telemetry] positions_state_contract_write_failed: %s", exc)
-    # Only persist non-zero positions; ignore exchange noise entries.
-    filtered_rows = []
-    for r in rows:
+        if state.last_cycle_ts <= 0:
+            LOG.debug("[pub_tick] last_cycle_ts_uninitialized")
+        nav_val, nav_detail = _compute_nav_with_detail()
+        rows = _collect_rows()
+        _persist_positions_cache(rows)
+        _persist_nav_log(nav_val, rows)
+        _persist_spot_state()
+        now = time.time()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        nav_float = float(nav_val) if nav_val is not None else 0.0
+        nav_payload = {"nav": nav_float, "nav_usd": nav_float, "updated_ts": now_iso}
+        if isinstance(nav_detail, Mapping):
+            nav_payload["nav_detail"] = dict(nav_detail)
+            # Flatten a few helpful fields for dashboard/state readers
+            for key in ("assets", "mark_prices", "nav_mode", "freshness"):
+                if key in nav_detail:
+                    nav_payload[key] = nav_detail.get(key)
+        nav_written = False
+        positions_state_written = False
+        positions_snapshot_written = False
+        positions_ledger_written = False
+        risk_written = False
+        scores_written = False
+        diagnostics_written = False
+        synced_written = False
+        binary_lab_written = False
         try:
-            qty = float(r.get("positionAmt") or r.get("qty") or 0.0)
-        except Exception:
-            qty = 0.0
-        if abs(qty) < 1e-9:
-            continue
-        filtered_rows.append(r)
-    # Persist non-zero positions with enriched fields for monitoring/ledger.
-    items = []
-    for r in filtered_rows:
-        qty = r.get("qty") if "qty" in r else r.get("positionAmt")
+            write_nav_state(nav_payload)
+            nav_written = True
+        except Exception as exc:
+            LOG.error("[telemetry] nav_state_write_failed: %s", exc)
+        positions_state_rows = _build_positions_state_rows(rows)
+        positions_state_ts = now_iso
+        positions_state_payload = {
+            "positions": positions_state_rows,
+            "updated_at": positions_state_ts,
+            "updated_ts": positions_state_ts,
+        }
         try:
-            qty = float(qty or 0.0)
-        except Exception:
-            qty = 0.0
-        entry = r.get("entryPrice") or r.get("entry_price") or 0.0
-        mark = r.get("markPrice") or r.get("mark_price") or 0.0
-        try:
-            entry = float(entry)
-        except Exception:
-            entry = 0.0
-        try:
-            mark = float(mark)
-        except Exception:
-            mark = 0.0
-        if not mark:
+            _write_positions_state(positions_state_rows, updated_ts=positions_state_ts)
+            positions_state_written = True
+        except Exception as exc:
+            LOG.error("[telemetry] positions_state_contract_write_failed: %s", exc)
+        # Only persist non-zero positions; ignore exchange noise entries.
+        filtered_rows = []
+        for r in rows:
             try:
-                sym = r.get("symbol")
-                if sym:
-                    mark = float(get_price(f"{sym}USDT"))
+                qty = float(r.get("positionAmt") or r.get("qty") or 0.0)
+            except Exception:
+                qty = 0.0
+            if abs(qty) < 1e-9:
+                continue
+            filtered_rows.append(r)
+        # Persist non-zero positions with enriched fields for monitoring/ledger.
+        items = []
+        for r in filtered_rows:
+            qty = r.get("qty") if "qty" in r else r.get("positionAmt")
+            try:
+                qty = float(qty or 0.0)
+            except Exception:
+                qty = 0.0
+            entry = r.get("entryPrice") or r.get("entry_price") or 0.0
+            mark = r.get("markPrice") or r.get("mark_price") or 0.0
+            try:
+                entry = float(entry)
+            except Exception:
+                entry = 0.0
+            try:
+                mark = float(mark)
             except Exception:
                 mark = 0.0
-        try:
-            pnl = float(r.get("unrealized") or r.get("pnl") or (qty * (mark - entry)))
-        except Exception:
-            pnl = 0.0
-        try:
-            notional = abs(qty * mark)
-        except Exception:
-            notional = 0.0
-        items.append(
-            {
-                "symbol": r.get("symbol"),
-                "side": r.get("positionSide") or r.get("side"),
-                "qty": qty,
-                "entry_price": entry,
-                "mark_price": mark,
-                "pnl": pnl,
-                "leverage": r.get("leverage"),
-                "notional": notional,
-                "ts": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-    positions_payload = {
-        "rows": filtered_rows,
-        "items": items,
-        "positions": positions_state_rows,
-        "updated": now,
-    }
-    try:
-        write_positions_snapshot_state(positions_payload)
-        positions_snapshot_written = True
-    except Exception as exc:
-        LOG.error("[telemetry] positions_snapshot_write_failed: %s", exc)
-    try:
-        from execution.position_ledger import build_position_ledger, build_positions_ledger_state
-
-        ledger = build_position_ledger(POSITIONS_STATE_PATH.parent)
-        ledger_snapshot = build_positions_ledger_state(
-            ledger,
-            updated_at=positions_state_ts,
-            state_dir=POSITIONS_STATE_PATH.parent,
-        )
-        write_positions_ledger_state(ledger_snapshot)
-        positions_ledger_written = True
-    except Exception as exc:
-        LOG.error("[telemetry] positions_ledger_write_failed: %s", exc)
-    risk_payload = _LAST_RISK_SNAPSHOT or {"updated_ts": now_iso, "symbols": []}
-    try:
-        write_risk_snapshot_state(risk_payload)
-        risk_written = True
-    except Exception as exc:
-        LOG.error("[telemetry] risk_snapshot_write_failed: %s", exc)
-    # v7.5_A1: Publish VaR/CVaR and alpha decay state
-    try:
-        positions_for_var = []
-        for r in rows:
-            sym = r.get("symbol")
-            if not sym:
-                continue
-            # Compute notional from qty * markPrice
-            qty = abs(float(r.get("qty") or 0))
-            mark = float(r.get("markPrice") or r.get("mark_price") or 0)
-            notional = qty * mark if mark > 0 else abs(float(r.get("notional") or 0))
-            if notional > 0:
-                positions_for_var.append({"symbol": sym, "notional": notional})
-        compute_and_write_risk_advanced_state(positions_for_var, nav_float)
-    except Exception as exc:
-        LOG.debug("[telemetry] risk_advanced_write_failed: %s", exc)
-    try:
-        symbols_list = [str(r.get("symbol")) for r in rows if r.get("symbol")]
-        compute_and_write_alpha_decay_state(symbols_list)
-    except Exception as exc:
-        LOG.debug("[telemetry] alpha_decay_write_failed: %s", exc)
-    
-    # v7.9_P4: Save Execution Alpha and Quality state
-    try:
-        save_alpha_state()
-    except Exception as exc:
-        LOG.debug("[telemetry] execution_alpha_save_failed: %s", exc)
-    try:
-        # load_minotaur_config requires strategy_cfg argument
-        _strategy_cfg = load_json("config/strategy_config.json") or {}
-        minotaur_cfg = load_minotaur_config(_strategy_cfg) if _ALPHA_HOOKS_AVAILABLE else None
-        if minotaur_cfg:
-            save_quality_state(minotaur_cfg)
-    except Exception as exc:
-        LOG.debug("[telemetry] execution_quality_save_failed: %s", exc)
-    
-    scores_payload = (
-        dict(_LAST_SYMBOL_SCORES_STATE)
-        if isinstance(_LAST_SYMBOL_SCORES_STATE, Mapping)
-        else {"symbols": [], "updated_ts": now_iso, "intel_enabled": bool(INTEL_V6_ENABLED)}
-    )
-    try:
-        write_symbol_scores_state(scores_payload)
-        scores_written = True
-    except Exception as exc:
-        LOG.error("[telemetry] symbol_scores_write_failed: %s", exc)
-    try:
-        write_runtime_diagnostics_state()
-        diagnostics_written = True
-    except Exception as exc:
-        LOG.debug("[telemetry] diagnostics_state_write_failed: %s", exc)
-    engine_meta_written = False
-    try:
-        now_ts = time.time()
-        write_engine_metadata_state(
-            {
-                "engine_version": state.engine_version,
-                "git_commit": _git_commit(),
-                "run_id": RUN_ID,
-                "hostname": HOSTNAME,
-                "env": ENV,
-                "status": "running",
-                "uptime_s": round(now_ts - _EXECUTOR_START_TS, 1),
-                "last_cycle_s": round(now_ts - state.last_cycle_ts, 1),
-            }
-        )
-        engine_meta_written = True
-    except Exception as exc:
-        LOG.debug("[telemetry] engine_metadata_write_failed: %s", exc)
-    flag_snapshot = get_v6_flag_snapshot()
-    try:
-        synced_payload = build_synced_state_payload(
-            items=rows,
-            nav=nav_float,
-            engine_version=state.engine_version,
-            flags=flag_snapshot,
-            updated_at=now,
-            nav_snapshot=nav_detail if isinstance(nav_detail, Mapping) else {},
-        )
-    except Exception as exc:
-        LOG.debug("[telemetry] build_synced_state_payload_failed: %s", exc)
-        synced_payload = {
-            "items": [dict(row) for row in rows],
-            "nav": nav_float,
-            "engine_version": state.engine_version,
-            "v6_flags": flag_snapshot,
-            "updated_at": now,
-            "nav_snapshot": nav_detail if isinstance(nav_detail, Mapping) else {},
+            if not mark:
+                try:
+                    sym = r.get("symbol")
+                    if sym:
+                        mark = float(get_price(f"{sym}USDT"))
+                except Exception:
+                    mark = 0.0
+            try:
+                pnl = float(r.get("unrealized") or r.get("pnl") or (qty * (mark - entry)))
+            except Exception:
+                pnl = 0.0
+            try:
+                notional = abs(qty * mark)
+            except Exception:
+                notional = 0.0
+            items.append(
+                {
+                    "symbol": r.get("symbol"),
+                    "side": r.get("positionSide") or r.get("side"),
+                    "qty": qty,
+                    "entry_price": entry,
+                    "mark_price": mark,
+                    "pnl": pnl,
+                    "leverage": r.get("leverage"),
+                    "notional": notional,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        positions_payload = {
+            "rows": filtered_rows,
+            "items": items,
+            "positions": positions_state_rows,
+            "updated": now,
         }
-    try:
-        write_synced_state(synced_payload)
-        synced_written = True
+        try:
+            write_positions_snapshot_state(positions_payload)
+            positions_snapshot_written = True
+        except Exception as exc:
+            LOG.error("[telemetry] positions_snapshot_write_failed: %s", exc)
+        try:
+            from execution.position_ledger import build_position_ledger, build_positions_ledger_state
+
+            ledger = build_position_ledger(POSITIONS_STATE_PATH.parent)
+            ledger_snapshot = build_positions_ledger_state(
+                ledger,
+                updated_at=positions_state_ts,
+                state_dir=POSITIONS_STATE_PATH.parent,
+            )
+            write_positions_ledger_state(ledger_snapshot)
+            positions_ledger_written = True
+        except Exception as exc:
+            LOG.error("[telemetry] positions_ledger_write_failed: %s", exc)
+        risk_payload = _LAST_RISK_SNAPSHOT or {"updated_ts": now_iso, "symbols": []}
+        try:
+            write_risk_snapshot_state(risk_payload)
+            risk_written = True
+        except Exception as exc:
+            LOG.error("[telemetry] risk_snapshot_write_failed: %s", exc)
+        # v7.5_A1: Publish VaR/CVaR and alpha decay state
+        try:
+            positions_for_var = []
+            for r in rows:
+                sym = r.get("symbol")
+                if not sym:
+                    continue
+                # Compute notional from qty * markPrice
+                qty = abs(float(r.get("qty") or 0))
+                mark = float(r.get("markPrice") or r.get("mark_price") or 0)
+                notional = qty * mark if mark > 0 else abs(float(r.get("notional") or 0))
+                if notional > 0:
+                    positions_for_var.append({"symbol": sym, "notional": notional})
+            compute_and_write_risk_advanced_state(positions_for_var, nav_float)
+        except Exception as exc:
+            LOG.debug("[telemetry] risk_advanced_write_failed: %s", exc)
+        try:
+            symbols_list = [str(r.get("symbol")) for r in rows if r.get("symbol")]
+            compute_and_write_alpha_decay_state(symbols_list)
+        except Exception as exc:
+            LOG.debug("[telemetry] alpha_decay_write_failed: %s", exc)
+    
+        # v7.9_P4: Save Execution Alpha and Quality state
+        try:
+            save_alpha_state()
+        except Exception as exc:
+            LOG.debug("[telemetry] execution_alpha_save_failed: %s", exc)
+        try:
+            # load_minotaur_config requires strategy_cfg argument
+            _strategy_cfg = load_json("config/strategy_config.json") or {}
+            minotaur_cfg = load_minotaur_config(_strategy_cfg) if _ALPHA_HOOKS_AVAILABLE else None
+            if minotaur_cfg:
+                save_quality_state(minotaur_cfg)
+        except Exception as exc:
+            LOG.debug("[telemetry] execution_quality_save_failed: %s", exc)
+    
+        scores_payload = (
+            dict(_LAST_SYMBOL_SCORES_STATE)
+            if isinstance(_LAST_SYMBOL_SCORES_STATE, Mapping)
+            else {"symbols": [], "updated_ts": now_iso, "intel_enabled": bool(INTEL_V6_ENABLED)}
+        )
+        try:
+            write_symbol_scores_state(scores_payload)
+            scores_written = True
+        except Exception as exc:
+            LOG.error("[telemetry] symbol_scores_write_failed: %s", exc)
+        try:
+            write_runtime_diagnostics_state()
+            diagnostics_written = True
+        except Exception as exc:
+            LOG.debug("[telemetry] diagnostics_state_write_failed: %s", exc)
+        engine_meta_written = False
+        try:
+            now_ts = time.time()
+            write_engine_metadata_state(
+                {
+                    "engine_version": state.engine_version,
+                    "git_commit": _git_commit(),
+                    "run_id": RUN_ID,
+                    "hostname": HOSTNAME,
+                    "env": ENV,
+                    "status": "running",
+                    "uptime_s": round(now_ts - _EXECUTOR_START_TS, 1),
+                    "last_cycle_s": round(now_ts - state.last_cycle_ts, 1),
+                }
+            )
+            engine_meta_written = True
+        except Exception as exc:
+            LOG.debug("[telemetry] engine_metadata_write_failed: %s", exc)
+        flag_snapshot = get_v6_flag_snapshot()
+        try:
+            synced_payload = build_synced_state_payload(
+                items=rows,
+                nav=nav_float,
+                engine_version=state.engine_version,
+                flags=flag_snapshot,
+                updated_at=now,
+                nav_snapshot=nav_detail if isinstance(nav_detail, Mapping) else {},
+            )
+        except Exception as exc:
+            LOG.debug("[telemetry] build_synced_state_payload_failed: %s", exc)
+            synced_payload = {
+                "items": [dict(row) for row in rows],
+                "nav": nav_float,
+                "engine_version": state.engine_version,
+                "v6_flags": flag_snapshot,
+                "updated_at": now,
+                "nav_snapshot": nav_detail if isinstance(nav_detail, Mapping) else {},
+            }
+        try:
+            write_synced_state(synced_payload)
+            synced_written = True
+        except Exception as exc:
+            LOG.error("[telemetry] synced_state_write_failed: %s", exc)
+        # B.5: Phase C readiness state surface (shadow-only, fail-open)
+        phase_c_written = False
+        try:
+            from execution.enforcement_rehearsal import compute_phase_c_readiness
+            from execution.state_publish import write_phase_c_readiness_state
+            readiness_payload = compute_phase_c_readiness()
+            write_phase_c_readiness_state(readiness_payload)
+            phase_c_written = True
+        except Exception as exc:
+            LOG.debug("[telemetry] phase_c_readiness_write_failed: %s", exc)
+        try:
+            binary_lab_written = _binary_lab_tick(now_iso)
+        except Exception as exc:
+            LOG.debug("[telemetry] binary_lab_state_write_failed: %s", exc)
+        # Episode ledger rebuild (observability — fail-open, throttled)
+        episode_ledger_written = False
+        _pub_tick_episode_ledger_due = (
+            now_ts - state.last_episode_ledger_rebuild_ts
+        ) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S
+        if _pub_tick_episode_ledger_due:
+            try:
+                from execution.episode_ledger import rebuild_and_save as _episode_rebuild
+                _pub_tick_heartbeat("LEDGER_REBUILD_STARTED", loop_id=loop_id)
+                _pub_tick_episode_ledger_rebuild_start = time.monotonic()
+                _episode_rebuild()
+                _pub_tick_episode_ledger_duration_ms = (
+                    time.monotonic() - _pub_tick_episode_ledger_rebuild_start
+                ) * 1000.0
+                _pub_tick_heartbeat(
+                    "LEDGER_REBUILD_COMPLETED",
+                    loop_id=loop_id,
+                    duration_ms=_pub_tick_episode_ledger_duration_ms,
+                    episode_ledger_duration_ms=_pub_tick_episode_ledger_duration_ms,
+                )
+                episode_ledger_written = True
+                state.last_episode_ledger_rebuild_ts = now_ts
+            except Exception as exc:
+                LOG.debug("[telemetry] episode_ledger_rebuild_failed: %s", exc)
+            # Edge calibration — compute ERR from episode ledger (fail-open)
+            try:
+                from execution.edge_calibration import persist_snapshot as _persist_err
+                import json as _json
+                _ep_path = os.path.join("logs", "state", "episode_ledger.json")
+                with open(_ep_path) as _fh:
+                    _ep_data = _json.load(_fh)
+                _persist_err(_ep_data.get("episodes", []))
+            except Exception as exc:
+                LOG.debug("[telemetry] edge_calibration_failed: %s", exc)
+            # Engine lift — Hydra vs Legacy outcome comparison (fail-open)
+            try:
+                from execution.engine_lift import persist_snapshot as _persist_lift
+                import json as _json2
+                _ep_path2 = os.path.join("logs", "state", "episode_ledger.json")
+                with open(_ep_path2) as _fh2:
+                    _ep_data2 = _json2.load(_fh2)
+                _persist_lift(_ep_data2.get("episodes", []))
+            except Exception as exc:
+                LOG.debug("[telemetry] engine_lift_failed: %s", exc)
+            # Hydra score monotonicity (fail-open)
+            try:
+                from execution.hydra_monotonicity import persist_snapshot as _persist_mono
+                import json as _json3
+                _ep_path3 = os.path.join("logs", "state", "episode_ledger.json")
+                with open(_ep_path3) as _fh3:
+                    _ep_data3 = _json3.load(_fh3)
+                _persist_mono(_ep_data3.get("episodes", []))
+            except Exception as exc:
+                LOG.debug("[telemetry] hydra_monotonicity_failed: %s", exc)
+        LOG.info(
+            "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s binary_lab=%s episode_ledger=%s",
+            nav_written,
+            positions_state_written,
+            positions_ledger_written,
+            positions_snapshot_written,
+            risk_written,
+            scores_written,
+            diagnostics_written,
+            engine_meta_written,
+            synced_written,
+            phase_c_written,
+            binary_lab_written,
+            episode_ledger_written,
+        )
+        _LAST_NAV_STATE = nav_payload
+        _LAST_POSITIONS_STATE = positions_state_payload
+        _pub_tick_duration_ms = (time.monotonic() - _pub_tick_started_monotonic) * 1000.0
+        _PUB_TICK_LAST_COMPLETED_TS = datetime.now(timezone.utc).isoformat()
+        _PUB_TICK_LAST_COMPLETED_DURATION_MS = _pub_tick_duration_ms
+        _pub_tick_terminal_emitted = True
+        _pub_tick_heartbeat(
+            "COMPLETED",
+            loop_id=loop_id,
+            duration_ms=_pub_tick_duration_ms,
+            episode_ledger_due=_pub_tick_episode_ledger_due,
+            episode_ledger_duration_ms=_pub_tick_episode_ledger_duration_ms,
+            outcome="ok",
+        )
     except Exception as exc:
-        LOG.error("[telemetry] synced_state_write_failed: %s", exc)
-    # B.5: Phase C readiness state surface (shadow-only, fail-open)
-    phase_c_written = False
-    try:
-        from execution.enforcement_rehearsal import compute_phase_c_readiness
-        from execution.state_publish import write_phase_c_readiness_state
-        readiness_payload = compute_phase_c_readiness()
-        write_phase_c_readiness_state(readiness_payload)
-        phase_c_written = True
-    except Exception as exc:
-        LOG.debug("[telemetry] phase_c_readiness_write_failed: %s", exc)
-    try:
-        binary_lab_written = _binary_lab_tick(now_iso)
-    except Exception as exc:
-        LOG.debug("[telemetry] binary_lab_state_write_failed: %s", exc)
-    # Episode ledger rebuild (observability — fail-open, throttled)
-    episode_ledger_written = False
-    if (now_ts - state.last_episode_ledger_rebuild_ts) >= _EPISODE_LEDGER_REBUILD_INTERVAL_S:
-        try:
-            from execution.episode_ledger import rebuild_and_save as _episode_rebuild
-            _episode_rebuild()
-            episode_ledger_written = True
-            state.last_episode_ledger_rebuild_ts = now_ts
-        except Exception as exc:
-            LOG.debug("[telemetry] episode_ledger_rebuild_failed: %s", exc)
-        # Edge calibration — compute ERR from episode ledger (fail-open)
-        try:
-            from execution.edge_calibration import persist_snapshot as _persist_err
-            import json as _json
-            _ep_path = os.path.join("logs", "state", "episode_ledger.json")
-            with open(_ep_path) as _fh:
-                _ep_data = _json.load(_fh)
-            _persist_err(_ep_data.get("episodes", []))
-        except Exception as exc:
-            LOG.debug("[telemetry] edge_calibration_failed: %s", exc)
-        # Engine lift — Hydra vs Legacy outcome comparison (fail-open)
-        try:
-            from execution.engine_lift import persist_snapshot as _persist_lift
-            import json as _json2
-            _ep_path2 = os.path.join("logs", "state", "episode_ledger.json")
-            with open(_ep_path2) as _fh2:
-                _ep_data2 = _json2.load(_fh2)
-            _persist_lift(_ep_data2.get("episodes", []))
-        except Exception as exc:
-            LOG.debug("[telemetry] engine_lift_failed: %s", exc)
-        # Hydra score monotonicity (fail-open)
-        try:
-            from execution.hydra_monotonicity import persist_snapshot as _persist_mono
-            import json as _json3
-            _ep_path3 = os.path.join("logs", "state", "episode_ledger.json")
-            with open(_ep_path3) as _fh3:
-                _ep_data3 = _json3.load(_fh3)
-            _persist_mono(_ep_data3.get("episodes", []))
-        except Exception as exc:
-            LOG.debug("[telemetry] hydra_monotonicity_failed: %s", exc)
-    LOG.info(
-        "[v6-runtime] state write complete state_dir=logs/state nav=%s positions_state=%s positions_ledger=%s positions=%s risk=%s symbol_scores=%s diagnostics=%s engine_meta=%s synced=%s phase_c=%s binary_lab=%s episode_ledger=%s",
-        nav_written,
-        positions_state_written,
-        positions_ledger_written,
-        positions_snapshot_written,
-        risk_written,
-        scores_written,
-        diagnostics_written,
-        engine_meta_written,
-        synced_written,
-        phase_c_written,
-        binary_lab_written,
-        episode_ledger_written,
-    )
-    _LAST_NAV_STATE = nav_payload
-    _LAST_POSITIONS_STATE = positions_state_payload
+        _pub_tick_duration_ms = (time.monotonic() - _pub_tick_started_monotonic) * 1000.0
+        _pub_tick_terminal_emitted = True
+        _pub_tick_heartbeat(
+            "FAILED",
+            loop_id=loop_id,
+            duration_ms=_pub_tick_duration_ms,
+            episode_ledger_due=_pub_tick_episode_ledger_due,
+            episode_ledger_duration_ms=_pub_tick_episode_ledger_duration_ms,
+            outcome="failed",
+            exception_type=type(exc).__name__,
+            exception_message=str(exc)[:500],
+        )
+        raise
+    finally:
+        if not _pub_tick_terminal_emitted:
+            _pub_tick_heartbeat(
+                "ABORTED",
+                loop_id=loop_id,
+                duration_ms=(time.monotonic() - _pub_tick_started_monotonic) * 1000.0,
+                episode_ledger_due=_pub_tick_episode_ledger_due,
+                episode_ledger_duration_ms=_pub_tick_episode_ledger_duration_ms,
+                outcome="aborted",
+            )
     return None
 
 
@@ -6626,8 +6628,9 @@ def _loop_once(state: ExecutorState, i: int) -> None:
             submitted,
         )
 
+    _pub_tick_heartbeat("CALL_REACHED", loop_id=i)
     try:
-        _pub_tick(state)
+        _pub_tick(state, loop_id=i)
     except Exception as exc:
         LOG.exception("[loop] publish_tick_failed: %s", exc)
     _maybe_run_pipeline_v6_shadow_heartbeat()
@@ -6743,13 +6746,15 @@ def main(argv: Optional[Sequence[str]] | None = None) -> None:
         )
     _startup_position_check(client)
 
-    # --- E2.3: Cancel stale open orders that could fill unexpectedly ----------
-    try:
-        from execution.exchange_utils import cancel_all_open_orders
-        cancel_result = cancel_all_open_orders()
-        LOG.info("[startup] cancel_all_open_orders result: %s", cancel_result)
-    except Exception as exc:
-        LOG.warning("[startup] cancel_all_open_orders failed (non-fatal): %s", exc)
+    # --- E2.3: Reconcile crash-window fill gaps, then cancel stale open orders -
+    # run_order_reconciliation: (1) backfills synthetic order_fill/order_close
+    # events for any order_ack that never got a fill log, (2) calls
+    # cancel_all_open_orders, (3) writes a reconciliation_summary event.
+    from execution.exchange_utils import cancel_all_open_orders
+    _startup_run_order_reconciliation(
+        cancel_all_open_orders=cancel_all_open_orders,
+        logger=LOG,
+    )
 
     # --- E2.1: Bootstrap churn-guard state from existing positions ------------
     try:

@@ -6,7 +6,6 @@ import math
 import pytest
 
 from research.weekly_momentum import (
-    _MIN_MONOTONICITY,
     _MIN_PAIRS,
     _MIN_RHO,
     _ROUND_TRIP_FEE,
@@ -29,7 +28,8 @@ _WEEK_MS = 7 * _DAY_MS
 def _make_bars(n: int, start_ms: int = 0, price_fn=None) -> list[Bar]:
     """Produce n daily bars; default price slowly rises by 1 per day."""
     if price_fn is None:
-        price_fn = lambda i: 100.0 + i  # type: ignore[misc]
+        def price_fn(i: int) -> float:
+            return 100.0 + i
     return [Bar(ts_ms=start_ms + i * _DAY_MS, close=price_fn(i)) for i in range(n)]
 
 

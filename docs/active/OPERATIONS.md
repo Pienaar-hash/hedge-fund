@@ -1,4 +1,4 @@
-# OPERATIONS.md — GPT Hedge v5.6 Runbook
+# OPERATIONS.md — GPT Hedge v7.9 Runbook
 
 ## Core Commands
 
@@ -7,8 +7,9 @@
 | **Long-run executor** | `ENV=prod PYTHONPATH=. python -m execution.executor_live` |
 | **One-shot intent + sync** | `ENV=prod PYTHONPATH=. ONE_SHOT=1 python -m execution.executor_live` |
 | **Dashboard (Streamlit)** | `streamlit run dashboard/app.py --server.port=8501` |
-| **Router doctor (audit)** | `ENV=prod PYTHONPATH=. python scripts/doctor.py --router` |
-| **Backfill missing fills / PnL** | `python3 scripts/backfill_fills_pnl.py --apply` |
+| **Runtime sanity** | `ENV=prod PYTHONPATH=. python scripts/runtime_sanity_check_v7_6.py` |
+| **Execution debug** | `ENV=prod PYTHONPATH=. python scripts/exec_debug.py` |
+| **State smoke** | `ENV=prod PYTHONPATH=. python scripts/smoke_test.py` |
 | **Telegram mini-report (dry-run)** | `ENV=prod PYTHONPATH=. python -m execution.telegram_report --dry-run` |
 
 ---
@@ -16,12 +17,10 @@
 ## Supervisor Process Map
 | Process | Purpose |
 |----------|----------|
-| `executor` | Core trading loop (ACK/FILL split) |
+| `executor` | Core trading loop |
 | `sync_state` | Publishes NAV + Firestore updates |
 | `dashboard` | Streamlit front-end |
-| `doctor` | Router health + telemetry |
-| `leaderboard_sync` | Optional investor feed |
 
 **Restart after patches:**
 ```bash
-sudo supervisorctl restart hedge:executor hedge:sync_state hedge:dashboard hedge:doctor
+sudo supervisorctl restart hedge:executor hedge:sync_state hedge:dashboard

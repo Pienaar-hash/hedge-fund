@@ -27,13 +27,15 @@ _FR_INTERVAL_MS = _DAY_MS // _FR_PER_DAY  # 8 hours
 
 def _make_funding(n: int, start_ms: int = 0, rate_fn=None) -> list[FundingRecord]:
     if rate_fn is None:
-        rate_fn = lambda i: 0.0001  # type: ignore[misc]
+        def rate_fn(i: int) -> float:
+            return 0.0001
     return [FundingRecord(ts_ms=start_ms + i * _FR_INTERVAL_MS, rate=rate_fn(i)) for i in range(n)]
 
 
 def _make_bars(n: int, start_ms: int = 0, price_fn=None) -> list[Bar]:
     if price_fn is None:
-        price_fn = lambda i: 1000.0 + i  # type: ignore[misc]
+        def price_fn(i: int) -> float:
+            return 1000.0 + i
     return [Bar(ts_ms=start_ms + i * _DAY_MS, close=price_fn(i)) for i in range(n)]
 
 
