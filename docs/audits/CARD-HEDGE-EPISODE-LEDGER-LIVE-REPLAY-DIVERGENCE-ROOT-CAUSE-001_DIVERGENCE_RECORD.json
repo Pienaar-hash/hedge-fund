@@ -1,0 +1,56 @@
+{
+  "card": "CARD-HEDGE-EPISODE-LEDGER-LIVE-REPLAY-DIVERGENCE-ROOT-CAUSE-001",
+  "disposition": "not_reproducible_insufficient_evidence",
+  "deployment_disposition": "rolled_back_runtime_failure",
+  "redeployment_recommendation": "do_not_redeploy_dec9acc7",
+  "candidate": {
+    "commit": "dec9acc78b18352ea01bae42edfd059592517a69",
+    "pid": 360065,
+    "cycle_utc": "2026-07-12T15:38:53.701212+00:00",
+    "mode": "full_fallback",
+    "fallback_reason": "replay_divergence",
+    "ledger_hash": "12fa34ab4823d3f9c7128f047d771be31caf31fd81c06aa0a02a63d730623d3b",
+    "source_bytes_reported": 32585312,
+    "events_replayed": 15855
+  },
+  "preexisting_pair": {
+    "ledger_hash": "12fa34ab4823d3f9c7128f047d771be31caf31fd81c06aa0a02a63d730623d3b",
+    "ledger_last_rebuild_ts": "2026-07-12T15:32:37.740802+00:00",
+    "checkpoint_hash": "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb",
+    "checkpoint_ts": "2026-07-12T15:30:15.976718+00:00",
+    "checkpoint_schema": "episode_ledger_incremental_v2",
+    "checkpoint_raw_sha256": "0db221fb8e13a5c732822a3b4c0594f580a347fa18453c564cf598f30ddfb83d"
+  },
+  "same_corpus_replay": {
+    "builder_commit": "dec9acc78b18352ea01bae42edfd059592517a69",
+    "execution_dle_source_order": [
+      "orders_executed.3.jsonl",
+      "orders_executed.2.jsonl",
+      "orders_executed.1.jsonl",
+      "orders_executed.jsonl"
+    ],
+    "captured_nav_total_equity": 6749.61134868,
+    "three_full_hashes": [
+      "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb",
+      "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb",
+      "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb"
+    ],
+    "missing_nav_fallback_hash": "12fa34ab4823d3f9c7128f047d771be31caf31fd81c06aa0a02a63d730623d3b",
+    "full_replay_with_captured_nav": "checkpoint_match",
+    "first_semantic_difference": {
+      "field_path": "stats.max_drawdown_pct",
+      "retained_12fa_value": 14.74,
+      "same_corpus_2d_value": 21.84
+    }
+  },
+  "proven_findings": [
+    "The ledger/checkpoint hash mismatch predates candidate PID 360065.",
+    "The candidate did not publish a replacement checkpoint; the checkpoint artifact is byte-identical before and after failure capture.",
+    "The frozen corpus is deterministic and produces 2d780f with its captured NAV.",
+    "The exact 12fa semantic hash is produced by the same execution/DLE corpus when the builder uses its 10000 NAV fallback.",
+    "The retained checkpoint nav fingerprint does not equal either retained pre or post NAV file hash.",
+    "The g4b3ff2a0 checkpoint telemetry label is not a code-content attestation: that commit contains no incremental ledger or v2 schema."
+  ],
+  "unreproduced_component": "The candidate full-builder/replay pair under its exact two source snapshots and exact NAV read cannot be replayed because candidate-cycle execution/DLE copies, per-read fingerprints, cwd, and exact NAV bytes were not retained.",
+  "cache_classification": "expected_startup_refresh_but_unauthorized_surface_ledger_benign_on_retained_evidence"
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "episode_ledger_live_replay_forensics_v1",
+  "evidence_root": "/tmp/card-episode-ledger-incremental-testnet-deployment-20260712T1535Z",
+  "integrity_sources": {
+    "pre": ["pre/manifest.json", "pre/SHA256SUMS"],
+    "post_failure": ["post_deployment_failure/failure_manifest.json", "post_deployment_failure/SHA256SUMS"],
+    "precision_cache": ["exchange_precision_cache.diff", "exchange_precision_cache.current.sha256", "exchange_precision_cache.head.sha256", "exchange_precision_cache.evidence.sha256"]
+  },
+  "pre_semantic_inputs": {
+    "execution_log_read_order": ["orders_executed.3.jsonl", "orders_executed.2.jsonl", "orders_executed.1.jsonl", "orders_executed.jsonl"],
+    "execution_logs": [
+      {"name": "orders_executed.3.jsonl", "bytes": 9999850, "lines": 13435, "sha256": "f68b6b61abb2f7780ee5e030e323f00b72e02844a496b6e08273e2a3d6aa6489", "checkpoint_identity": "2049:257828", "checkpoint_anchor": "ca05bd3fa64b76598b37da972ed5549b0533a42b6c331ee7dbe729cc644932ac"},
+      {"name": "orders_executed.2.jsonl", "bytes": 9999664, "lines": 12168, "sha256": "96a48fe72ca984c063c04b1f5e8586528dfb9333059efe845459e72c724c8f72", "checkpoint_identity": "2049:258149", "checkpoint_anchor": "3b1a570700b19aac7cad026f1a020e3f961b345da6df59a8fa0e155460e3c979"},
+      {"name": "orders_executed.1.jsonl", "bytes": 9999583, "lines": 11405, "sha256": "760f379bdd163051cc58da01a563639e6aad161290a962b961cca8af572a9e2b", "checkpoint_identity": "2049:261057", "checkpoint_anchor": "245a2cacf153842695faafbfae264d156aede044bc94084b05ea911663818335"},
+      {"name": "orders_executed.jsonl", "bytes": 2585956, "lines": 3247, "sha256": "17cf837825ab100b08bdbe039da01f103fcf390111e2230308bd488155af2d52", "checkpoint_identity": "2049:296386", "checkpoint_anchor": "3dbb6eef07e1f5eb523ee62af854d2dcd29a65d18332c752562a3248469cf7da"}
+    ],
+    "authority_log": {"name": "dle_shadow_events.jsonl", "bytes": 52715969, "lines": 69378, "sha256": "82cbb84d64de2cda070f5cb2bb3f0b5c11c32c189c4b7dea2945c54b335da8c5"},
+    "nav": {"name": "nav_state.json", "bytes": 70567, "sha256": "17636dda14dd861b40751cd0cb70768a24dc38e76d294c86ff71981750f81f8a", "total_equity": 6749.61134868},
+    "ledger": {"name": "episode_ledger.json", "bytes": 3572072, "sha256": "c2e268967f9bed9920368b54f6d3d6c4a52da39f2ebefde262afa033a63af8a3", "semantic_hash": "12fa34ab4823d3f9c7128f047d771be31caf31fd81c06aa0a02a63d730623d3b"},
+    "checkpoint": {"name": "episode_ledger_checkpoint.json", "bytes": 1478902, "sha256": "0db221fb8e13a5c732822a3b4c0594f580a347fa18453c564cf598f30ddfb83d", "schema": "episode_ledger_incremental_v2", "ledger_hash": "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb", "nav_sha256": "cf2be589c1ec0e2c24f4e49b5b4fe6cad357c5366506c85da0f56a42d2482a47"}
+  },
+  "post_failure_retained": {
+    "ledger": {"sha256": "e212a6726bcc7303be79676de35584d8b3a419cab77fdf42b482ee3dbddeb3e2", "semantic_hash": "12fa34ab4823d3f9c7128f047d771be31caf31fd81c06aa0a02a63d730623d3b"},
+    "checkpoint": {"sha256": "0db221fb8e13a5c732822a3b4c0594f580a347fa18453c564cf598f30ddfb83d", "unchanged_from_pre": true},
+    "nav": {"sha256": "a8d1235c1a9558db7285224ea6c5b6907cd98649dc9ba42a211b577e10ed3581", "total_equity": 6748.90734868},
+    "rebuild_telemetry": {"sha256": "8e22a142e0badc6f414afc4ed1cbf6088d31c84de40b28cbbd49a35497ec10ec"},
+    "heartbeat": {"sha256": "f19298f6b3aafa9939988128d5fe1195988a1719517d8e4c84b74a7280be5b23"},
+    "missing_semantic_inputs": ["candidate-cycle execution logs", "candidate-cycle DLE authority log", "candidate process cwd", "candidate complete environment", "per-read source/NAV snapshots", "candidate-period executor/Supervisor stderr log excerpt"]
+  },
+  "nonsemantic_operational_artifacts_retained": ["repository_head.txt", "repository_log.txt", "repository_status.txt", "process.txt", "process_environment.txt", "supervisor_status.txt", "supervisor_pid.txt", "disk.txt", "memory.txt", "positions_state.json", "pub_tick_heartbeat.jsonl", "episode_ledger_rebuild.jsonl", "positions_state.json"]
+}
