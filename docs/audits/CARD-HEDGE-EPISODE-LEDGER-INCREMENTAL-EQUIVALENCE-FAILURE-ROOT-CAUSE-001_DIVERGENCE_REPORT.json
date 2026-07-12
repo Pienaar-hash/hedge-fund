@@ -1,0 +1,53 @@
+{
+  "schema_version": "episode_ledger_equivalence_forensics_v1",
+  "candidate_git_sha": "f9250de18b735d24c09349b1b01786c002299165",
+  "known_good_git_sha": "4aa5110268db331baae022d5f818ea99b47b0256",
+  "historical_snapshot_comparison": {
+    "incremental_snapshot_hash": "12fa34ab4823d3f9c7128f047d771be31caf31fd81c06aa0a02a63d730623d3b",
+    "fresh_full_hash_from_frozen_inputs": "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb",
+    "first_difference": {
+      "scope": "stats",
+      "episode_uid": null,
+      "episode_index_full": null,
+      "episode_index_incremental": null,
+      "field_path": "stats.max_drawdown_pct",
+      "full_value": 21.84,
+      "incremental_snapshot_value": 14.74
+    },
+    "summary": {
+      "episodes_only_in_full": [],
+      "episodes_only_in_incremental_snapshot": [],
+      "episodes_changed": 0,
+      "authority_episodes_changed": 0,
+      "ordering_only": false,
+      "stats_changed": ["max_drawdown_pct"],
+      "authority_changed": 0
+    }
+  },
+  "same_frozen_corpus_reproduction": {
+    "canonicalization": "JSON keys sorted; compact UTF-8 JSON; last_rebuild_ts excluded only",
+    "known_good_full_hash": "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb",
+    "candidate_initial_full_hash": "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb",
+    "candidate_checkpoint_noop_hash": "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb",
+    "candidate_checkpoint_noop_rerun_hash": "2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb",
+    "first_difference": null,
+    "summary": {
+      "episode_count": 1627,
+      "episode_uid_order_equal": true,
+      "episode_uid_set_equal": true,
+      "per_episode_payloads_equal": true,
+      "authority_payloads_equal": true,
+      "aggregate_stats_equal": true,
+      "reconciliation_equal": true,
+      "exit_reason_distribution_equal": true
+    }
+  },
+  "root_cause": {
+    "primary_classification": "canonicalization_or_hash_defect",
+    "field": "stats.max_drawdown_pct",
+    "max_drawdown_abs": 1473.88,
+    "historical_effective_nav_baseline": 10000.0,
+    "frozen_nav_total_equity": 6747.24534868,
+    "explanation": "The semantic hash included a NAV-dependent aggregate. The historical comparison did not freeze nav_state.json with the execution and authority sources, so it compared otherwise equal ledgers calculated with different NAV denominators."
+  }
+}
