@@ -43,11 +43,11 @@
     }
   },
   "root_cause": {
-    "primary_classification": "canonicalization_or_hash_defect",
+    "primary_classification": "not_reproducible_insufficient_evidence",
     "field": "stats.max_drawdown_pct",
     "max_drawdown_abs": 1473.88,
     "historical_effective_nav_baseline": 10000.0,
     "frozen_nav_total_equity": 6747.24534868,
-    "explanation": "The semantic hash included a NAV-dependent aggregate. The historical comparison did not freeze nav_state.json with the execution and authority sources, so it compared otherwise equal ledgers calculated with different NAV denominators."
+    "explanation": "A controlled alternate comparison proved that the semantic hash includes a NAV-dependent aggregate and changes when nav_state.json changes. The original 0e02 ledger payload and contemporaneous NAV input were not retained, so this mechanism cannot be asserted as the exact historical hash-pair cause."
   }
 }

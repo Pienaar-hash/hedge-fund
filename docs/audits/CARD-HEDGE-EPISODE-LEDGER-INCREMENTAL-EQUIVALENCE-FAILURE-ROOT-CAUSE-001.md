@@ -2,14 +2,15 @@
 
 ## Executive verdict
 
-**Primary classification:** `canonicalization_or_hash_defect`.
+**Primary classification:** `not_reproducible_insufficient_evidence`.
 
-The reported `12fa…` versus `0e02…` mismatch is not reproducible as an
-incremental event-ingestion divergence.  Its first and only observable field
-difference is `stats.max_drawdown_pct`, an aggregate derived from the
-independently written `logs/state/nav_state.json`.  That auxiliary input was
-not frozen by the historical comparison.  Episodes, UIDs, authority bindings,
-reconciliation, exit reasons, PnL, fees, prices, and quantities all match.
+The original `12fa…` versus `0e02…` pair cannot be reproduced from one immutable
+corpus: the `0e02…` ledger payload and its contemporaneous NAV input were not
+retained.  Therefore this card cannot honestly identify its exact first field
+difference or prove an algorithmic cause.  A controlled alternate comparison
+of the retained `12fa…` snapshot against a newly frozen full result found one
+and only one observable field difference, `stats.max_drawdown_pct`, an
+aggregate derived from independently written `logs/state/nav_state.json`.
 
 With execution logs, DLE authority log, persisted ledger/checkpoint, and NAV
 state frozen together, the known-good full builder, candidate clean first run,
@@ -19,13 +20,14 @@ and two candidate checkpoint-backed no-op rebuilds all hash to:
 2d780f3cf6536dfb2774e7f1e81b7e3133f876f0da82b210863157279ce6b8cb
 ```
 
-This removes the specific basis for the prior rollback, but does **not**
-authorize redeployment.  Review found two incremental-only equivalence seams
-that were not exercised by this corpus.  No runtime process, live file,
+This demonstrates a serious fixture/provenance defect in the earlier proof,
+but it does **not** remove the rollback basis or authorize redeployment. Review
+found two incremental-only equivalence seams that were not exercised by this
+corpus. No runtime process, live file,
 checkpoint, configuration, position, or exchange state was changed.  The
 executor remains on known-good `4aa51102`; `f9250de1` was not redeployed.
 
-**Candidate disposition:** `repairable_multiple_defects`.
+**Candidate disposition:** `inconclusive`.
 
 ## Boundaries and frozen corpus
 
@@ -81,7 +83,9 @@ content was changed.
 
 The machine-readable comparison is
 [the divergence report](CARD-HEDGE-EPISODE-LEDGER-INCREMENTAL-EQUIVALENCE-FAILURE-ROOT-CAUSE-001_DIVERGENCE_REPORT.json).
-The historical snapshot's first difference is exactly:
+The retained historical snapshot versus the newly frozen full output has this
+exact first difference (this is not asserted to be the unavailable `0e02…`
+payload's first difference):
 
 ```json
 {
@@ -119,10 +123,10 @@ captured: round(1473.88 / 10000 * 100, 2)       = 14.74
 frozen:   round(1473.88 / 6747.24534868 * 100, 2) = 21.84
 ```
 
-10,000 is the builder's fallback/effective historical baseline.  The prior NAV
-file was not preserved, so its exact old contents cannot be recovered; the
-arithmetic and controlled same-corpus reruns prove NAV timing caused the
-reported semantic-hash failure, not episode reconstruction.
+10,000 is the builder's fallback/effective historical baseline. The original
+NAV file and `0e02…` payload were not preserved. The arithmetic proves a
+NAV-timing mechanism for the retained comparison; it does not prove that
+mechanism was the exact cause of the original hash pair.
 
 ## Checkpoint transaction analysis
 
@@ -151,7 +155,7 @@ later validation/fallback.  Transaction ordering did not contribute here.
 | output ordering only | eliminated: no order difference exists |
 | checkpoint transaction | eliminated as cause; recovery is conservative |
 | aggregate recalculation | exact mismatch is NAV-dependent drawdown percentage |
-| canonicalization/hash | proven primary cause: hash includes NAV-dependent public aggregate without freezing NAV provenance |
+| canonicalization/hash | proven alternate-comparison mechanism: hash includes NAV-dependent public aggregate without frozen NAV provenance |
 
 Two paths are not definitionally equivalent and remain required repair scope:
 
@@ -183,6 +187,8 @@ appends, then pass only after exact equivalence is restored.
 
 ## Final disposition
 
-`repairable_multiple_defects`.  The original mismatch is fully explained by an
-unfrozen NAV-dependent aggregate.  Keep `f9250de1` undeployed and testnet on
-`4aa51102` until the stated narrow repair/proof card closes.
+`inconclusive`. The retained evidence proves same-corpus equivalence for the
+tested no-op path and proves a NAV-fixture failure mechanism, but cannot prove
+the exact historical `12fa…`/`0e02…` divergence. Keep `f9250de1` undeployed and
+testnet on `4aa51102` until a new frozen corpus captures an actual divergent
+incremental/full pair or the stated repair/proof card closes.
