@@ -29,6 +29,9 @@ import bisect
 import hashlib
 import json
 import logging
+import os
+import tempfile
+import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -38,6 +41,7 @@ from collections import defaultdict
 from dateutil import parser as dateparser
 
 from execution.exit_reason_normalizer import normalize_exit_reason as _normalize_exit
+from execution.helpers import git_commit as _git_commit
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,10 @@ EXECUTION_LOG_DIR = Path("logs/execution")
 EXECUTION_LOG_PATH = Path("logs/execution/orders_executed.jsonl")
 DOCTRINE_LOG_PATH = Path("logs/doctrine_events.jsonl")
 DLE_SHADOW_LOG_PATH = Path("logs/execution/dle_shadow_events.jsonl")
+NAV_STATE_PATH = Path("logs/state/nav_state.json")
+EPISODE_LEDGER_CHECKPOINT_PATH = Path("logs/state/episode_ledger_checkpoint.json")
+EPISODE_LEDGER_REBUILD_LOG_PATH = Path("logs/execution/episode_ledger_rebuild.jsonl")
+EPISODE_LEDGER_CHECKPOINT_VERSION = "episode_ledger_incremental_v2"
 
 # B.4 matching constants
 MATCH_WINDOW_NARROW_S = 120.0   # first pass: ±120 seconds
@@ -1060,8 +1068,7 @@ def build_episode_ledger(
         # Fallback: if we have no NAV context, use 10_000 as reasonable base
         try:
             import json as _json
-            from pathlib import Path as _Path
-            _nav_path = _Path("logs/state/nav_state.json")
+            _nav_path = NAV_STATE_PATH
             _nav_base = float(_json.loads(_nav_path.read_text()).get("total_equity", 10000)) if _nav_path.exists() else 10000
         except Exception:
             _nav_base = 10000
@@ -1176,13 +1183,613 @@ def load_episode_ledger() -> Optional[EpisodeLedger]:
         return None
 
 
+def _canonical_ledger_hash(ledger: EpisodeLedger | dict) -> str:
+    """Hash public ledger semantics, deliberately excluding rebuild wall time."""
+    payload = ledger.to_dict() if isinstance(ledger, EpisodeLedger) else dict(ledger)
+    payload.pop("last_rebuild_ts", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _event_identity(event: dict) -> str:
+    """The existing cross-file de-dup key, encoded durably for a checkpoint."""
+    return json.dumps([
+        event.get("symbol", ""), event.get("positionSide", ""), event.get("side", ""),
+        str(event.get("ts_fill_first", "")), str(event.get("orderId", "")),
+    ], separators=(",", ":"))
+
+
+def _event_sort_key(event: dict) -> str:
+    return str(event.get("ts") or event.get("ts_fill_first") or "")
+
+
+def _execution_sources() -> list[Path]:
+    """Return exactly the source ordering used by the legacy full loader."""
+    sources: list[Path] = []
+    if EXECUTION_LOG_DIR.exists():
+        sources.extend(sorted(
+            EXECUTION_LOG_DIR.glob("orders_executed.*.jsonl"),
+            key=lambda p: p.name,
+            reverse=True,
+        ))
+    if EXECUTION_LOG_PATH.exists():
+        sources.append(EXECUTION_LOG_PATH)
+    return sources
+
+
+def _source_identity(path: Path) -> tuple[str, dict]:
+    stat = path.stat()
+    ident = f"{stat.st_dev}:{stat.st_ino}"
+    return ident, {
+        "path": path.name,
+        "identity": ident,
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "size": stat.st_size,
+        "offset": stat.st_size,
+    }
+
+
+def _source_anchor(path: Path, offset: int) -> str:
+    """Bounded content signal for in-place rewrites without re-reading a log."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        digest.update(handle.read(min(4096, offset)))
+        if offset > 4096:
+            handle.seek(max(0, offset - 4096))
+            digest.update(handle.read(4096))
+    digest.update(str(offset).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _authority_fingerprint() -> dict:
+    """A changed shadow source can alter historic authority matching, so fallback."""
+    try:
+        stat = DLE_SHADOW_LOG_PATH.stat()
+    except FileNotFoundError:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _nav_fingerprint() -> dict:
+    """Capture the complete NAV semantic input, not only its filesystem identity."""
+    try:
+        raw = NAV_STATE_PATH.read_bytes()
+    except FileNotFoundError:
+        return {"exists": False}
+    except OSError as exc:
+        return {"exists": False, "read_error": type(exc).__name__}
+    stat = NAV_STATE_PATH.stat()
+    return {
+        "exists": True,
+        "path": str(NAV_STATE_PATH),
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "size": stat.st_size,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _atomic_json_write(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(raw_tmp, path)
+    finally:
+        if os.path.exists(raw_tmp):
+            os.unlink(raw_tmp)
+
+
+def _append_rebuild_telemetry(record: dict) -> None:
+    """Telemetry is observability only: a sink failure must not affect the ledger."""
+    try:
+        from execution.log_utils import append_jsonl
+        append_jsonl(EPISODE_LEDGER_REBUILD_LOG_PATH, record)
+    except Exception as exc:
+        logger.warning("episode ledger rebuild telemetry write failed (fail-open): %s", exc)
+
+
+def _episode_from_accumulator(
+    symbol: str,
+    pos_side: str,
+    entry_fills: list[dict],
+    exit_fills: list[dict],
+    episode_id: str = "",
+) -> Episode:
+    """Construct one episode using the legacy full-builder arithmetic exactly."""
+    entry_notional = sum(float(e.get("avgPrice", 0)) * float(e.get("executedQty", 0)) for e in entry_fills)
+    entry_qty = sum(float(e.get("executedQty", 0)) for e in entry_fills)
+    entry_fees = sum(float(e.get("fee_total", 0) or 0) for e in entry_fills)
+    avg_entry = entry_notional / entry_qty if entry_qty > 0 else 0
+    exit_notional = sum(float(e.get("avgPrice", 0)) * float(e.get("executedQty", 0)) for e in exit_fills)
+    exit_qty = sum(float(e.get("executedQty", 0)) for e in exit_fills)
+    exit_fees = sum(float(e.get("fee_total", 0) or 0) for e in exit_fills)
+    avg_exit = exit_notional / exit_qty if exit_qty > 0 else 0
+    trade_qty = min(entry_qty, exit_qty) if exit_qty > 0 else entry_qty
+    gross_pnl = ((avg_exit - avg_entry) if pos_side == "LONG" else (avg_entry - avg_exit)) * trade_qty
+    entry_ts = entry_fills[0].get("ts") or entry_fills[0].get("ts_fill_first") or ""
+    last_exit = exit_fills[-1]
+    exit_ts = last_exit.get("ts") or last_exit.get("ts_fill_first") or ""
+    entry_dt, exit_dt = _parse_ts(entry_ts), _parse_ts(exit_ts)
+    duration_hours = ((exit_dt - entry_dt).total_seconds() / 3600) if entry_dt and exit_dt else 0.0
+    normalized = _normalize_exit(_extract_exit_reason(last_exit), source="episode_ledger")
+    return Episode(
+        episode_id=episode_id,
+        symbol=symbol, side=pos_side, entry_ts=entry_ts, exit_ts=exit_ts,
+        duration_hours=round(duration_hours, 2), entry_fills=len(entry_fills), exit_fills=len(exit_fills),
+        entry_notional=round(entry_notional, 2), exit_notional=round(exit_notional, 2),
+        total_qty=round(trade_qty, 6), avg_entry_price=round(avg_entry, 4), avg_exit_price=round(avg_exit, 4),
+        gross_pnl=round(gross_pnl, 4), fees=round(entry_fees + exit_fees, 4),
+        net_pnl=round(gross_pnl - entry_fees - exit_fees, 4),
+        regime_at_entry=_extract_regime_at_entry(entry_fills[0]), regime_at_exit="unknown",
+        exit_reason=normalized.canonical, exit_reason_raw=normalized.raw,
+        strategy=_extract_strategy(entry_fills[0]), **_extract_scoring_fields(entry_fills[0]),
+    )
+
+
+def _initial_group_state() -> dict:
+    return {"open_qty": 0.0, "entry_fills": [], "exit_fills": [], "last_sort_key": ""}
+
+
+def _apply_fill_to_group(key: str, group: dict, fill: dict) -> tuple[Optional[Episode], dict]:
+    """Apply one timestamp-ordered fill and return a closed episode, if any."""
+    symbol, pos_side = key.split("|", 1)
+    qty = float(fill.get("executedQty", 0))
+    is_reduce = fill.get("reduceOnly", False)
+    side = fill.get("side", "")
+    if pos_side == "LONG":
+        is_entry, is_exit = side == "BUY" and not is_reduce, side == "SELL" or is_reduce
+    else:
+        is_entry, is_exit = side == "SELL" and not is_reduce, side == "BUY" or is_reduce
+    counters = {"total": 1, "consumed": 0, "orphaned": 0}
+    if is_entry:
+        group["open_qty"] += qty
+        group["entry_fills"].append(fill)
+        counters["consumed"] = 1
+    elif is_exit and group["open_qty"] > 0:
+        group["open_qty"] -= min(qty, group["open_qty"])
+        group["exit_fills"].append(fill)
+        counters["consumed"] = 1
+        if group["open_qty"] < 0.0001 and group["entry_fills"]:
+            episode = _episode_from_accumulator(symbol, pos_side, group["entry_fills"], group["exit_fills"])
+            group.update(_initial_group_state())
+            return episode, counters
+    elif is_exit:
+        counters["orphaned"] = 1
+    group["last_sort_key"] = _event_sort_key(fill)
+    return None, counters
+
+
+def _replay_checkpoint_state(fills: list[dict]) -> tuple[dict, list[str], dict, dict]:
+    """Create durable open-position state from a clean corpus without changing output."""
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    order: list[str] = []
+    identities: list[str] = []
+    seen: set[str] = set()
+    for fill in fills:
+        identity = _event_identity(fill)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        identities.append(identity)
+        symbol, side = fill.get("symbol", ""), fill.get("positionSide", "")
+        if not symbol or not side:
+            continue
+        key = f"{symbol}|{side}"
+        if key not in grouped:
+            order.append(key)
+        grouped[key].append(fill)
+    states, episodes_by_group = {}, defaultdict(list)
+    counters = {"total": 0, "consumed": 0, "orphaned": 0}
+    for key in order:
+        state = _initial_group_state()
+        for fill in sorted(grouped[key], key=_event_sort_key):
+            episode, delta = _apply_fill_to_group(key, state, fill)
+            for name in counters:
+                counters[name] += delta[name]
+            if episode:
+                episodes_by_group[key].append(episode)
+            state["last_sort_key"] = _event_sort_key(fill)
+        states[key] = state
+    episode_number = 0
+    for key in order:
+        for episode in episodes_by_group[key]:
+            episode_number += 1
+            episode.episode_id = f"EP_{episode_number:04d}"
+    return states, order, dict(episodes_by_group), {"identities": identities, "counters": counters}
+
+
+def _flatten_group_episodes(episodes_by_group: dict, order: list[str]) -> list[Episode]:
+    episodes: list[Episode] = []
+    number = 0
+    for key in order:
+        for episode in episodes_by_group.get(key, []):
+            number += 1
+            episode.episode_id = f"EP_{number:04d}"
+            episodes.append(episode)
+    return episodes
+
+
+def _stats_from_incremental(
+    episodes: list[Episode], total_fills: int, counters: dict, metadata_pnl: dict,
+    log_files_read: int,
+) -> dict:
+    total_gross, total_fees, total_net = (sum(getattr(e, name) for e in episodes) for name in ("gross_pnl", "fees", "net_pnl"))
+    winners, losers = [e for e in episodes if e.net_pnl > 0], [e for e in episodes if e.net_pnl < 0]
+    max_dd_abs = 0.0
+    cumulative = peak = 0.0
+    for episode in sorted(episodes, key=lambda e: e.exit_ts):
+        cumulative += episode.net_pnl
+        peak = max(peak, cumulative)
+        max_dd_abs = max(max_dd_abs, peak - cumulative)
+    try:
+        nav_base = float(json.loads(NAV_STATE_PATH.read_text()).get("total_equity", 10000))
+    except Exception:
+        nav_base = 10000
+    max_dd_pct = round(max_dd_abs / (nav_base + peak) * 100, 2) if max_dd_abs and nav_base + peak > 0 else 0.0
+    return {
+        "total_fills": total_fills, "episodes_found": len(episodes), "total_gross_pnl": round(total_gross, 2),
+        "total_fees": round(total_fees, 2), "total_net_pnl": round(total_net, 2),
+        "winners": len(winners), "losers": len(losers),
+        "win_rate": round(len(winners) / len(episodes) * 100, 1) if episodes else 0,
+        "avg_duration_hours": round(sum(e.duration_hours for e in episodes) / len(episodes), 1) if episodes else 0,
+        "max_drawdown_pct": max_dd_pct, "max_drawdown_abs": round(max_dd_abs, 2),
+        "exit_reasons": {reason: len([e for e in episodes if e.exit_reason == reason]) for reason in sorted({e.exit_reason for e in episodes})},
+        "metadata_pnl": metadata_pnl,
+        "reconciliation": {"fills_total": counters["total"], "fills_consumed": counters["consumed"], "fills_orphaned": counters["orphaned"], "log_files_read": log_files_read},
+    }
+
+
+def _metadata_pnl_apply(metadata: dict, fill: dict) -> None:
+    """Accumulate metadata PnL without introducing an incremental rounding boundary.
+
+    ``metadata`` is checkpoint-private state.  Its public representation is
+    rendered only after a batch, at the same round-once boundary as
+    :func:`_compute_metadata_pnl`.
+    """
+    if not fill.get("reduceOnly"):
+        return
+    metadata["exits"] = int(metadata.get("exits", 0)) + 1
+    metadata["raw_fees"] = float(metadata.get("raw_fees", 0) or 0) + float(fill.get("fee_total", 0) or 0)
+    meta = fill.get("metadata", {}) or {}
+    exit_info = meta.get("exit", {}) or meta.get("tp_sl", {}) or {}
+    entry_price = exit_info.get("entry_price") or meta.get("entry_price")
+    if entry_price:
+        metadata["exits_with_entry_price"] = int(metadata.get("exits_with_entry_price", 0)) + 1
+        exit_price, qty = float(fill.get("avgPrice", 0) or 0), float(fill.get("executedQty", 0) or 0)
+        pnl = (exit_price - float(entry_price)) * qty if fill.get("positionSide", "") == "LONG" else (float(entry_price) - exit_price) * qty
+        metadata["raw_gross_pnl"] = float(metadata.get("raw_gross_pnl", 0) or 0) + pnl
+
+
+def _metadata_pnl_state(
+    fills: list[dict], since_date: Optional[str] = None, until_date: Optional[str] = None,
+) -> dict:
+    """Return checkpoint-private, unrounded metadata-PnL accumulation state."""
+    state: dict = {"exits": 0, "exits_with_entry_price": 0, "raw_fees": 0.0, "raw_gross_pnl": 0.0}
+    for fill in fills:
+        if not fill.get("reduceOnly"):
+            continue
+        ts = _parse_ts(fill.get("ts"))
+        if ts:
+            date_str = ts.strftime("%Y-%m-%d")
+            if since_date and date_str < since_date:
+                continue
+            if until_date and date_str > until_date:
+                continue
+        _metadata_pnl_apply(state, fill)
+    return state
+
+
+def _metadata_pnl_public(state: dict) -> dict:
+    """Render metadata-PnL state using the canonical, round-once contract."""
+    gross = float(state.get("raw_gross_pnl", 0) or 0)
+    fees = float(state.get("raw_fees", 0) or 0)
+    return {
+        "exits": int(state.get("exits", 0)),
+        "exits_with_entry_price": int(state.get("exits_with_entry_price", 0)),
+        "gross_pnl": round(gross, 2),
+        "fees": round(fees, 2),
+        "net_pnl": round(gross - fees, 2),
+    }
+
+
+def _read_new_execution_events(checkpoint: dict) -> tuple[list[dict], list[dict], int, Optional[str]]:
+    """Read only byte ranges after saved offsets; return a conservative fallback reason."""
+    old_sources = {entry["identity"]: entry for entry in checkpoint.get("sources", [])}
+    current: list[tuple[Path, str, dict]] = []
+    try:
+        for path in _execution_sources():
+            ident, entry = _source_identity(path)
+            current.append((path, ident, entry))
+    except OSError as exc:
+        return [], [], 0, f"source_stat_failed:{type(exc).__name__}"
+    old_ids = [entry["identity"] for entry in checkpoint.get("sources", [])]
+    # JsonlLogger atomically replaces the active filename on append.  Treat a
+    # new inode at the *same* path as a continuation only after proving its
+    # previously consumed prefix with the stored bounded anchors.  A renamed
+    # inode remains the normal rotation case.
+    matched_previous: dict[str, dict] = {}
+    matched_old_ids: list[str] = []
+    for path, ident, entry in current:
+        previous = old_sources.get(ident)
+        if previous is None:
+            candidates = [old for old in old_sources.values() if old.get("path") == entry["path"]]
+            if len(candidates) == 1 and entry["size"] >= int(candidates[0].get("offset", 0)):
+                candidate = candidates[0]
+                try:
+                    if candidate.get("content_anchor") == _source_anchor(path, int(candidate["offset"])):
+                        previous = candidate
+                except OSError as exc:
+                    return [], [], 0, f"source_anchor_failed:{type(exc).__name__}"
+        if previous is not None:
+            matched_previous[ident] = previous
+            matched_old_ids.append(previous["identity"])
+    if any(identity not in matched_old_ids for identity in old_ids):
+        return [], [], 0, "source_missing_or_replaced"
+    if matched_old_ids != old_ids:
+        return [], [], 0, "source_order_changed"
+    events, updated_sources, bytes_read = [], [], 0
+    for path, ident, entry in current:
+        previous = matched_previous.get(ident)
+        offset = int(previous.get("offset", 0)) if previous else 0
+        if entry["size"] < offset:
+            return [], [], bytes_read, "source_truncated"
+        try:
+            anchor = _source_anchor(path, offset) if previous else None
+        except OSError as exc:
+            return [], [], bytes_read, f"source_anchor_failed:{type(exc).__name__}"
+        if previous and previous.get("content_anchor") != anchor:
+            return [], [], bytes_read, "source_content_changed"
+        consumed = offset
+        if entry["size"] > offset:
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(offset)
+                    while True:
+                        before = handle.tell()
+                        raw = handle.readline()
+                        if not raw:
+                            break
+                        if not raw.endswith(b"\n"):
+                            # An incomplete append is retried next cycle, never partially consumed.
+                            break
+                        consumed = handle.tell()
+                        bytes_read += consumed - before
+                        try:
+                            value = json.loads(raw.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            continue
+                        if value.get("event_type") != "order_fill":
+                            continue
+                        if float(value.get("executedQty", 0) or 0) <= 0:
+                            continue
+                        events.append(value)
+            except OSError as exc:
+                return [], [], bytes_read, f"source_read_failed:{type(exc).__name__}"
+        entry["offset"] = consumed
+        try:
+            entry["content_anchor"] = _source_anchor(path, consumed)
+        except OSError as exc:
+            return [], [], bytes_read, f"source_anchor_failed:{type(exc).__name__}"
+        updated_sources.append(entry)
+    return events, updated_sources, bytes_read, None
+
+
+def _checkpoint_payload(
+    ledger: EpisodeLedger, sources: list[dict], states: dict, order: list[str],
+    identities: list[str], counters: dict, metadata_pnl: dict,
+) -> dict:
+    return {
+        "schema_version": EPISODE_LEDGER_CHECKPOINT_VERSION,
+        "checkpoint_ts": datetime.now(timezone.utc).isoformat(),
+        "sources": sources,
+        "source_file_order": [entry["path"] for entry in sources],
+        "execution_log_fingerprint": hashlib.sha256(json.dumps(sources, sort_keys=True).encode()).hexdigest(),
+        "authority_fingerprint": _authority_fingerprint(),
+        "nav_fingerprint": _nav_fingerprint(),
+        "open_episode_state": states,
+        "group_order": order,
+        "event_identities": identities,
+        "reconciliation_counters": counters,
+        "metadata_pnl": metadata_pnl,
+        "completed_episode_count": len(ledger.episodes),
+        "ledger_hash": _canonical_ledger_hash(ledger),
+        "engine_version": "v7.9",
+        "git_sha": _git_commit(),
+    }
+
+
+def _checkpoint_is_valid(checkpoint: object, ledger: Optional[EpisodeLedger]) -> Optional[str]:
+    if not isinstance(checkpoint, dict):
+        return "checkpoint_missing_or_corrupt"
+    if checkpoint.get("schema_version") != EPISODE_LEDGER_CHECKPOINT_VERSION:
+        return "checkpoint_version_mismatch"
+    if ledger is None:
+        return "ledger_missing_or_corrupt"
+    if checkpoint.get("ledger_hash") != _canonical_ledger_hash(ledger):
+        return "ledger_checkpoint_hash_mismatch"
+    required = ("sources", "open_episode_state", "group_order", "event_identities", "reconciliation_counters", "metadata_pnl", "nav_fingerprint")
+    return next((f"checkpoint_missing_{key}" for key in required if key not in checkpoint), None)
+
+
+def _load_checkpoint() -> Optional[dict]:
+    try:
+        return json.loads(EPISODE_LEDGER_CHECKPOINT_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _full_rebuild_with_checkpoint(reason: str, mode: str = "full_fallback") -> tuple[EpisodeLedger, dict]:
+    """The only recovery path: run the unchanged canonical full builder then checkpoint it."""
+    ledger = build_episode_ledger()
+    fills = _load_execution_log()
+    metadata_state = _metadata_pnl_state(fills)
+    states, order, episodes_by_group, replay = _replay_checkpoint_state(fills)
+    # The replay uses the same legacy rules; disagreement means do not create a checkpoint.
+    replay_episodes = _flatten_group_episodes(episodes_by_group, order)
+    if not fills:
+        baseline = ledger
+    else:
+        baseline_stats = _stats_from_incremental(
+            replay_episodes, len(replay["identities"]), replay["counters"],
+            _metadata_pnl_public(metadata_state), len(_execution_sources()),
+        )
+        if "authority" in ledger.stats:
+            baseline_stats["authority"] = ledger.stats["authority"]
+        baseline = EpisodeLedger(
+            episodes=replay_episodes, episodes_v2=ledger.episodes_v2,
+            last_rebuild_ts=ledger.last_rebuild_ts, stats=baseline_stats,
+        )
+    if _canonical_ledger_hash(baseline) != _canonical_ledger_hash(ledger):
+        logger.warning("episode ledger checkpoint replay divergence; checkpoint withheld")
+        return ledger, {"checkpoint": None, "reason": "replay_divergence"}
+    sources = []
+    for path in _execution_sources():
+        _, source = _source_identity(path)
+        source["content_anchor"] = _source_anchor(path, source["offset"])
+        sources.append(source)
+    checkpoint = _checkpoint_payload(ledger, sources, states, order, replay["identities"], replay["counters"], metadata_state)
+    return ledger, {"checkpoint": checkpoint, "reason": reason}
+
+
 def rebuild_and_save(
     since_date: Optional[str] = None,
     until_date: Optional[str] = None,
+    *,
+    force_full: bool = False,
 ) -> EpisodeLedger:
-    """Convenience function: rebuild and save ledger."""
-    ledger = build_episode_ledger(since_date, until_date)
-    save_episode_ledger(ledger)
+    """Incrementally rebuild the default ledger; scoped rebuilds remain canonical full builds."""
+    started = time.monotonic()
+    checkpoint = _load_checkpoint()
+    ledger = load_episode_ledger()
+    reason = "forced_full" if force_full else ("scoped_rebuild" if since_date or until_date else _checkpoint_is_valid(checkpoint, ledger))
+    mode = "forced_full" if force_full else "full_fallback"
+    source_files_seen = len(_execution_sources())
+    source_files_read = bytes_read = new_events = events_replayed = episodes_created = episodes_updated = 0
+    if reason:
+        if since_date or until_date:
+            ledger = build_episode_ledger(since_date, until_date)
+            save_episode_ledger(ledger)
+            checkpoint_out = None
+        else:
+            ledger, detail = _full_rebuild_with_checkpoint(reason, mode)
+            checkpoint_out = detail["checkpoint"]
+            reason = detail["reason"]
+        mode = "forced_full" if force_full else "full_fallback"
+        events_replayed = int(ledger.stats.get("total_fills", 0))
+        source_files_read = source_files_seen
+        bytes_read = sum(path.stat().st_size for path in _execution_sources() if path.exists())
+    else:
+        assert checkpoint is not None and ledger is not None
+        events, sources, bytes_read, read_reason = _read_new_execution_events(checkpoint)
+        if read_reason:
+            ledger, detail = _full_rebuild_with_checkpoint(read_reason)
+            checkpoint_out, reason, mode = detail["checkpoint"], detail["reason"], "full_fallback"
+            events_replayed, source_files_read = int(ledger.stats.get("total_fills", 0)), source_files_seen
+            bytes_read = sum(path.stat().st_size for path in _execution_sources() if path.exists())
+        else:
+            source_files_read = sum(1 for source in sources if source["offset"] > next((old.get("offset", 0) for old in checkpoint["sources"] if old["identity"] == source["identity"]), 0))
+            known = set(checkpoint["event_identities"])
+            states, order = checkpoint["open_episode_state"], checkpoint["group_order"]
+            episodes_by_group: dict[str, list[Episode]] = defaultdict(list)
+            for episode in ledger.episodes:
+                episodes_by_group[f"{episode.symbol}|{episode.side}"].append(episode)
+            counters = dict(checkpoint["reconciliation_counters"])
+            metadata = dict(checkpoint["metadata_pnl"])
+            accepted: list[dict] = []
+            late = False
+            for event in events:
+                identity = _event_identity(event)
+                if identity in known:
+                    continue
+                symbol, side = event.get("symbol", ""), event.get("positionSide", "")
+                key = f"{symbol}|{side}" if symbol and side else ""
+                if key and key in states and _event_sort_key(event) < states[key].get("last_sort_key", ""):
+                    late = True
+                    break
+                known.add(identity)
+                accepted.append(event)
+            if late:
+                ledger, detail = _full_rebuild_with_checkpoint("late_event_or_replay_divergence")
+                checkpoint_out, reason, mode = detail["checkpoint"], detail["reason"], "full_fallback"
+                events_replayed, source_files_read = int(ledger.stats.get("total_fills", 0)), source_files_seen
+                bytes_read = sum(path.stat().st_size for path in _execution_sources() if path.exists())
+            else:
+                # The full builder groups in source order, then stable-sorts
+                # each group by this key.  Preserve first-seen group order,
+                # while replaying every append batch in that same group-local
+                # canonical order.  File order is not semantic ordering.
+                accepted_by_group: dict[str, list[dict]] = defaultdict(list)
+                for event in accepted:
+                    symbol, side = event.get("symbol", ""), event.get("positionSide", "")
+                    if symbol and side:
+                        accepted_by_group[f"{symbol}|{side}"].append(event)
+                for key, group_events in accepted_by_group.items():
+                    if key not in states:
+                        states[key] = _initial_group_state()
+                        order.append(key)
+                    for event in sorted(group_events, key=_event_sort_key):
+                        episode, delta = _apply_fill_to_group(key, states[key], event)
+                        states[key]["last_sort_key"] = _event_sort_key(event)
+                        for name in counters:
+                            counters[name] += delta[name]
+                        if episode:
+                            episodes_by_group[key].append(episode)
+                            episodes_created += 1
+                        _metadata_pnl_apply(metadata, event)
+                new_events = len(accepted)
+                episodes = _flatten_group_episodes(episodes_by_group, order)
+                # Authority data is a separate read-only source.  Rebind it when it changed,
+                # without falling back to the execution-history scan.
+                authority_changed = checkpoint.get("authority_fingerprint") != _authority_fingerprint()
+                if authority_changed or (episodes_created and ledger.episodes_v2):
+                    links_in, links_out, decisions = _load_shadow_indexes()
+                    if links_in or links_out:
+                        ledger.episodes_v2, authority = _bind_authority(episodes, links_in, links_out, decisions)
+                        episodes_updated = len(episodes) if authority_changed else episodes_created
+                    else:
+                        ledger.episodes_v2, authority = [], None
+                else:
+                    authority = ledger.stats.get("authority")
+                    v2_by_uid = {_compute_episode_uid(e.symbol, e.side, e.entry_ts, e.exit_ts, e.total_qty, e.avg_entry_price, e.avg_exit_price): e for e in ledger.episodes_v2}
+                    for episode in episodes:
+                        existing = v2_by_uid.get(_compute_episode_uid(episode.symbol, episode.side, episode.entry_ts, episode.exit_ts, episode.total_qty, episode.avg_entry_price, episode.avg_exit_price))
+                        if existing:
+                            existing.episode_id = episode.episode_id
+                ledger.episodes = episodes
+                ledger.last_rebuild_ts = datetime.now(timezone.utc).isoformat()
+                ledger.stats = _stats_from_incremental(episodes, len(known), counters, _metadata_pnl_public(metadata), source_files_seen)
+                if authority:
+                    ledger.stats["authority"] = authority
+                checkpoint_out = _checkpoint_payload(ledger, sources, states, order, sorted(known), counters, metadata)
+                mode, reason = "incremental", None
+    if 'checkpoint_out' in locals() and checkpoint_out is not None:
+        # Either file can survive an interruption; the semantic hash check turns that into a safe fallback.
+        _atomic_json_write(EPISODE_LEDGER_PATH, ledger.to_dict())
+        _atomic_json_write(EPISODE_LEDGER_CHECKPOINT_PATH, checkpoint_out)
+    elif not (since_date or until_date):
+        save_episode_ledger(ledger)
+    duration_ms = (time.monotonic() - started) * 1000
+    _append_rebuild_telemetry({
+        "ts": datetime.now(timezone.utc).isoformat(), "mode": mode, "duration_ms": round(duration_ms, 3),
+        "source_files_seen": source_files_seen, "source_files_read": source_files_read, "bytes_read": bytes_read,
+        "new_events": new_events, "events_replayed": events_replayed, "episodes_created": episodes_created,
+        "episodes_updated": episodes_updated, "episodes_total": len(ledger.episodes),
+        "checkpoint_valid": not bool(reason), "fallback_reason": reason,
+        "ledger_hash": _canonical_ledger_hash(ledger), "checkpoint_version": EPISODE_LEDGER_CHECKPOINT_VERSION,
+        "engine_version": "v7.9", "git_sha": _git_commit(),
+    })
+    logger.info("episode ledger rebuild mode=%s new_events=%d bytes_read=%d fallback=%s", mode, new_events, bytes_read, reason)
     return ledger
 
 

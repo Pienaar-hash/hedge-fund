@@ -42,3 +42,4 @@ Agent guidance:
 - If you change runtime/state surfaces, also run `test-runtime`.
 - Use `make cov-core` when changing execution, dashboard, prediction, or treasury logic.
 - `tests/integration/test_pub_tick_heartbeat.py` covers the `_pub_tick()` boundary heartbeat (`logs/execution/pub_tick_heartbeat.jsonl`); always monkeypatch `executor_live._PUB_TICK_HEARTBEAT_LOG` to an in-memory/tmp_path logger — this repo's `logs/` directory is the live executor's real log directory, not a test fixture.
+- `tests/unit/test_episode_ledger_incremental.py` covers initial/full fallback, no-op and append cursors, open-to-closed transitions, rotations, duplicate/malformed lines, source truncation/replacement, corrupt/version/hash-divergent checkpoints, forced full rebuild, telemetry fail-open, and structural source-byte scaling. It compares incremental output with a clean canonical full build.

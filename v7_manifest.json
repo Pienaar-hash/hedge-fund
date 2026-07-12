@@ -160,6 +160,14 @@
         "fail_behavior": "explicit flags, never guess"
       }
     },
+    "episode_ledger_checkpoint": {
+      "path": "logs/state/episode_ledger_checkpoint.json",
+      "owner": "episode_ledger",
+      "update_frequency": "per_episode_ledger_rebuild",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "description": "Durable incremental episode-ledger cursor. Records checkpoint version, source identities and byte offsets, open episode reconstruction state, de-dup identities, raw metadata-PnL accumulation, reconciliation aggregates, authority and NAV source fingerprints, and semantic ledger hash. Corruption or incompatibility triggers a visible canonical full fallback."
+    },
     "meta_scheduler": {
       "path": "logs/state/meta_scheduler.json",
       "owner": "executor",
@@ -781,6 +789,27 @@
       "lifecycle": "runtime_generated",
       "event_types": ["order_ack", "order_fill", "order_close", "reconciliation_summary"],
       "known_gaps": "crash-window: if executor restarts after order_ack but before order_fill is written, the fill is missing until startup_reconciliation.reconcile_unresolved_acks() backfills it"
+    },
+    "episode_ledger_rebuild": {
+      "path": "logs/execution/episode_ledger_rebuild.jsonl",
+      "owner": "episode_ledger",
+      "description": "Append-only, fail-open telemetry for full and incremental episode-ledger rebuilds.",
+      "optional": true,
+      "lifecycle": "runtime_generated",
+      "fields": {
+        "mode": "incremental|full_fallback|forced_full",
+        "duration_ms": "float",
+        "source_files_seen": "int",
+        "source_files_read": "int",
+        "bytes_read": "int",
+        "new_events": "int",
+        "events_replayed": "int",
+        "episodes_created": "int",
+        "episodes_updated": "int",
+        "checkpoint_valid": "bool",
+        "fallback_reason": "str|null",
+        "ledger_hash": "sha256 semantic ledger hash excluding rebuild wall time"
+      }
     },
     "position_state_log": {
       "path": "logs/execution/position_state.jsonl",

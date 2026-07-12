@@ -1,0 +1,40 @@
+{
+  "card": "CARD-HEDGE-EPISODE-LEDGER-INCREMENTAL-DEFINITIONAL-EQUIVALENCE-REPAIR-001",
+  "starting_branch": "card/episode-ledger-equivalence-forensics-001",
+  "starting_head": "4b3ff2a086c2a565d41bf0ad9149aff95882f3b4",
+  "deployed_executor_commit": "4aa5110268db331baae022d5f818ea99b47b0256",
+  "unrepaired_candidate": "f9250de18b735d24c09349b1b01786c002299165",
+  "repaired_checkpoint_version": "episode_ledger_incremental_v2",
+  "candidate_regressions": {
+    "unsorted_multi_event_append": "diverges",
+    "per_event_metadata_pnl_rounding": "diverges"
+  },
+  "repaired_fixture_results": {
+    "clean_initial_full": "pass",
+    "checkpoint_backed_noop": "pass",
+    "single_event_append": "pass",
+    "unsorted_multi_event_append": "pass",
+    "equal_timestamp_stable_order": "pass",
+    "interleaved_multi_symbol_append": "pass",
+    "metadata_pnl_rounding": "pass",
+    "active_log_growth": "pass",
+    "rotation_preserved_content": "pass",
+    "restart_valid_checkpoint": "pass",
+    "ledger_written_checkpoint_stale_recovery": "pass",
+    "checkpoint_hash_mismatch_fallback": "pass",
+    "unproven_inode_replacement_fallback": "pass",
+    "partial_trailing_line_then_completion": "pass",
+    "duplicate_event_append": "pass",
+    "nav_only_semantic_change": "pass",
+    "repeated_noop_idempotence": "pass",
+    "repeated_recovery_idempotence": "pass",
+    "authority_payload_equivalence": "pass",
+    "manifest_missing_or_mutated_input_rejection": "pass"
+  },
+  "representative_canonical_hashes": {
+    "clean_initial_full_and_noop": "b5139f15dd0e13b77652ba82df4d457d6003d58fa52e9242251685f3b0e46d14",
+    "unsorted_append_full_and_incremental": "aabcb020ca39bdf77e3f06ccfc29bb0a37609ed4bff1594d20a54f7fd507f34f",
+    "rounding_append_full_and_incremental": "863e00bd9640b9e9bf37486d2c7f99e3426ec3d2180ddc09e1f5a0c7bc46204e"
+  },
+  "deployment_disposition": "offline_proven_not_deployed"
+}

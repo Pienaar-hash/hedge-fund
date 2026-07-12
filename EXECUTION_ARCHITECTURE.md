@@ -134,6 +134,7 @@ All state surfaces live in `logs/state/`. The executor is the **sole writer**. D
 | `hydra_state.json` | `logs/state/hydra_state.json` | Head budgets, usage, merged intents | Each cycle |
 | `diagnostics.json` | `logs/state/diagnostics.json` | Veto counters, pipeline liveness, alerts | Each cycle |
 | `router_health.json` | `logs/state/router_health.json` | Fill ratio, slippage mean, spread mean (state surface) | Each cycle |
+| `episode_ledger_checkpoint.json` | `logs/state/episode_ledger_checkpoint.json` | Durable incremental cursor, source identities/offsets, open episode state, and semantic ledger hash | Each ledger rebuild |
 | `telegram_state.json` | `logs/state/telegram_state.json` | Alert dedupe state | On alert send |
 | `nav_health.json` | **`logs/nav_health.json`** | NAV age, source freshness | Each cycle |
 
@@ -154,10 +155,19 @@ Most append-only JSONL logs are under `logs/execution/`, but two live in `logs/`
 | `execution_health.jsonl` | `logs/execution/` | Uptime, error rate, ATR regime distribution |
 | `sync_heartbeats.jsonl` | `logs/execution/` | Sync state service heartbeats |
 | `pub_tick_heartbeat.jsonl` | `logs/execution/` | `_pub_tick()` boundary trace — proves call reached / entered / completed / failed / aborted (see below) |
+| `episode_ledger_rebuild.jsonl` | `logs/execution/` | Fail-open rebuild telemetry: mode, source bytes read, event/episode deltas, fallback reason, semantic hash |
 | `doctrine_events.jsonl` | **`logs/`** | Doctrine entry/exit verdicts (ALLOW, VETO, exit reasons) |
 | `router_health.jsonl` | **`logs/`** | Router health log (separate from the state surface) |
 
 **NAV history:** `logs/nav_log.json` — single JSON array, entries keyed `{"t": <unix_ts>, "nav": <float>}`. The writer appends without truncation; there is no size cap in the current code. Read with Python/jq, not `tail`.
+
+## Episode-ledger incremental rebuild
+
+`execution.episode_ledger.rebuild_and_save()` keeps the public `episode_ledger.json` schema unchanged while checkpointing the source-file device/inode, consumed byte offset, de-dup identities, reconstruction state for open episodes, completion count, and a canonical semantic hash. The first rebuild is a canonical full build. Routine rebuilds consume only complete JSONL lines appended after each saved offset, then update only the affected symbol/side state.
+
+Current and rotated `orders_executed*.jsonl` sources retain the legacy order: rotated names in reverse lexical order, followed by `orders_executed.jsonl`. An inode-preserving rename is treated as rotation; an unseen current file is ingested from zero. The active writer may atomically replace the active pathname: this is accepted only when bounded anchors prove that the old consumed range is an unchanged prefix, then only the suffix is consumed. Missing sources, unproven replacement/truncation, source-order changes, malformed/corrupt or version-mismatched checkpoints, a ledger/checkpoint semantic-hash mismatch, late event ordering, and explicit `force_full=True` use the canonical full fallback. No source data is guessed or discarded.
+
+Authority shadow changes are re-bound from the current shadow index without re-reading execution history. Every rebuild appends bounded, fail-open telemetry to `logs/execution/episode_ledger_rebuild.jsonl`; a telemetry failure cannot affect state publication or trading.
 
 ---
 
