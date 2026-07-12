@@ -1,0 +1,369 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Episode Ledger Provenance-Gated Deployment Bundle",
+  "type": "object",
+  "required": [
+    "candidate_commit_sha",
+    "candidate_worktree_clean",
+    "candidate_module_content_hash",
+    "candidate_callable_fingerprints",
+    "interpreter_identity",
+    "dependency_environment_fingerprint",
+    "runtime_configuration_hashes",
+    "resolved_source_destination_paths",
+    "canonicalization_identifier",
+    "nav_semantic_input_declaration",
+    "test_results",
+    "atomic_snapshot_manifest",
+    "full_replay_equivalence_results",
+    "checkpoint_compatibility_result",
+    "rollback_target",
+    "authorization_record",
+    "bundle_checksum_manifest",
+    "state_machine",
+    "preflight_gate",
+    "freshness_gate"
+  ],
+  "properties": {
+    "candidate_commit_sha": {
+      "type": "string"
+    },
+    "candidate_worktree_clean": {
+      "type": "boolean",
+      "const": true
+    },
+    "candidate_module_content_hash": {
+      "type": "string"
+    },
+    "candidate_callable_fingerprints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "kind",
+          "sha256"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "interpreter_identity": {
+      "type": "object",
+      "required": [
+        "path",
+        "version"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "dependency_environment_fingerprint": {
+      "type": "object",
+      "required": [
+        "requirements_sha256",
+        "python_implementation"
+      ],
+      "properties": {
+        "requirements_sha256": {
+          "type": "string"
+        },
+        "python_implementation": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "runtime_configuration_hashes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "resolved_source_destination_paths": {
+      "type": "object",
+      "required": [
+        "live_runtime_root",
+        "evidence_dir",
+        "candidate_repo_root",
+        "rollback_repo_root"
+      ],
+      "properties": {
+        "live_runtime_root": {
+          "type": "string"
+        },
+        "evidence_dir": {
+          "type": "string"
+        },
+        "candidate_repo_root": {
+          "type": "string"
+        },
+        "rollback_repo_root": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "canonicalization_identifier": {
+      "type": "string",
+      "const": "execution.episode_ledger._canonical_ledger_hash"
+    },
+    "nav_semantic_input_declaration": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "const": true
+        },
+        "path": {
+          "type": "string",
+          "const": "logs/state/nav_state.json"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "test_results": {
+      "type": "object",
+      "required": [
+        "rehearsal_matrix_passed",
+        "comparison_report_hash"
+      ],
+      "properties": {
+        "rehearsal_matrix_passed": {
+          "type": "boolean"
+        },
+        "comparison_report_hash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "atomic_snapshot_manifest": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "role",
+          "source",
+          "snapshot",
+          "identity"
+        ],
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "identity": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "full_replay_equivalence_results": {
+      "type": "object",
+      "required": [
+        "comparisons",
+        "first_semantic_difference"
+      ],
+      "properties": {
+        "comparisons": {
+          "type": "object"
+        },
+        "first_semantic_difference": {}
+      },
+      "additionalProperties": true
+    },
+    "checkpoint_compatibility_result": {
+      "type": "object",
+      "required": [
+        "compatible"
+      ],
+      "properties": {
+        "compatible": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "rollback_target": {
+      "type": "object",
+      "required": [
+        "commit_sha",
+        "module_hash",
+        "procedure"
+      ],
+      "properties": {
+        "commit_sha": {
+          "type": "string"
+        },
+        "module_hash": {
+          "type": "string"
+        },
+        "procedure": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "authorization_record": {
+      "type": "object",
+      "required": [
+        "authorized_by",
+        "ts",
+        "bundle_hash",
+        "statement"
+      ],
+      "properties": {
+        "authorized_by": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "string"
+        },
+        "bundle_hash": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "bundle_checksum_manifest": {
+      "type": "object",
+      "required": [
+        "sha256sums_sha256",
+        "entries"
+      ],
+      "properties": {
+        "sha256sums_sha256": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "state_machine": {
+      "type": "object",
+      "required": [
+        "states",
+        "terminal_states",
+        "valid_transitions",
+        "transition_authority",
+        "required_evidence",
+        "failure_codes"
+      ],
+      "properties": {
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "UNPREPARED",
+              "PREFLIGHT_CAPTURED",
+              "SNAPSHOT_FROZEN",
+              "OFFLINE_EQUIVALENCE_PASSED",
+              "RUNTIME_PROVENANCE_VERIFIED",
+              "DEPLOYMENT_AUTHORIZED",
+              "DEPLOYING",
+              "POST_START_VALIDATING",
+              "ACCEPTED",
+              "ROLLED_BACK",
+              "FAILED_CLOSED"
+            ]
+          }
+        },
+        "terminal_states": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "valid_transitions": {
+          "type": "object"
+        },
+        "transition_authority": {
+          "type": "object"
+        },
+        "required_evidence": {
+          "type": "object"
+        },
+        "failure_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "preflight_gate": {
+      "type": "object",
+      "required": [
+        "passed"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "freshness_gate": {
+      "type": "object",
+      "required": [
+        "candidate_commit",
+        "candidate_module_hash",
+        "clean_worktree",
+        "passed"
+      ],
+      "properties": {
+        "candidate_commit": {
+          "type": "string"
+        },
+        "candidate_module_hash": {
+          "type": "string"
+        },
+        "clean_worktree": {
+          "type": "boolean"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
