@@ -1,0 +1,8 @@
+{
+  "schema_version": "weekly_risk_limits_v1",
+  "risk": {
+    "maximum_weekly_loss_pct": 0.08,
+    "maximum_drawdown_pct": 0.20,
+    "maximum_concurrent_position_risk_pct": 0.10
+  }
+}

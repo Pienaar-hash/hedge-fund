@@ -1,0 +1,39 @@
+{
+  "schema_version": "weekly_momentum_config_v1",
+  "rebalance": {
+    "weekday_utc": 0,
+    "hour_utc": 1,
+    "minute_utc": 0
+  },
+  "lookbacks_weeks": {
+    "short": 4,
+    "medium": 13,
+    "long": 26,
+    "anchor": 52,
+    "trend_sma": 40,
+    "persistence": 13
+  },
+  "score_weights": {
+    "rank_4w": 0.15,
+    "rank_13w": 0.35,
+    "rank_26w": 0.30,
+    "rank_52w": 0.20
+  },
+  "selection": {
+    "max_positions": 3,
+    "minimum_score": 0.80,
+    "minimum_rank_13w": 0.75,
+    "minimum_rank_26w": 0.80,
+    "minimum_rank_52w": 0.70,
+    "minimum_persistence_13": 0.69
+  },
+  "sizing": {
+    "maximum_gross_exposure_pct": 1.0,
+    "maximum_position_pct": 0.45,
+    "minimum_position_pct": 0.20,
+    "maximum_leverage": 1.0,
+    "max_loss_pct_per_position": 0.04,
+    "hard_stop_pct": 0.10,
+    "rebalance_threshold_pct": 0.05
+  }
+}

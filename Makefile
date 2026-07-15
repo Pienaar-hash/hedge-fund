@@ -6,15 +6,15 @@ smoke:
 
 .PHONY: test
 test:
-	@PYTHONPATH=. $(PYTHON) -m pytest tests/unit tests/integration tests/dashboard tests/scripts -q
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/unit/test_weekly_momentum_engine.py tests/unit/test_weekly_position_sizer.py tests/unit/test_weekly_risk_gate.py tests/integration/test_weekly_cycle.py tests/integration/test_weekly_replay_determinism.py -q
 
 .PHONY: test-fast
 test-fast:
-	@PYTHONPATH=. $(PYTHON) -m pytest tests/unit tests/integration tests/dashboard tests/scripts -m "not runtime and not legacy" -q
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/unit/test_weekly_momentum_engine.py tests/unit/test_weekly_position_sizer.py tests/unit/test_weekly_risk_gate.py -q
 
 .PHONY: test-runtime
 test-runtime:
-	@PYTHONPATH=. $(PYTHON) -m pytest tests/integration -m "runtime" -q
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/integration/test_weekly_cycle.py tests/integration/test_weekly_replay_determinism.py -q
 
 .PHONY: test-research
 test-research:

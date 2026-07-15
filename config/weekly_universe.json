@@ -1,0 +1,36 @@
+{
+  "schema_version": "weekly_universe_v1",
+  "price_source": "canonical_weekly_fixture",
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "correlation_group": "majors",
+      "min_notional_usd": 25.0,
+      "notional_precision": 2
+    },
+    {
+      "symbol": "ETHUSDT",
+      "correlation_group": "majors",
+      "min_notional_usd": 25.0,
+      "notional_precision": 2
+    },
+    {
+      "symbol": "SOLUSDT",
+      "correlation_group": "alts",
+      "min_notional_usd": 25.0,
+      "notional_precision": 2
+    },
+    {
+      "symbol": "LINKUSDT",
+      "correlation_group": "alts",
+      "min_notional_usd": 25.0,
+      "notional_precision": 2
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "correlation_group": "memes",
+      "min_notional_usd": 25.0,
+      "notional_precision": 2
+    }
+  ]
+}
