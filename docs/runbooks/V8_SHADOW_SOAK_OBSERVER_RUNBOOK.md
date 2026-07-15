@@ -2,7 +2,9 @@
 
 ## Status
 
-Manual observation only.
+Phase 5 is terminated with a hard-fail verdict.
+
+Phase 6 is denied. No live authority increase is permitted.
 
 This runbook does not authorize:
 - cron
@@ -19,17 +21,19 @@ Current sealed runner commit:
 
 ## Purpose
 
-Run the V8 Phase 5 shadow soak observer once per day and inspect the read-only state outputs.
+This document is now an archival runbook for the completed Phase 5 observer.
 
-The observer is research-only. It writes append-only observation events and a state snapshot. It does not gate execution.
+The observer remains research-only and non-gating, but observation is stopped for this configuration.
 
-## Daily manual command
+## Observation loop status
 
-From repo root:
+Do not run the Phase 5 daily observer loop.
 
 ```bash
-bin/run-shadow-soak-observer.sh
+# prohibited: bin/run-shadow-soak-observer.sh
 ```
+
+Manual inspection of already-written append-only logs is permitted for research-only analysis.
 
 ## Inspect state
 
@@ -47,7 +51,7 @@ logs/state/shadow_soak_state.json
 
 ## Acceptable interim states
 
-During the 14-day observation period, the state may be:
+Historical reference (during the prior 14-day observation design), the state could be:
 
 ```text
 PENDING
@@ -70,17 +74,34 @@ Do not proceed to Phase 6 if any of the following are present:
 * median absolute slippage error above 3 bps at gate review
 * p95 absolute slippage error above 10 bps at gate review
 
-## 14-day gate
+## 14-day gate (superseded)
 
 Do not discuss live activation until 14 days of real observation data exist.
 
 PASS requires the Phase 5 criteria in `docs/v8_phase5_shadow_soak_spec.md`.
 
+This gate is superseded by the Phase 5 hard-fail postmortem in `docs/audits/V8_PHASE5_FAILURE_POSTMORTEM.md`.
+
+## Next valid work (research-only)
+
+1. Identify strategy divergence point between replay and live signal generation.
+2. Run side-by-side replay vs live trace on identical inputs for a single symbol and hour.
+3. Capture the first divergence event (signal, regime, doctrine decision, side mapping).
+4. Keep executor, doctrine, risk, and live authority unchanged until root cause is documented.
+
+Initial trace helper:
+
+```bash
+python -m research.phase5_divergence_trace \
+  --logs-dir logs \
+  --replay-dir data/replay_certifications/<run_id>
+```
+
 ## Rollback / disable
 
 Do not delete append-only logs.
 
-To disable the observer:
+If archival disable actions are needed:
 
 1. Stop running `bin/run-shadow-soak-observer.sh`
 2. Archive `logs/research/shadow_soak_events.jsonl` to `logs/research/archive/`
