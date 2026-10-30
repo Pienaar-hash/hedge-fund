@@ -1,0 +1,2019 @@
+{
+  "created_on": "2026-10-30",
+  "excluded": "Python installations, virtual environments, package caches, pytest temporary directories, redundant operational-context dumps, credentials and unrelated runtime state",
+  "files": [
+    {
+      "bytes": 889,
+      "path": "H-LIQ-001/closeout-20261030/commit-result.json",
+      "sha256": "96ee5344440644d7e605e25193d915ec0cbc6b2bff1afda751ed054aaf7e2a1d"
+    },
+    {
+      "bytes": 259,
+      "path": "H-LIQ-001/closeout-20261030/liquidity-tests.log",
+      "sha256": "7fbfe501a610ea891bbb25b84ca584663673c182509b2f536a7bbf105641dcf9"
+    },
+    {
+      "bytes": 392,
+      "path": "H-LIQ-001/closeout-20261030/preservation-and-review.json",
+      "sha256": "f164d071e1510ee426e7a7c5d5949f15252ac6ca87a6a3cf79f080c02b179edc"
+    },
+    {
+      "bytes": 160,
+      "path": "H-LIQ-001/closeout-20261030/test-fast.log",
+      "sha256": "86dc5ee72209450ba766e3b3bf8e6e53e0c5554cb041f8c53e15e96c85d0eab4"
+    },
+    {
+      "bytes": 9530,
+      "path": "H-LIQ-001/daily-20261030/REPORT.md",
+      "sha256": "b744ec8ea94afd698d1a6a77e025fd31ba57aa33997a1219f593adcad29c599a"
+    },
+    {
+      "bytes": 65314,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-01-klines_1m/BTCUSDT-1m-2022-01-01.zip",
+      "sha256": "09086b8e44cdd0aa902b38fc698e0ce98fbc554d47146d0f27d5a58f9fe39c2b"
+    },
+    {
+      "bytes": 92,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-01-klines_1m/BTCUSDT-1m-2022-01-01.zip.CHECKSUM",
+      "sha256": "821a09080ef9214abb1f5eba6cad280dd5a3254b7d7ed976019daae156a63ec4"
+    },
+    {
+      "bytes": 2897,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-01-klines_1m/manifest.json",
+      "sha256": "cf6c38dc873a3c26687d61d3a5a7d1f65479cd0e477fda7cf26c917581cd2fa1"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-01-klines_1m/partitions/part-000000-c.npy",
+      "sha256": "6a28a4e8f24f1b0515a978339d6ed56b2588830dc738309632aeecd2880247c4"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-01-klines_1m/partitions/part-000000-h.npy",
+      "sha256": "fde1e456a481b9bda568028c9a86dd8dfd0d43b4084031a1d67d428bad6fea92"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-01-klines_1m/partitions/part-000000-l.npy",
+      "sha256": "5d49efbbbf72c1ce7fc68ec4f751107f6a955605f9b93660f56c8bd6d460e85a"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-01-klines_1m/partitions/part-000000-o.npy",
+      "sha256": "b10a94e07bb36070a0def143141bcc78b1510e38e5e3e2f741869556b27ffc24"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-01-klines_1m/partitions/part-000000-t.npy",
+      "sha256": "f3ef3d6136593a2a85b93943284279295f282225464f9522e6af87debf5e7943"
+    },
+    {
+      "bytes": 13571348,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/BTCUSDT-aggTrades-2022-01-02.zip",
+      "sha256": "87f3d9e800bf9abec643ce0e9add98eedc927bea4c8006da652235ea779cc429"
+    },
+    {
+      "bytes": 99,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/BTCUSDT-aggTrades-2022-01-02.zip.CHECKSUM",
+      "sha256": "c568b02eb5151bf65df47a9d59bce6a61487229bb8f30ef652c3a0640b7a80f5"
+    },
+    {
+      "bytes": 16755,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/FAILURE.json",
+      "sha256": "280c0f4bda3592b5b3d2ba431b09247f5a3b6f7f79eebe56a6a969eab08cb928"
+    },
+    {
+      "bytes": 16691,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/manifest.json",
+      "sha256": "dfb3a0b9620bcced9d94cb648c170938a4fd353f24b2497991d1f533c0b0d17c"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000000-first_id.npy",
+      "sha256": "7442f7a9ddf3b3fbf871bdbb67bf48de82b40868a299e6481a2d45cbd4aaf587"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000000-id.npy",
+      "sha256": "2bbec09abf4de26b9743d0ac4c9daf36f3939eb86d787ce77fe59843408f7bcd"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000000-last_id.npy",
+      "sha256": "d09a05299abaeede15c6edea451cdd2e8c8179e806af3dfdf064097ed73d80cf"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000000-p.npy",
+      "sha256": "3579aa976fac8365a364c8770b39a261a6f9d8167dc125edc77c62c5957a851c"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000000-q.npy",
+      "sha256": "f2ad26a999b66b53c97cef6f7c1284cb178a381b37c98861d421e0e27036fe6f"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000000-t.npy",
+      "sha256": "c4e316a83423465056e790ee9c6993dd342e823ec497f95e9d7fe02d1c94ade5"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000001-first_id.npy",
+      "sha256": "715938e7314a864fd019d093614db6174363b70c1a6869ab9f3d401b28e14d74"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000001-id.npy",
+      "sha256": "8cdf63eefa4b1fd8e9e077ec84618e1b7a1a00a80eb139f82d4417ba4d82a1bf"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000001-last_id.npy",
+      "sha256": "37abe9e734f1a37240dc476e33d362838b22eee179dda293297366d8e329c8e4"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000001-p.npy",
+      "sha256": "ffe8fc6c7166dda08efe5c68e5b7cc303051a079cc51ee5c38e17e7e1896eb59"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000001-q.npy",
+      "sha256": "d97aba6fbafc63a275b3d56c6a61479201a31821a489a52b25156c94e49d3d89"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000001-t.npy",
+      "sha256": "f9411b71c572677bf66e866d4bc83e2eee74487a76dd0cf620331b4b91783485"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000002-first_id.npy",
+      "sha256": "89ca121e1227474b00177747c53145a22a145266e0228cd1aa17cf830c6858d6"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000002-id.npy",
+      "sha256": "077f1dba95ed6a757259c03f16f5af5b446c5e23eb204c0967ba8281fa2fd47a"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000002-last_id.npy",
+      "sha256": "d3e318be5a92e62b749b1e6eb84a7d7fc32e5c399337871221ad736c667dbbe8"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000002-p.npy",
+      "sha256": "0da290b048301da50a92eaffaf279d1efded2345173aa3f2b4b6495ca405f020"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000002-q.npy",
+      "sha256": "7aa1e635efcd82c71e5f26a5b93e0e3374ba604d990f48022bcc3acd1dd8330b"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000002-t.npy",
+      "sha256": "06cb7227cbab59f542f227ccf85523a71fe341baaf6406ebbef9411f710f0629"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000003-first_id.npy",
+      "sha256": "aa622e3cacf2265dc6d37f77aebfa2d8d2827d82e3b375cd9563d18a910980f9"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000003-id.npy",
+      "sha256": "6cfb61339cab3a3dc680f33183eb81df6be64e0ed66832b41e503ee93f819c34"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000003-last_id.npy",
+      "sha256": "197f6e2b1e8ed1271971448e81acedd5b555e5b3488c7613c24e46895dd98c7b"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000003-p.npy",
+      "sha256": "72b3fa99316599a287595f02888a0336c5ed3b3afb98ac0ab8510c6d94f5ca38"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000003-q.npy",
+      "sha256": "eb63ff418870ab482e071e08b98e8a13f539ba6278181ef6be173b437f2660f6"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000003-t.npy",
+      "sha256": "c08a3756b751b438e0b2f8ec47e59822de7b1569c3fe11509b33a5965ca77396"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000004-first_id.npy",
+      "sha256": "63bd628c405398dc6f8184c91b89595126825084d8728d8ffacb65813e2e8ee5"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000004-id.npy",
+      "sha256": "9fa1ba485797825b790f754c1a3fe4a92b1982efa2596e9dd6e6e2acfea26b48"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000004-last_id.npy",
+      "sha256": "7ce7e6984444744a5fd41cf78e10ab17e69696537a5cc1b20cffc9a03068822c"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000004-p.npy",
+      "sha256": "ac33de73956afb78d2b19ebccc75c81474227ceccd9fbf0b11ff76fe638a0fa7"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000004-q.npy",
+      "sha256": "0b3f9a1eeb2d35526222e89462f17fa330b547f7f37f360ed4e7300cfafb7858"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000004-t.npy",
+      "sha256": "201ad07b5a90a516ee7f73361d5fcb4571e2a4439a5c815d5f6a73fa87b632b5"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000005-first_id.npy",
+      "sha256": "572e80a320b547b07ac92374595d917744b407338ef3d7747eff78e94e8667dc"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000005-id.npy",
+      "sha256": "11d55265aa79e28de9e9c72840e3bda3265789c8db716ebb7fac984215883c31"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000005-last_id.npy",
+      "sha256": "8bc43b3efcad0ed1cae4d4c8eee9bbe93ae2544916e9b270b6eba7bc44090806"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000005-p.npy",
+      "sha256": "d4a59e1502484661ba8dfd0cf42692200b1c941c6781f4d343077014bea61655"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000005-q.npy",
+      "sha256": "59b87b32e7ad282a21cca160c08a91a1f53ca448600ee69ee8ffc54ab00af788"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000005-t.npy",
+      "sha256": "537b9ef4fe3aa85c1af50b669614e592e8614794f2333d1849de58c3427030a1"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000006-first_id.npy",
+      "sha256": "4ad8472617496f700cfd545db1707ffd8ebe74e7d432e96b415d6ae6ef69a0a1"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000006-id.npy",
+      "sha256": "a8e625bf238762bbdd147c8d11d9e9197b2420102471b76f627d2ead5a238322"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000006-last_id.npy",
+      "sha256": "d04ddfcf44ee1c4360049346f7a2030f7190532db1aae0cffd8a5485ccdb543f"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000006-p.npy",
+      "sha256": "2b747799c1379cd2122129b941776c5c8395efb0843cb4a767ebfe1b5058bca0"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000006-q.npy",
+      "sha256": "a6b1d34f58409359d6c067596350d83299a14aeffa725bc8692a99758c2fa67a"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000006-t.npy",
+      "sha256": "33f7221a635ddc42fb3b3f909df560fa9a12d843ad49a435172109023f0d756e"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000007-first_id.npy",
+      "sha256": "8034f685dbf71d31d01234de3f971819fd9d778cf4c0f928affc6e0e36199f9f"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000007-id.npy",
+      "sha256": "021ac070262d564f173e96f1516f7c16c5ca1d2131a7301829909a8a9529e0a8"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000007-last_id.npy",
+      "sha256": "bdc165214f04524acce1260aec1cbc3f2bd762c86c84ff9195d84eeb8387cbab"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000007-p.npy",
+      "sha256": "dce031d06a8e471290c87d65d684e6182409a47c5b4136a6d88de0d6cbef59cd"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000007-q.npy",
+      "sha256": "a3d407b8c07c28029e06e699d57914db88f56cda48fc79def1f0734fcd5c126f"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000007-t.npy",
+      "sha256": "2187be0c72a4b1494d403a4ddc59ec3da0674ae5d6120ec1188d42c09d7cdeae"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000008-first_id.npy",
+      "sha256": "05b4f97dd11cdd4a39a415c286a2ca1f8cf1f0bbe39716f8d3e5f01745e284dc"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000008-id.npy",
+      "sha256": "c8a4780f2b9d24bcb00fe540a4ee278777b8ed519f4ecb5ff97e353fd52c7d64"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000008-last_id.npy",
+      "sha256": "b977a34b006971b9b6add2be3c6e6565ebd150b01db5f30f5d9705a252fe3039"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000008-p.npy",
+      "sha256": "44652de15f783e8d81010878af32c01c9c938cec9a2aef251b2e0a73dfdaf4d4"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000008-q.npy",
+      "sha256": "7e5f21d08fca4cf222e38bc7489885055411e883d667e22784a8e30e8906c84e"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000008-t.npy",
+      "sha256": "8a417d23015c2a78b96dd8ea74ebafd4ead43e384215c3a97333ab8d83cc5311"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000009-first_id.npy",
+      "sha256": "84f59afddab13c7890fc644bd21b022dbf54addf24ce4fd957a6c5d06bfd0ad1"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000009-id.npy",
+      "sha256": "dca294a1b3e6f825d1ed2b25bfd842db8de008fba5706bb59e5b86c10c6c7da0"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000009-last_id.npy",
+      "sha256": "59174f9509d27876ffd850fc1f714ad613c2af3f514e65a3eba9cfa51deb8910"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000009-p.npy",
+      "sha256": "15cbac54cd5fe3c27c2e0b57a33b0726580bb8580b9a6a8b39697a803d2eeac6"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000009-q.npy",
+      "sha256": "3e7a2230100a388418284614a4d769d7ddfc5a4da09667a9277ffb0181515b4f"
+    },
+    {
+      "bytes": 800128,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000009-t.npy",
+      "sha256": "eb3dda0c3c2e46dc13afa90169d28808aa3cbaec30219560a4fbbbd2f0e7c66a"
+    },
+    {
+      "bytes": 21576,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000010-first_id.npy",
+      "sha256": "e0c019a0ab4103fc3c6bac2857aed9b15be658b7be41dea602fa57fd77dbee7d"
+    },
+    {
+      "bytes": 21576,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000010-id.npy",
+      "sha256": "4e2abaa3288fd8d5918c70b54857f4cd208e163e4562cd9f2c6e885549581739"
+    },
+    {
+      "bytes": 21576,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000010-last_id.npy",
+      "sha256": "13348e7e433b6c4a38ed1248cc53536e30a232d7e9f2c97722a4c84e354a8d8e"
+    },
+    {
+      "bytes": 21576,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000010-p.npy",
+      "sha256": "e7d8c056fdc6b7c7011b29b9f7fb38facf29738b3d1982e0b46b4fe1cca61cf3"
+    },
+    {
+      "bytes": 21576,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000010-q.npy",
+      "sha256": "648dbe9c2ca3cd292ef09207393b6f4fb59aeb3b2d7246ca94507c0182abcbbc"
+    },
+    {
+      "bytes": 21576,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-aggTrades/partitions/part-000010-t.npy",
+      "sha256": "f02acdd7d0ad8d79eefa0bd213ce5cdfcccc6aa7322d657a82381d7b8d8839ff"
+    },
+    {
+      "bytes": 64860,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-klines_1m/BTCUSDT-1m-2022-01-02.zip",
+      "sha256": "b63ce83d866324c5cb34bcd0ff922b6eb0f8199e9cbe0b94f766304649c8699e"
+    },
+    {
+      "bytes": 92,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-klines_1m/BTCUSDT-1m-2022-01-02.zip.CHECKSUM",
+      "sha256": "a4fb6c25508846b380b3e7581ed54a80a86eb87fa32a8db8bc99f8dcb04e86b6"
+    },
+    {
+      "bytes": 2897,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-klines_1m/manifest.json",
+      "sha256": "e39db95bd53870437668cd45bf725ee9257283f28409f1a7f7b174c7f54e2de4"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-klines_1m/partitions/part-000000-c.npy",
+      "sha256": "8097ce46c0a9ab93dd86198a89982c0215af8661deffc48a38efbb0015896551"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-klines_1m/partitions/part-000000-h.npy",
+      "sha256": "0ed14829893242276786a3017bb14937dfddffdf15f7225627d9caff041a3077"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-klines_1m/partitions/part-000000-l.npy",
+      "sha256": "1eeb23b9a96b336a21af0cad5830bc4949e859bac81e774bb8b66fc2eec19e2e"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-klines_1m/partitions/part-000000-o.npy",
+      "sha256": "64aa3f469e620cd6ec4f6415363e1ca6ac3fc5e59bf9676d38c0072b5114a73d"
+    },
+    {
+      "bytes": 11648,
+      "path": "H-LIQ-001/daily-20261030/benchmark/BTCUSDT-2022-01-02-klines_1m/partitions/part-000000-t.npy",
+      "sha256": "23a9a1a3a1ae4892cba6b28bb962c8b229bf9e41c0144e7e09f55350299ff879"
+    },
+    {
+      "bytes": 9564,
+      "path": "H-LIQ-001/daily-20261030/benchmark/benchmark-result.json",
+      "sha256": "f6fa880929df4128e59602a3f9fb3bfb0d556cf6428ed21a9684d107b2c581fa"
+    },
+    {
+      "bytes": 2024,
+      "path": "H-LIQ-001/daily-20261030/benchmark/selection-and-boundary.json",
+      "sha256": "f963d1e31138711e7e84bcda766816b07191daea000a559f3456a512759c7772"
+    },
+    {
+      "bytes": 298,
+      "path": "H-LIQ-001/daily-20261030/benchmark.log",
+      "sha256": "5b17bbbf88184c3b010c4218ff0cdced41a9c16298337fa7114b505fd81ef78e"
+    },
+    {
+      "bytes": 926,
+      "path": "H-LIQ-001/daily-20261030/benchmark.time",
+      "sha256": "916e28917382eb300ea8b8bc22464118744cca05360fbdd217c64c450656c11b"
+    },
+    {
+      "bytes": 14,
+      "path": "H-LIQ-001/daily-20261030/cpu.max.after",
+      "sha256": "261369fa24cb11ef3776980c85360401b9cdc7cf51aaa7a27e7acad94d662607"
+    },
+    {
+      "bytes": 14,
+      "path": "H-LIQ-001/daily-20261030/cpu.max.before",
+      "sha256": "261369fa24cb11ef3776980c85360401b9cdc7cf51aaa7a27e7acad94d662607"
+    },
+    {
+      "bytes": 724,
+      "path": "H-LIQ-001/daily-20261030/final-file-hashes.json",
+      "sha256": "5b0a8546b876a26dd8b7433c4ddf4d9629f91ba58c9b106550848ea66c24c48a"
+    },
+    {
+      "bytes": 794,
+      "path": "H-LIQ-001/daily-20261030/final-status.json",
+      "sha256": "ffd433cb378fa333ec7f2410f90240562d431db92b6cea16afdee19c03a9d331"
+    },
+    {
+      "bytes": 53,
+      "path": "H-LIQ-001/daily-20261030/memory.events.after",
+      "sha256": "28fe05a1d7b8467a03fb54454f7b6a130fab752864d0454f5f6c4a4b6ce307f2"
+    },
+    {
+      "bytes": 53,
+      "path": "H-LIQ-001/daily-20261030/memory.events.before",
+      "sha256": "28fe05a1d7b8467a03fb54454f7b6a130fab752864d0454f5f6c4a4b6ce307f2"
+    },
+    {
+      "bytes": 11,
+      "path": "H-LIQ-001/daily-20261030/memory.max.after",
+      "sha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e"
+    },
+    {
+      "bytes": 11,
+      "path": "H-LIQ-001/daily-20261030/memory.max.before",
+      "sha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e"
+    },
+    {
+      "bytes": 9,
+      "path": "H-LIQ-001/daily-20261030/memory.peak.after",
+      "sha256": "4dd2c9d53f5b5161bbccdae06aee6e8897f9564370535bbf2f28ffeb681b44fe"
+    },
+    {
+      "bytes": 2,
+      "path": "H-LIQ-001/daily-20261030/memory.swap.max.after",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 2,
+      "path": "H-LIQ-001/daily-20261030/memory.swap.max.before",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 49897,
+      "path": "H-LIQ-001/daily-20261030/repair.patch",
+      "sha256": "97f46eb3d9316db92ebacf4fc90000cba3112a7dcd197b8565198d187c066586"
+    },
+    {
+      "bytes": 248,
+      "path": "H-LIQ-001/daily-20261030/repository-before.txt",
+      "sha256": "d47b21429729d449e8974bc51c1ae4f368c2cd67715a19b601165b87621a9143"
+    },
+    {
+      "bytes": 1029,
+      "path": "H-LIQ-001/daily-20261030/run-benchmark.sh",
+      "sha256": "2fdbdc0d3b6a354fec1ee9f47b4e28f14a07cee369921412dc0d95a4b2625403"
+    },
+    {
+      "bytes": 191,
+      "path": "H-LIQ-001/daily-20261030/selection-timestamp.json",
+      "sha256": "0b12806fe393d50ccef84a3162dd736bd90f92edf248341dda22bb409e229000"
+    },
+    {
+      "bytes": 25299,
+      "path": "H-LIQ-001/daily-20261030/source-manifest.json",
+      "sha256": "2008047763ed526cd70d28d95231279132812129b54d5d5028aeb61aadc6d5fd"
+    },
+    {
+      "bytes": 87,
+      "path": "H-LIQ-001/daily-20261030/source-manifest.sha256",
+      "sha256": "b87a9b52404469f99823cdd46cdc23788651bcfd5bbde78ee7b5304712cbc4d8"
+    },
+    {
+      "bytes": 2565,
+      "path": "H-LIQ-001/daily-20261030/source-snapshot/docs/research/H_LIQ_001_DAILY_INGESTION_ADDENDUM.md",
+      "sha256": "80d4489ebda5d6373cdd4275de87ba336c5d2f9b8cf40f0a6efb980c0c9ec84d"
+    },
+    {
+      "bytes": 118,
+      "path": "H-LIQ-001/daily-20261030/source-snapshot/docs/research/H_LIQ_001_DAILY_INGESTION_ADDENDUM.sha256",
+      "sha256": "346c1e3711712d85ffce278a866be4b26be61bba4ff3e4dbee18dedc851e933e"
+    },
+    {
+      "bytes": 7719,
+      "path": "H-LIQ-001/daily-20261030/source-snapshot/research/liquidity/benchmark_daily.py",
+      "sha256": "2bd13e8518801899a1297a3a390e9380c3782c76a9cebee1975a5377ff775f3f"
+    },
+    {
+      "bytes": 18587,
+      "path": "H-LIQ-001/daily-20261030/source-snapshot/research/liquidity/daily_ingestion.py",
+      "sha256": "3432a48d8800df1274b6d0715dc3730d8d8a985e7a610ffb5e6e1b19e4343df3"
+    },
+    {
+      "bytes": 8988,
+      "path": "H-LIQ-001/daily-20261030/source-snapshot/tests/research/liquidity/test_daily_ingestion.py",
+      "sha256": "c20b80951b6163edc26aa722fd86f7c56c3e966098fb1923b9b16febd8e4938d"
+    },
+    {
+      "bytes": 159,
+      "path": "H-LIQ-001/daily-20261030/test-fast.log",
+      "sha256": "95e8bf939c65c202850bcdde4411ea1c26c75f3f2dc64393d51164e90bb69a71"
+    },
+    {
+      "bytes": 178,
+      "path": "H-LIQ-001/daily-20261030/tests-final.log",
+      "sha256": "7773dec3d589bd307c4043eae59bf0ba9ed80e4a78ec37e4ff05c2fea39c053b"
+    },
+    {
+      "bytes": 929,
+      "path": "H-LIQ-001/daily-20261030/tests-final.time",
+      "sha256": "f3a725e573594950e423b0f01ab5ef1d473ebde0fa307c9ba7da1656811db292"
+    },
+    {
+      "bytes": 159,
+      "path": "H-LIQ-001/daily-20261030/tests.log",
+      "sha256": "fe3e32b7bd785faf587f2cdf8f0093f54a187b86bc2e4e9e410d7735235f4dc2"
+    },
+    {
+      "bytes": 918,
+      "path": "H-LIQ-001/daily-20261030/tests.time",
+      "sha256": "bfe6b069cc53c34840db88c67f3259578ec6cfeadc536bf8f62af71bfe21ae32"
+    },
+    {
+      "bytes": 2,
+      "path": "H-LIQ-001/daily-20261030/wrapper-exit-code",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 7289,
+      "path": "H-LIQ-001/infra-20261030/REPORT.md",
+      "sha256": "c8dec7ede0cc702187c4289ee3864a13e3b55dd5a901e88c36d74c1abfe885f0"
+    },
+    {
+      "bytes": 1603,
+      "path": "H-LIQ-001/infra-20261030/benchmark-status.json",
+      "sha256": "dbcb037676189f977c6f03a7f58ab9c1efb061b1f55210e4f8a01ab7bcb60981"
+    },
+    {
+      "bytes": 9,
+      "path": "H-LIQ-001/infra-20261030/cgroup-memory-peak.bytes",
+      "sha256": "d1a8017e9d64fc9ba5564773c46daebf5ff271d239a5c888764c2f3064795f4c"
+    },
+    {
+      "bytes": 1432,
+      "path": "H-LIQ-001/infra-20261030/environment-freeze.txt",
+      "sha256": "369f57e6bbd589f121a548593370582a8d7e571e86f9b33fa99b1b3274fd3bd5"
+    },
+    {
+      "bytes": 80,
+      "path": "H-LIQ-001/infra-20261030/liquidity-tests.log",
+      "sha256": "07c2eef926162e0090994bc913805aa08a8b2cbb5b21d2c933b937a10300713f"
+    },
+    {
+      "bytes": 917,
+      "path": "H-LIQ-001/infra-20261030/liquidity-tests.time",
+      "sha256": "38d612971e4eff3a4b3f1626fce53efd099734023b5fde087eac29542bbef9de"
+    },
+    {
+      "bytes": 53,
+      "path": "H-LIQ-001/infra-20261030/memory.events",
+      "sha256": "28fe05a1d7b8467a03fb54454f7b6a130fab752864d0454f5f6c4a4b6ce307f2"
+    },
+    {
+      "bytes": 11,
+      "path": "H-LIQ-001/infra-20261030/memory.max",
+      "sha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e"
+    },
+    {
+      "bytes": 2,
+      "path": "H-LIQ-001/infra-20261030/memory.swap.max",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 2614,
+      "path": "H-LIQ-001/infra-20261030/preflight.json",
+      "sha256": "1b9bd00e9f0d1944000697ba32415eef3a1e9e76ea47025a826a84bec95fe5fe"
+    },
+    {
+      "bytes": 931,
+      "path": "H-LIQ-001/infra-20261030/run-tests.sh",
+      "sha256": "21222c6a1a0e442d036833de6e5ed0f86b401ba1b515aca279c1e889f33ea0fb"
+    },
+    {
+      "bytes": 3,
+      "path": "H-LIQ-001/infra-20261030/source-manifest.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "bytes": 2,
+      "path": "H-LIQ-001/infra-20261030/tests-exit-code",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 9203,
+      "path": "H-LIQ-001/source-contract-20261030/REPORT.md",
+      "sha256": "511324cf51d67a711a4e7243222378a552dc23366dfa6176304da736931ee564"
+    },
+    {
+      "bytes": 617,
+      "path": "H-LIQ-001/source-contract-20261030/after-998946303.csv",
+      "sha256": "590553942111b77594b7a4194379b22b24c00f3d916893d4f633271da15aa55a"
+    },
+    {
+      "bytes": 619,
+      "path": "H-LIQ-001/source-contract-20261030/after-998946314.csv",
+      "sha256": "b6da8b86815e201b3d35227e99c2da9c71a56c8dff00d2c8ee27d38db5628426"
+    },
+    {
+      "bytes": 619,
+      "path": "H-LIQ-001/source-contract-20261030/after-999064862.csv",
+      "sha256": "42c6b7cea32acd171a6b896bcca6ca18a3df1a825a02c39cfb4baa35ebdb99df"
+    },
+    {
+      "bytes": 14670,
+      "path": "H-LIQ-001/source-contract-20261030/anomaly-evidence.json",
+      "sha256": "5d167d556716dda89abe0b62e172771dbe56d1b04cf913f59c4ee7d12acf1feb"
+    },
+    {
+      "bytes": 9530,
+      "path": "H-LIQ-001/source-contract-20261030/before/docs/research/H_LIQ_001_DAILY_BENCHMARK_RESULT.md",
+      "sha256": "b744ec8ea94afd698d1a6a77e025fd31ba57aa33997a1219f593adcad29c599a"
+    },
+    {
+      "bytes": 2565,
+      "path": "H-LIQ-001/source-contract-20261030/before/docs/research/H_LIQ_001_DAILY_INGESTION_ADDENDUM.md",
+      "sha256": "80d4489ebda5d6373cdd4275de87ba336c5d2f9b8cf40f0a6efb980c0c9ec84d"
+    },
+    {
+      "bytes": 118,
+      "path": "H-LIQ-001/source-contract-20261030/before/docs/research/H_LIQ_001_DAILY_INGESTION_ADDENDUM.sha256",
+      "sha256": "346c1e3711712d85ffce278a866be4b26be61bba4ff3e4dbee18dedc851e933e"
+    },
+    {
+      "bytes": 7719,
+      "path": "H-LIQ-001/source-contract-20261030/before/research/liquidity/benchmark_daily.py",
+      "sha256": "2bd13e8518801899a1297a3a390e9380c3782c76a9cebee1975a5377ff775f3f"
+    },
+    {
+      "bytes": 18587,
+      "path": "H-LIQ-001/source-contract-20261030/before/research/liquidity/daily_ingestion.py",
+      "sha256": "3432a48d8800df1274b6d0715dc3730d8d8a985e7a610ffb5e6e1b19e4343df3"
+    },
+    {
+      "bytes": 8988,
+      "path": "H-LIQ-001/source-contract-20261030/before/tests/research/liquidity/test_daily_ingestion.py",
+      "sha256": "c20b80951b6163edc26aa722fd86f7c56c3e966098fb1923b9b16febd8e4938d"
+    },
+    {
+      "bytes": 11581,
+      "path": "H-LIQ-001/source-contract-20261030/benchmark-evidence-before.sha256.json",
+      "sha256": "02103b28dbd46f3922aceac235ec47ec47ab4f04225db67d5589170288a47b7f"
+    },
+    {
+      "bytes": 6063,
+      "path": "H-LIQ-001/source-contract-20261030/inspect_context.py",
+      "sha256": "11d31873d65564aea2d8ec0684a8f3a1225c2a7808f9b79cfd4cc61181e5e73f"
+    },
+    {
+      "bytes": 2782,
+      "path": "H-LIQ-001/source-contract-20261030/inspection.log",
+      "sha256": "86e22bd6a38dc8cdc2676d47488eb49b968008cf13588f2cf85a6cb517d5bebb"
+    },
+    {
+      "bytes": 852,
+      "path": "H-LIQ-001/source-contract-20261030/inspection.time",
+      "sha256": "b10784fb159a6e3df91c21903fdb3c7a76ececf29e7583194751299c924447f0"
+    },
+    {
+      "bytes": 482,
+      "path": "H-LIQ-001/source-contract-20261030/preservation-check.json",
+      "sha256": "ad3bf3553e4d00efc4f104bf3fc7d18773aa3baf463dc80e6dd14278a0a3ac79"
+    },
+    {
+      "bytes": 2467,
+      "path": "H-LIQ-001/source-contract-20261030/regression-windows.json",
+      "sha256": "8c9debf2786796229a1919a6687bb3e4d27eef97eb21f398a61ef01623bff79d"
+    },
+    {
+      "bytes": 1136,
+      "path": "H-LIQ-001/source-contract-20261030/repository-before.json",
+      "sha256": "7b3b4c8d3d6f60fd08c6e9e2e82ab252e9f3b19fc79775ec44f2987c79197e48"
+    },
+    {
+      "bytes": 21610,
+      "path": "H-LIQ-001/source-contract-20261030/source-contract-change.patch",
+      "sha256": "43e7ad2bacfcb44be83ba5cb7e5ad12113a01799dc3622ff4d75e1dce86a5313"
+    },
+    {
+      "bytes": 2579,
+      "path": "H-LIQ-001/source-contract-20261030/source-contract-decision.json",
+      "sha256": "9248c41832124fb8b2b83d0933b7ad530bf5041b92f164ab74b3f2698e04f515"
+    },
+    {
+      "bytes": 160,
+      "path": "H-LIQ-001/source-contract-20261030/test-fast.log",
+      "sha256": "07c1450d21c0c3848f3e7fe635f5a1a9730cca18166fcfd89c2be719c21921fc"
+    },
+    {
+      "bytes": 259,
+      "path": "H-LIQ-001/source-contract-20261030/tests.log",
+      "sha256": "47b478c2479e4dc69549207154b9b673632812ee66d0becfcba8cb6188080185"
+    },
+    {
+      "bytes": 940,
+      "path": "H-LIQ-001/source-contract-20261030/tests.time",
+      "sha256": "ba9d9eef45feb96aa814a7a22de8407670ae87bf1a9f428143e9bb2548dc0d54"
+    },
+    {
+      "bytes": 10537,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/REPORT.md",
+      "sha256": "ecf7d3ef19bc039adc92ed3f87132c179a60c50e77cb776e1c07894af4b6a2b6"
+    },
+    {
+      "bytes": 13991,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/code-before-run.py",
+      "sha256": "85afc0044a85ad318ddb15adc44a3f02e11a1d6fc3caef32e2a12b08ed478d6f"
+    },
+    {
+      "bytes": 14,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/cpu.max.before",
+      "sha256": "261369fa24cb11ef3776980c85360401b9cdc7cf51aaa7a27e7acad94d662607"
+    },
+    {
+      "bytes": 3717,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/definition-before-run.md",
+      "sha256": "950e32f558862216ec7c8f88f0a7cc254ea2332ad64d02cad25a8229ef108dd9"
+    },
+    {
+      "bytes": 2,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/exit-code",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 53,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/memory.events.after",
+      "sha256": "28fe05a1d7b8467a03fb54454f7b6a130fab752864d0454f5f6c4a4b6ce307f2"
+    },
+    {
+      "bytes": 53,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/memory.events.before",
+      "sha256": "28fe05a1d7b8467a03fb54454f7b6a130fab752864d0454f5f6c4a4b6ce307f2"
+    },
+    {
+      "bytes": 11,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/memory.max.before",
+      "sha256": "604fec38960d7c5bd3bd6c06ad8f4b42eac0bb30ea02d43518d0f9f11d5e131e"
+    },
+    {
+      "bytes": 10,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/memory.peak.after",
+      "sha256": "98f3040b293be69d0985804bf04f107ecfd81a28e59793b3dd24594b53abc77c"
+    },
+    {
+      "bytes": 2,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/memory.swap.max.before",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 3447,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/progress.log",
+      "sha256": "4ab184f9026a2bccb60eb0e13c8d149f5dd3ba3dd2287398183926e92e028b48"
+    },
+    {
+      "bytes": 66505,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2021-12-31.zip",
+      "sha256": "80e2b5bf3fe315082bd322b7469ae7ba9c0a0c39b9116a6effdbc7af83f5068c"
+    },
+    {
+      "bytes": 92,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2021-12-31.zip.CHECKSUM",
+      "sha256": "1a54ca816a6a7446fda39ffe931d9300ae704f01edf113e45b4a2117900adeb0"
+    },
+    {
+      "bytes": 2029103,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-01.zip",
+      "sha256": "9cdbcf68903434c850f9bec60d8174c2cfd105dd24a7566965b442ec15124e04"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-01.zip.CHECKSUM",
+      "sha256": "a4a0fc5937de792e72dd10d613ce580263547b52b2abd6ba2a80c807b4b620ce"
+    },
+    {
+      "bytes": 1795701,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-02.zip",
+      "sha256": "63672d552f98ec125ac4d90d82154313fb9832b7e1aaed196101816bd61bfb89"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-02.zip.CHECKSUM",
+      "sha256": "f6205996db3db808e8b0cb2d848dfeab84a79dc8a39f6e866e3b5d04130e83d6"
+    },
+    {
+      "bytes": 1922190,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-03.zip",
+      "sha256": "4532faf2f92d205fac79b7d25327d2045843b60a4494e00b0962e6b7f028bc06"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-03.zip.CHECKSUM",
+      "sha256": "25d1f20d8c175675872129c5d213cf1bf1432a8aa557f489111427e04d38b304"
+    },
+    {
+      "bytes": 1833665,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-04.zip",
+      "sha256": "0f509e296da62eed5f4e903507ced0de9738ea96a7a885e76dd2394b8049e689"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-04.zip.CHECKSUM",
+      "sha256": "3174c8458923c11e7b2b89ba255973750ec236f0f02cc02a0eabae87e470b357"
+    },
+    {
+      "bytes": 1926294,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-05.zip",
+      "sha256": "768bdbbd11b08d935b3753ecfee7f1e351a346c71b11cf68a4a51296d694f368"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-05.zip.CHECKSUM",
+      "sha256": "35d07f08e036723a8eabef72a8b6779be63b54a98f8e4769ab99f3245e6d8305"
+    },
+    {
+      "bytes": 1875823,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-06.zip",
+      "sha256": "8587319eaf1b1f6d73fd34446acdecdc72c47b23ecfd2d88e2a6dd2a35470565"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-06.zip.CHECKSUM",
+      "sha256": "190f6dffd3732ffc10a051b9554afc4e062c8cd9b7a1e3b40a74d28c1944780f"
+    },
+    {
+      "bytes": 1925230,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-07.zip",
+      "sha256": "6fc45fa135a6be85679a6ab0b1268fbd1f8258079295cd134b9a4c535c6b6b65"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-07.zip.CHECKSUM",
+      "sha256": "a3a0af43b5ab15e2f58dae549f47c0a765bab8187b05c3884222c02f7baa500b"
+    },
+    {
+      "bytes": 1897142,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-08.zip",
+      "sha256": "806ee1d6efa856984fe79453d17f04c0fb5e447413fe828cbd3ec2df9a1f5fc4"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-08.zip.CHECKSUM",
+      "sha256": "23d41c96f0c70edd55e1838c790220617b5c5b1215fdd330baf3a19ece2d7bb5"
+    },
+    {
+      "bytes": 1842043,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-09.zip",
+      "sha256": "fa1adecbe41b530c12f481882115511297ac7b78a9a7ae9d9d21b11c745649a4"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-09.zip.CHECKSUM",
+      "sha256": "9ab66ef9b4608aa2d439d5871c0ddcdf21cdb22a12feab784366067460a8821c"
+    },
+    {
+      "bytes": 1847485,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-10.zip",
+      "sha256": "0f2d2cd67b30ab186bf3db5a07acfe835f1d74335c6493c80e9e4f0598e29b2c"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-10.zip.CHECKSUM",
+      "sha256": "1f8abacb022997b1b4e67aba543d250266fafffa82ca692d81b359613b65c20e"
+    },
+    {
+      "bytes": 1801135,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-11.zip",
+      "sha256": "96916aba47f230a9bc68cd3fd98d0d352e1fd8f23c16c515107c4d965a2067a3"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-11.zip.CHECKSUM",
+      "sha256": "e6c55d247089a1641f5706220a472064ab1181d62b9a987ed98334aa612398bb"
+    },
+    {
+      "bytes": 1765742,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-12.zip",
+      "sha256": "0f4788019cdb29f4db7b03d9efefce099d7adf49c0daf70a144b814b292bf577"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2022-12.zip.CHECKSUM",
+      "sha256": "2ff163988f4c120f44079b5b722492e8758070da4eeba485f2a1e7f48ff13c66"
+    },
+    {
+      "bytes": 1824474,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-01.zip",
+      "sha256": "b7b04483464b36c89f519bf35d6461d278c709577562108b6a00fb786b92e6a6"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-01.zip.CHECKSUM",
+      "sha256": "435885dbe1655d04ae70a4b5feb8908a931697f2167c097b415da9a39587a964"
+    },
+    {
+      "bytes": 1688103,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-02.zip",
+      "sha256": "b62ca5df57b1715109cb1fd57097529b28410fb36b0db5bd41dbefe7e070db68"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-02.zip.CHECKSUM",
+      "sha256": "bb78e70eb11e0a54c07e08c4cd7178a5caf4b3ca4bd2273aea62560baa005b43"
+    },
+    {
+      "bytes": 1907895,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-03.zip",
+      "sha256": "1cb47aae71e941d3e9d333f9c96723eb35c8b4a7ec90e819c59a7c02f89b03bb"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-03.zip.CHECKSUM",
+      "sha256": "51c7108498af060dc5b7f79f5da3aba626e87bced5cc6bd010cdbbc73c948b17"
+    },
+    {
+      "bytes": 1810833,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-04.zip",
+      "sha256": "2c22e2e460bf0e41884bf71031eebf60224ba470b25777a4d17ddc9298390650"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-04.zip.CHECKSUM",
+      "sha256": "940a46b69fd73c451ff67ad2dad7ebbbcf539164d70f333fd85421ee90ae6f5b"
+    },
+    {
+      "bytes": 1859563,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-05.zip",
+      "sha256": "cf9e0ab390e3872ddb9d807ad161933a28e374e09dbee2b9addf659856d1e656"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-05.zip.CHECKSUM",
+      "sha256": "5f883b366fe7689dde1bf307b84fba6e31173d364bcc9c2ce53cb9e596cb261c"
+    },
+    {
+      "bytes": 1806762,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-06.zip",
+      "sha256": "8dac3fe301198e752b257817542a7ded393dbe00b604f67aba6bc0090778ae95"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-06.zip.CHECKSUM",
+      "sha256": "2b7d1bc58a2e839e76254b1ed01686e8ed35d1ef83404ca74e34b8768b1aeb04"
+    },
+    {
+      "bytes": 1805388,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-07.zip",
+      "sha256": "5cc84c767c9f4d1fa3cb3d33bd009a0b5e3a445e9c89ad2ef259c90b0365cbc3"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-07.zip.CHECKSUM",
+      "sha256": "ffe6ff2766dee40fde87ef09919d01aab7e70b9aa0ad49aa767c3add01eae735"
+    },
+    {
+      "bytes": 1781029,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-08.zip",
+      "sha256": "8d77e6f898fba3aa5bf643d128e0aaa1b722ea6881cd26a3d19088705117a1d7"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-08.zip.CHECKSUM",
+      "sha256": "fc6def4997587e642c9c0ca805934bd73327bd5d885199c7fc6325d9dd096d1a"
+    },
+    {
+      "bytes": 1729534,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-09.zip",
+      "sha256": "ea43f6e612b54e165c47ea30955b8d9e825b1d3ad1846f12c03ad0f0fced9029"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-09.zip.CHECKSUM",
+      "sha256": "1b99463c382de2e8ea9509d52ca997e4aff47bb6939a92e40d6f409dbf52d562"
+    },
+    {
+      "bytes": 1829597,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-10.zip",
+      "sha256": "153f1322695d16a12cab261b7798045323d9f893b19d35d95ffe94a62530b4de"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-10.zip.CHECKSUM",
+      "sha256": "9a115bccc0b9e0d403aa759840458949c663f3df3cff69b35d331e3e323cee8f"
+    },
+    {
+      "bytes": 1783820,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-11.zip",
+      "sha256": "63aa156170b2316927ae4c4928cc78866934a02b4bbc14c730b5fe4790383a80"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-11.zip.CHECKSUM",
+      "sha256": "99b07b70223c3246612360875daf409fdd7ba6c61af96d2b16007dff78244393"
+    },
+    {
+      "bytes": 1874380,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-12.zip",
+      "sha256": "947ea9b1c5dfa301f1d5ff89d28f3ee49bc73eef2cfa1f0dc4024048458eb60b"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2023-12.zip.CHECKSUM",
+      "sha256": "514a02aaaec7d9722319d50cfc1110d3237f137663e02d56e1ca0527fcb1c697"
+    },
+    {
+      "bytes": 1898532,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-01.zip",
+      "sha256": "21eeac04a76a7a35b10467e5e752fb2f8cff77cdeb57df6b50a23ce8d69bb190"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-01.zip.CHECKSUM",
+      "sha256": "b885ad0455d0d5ad38a753a400881fb03a1d6362a68ad479a3c32ee9ab870fd2"
+    },
+    {
+      "bytes": 1770127,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-02.zip",
+      "sha256": "1407acbf8ad99911bdf582805699b7e85fdbc346dbe12618ce8b6369f0d8058d"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-02.zip.CHECKSUM",
+      "sha256": "2ac6923b3fa0bc75f3518ae16a725d712dd75e3ded15b1da28bdd937c01a25ad"
+    },
+    {
+      "bytes": 1950611,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-03.zip",
+      "sha256": "040b8e448e4243072b88b0d9908dfebed91bba943b75f4e831fa5337a2e1dab9"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-03.zip.CHECKSUM",
+      "sha256": "3cdd97c68d994b29be883c0d35c54f5277360e74866ffcd0bdfb5a3f028a784a"
+    },
+    {
+      "bytes": 1870249,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-04.zip",
+      "sha256": "6a41f002da0c8e3f60bd46c841ea4ed766fb195764ad3b6b10e4f508d29c2eb7"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-04.zip.CHECKSUM",
+      "sha256": "0bf5e36022728aca6d5c3edda7820cfabcc07ae2330cf805f645d8b3e58cb2b5"
+    },
+    {
+      "bytes": 1896566,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-05.zip",
+      "sha256": "42de617ed643def54b5a2c3fceb7cd2edec91aafaa01104a097b2ded5c5122d4"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-05.zip.CHECKSUM",
+      "sha256": "f4b366db483525c714016713e3538a49724157074e47a9b43ff1048210d14ba5"
+    },
+    {
+      "bytes": 1789499,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-06.zip",
+      "sha256": "93499da4990fec5471bb0d73c91116e7d20a8b2697d7a4491665d6d1b8e85c85"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-06.zip.CHECKSUM",
+      "sha256": "c592dda3abc5476c25e98d9fed6489e5b6526056f00de09ca5ea6b2bf84066ba"
+    },
+    {
+      "bytes": 1912408,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-07.zip",
+      "sha256": "97f9cd5104a33828c5c2d8d03a2796d600102ab88737d1c6da515b9609540c3c"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-07.zip.CHECKSUM",
+      "sha256": "7bca727051b01aa158cafa0357795892395b0363fb3590074619e7dc65e9c3d1"
+    },
+    {
+      "bytes": 1919190,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-08.zip",
+      "sha256": "f69dbcebfd7108dc97825bd6c35d8d9a51745082f66617cb69de888e867e8e89"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-08.zip.CHECKSUM",
+      "sha256": "a5495391a4cb292f3b32093427783239f733a7a682f281e159566fd65c4ee16e"
+    },
+    {
+      "bytes": 1829434,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-09.zip",
+      "sha256": "16fe2e13728236bfbd3efee99671612daadeea3b62dfd55d8874feae9faa4946"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-09.zip.CHECKSUM",
+      "sha256": "99a6e376059d83ccd95a58da6e54539ca57a3e03234246e1627cf72c63789733"
+    },
+    {
+      "bytes": 1878910,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-10.zip",
+      "sha256": "aa8c79ad120a8d870e23276d1ad5966f99f59bc0a1886ef5927a3808a5efee36"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-10.zip.CHECKSUM",
+      "sha256": "0e555481201715ff50f5f2ef793c9bf2397b2eadfcb90146509b299ec8bcec9f"
+    },
+    {
+      "bytes": 1876449,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-11.zip",
+      "sha256": "9c3dad038f4b043ec51d4200f57d15a0a07b3fc32b3ea3dca6a96543b9624941"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-11.zip.CHECKSUM",
+      "sha256": "d82e1e0ce6b58baff953f5f274adbeb21dfa1f7536ea2da5b75406cb86ef7f7a"
+    },
+    {
+      "bytes": 1929835,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-12.zip",
+      "sha256": "bfce141d2a152c2b94d85b797fe18ebfa195fa0e6091a7ccc06663ae1309466f"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/BTCUSDT-1m-2024-12.zip.CHECKSUM",
+      "sha256": "83c6817cdb6392daa9b24f6e61d7d93e898ac32da15a968d37d5f0e4c6aed4ef"
+    },
+    {
+      "bytes": 63264,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2021-12-31.zip",
+      "sha256": "90f52923648a99f2a98c0d09f287dcb6b4ad3f3e8d7d05caf8100d8e079f4d90"
+    },
+    {
+      "bytes": 92,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2021-12-31.zip.CHECKSUM",
+      "sha256": "dff75d22f0b987f94c938713fde12b3981c94353634fe5a4929eaebcf42c9c2a"
+    },
+    {
+      "bytes": 1943635,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-01.zip",
+      "sha256": "6b1f5eef19ba80942734c04dd77cf177c7d82bfcc165424a6b9ad005e30df787"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-01.zip.CHECKSUM",
+      "sha256": "0360fe90f482a100449d7336d195bbbea06d327b5d2e15e2ac2ae8e3ddd33999"
+    },
+    {
+      "bytes": 1770290,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-02.zip",
+      "sha256": "0a282034071d71093e41440a77eb6e5eecb9cb293191a05432df5de411a49782"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-02.zip.CHECKSUM",
+      "sha256": "e7dc04a69793c424755e184ced56ecc5e51e94df2014e2d5ddf5950882da556b"
+    },
+    {
+      "bytes": 1922609,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-03.zip",
+      "sha256": "8dd4fbcefdc6ed44f580daadf7ee180a2206d2c56062efa4e9c29170509b7528"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-03.zip.CHECKSUM",
+      "sha256": "ae0989d2064d66056c6c604d50d47b4281b8914a7d17fc921ccca43ebf4eacb5"
+    },
+    {
+      "bytes": 1848537,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-04.zip",
+      "sha256": "f3d073fdcd87efc51b5eca9eda12bc1d6969832fedcc7279fac9189403c2ff3d"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-04.zip.CHECKSUM",
+      "sha256": "a63c9c032167b4dbd8c27c05e831c80da0368f859d2b1de216b21ff4994e57f2"
+    },
+    {
+      "bytes": 1938461,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-05.zip",
+      "sha256": "ace5b3685a0e64d51b44e8c8028c04f74f4158728e1091c0ee6485e0af8c4a28"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-05.zip.CHECKSUM",
+      "sha256": "0e882bf00cb871291ecb2b530c014bb6a070ed8a869eaf968de6d63141c839c2"
+    },
+    {
+      "bytes": 1901973,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-06.zip",
+      "sha256": "fe28507344a66f351fff61708981dff001cccf5d07f6d1036431c9222a03df7b"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-06.zip.CHECKSUM",
+      "sha256": "80a716004200ec76bb40713031a177e1ccb14c697e852898ee8fb268ce1567a3"
+    },
+    {
+      "bytes": 1969156,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-07.zip",
+      "sha256": "f74f6765b85cf5ecd3e566ad7c2bcd403a0cf13197a988a832b44f20d7208ca1"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-07.zip.CHECKSUM",
+      "sha256": "e3effaffed13db87beda578a1e2020143b0618e0a2dd210f3e8abfcc63578e86"
+    },
+    {
+      "bytes": 1980362,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-08.zip",
+      "sha256": "04e0f53dc0acd9caf96e6cbd09ad4d65a1842e34f21ef878aeb9994d04853f95"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-08.zip.CHECKSUM",
+      "sha256": "b5c50dec473956f472f40fcad9bb3d1c4af65b64767e680de42cff211d155bf0"
+    },
+    {
+      "bytes": 1905953,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-09.zip",
+      "sha256": "a063208820fa69a391071daf2ba30a2eebafc41f1de2b4dac34752980004d83c"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-09.zip.CHECKSUM",
+      "sha256": "199919cfaa3d2d972f47d689b4d0e19fc4a13f50ac9d14e48f32542e821a0f80"
+    },
+    {
+      "bytes": 1906554,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-10.zip",
+      "sha256": "dfbf63b2f5e6131156cf6934cc414af4b08d4bd83bce6bb0c3ad8e843e084281"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-10.zip.CHECKSUM",
+      "sha256": "c223361a58c790af1f41d3af06b5d276445630184b6835c5c5a4c385e6804b9d"
+    },
+    {
+      "bytes": 1878009,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-11.zip",
+      "sha256": "28c780ededdc1f725869a5bc91edbaf570941b8d3e9fdd8ad815d32d74e07c16"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-11.zip.CHECKSUM",
+      "sha256": "a4481cb3124135dd8dd383ad379e90c88dc5f5a3974195bbdb29e34eab036c25"
+    },
+    {
+      "bytes": 1862705,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-12.zip",
+      "sha256": "1e426fd43bd84ab244e8a47630d7b09084455dc68eee32eb5ccecd9950c68af6"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2022-12.zip.CHECKSUM",
+      "sha256": "bc448a41f03e18693663ee3e10bfe8123a94a25df334be475c276cc497dbeaaf"
+    },
+    {
+      "bytes": 1886386,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-01.zip",
+      "sha256": "0f501c198dd70e9330e698d62fbaeaf8b4b94275a4157b859f9fc3de0498dfe4"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-01.zip.CHECKSUM",
+      "sha256": "272ceaeddaf386837decb92290bd3a940f80fc461f8f7aa76a6d91f16065a4d9"
+    },
+    {
+      "bytes": 1722282,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-02.zip",
+      "sha256": "e19b3ba0cfb3121d51d0617a0b0f6889233d8d4e6ce6f391e573adfce2385c88"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-02.zip.CHECKSUM",
+      "sha256": "e149ef4df14ec5861eba27d8a3167d5df16ac061cbe631e4db90ea3c7fd545af"
+    },
+    {
+      "bytes": 1924989,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-03.zip",
+      "sha256": "277ce2cc1c7175df2d19ccebe081ff286bc3ef6eb028c698f86c4eca1b9b4989"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-03.zip.CHECKSUM",
+      "sha256": "3345d8e15d6653fdd2f012e1794fec24419e2a2f1203e6a1fa676d01d5085fb8"
+    },
+    {
+      "bytes": 1840076,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-04.zip",
+      "sha256": "b900eb2661c1559133d58ea820a9c54d2a3fb0054ba148c7f0d86a1a790b267a"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-04.zip.CHECKSUM",
+      "sha256": "f0f8a22423a4080a850e9ab7426c03ba411ff3e500a13a402add275027002278"
+    },
+    {
+      "bytes": 1871691,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-05.zip",
+      "sha256": "5d75bb047ecbb013fabefd80e883b3dd6d21cd98bfbedb208147e5b2e7c395d6"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-05.zip.CHECKSUM",
+      "sha256": "095aff5828cac4404e7e842302a3d8f60bce153cfc64e264c865720564d95988"
+    },
+    {
+      "bytes": 1811667,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-06.zip",
+      "sha256": "726c301fe41f23a79eed5a09ff556ffb9dbdfb54ce2a66fe2737ae61c33d07c1"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-06.zip.CHECKSUM",
+      "sha256": "9a77c9519e78c7293f55b71557ff4670b6f1a0c40b8abe36e1bac3a66719e024"
+    },
+    {
+      "bytes": 1829055,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-07.zip",
+      "sha256": "cd3bcf0ed40e17b4c4cbce1f6af1c8fe2be309db2fecdfc7436f7c453a15e177"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-07.zip.CHECKSUM",
+      "sha256": "2fd7389120f864725f7b118722d81ab2e83e5292334812ed214090df41bec4ff"
+    },
+    {
+      "bytes": 1789888,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-08.zip",
+      "sha256": "b0f54f67f3135d3f64ea2ca9a95f01fb18031c1b6d7ffbf552aa37e4965bcee5"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-08.zip.CHECKSUM",
+      "sha256": "d533191f0803a821443ff5f7955ac9013ff3e7cf34649d6e728e828f4260f29d"
+    },
+    {
+      "bytes": 1742207,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-09.zip",
+      "sha256": "1d57af68d4f8d652bb6a4d78cd50b6ceecb4aff4b19a2cb59c7d1cba005dc386"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-09.zip.CHECKSUM",
+      "sha256": "527071a3a556ca78dd71f3a7d34061a45c4a793c1f36f640baef52340323cd42"
+    },
+    {
+      "bytes": 1848719,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-10.zip",
+      "sha256": "d14f90cbc8075341cf1dfe9cfc29dc1689a0b3c3adcc0c3a35ca360a5c78f651"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-10.zip.CHECKSUM",
+      "sha256": "a63b2502ede5b8472ad3f45bc667efdde4ebdb35f2ca5cfba64266f6b7bdfd41"
+    },
+    {
+      "bytes": 1839269,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-11.zip",
+      "sha256": "5eeb6b99e8dc6889fe9d317f373f4f587c4c8d35de9ee2854a6471d6fd7b3e1b"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-11.zip.CHECKSUM",
+      "sha256": "620cacf87b2938e68e61dbf3257ca656ac0cd64bf10eee30dd62094dda573e50"
+    },
+    {
+      "bytes": 1914277,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-12.zip",
+      "sha256": "6ebf84e9b991619d772af5d9835175c5e456688c33c72affa35b3aecbac30d09"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2023-12.zip.CHECKSUM",
+      "sha256": "60ee15cbb9e28ccdb31979a9ae96db94bfa0cc686ba47422e214d8854330b493"
+    },
+    {
+      "bytes": 1918758,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-01.zip",
+      "sha256": "7fa68ec5fedc6eef175ed0af6e9f252062f6ceaca016106c265e6e4b724b5ef2"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-01.zip.CHECKSUM",
+      "sha256": "22f19fcae67a3473bbff79bd624a3315c03a593ea08b92f28f4c577910cffd6b"
+    },
+    {
+      "bytes": 1796355,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-02.zip",
+      "sha256": "de3f91fcd929d207b4382afd7a728c0f44527d6bdbcb0a585b01b0fe001e24ab"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-02.zip.CHECKSUM",
+      "sha256": "ced28b7011945100c12daf51960a861ad3b61e6037157532e0c73c3cf3f254aa"
+    },
+    {
+      "bytes": 1977193,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-03.zip",
+      "sha256": "dd10515a9b010920bac628f2ec600405ff8e41de7d0f81694fbf391ca54b86b2"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-03.zip.CHECKSUM",
+      "sha256": "55c64a30b2768283a1a8a8464c8509c2b1031c70c18821ab88cc4257d2b13085"
+    },
+    {
+      "bytes": 1896608,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-04.zip",
+      "sha256": "1856da8b501dbb831b9a5490e99be8564433c4a4d46de89200f0258c74dd4790"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-04.zip.CHECKSUM",
+      "sha256": "2b96e23e44f8a0f2f011584bbaebf10c8c05005a0d304b7bad131c886673bc8a"
+    },
+    {
+      "bytes": 1935350,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-05.zip",
+      "sha256": "d512aa43b5b6a5168fa1b6242fe4cf01c88e51c78bb9f4d202f0ca2e42338f96"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-05.zip.CHECKSUM",
+      "sha256": "9db87f478c0ddb7160089700ddd6b934348c540ce137892e90a7a5839310f7ae"
+    },
+    {
+      "bytes": 1842414,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-06.zip",
+      "sha256": "57e4b010904bbd754ee951ada7d9edd34bc4242379ae49fb66352e2c5f5cb525"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-06.zip.CHECKSUM",
+      "sha256": "d072f030027909134cddd461d7e45845ff2db3241b415cfd7865583246d95684"
+    },
+    {
+      "bytes": 1934815,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-07.zip",
+      "sha256": "34a3729eb2f6dd1563715e085eb936a4034357d95cba2605b96cf1cb5c533b65"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-07.zip.CHECKSUM",
+      "sha256": "b31545ec42b5c24be72d039c2d144481f8e11009844e102b5d8a61a6aaf73bee"
+    },
+    {
+      "bytes": 1941203,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-08.zip",
+      "sha256": "2ccc1d0c491c63a6bfbabda39e8bd41e555a87052d77120199133e9e81bbf36c"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-08.zip.CHECKSUM",
+      "sha256": "0fc094d7658429f8b1e8e9df5fb66b649198dbde674a18eb2e2914100a6cec27"
+    },
+    {
+      "bytes": 1852202,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-09.zip",
+      "sha256": "317e18ce04f6312b4a3de3b5504bef2001a92bf72cb8e4988e160ee327c9c737"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-09.zip.CHECKSUM",
+      "sha256": "77d0a57bd43abdd005485e6fceff2fababaf833f12e601392952dc75dd8ce48c"
+    },
+    {
+      "bytes": 1907533,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-10.zip",
+      "sha256": "d1f340994285a075a97d7d0ed5e9aca3d82dadbba8f817b2f886188420a009f1"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-10.zip.CHECKSUM",
+      "sha256": "44aa873ee2f1ddfce02939917f702fbcc6cdddc7099b210a5f85d487a53d8454"
+    },
+    {
+      "bytes": 1921220,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-11.zip",
+      "sha256": "4170f68dd576e8af35ecc9b19808dcb673c0423838bd560c7c4c1fabefdad5ad"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-11.zip.CHECKSUM",
+      "sha256": "bd715d4c57c6e62220b86b0f29c37424373471b2cd02a2645db8009c90d2287a"
+    },
+    {
+      "bytes": 1981846,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-12.zip",
+      "sha256": "82018947075e35e5ac0a771bb97a22118008db2c6fb6a94f8c1a2c4ebb34d12b"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/ETHUSDT-1m-2024-12.zip.CHECKSUM",
+      "sha256": "d611ef6ceb07f6bdcbdba78b6a97b9c5c8b44fbac45d5c385ccb146ed99ee8c7"
+    },
+    {
+      "bytes": 47461,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2021-12-31.zip",
+      "sha256": "9deea452d71d68cf6f8ad0f83652a35220c8d725326d0457f3b579fa973e0a7e"
+    },
+    {
+      "bytes": 92,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2021-12-31.zip.CHECKSUM",
+      "sha256": "9b118f417eac80204500eadf5e8c19c9f84e4929212d5439715e48eebb91b247"
+    },
+    {
+      "bytes": 1486921,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-01.zip",
+      "sha256": "7b130e49b01048ee884d32c900c805a124999b516a58397afdda8bec77ee05fb"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-01.zip.CHECKSUM",
+      "sha256": "75a58764d2bd55e730e346a4cf642e7f72b0ab54536e0c7b4e58a025bccc7d04"
+    },
+    {
+      "bytes": 1204629,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-02.zip",
+      "sha256": "cc76e9bf78f5b9d6f23d5f4b9d95f37544e47ee0511717c16d8a4cc39e68ff8c"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-02.zip.CHECKSUM",
+      "sha256": "b4103aab91b3bf2d30b9124678f6aa2024d9763a4108e1a8442703c9c2070945"
+    },
+    {
+      "bytes": 1463709,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-03.zip",
+      "sha256": "b2a7afc3c7b92c47e6f6657ed247a9adec781a57a90b43dae2afd5e95ff3e340"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-03.zip.CHECKSUM",
+      "sha256": "1d9969c9f11368d8355b0d6244bbd303e926af7831956584b1806aaf63819897"
+    },
+    {
+      "bytes": 1334627,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-04.zip",
+      "sha256": "d7dd9e46951e917a5cb805a0d90d6bc45e597235da03f5984d9267af09858819"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-04.zip.CHECKSUM",
+      "sha256": "a339d5cb191b7c5cc4e888cd93d4c259cc0e7f2eb557eae5f8c15f8c7d5f22c4"
+    },
+    {
+      "bytes": 1482408,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-05.zip",
+      "sha256": "6601212a59665d723637084cc07ba078b6bf43ff59ad6245cb5d24d7ef74d0e9"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-05.zip.CHECKSUM",
+      "sha256": "9767e24765aa191cd4dbe35df48092a09b59e7fe4c56e6a2410aed8fd623abfd"
+    },
+    {
+      "bytes": 1447293,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-06.zip",
+      "sha256": "6518187f076bd25fe15ba0d9ceba8a5cb7fa0ba8d709a72cd74752a53b82fe7a"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-06.zip.CHECKSUM",
+      "sha256": "138bcf1790f9a2d37a49f7a3c2f28494ce3f2cdca485b1bfdd89905bdcfdfd9f"
+    },
+    {
+      "bytes": 1450054,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-07.zip",
+      "sha256": "669155423a1fe4f4eee86e5369df6aecbd9f73c44ba925c260cf685ee503c8fb"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-07.zip.CHECKSUM",
+      "sha256": "6c5903d8b576b59f25bef4266fdd2f1187b355f8497aa70d7c92b4e964ab59d7"
+    },
+    {
+      "bytes": 1427092,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-08.zip",
+      "sha256": "ec60778f79237e943d72cb9f77d1d3a33f9df9c46baff1e8cffbf6ec6d639e40"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-08.zip.CHECKSUM",
+      "sha256": "e26e57478c21d8f7c047f9e228d718d1805dc46b5de69810367e84f3ff11c0d2"
+    },
+    {
+      "bytes": 1353336,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-09.zip",
+      "sha256": "61dcf1b611d5d31f50799358b3382c7d1cfa06579a0378582151fc9aab009649"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-09.zip.CHECKSUM",
+      "sha256": "17bf7647a5f88734ad3e09233efa008e29a29fdb9a4835806f28007b25f583fe"
+    },
+    {
+      "bytes": 1351431,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-10.zip",
+      "sha256": "5facfe29d08b2b00c7183c6442a84f287d54cda51c1134fea1f6b5670ba3b53e"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-10.zip.CHECKSUM",
+      "sha256": "e3928866f29a35282a6131a60ba25aa8a3e5e829bd77802b0c77bf111ab30fed"
+    },
+    {
+      "bytes": 1506429,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-11.zip",
+      "sha256": "f3e4ca35b3fa741dd59b047fedab3a1691d1d435e9dbcac0cc92c43ce2e7f4a8"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-11.zip.CHECKSUM",
+      "sha256": "267cc7b7afe7458b22cd158c1523cb0a180b744af417633b44f350ae8885ff06"
+    },
+    {
+      "bytes": 1468615,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-12.zip",
+      "sha256": "d9319b4016f7cef11f0ec0bfc9bc424d64806405691c01bc6636488171702c44"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2022-12.zip.CHECKSUM",
+      "sha256": "2495b9d5e64cd2f5cef8a60309e19e4dcd3ea5dbc7e2a4925043fcf084a65a13"
+    },
+    {
+      "bytes": 1613893,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-01.zip",
+      "sha256": "acf6b7517063dd1e21e4eb0f8955703ec5d344a2b81c8dd008840675a9f0b2f7"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-01.zip.CHECKSUM",
+      "sha256": "395941608bfc03dab623566157deacdf503ae3c6ce8ccf32f821ab0433e538a9"
+    },
+    {
+      "bytes": 1425133,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-02.zip",
+      "sha256": "7cc61f177254c5b76b806029170af802d176d9a6ce65df04061b344480e7f23a"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-02.zip.CHECKSUM",
+      "sha256": "46898234a19f281c1737cf9cc0a1779dbc6d79722f592e62be3ce50164cda28c"
+    },
+    {
+      "bytes": 1568915,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-03.zip",
+      "sha256": "2ea0f1c53bf9f991dfc28451de2980d346657c9a04a31fa375855b0cfdd443dc"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-03.zip.CHECKSUM",
+      "sha256": "7b45f28588d3204d1d0c804e779ba4b1907a9cfb9ecaf1e38c529b0b146efad4"
+    },
+    {
+      "bytes": 1492899,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-04.zip",
+      "sha256": "730866186275eaa139e906f5e9ee85a8eaa9f3d9b458444a4d2b4ef327c668ac"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-04.zip.CHECKSUM",
+      "sha256": "fc353571aac5fcafdf80d4b66f3d0a29cdf355392c9aad3751e5106ebdaa51ba"
+    },
+    {
+      "bytes": 1509824,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-05.zip",
+      "sha256": "6719ca1d136478fd57318ad022e797dca94ff71d8f1dfa8be1083355b16584ce"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-05.zip.CHECKSUM",
+      "sha256": "abae20fabbaee561549e24f3a831ecbe6038e4b3d4d4f39d7280cfae1df1f1e3"
+    },
+    {
+      "bytes": 1500407,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-06.zip",
+      "sha256": "be2bf918c1acdcef1baa6b00ce17a720ee571085530c03b5a1bb0c632472b668"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-06.zip.CHECKSUM",
+      "sha256": "1d5399460f7abe30f040078e4e368da3164c9014097995c5a99623eb38c50f78"
+    },
+    {
+      "bytes": 1597079,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-07.zip",
+      "sha256": "854ceb3a57ff376a4ac6e26e7379e2d5664e02e7e90625a45efed2b8eb49f662"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-07.zip.CHECKSUM",
+      "sha256": "f7da63dfe3b5559d639af81e7172e05d82ab1988c0040b309dc2c753ab67b9b8"
+    },
+    {
+      "bytes": 1541736,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-08.zip",
+      "sha256": "e4470e1505835b2cc3965e0a1e3f7c9f19673e0a3120159ed98cf6e71ff63366"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-08.zip.CHECKSUM",
+      "sha256": "95d33fab9dd0c49ee350b5c43c660d50ca3dc625dece599faf64a4eb2a17e27f"
+    },
+    {
+      "bytes": 1475943,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-09.zip",
+      "sha256": "1b50bddf52600d643883b5f912407f6738ccb194b9d1032939baed4bcd00773a"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-09.zip.CHECKSUM",
+      "sha256": "e9020138225c402b9befec83d94b509518337e4bc9d32b7982039f939bf61b67"
+    },
+    {
+      "bytes": 1600585,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-10.zip",
+      "sha256": "de3120ee09c19cd23f22f5d4fea57f40a3d20c27563ac0e910589476763977dd"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-10.zip.CHECKSUM",
+      "sha256": "656741c691a59b12d81bfea533d1e8c9d595d49dcc26215906bb32074bd03cbc"
+    },
+    {
+      "bytes": 1633463,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-11.zip",
+      "sha256": "f01ab6905a199359bdd3e630246f3d12fdb30368a57894356b7ce01374de6179"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-11.zip.CHECKSUM",
+      "sha256": "393d3763fc901a1ef5e3b656ea41e3a6536171a22bcdcaaf0fdc221c32f18b23"
+    },
+    {
+      "bytes": 1703152,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-12.zip",
+      "sha256": "ba0a9cdf9013b0eea15ede93da7d92965d5c70c352b7615a859e301b9d63510d"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2023-12.zip.CHECKSUM",
+      "sha256": "cd929e1bb0c0300de5942bb0b0366a2f7a6aaffdb4ef7dfcbad527385e1b9efa"
+    },
+    {
+      "bytes": 1698240,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-01.zip",
+      "sha256": "7f24af8fea65040962f7fc73c8d61fb6128c583e9d6c555d6ccca96b4d50995a"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-01.zip.CHECKSUM",
+      "sha256": "05705334317a269591691c8679f27076e9c4f435bea5d549da44955dc653d550"
+    },
+    {
+      "bytes": 1567850,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-02.zip",
+      "sha256": "d5a3bd5540af9a97a6fa06e23154a78f88dd7eec2092d49b0cc284ae7c39fe16"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-02.zip.CHECKSUM",
+      "sha256": "d1a6902693601dac856a47adb165d50cb2ac92f0289d9acb1f97baa61f93cfe6"
+    },
+    {
+      "bytes": 1738207,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-03.zip",
+      "sha256": "78a1baab910e7cfcf53b3f2a4fe7519febbb6cc7407a353f95c83d07eaef1809"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-03.zip.CHECKSUM",
+      "sha256": "874b228301ad91c6ede80987f8cdb4943e40cc20aa9e549725442b5b2d1e3784"
+    },
+    {
+      "bytes": 1658919,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-04.zip",
+      "sha256": "e19eed213f5030153fd5e28c8b8cd14c8e05a93cfd5a28f15a68066e458dd414"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-04.zip.CHECKSUM",
+      "sha256": "e025b15815d6a39c56140bed0182c65664a4631e5cf08957ade25c2f83eeb194"
+    },
+    {
+      "bytes": 1681927,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-05.zip",
+      "sha256": "3b62d6e6e687502f37c49eb635ca1dd2c5ac973c4bd3d820fe3700a126a46f98"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-05.zip.CHECKSUM",
+      "sha256": "58da6af0afb0141ccf3cfedd11835612a16a9a1159a7100636ad339719c067e4"
+    },
+    {
+      "bytes": 1591430,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-06.zip",
+      "sha256": "55bee5af4510c5c05186cd62343895ce0dfcd5ed1b442b901c6cc5db300d0582"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-06.zip.CHECKSUM",
+      "sha256": "375e7338375a176c7c837a64e92655cd11351ff645e7bddeb7291a55ed30ce9d"
+    },
+    {
+      "bytes": 1682413,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-07.zip",
+      "sha256": "56f7b44a70d3a1eedeb43cde4e81a3deea6e1ff2406d332a9a8205082455758e"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-07.zip.CHECKSUM",
+      "sha256": "1a640c39a768e8ef4ea1df771daa618508002f6ba338885dda0f27185f7402c3"
+    },
+    {
+      "bytes": 1694056,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-08.zip",
+      "sha256": "4ec6ef5fbd00a1e596324ea24909347abd6a623889089e9ef6e2f71625947eda"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-08.zip.CHECKSUM",
+      "sha256": "9060aa42b4ffac03e2a9c200c26048a4c6d9d9f1bce14011678c715646d2ee1b"
+    },
+    {
+      "bytes": 1608317,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-09.zip",
+      "sha256": "7c0b5f6a3c80684cbc733df88121ceefbb83645d9796db16107d1460e9a787c2"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-09.zip.CHECKSUM",
+      "sha256": "b984b34ba307dadf736d1599436ef6868749c5e660f37e926eaae8eb15be40c6"
+    },
+    {
+      "bytes": 1602398,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-10.zip",
+      "sha256": "f167b2be29ec4eef66fe38a17a6ade84034abf302c49deee31875a6f6cea6f53"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-10.zip.CHECKSUM",
+      "sha256": "a74e4d74f7d4c98a87acbd85c017f3bf2602b003661b482225838f526ff4d608"
+    },
+    {
+      "bytes": 1556146,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-11.zip",
+      "sha256": "cc26ccf5eb442a5d66daa7396eb589d7c9934ba3301503a753c03ddbe94a4af0"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-11.zip.CHECKSUM",
+      "sha256": "404864c71cb5d4aa70bdfe3cfa6bcc97df3b5350fa981b306d2476539a37488f"
+    },
+    {
+      "bytes": 1584587,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-12.zip",
+      "sha256": "631fd8d38ebc10376e985bc232f64a388a8ae50ffeb588098c4bcf39de45e05e"
+    },
+    {
+      "bytes": 89,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/archives/SOLUSDT-1m-2024-12.zip.CHECKSUM",
+      "sha256": "4d95611643d6b735d3b34aee0cc5d4263d620b10764b89f7e732939f962205bb"
+    },
+    {
+      "bytes": 329,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/definition-identity.json",
+      "sha256": "8393eb4476b440323df4d8adbf2fd5d6c264e7337fddbefd1af04c54a4b0e9df"
+    },
+    {
+      "bytes": 481865,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/events.csv",
+      "sha256": "da568c107a3fa79a8dd06055f3dbf1fce895ceb42a0165320be39cdedeee3081"
+    },
+    {
+      "bytes": 253,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/gaps.json",
+      "sha256": "88f81bf5a5e81b31f5f6c12ef52c43199fed9d4d546f434deb724eca189b3d34"
+    },
+    {
+      "bytes": 10942,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/results.json",
+      "sha256": "f5386c4b6091a3798c60511e81142b73c4f68b67f2aee9f6bed91fa941d11d84"
+    },
+    {
+      "bytes": 107,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/runtime.json",
+      "sha256": "577192eb7d7ca7934ff526ded4328bd9fe9af9978282108a91e4d3651d08311e"
+    },
+    {
+      "bytes": 49080,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-20261030/sources.json",
+      "sha256": "8f5f77c9659a814487f333fba2a823d6470fd402121ba3985fa956a48678acf1"
+    },
+    {
+      "bytes": 853,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/run-screen.sh",
+      "sha256": "5aaf56780cde34be3d6406c563173492b54d913f4488044026e359bd1247e25f"
+    },
+    {
+      "bytes": 896,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/screen.time",
+      "sha256": "9dd9d8af751fbad35c8c0ee6baefa0937edea7e10cc8c1609ec6733d37684b56"
+    },
+    {
+      "bytes": 160,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/test-fast.log",
+      "sha256": "55d925a65590529652bd1ec60e583819d5d4aa2b11162f409718c0419d012f53"
+    },
+    {
+      "bytes": 179,
+      "path": "PDH-PDL-CANDLE-SCREEN-001/tests.log",
+      "sha256": "8b9e2aeb108bbf73e5e804e08017b48b5ea93b9515b3bc3443e058c4b41ff6c0"
+    }
+  ],
+  "original_evidence_modified": false,
+  "purpose": "Preserve existing H-LIQ-001 and rejected PDH/PDL candle-screen evidence without rewriting it",
+  "total_original_bytes": 252783225
+}

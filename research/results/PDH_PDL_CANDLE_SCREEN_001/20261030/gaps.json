@@ -1,0 +1,14 @@
+[
+  {
+    "after_ms": 1645833540000,
+    "before_ms": 1646092800000,
+    "missing_minutes": 4320,
+    "symbol": "SOLUSDT"
+  },
+  {
+    "after_ms": 1648771140000,
+    "before_ms": 1648944000000,
+    "missing_minutes": 2880,
+    "symbol": "SOLUSDT"
+  }
+]

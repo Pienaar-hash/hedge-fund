@@ -1,0 +1,59 @@
+{
+  "checked_at_utc": "2026-10-30T13:39:20.488037+00:00",
+  "host": "policy-ops-01",
+  "scope": "policy-ops-01; current user and readable system state only",
+  "matching_processes": [],
+  "running_service_inventory": [
+    {
+      "scope": "system",
+      "running_units": [
+        "atd.service",
+        "cron.service",
+        "dbus.service",
+        "getty@tty1.service",
+        "multipathd.service",
+        "polkit.service",
+        "qemu-guest-agent.service",
+        "rsyslog.service",
+        "serial-getty@ttyS0.service",
+        "ssh.service",
+        "systemd-journald.service",
+        "systemd-logind.service",
+        "systemd-networkd.service",
+        "systemd-resolved.service",
+        "systemd-timesyncd.service",
+        "systemd-udevd.service",
+        "tailscaled.service",
+        "unattended-upgrades.service",
+        "user@0.service",
+        "user@1000.service"
+      ],
+      "exit_code": 0
+    },
+    {
+      "scope": "user",
+      "running_units": [
+        "dbus.service"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "matching_running_services": [],
+  "readable_scheduler_config_files_checked": 389,
+  "matching_configuration_files": [],
+  "unreadable_configuration_files": [],
+  "process_cwd_permission_denied_count": 120,
+  "process_cmdline_permission_denied_count": 0,
+  "current_user_crontab_exit_code": 1,
+  "current_user_crontab_matches": [],
+  "supervisor_docker_podman_cli_present": {
+    "supervisorctl": false,
+    "docker": false,
+    "podman": false
+  },
+  "limitations": [
+    "No sudo access; root crontabs, protected process CWDs, private configs and other users session managers not fully assessed",
+    "Remote production hosts not inspected; runtime/capital/exchange status NOT ESTABLISHED",
+    "No services, timers, jobs, exchange credentials, positions or orders changed"
+  ]
+}

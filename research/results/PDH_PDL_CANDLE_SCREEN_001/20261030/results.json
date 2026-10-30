@@ -1,0 +1,341 @@
+{
+  "code_sha256": "85afc0044a85ad318ddb15adc44a3f02e11a1d6fc3caef32e2a12b08ed478d6f",
+  "coverage": {
+    "BTCUSDT": {
+      "complete_days": 1096,
+      "days_observed": 1096,
+      "exclusions_or_absent_candidates": {
+        "no_penetration": 1218
+      },
+      "expected_screen_days": 1096,
+      "missing_whole_days": 0
+    },
+    "ETHUSDT": {
+      "complete_days": 1096,
+      "days_observed": 1096,
+      "exclusions_or_absent_candidates": {
+        "equality_deadband": 1,
+        "no_penetration": 1199
+      },
+      "expected_screen_days": 1096,
+      "missing_whole_days": 0
+    },
+    "SOLUSDT": {
+      "complete_days": 1091,
+      "days_observed": 1091,
+      "exclusions_or_absent_candidates": {
+        "equality_deadband": 6,
+        "no_penetration": 1193,
+        "unavailable_previous_day": 2
+      },
+      "expected_screen_days": 1096,
+      "missing_whole_days": 5
+    }
+  },
+  "decision": "REJECT_SCREEN_MECHANISM",
+  "definition_sha256": "950e32f558862216ec7c8f88f0a7cc254ea2332ad64d02cad25a8229ef108dd9",
+  "gates": {
+    "at_least_50_each_class_each_symbol_year": true,
+    "pooled_median_difference_at_least_10bp": false,
+    "pooled_rejection_median_net_at_least_5bp": false,
+    "positive_rejection_net_and_difference_all_symbols": false,
+    "positive_rejection_net_and_difference_two_of_three_years": false
+  },
+  "held_out_2025": "NOT_DOWNLOADED_OR_INSPECTED",
+  "hypothesis_relationship": "NOT_H_LIQ_001_PRIMARY_TEST",
+  "pooled": {
+    "acceptance": {
+      "mean_gross_bps": -3.5646642046619994,
+      "mean_net_bps": -18.564664204661998,
+      "median_gross_bps": 4.57854263415647,
+      "median_net_bps": -10.42145736584353,
+      "n": 1530
+    },
+    "mean_difference_bps": 1.3600812483374658,
+    "median_difference_bps": 0.02226105403049683,
+    "rejection": {
+      "mean_gross_bps": -2.2045829563245336,
+      "mean_net_bps": -17.204582956324533,
+      "median_gross_bps": 4.600803688186967,
+      "median_net_bps": -10.399196311813032,
+      "n": 1415
+    }
+  },
+  "screen": "PDH_PDL_CANDLE_SCREEN_001",
+  "symbol_years": {
+    "BTCUSDT-2022": {
+      "acceptance": {
+        "mean_gross_bps": 2.79598785149242,
+        "mean_net_bps": -12.20401214850758,
+        "median_gross_bps": 3.8124194790320796,
+        "median_net_bps": -11.18758052096792,
+        "n": 193
+      },
+      "mean_difference_bps": -0.5624088822071278,
+      "median_difference_bps": -2.5100315247621063,
+      "rejection": {
+        "mean_gross_bps": 2.233578969285292,
+        "mean_net_bps": -12.766421030714708,
+        "median_gross_bps": 1.3023879542699734,
+        "median_net_bps": -13.697612045730027,
+        "n": 143
+      }
+    },
+    "BTCUSDT-2023": {
+      "acceptance": {
+        "mean_gross_bps": 3.8880666104372867,
+        "mean_net_bps": -11.111933389562713,
+        "median_gross_bps": 11.523056921017613,
+        "median_net_bps": -3.476943078982387,
+        "n": 140
+      },
+      "mean_difference_bps": -3.3537842663931676,
+      "median_difference_bps": -9.06215461396571,
+      "rejection": {
+        "mean_gross_bps": 0.534282344044119,
+        "mean_net_bps": -14.465717655955881,
+        "median_gross_bps": 2.460902307051904,
+        "median_net_bps": -12.539097692948097,
+        "n": 168
+      }
+    },
+    "BTCUSDT-2024": {
+      "acceptance": {
+        "mean_gross_bps": -12.674232182601065,
+        "mean_net_bps": -27.674232182601067,
+        "median_gross_bps": -3.602955232723258,
+        "median_net_bps": -18.602955232723257,
+        "n": 186
+      },
+      "mean_difference_bps": 11.873982904150989,
+      "median_difference_bps": 7.38024897806784,
+      "rejection": {
+        "mean_gross_bps": -0.8002492784500765,
+        "mean_net_bps": -15.800249278450076,
+        "median_gross_bps": 3.777293745344582,
+        "median_net_bps": -11.222706254655417,
+        "n": 144
+      }
+    },
+    "ETHUSDT-2022": {
+      "acceptance": {
+        "mean_gross_bps": -0.8821786558458949,
+        "mean_net_bps": -15.882178655845895,
+        "median_gross_bps": 2.2806784642400286,
+        "median_net_bps": -12.71932153575997,
+        "n": 176
+      },
+      "mean_difference_bps": 4.583336872521226,
+      "median_difference_bps": 3.921044332406237,
+      "rejection": {
+        "mean_gross_bps": 3.7011582166753314,
+        "mean_net_bps": -11.298841783324669,
+        "median_gross_bps": 6.201722796646266,
+        "median_net_bps": -8.798277203353734,
+        "n": 163
+      }
+    },
+    "ETHUSDT-2023": {
+      "acceptance": {
+        "mean_gross_bps": -6.761040245639202,
+        "mean_net_bps": -21.7610402456392,
+        "median_gross_bps": 6.282736675399532,
+        "median_net_bps": -8.717263324600468,
+        "n": 148
+      },
+      "mean_difference_bps": 4.642534426014416,
+      "median_difference_bps": -0.5163211265631995,
+      "rejection": {
+        "mean_gross_bps": -2.1185058196247852,
+        "mean_net_bps": -17.118505819624787,
+        "median_gross_bps": 5.766415548836332,
+        "median_net_bps": -9.233584451163669,
+        "n": 173
+      }
+    },
+    "ETHUSDT-2024": {
+      "acceptance": {
+        "mean_gross_bps": -5.647411056590464,
+        "mean_net_bps": -20.647411056590464,
+        "median_gross_bps": 5.321437441367718,
+        "median_net_bps": -9.678562558632283,
+        "n": 180
+      },
+      "mean_difference_bps": 9.946478919512487,
+      "median_difference_bps": 1.2319012753523628,
+      "rejection": {
+        "mean_gross_bps": 4.299067862922024,
+        "mean_net_bps": -10.700932137077977,
+        "median_gross_bps": 6.553338716720081,
+        "median_net_bps": -8.44666128327992,
+        "n": 152
+      }
+    },
+    "SOLUSDT-2022": {
+      "acceptance": {
+        "mean_gross_bps": -0.26972393964922536,
+        "mean_net_bps": -15.269723939649225,
+        "median_gross_bps": 9.76085973055459,
+        "median_net_bps": -5.239140269445411,
+        "n": 175
+      },
+      "mean_difference_bps": -17.147132118405075,
+      "median_difference_bps": -1.6032957107999017,
+      "rejection": {
+        "mean_gross_bps": -17.4168560580543,
+        "mean_net_bps": -32.4168560580543,
+        "median_gross_bps": 8.157564019754687,
+        "median_net_bps": -6.8424359802453125,
+        "n": 146
+      }
+    },
+    "SOLUSDT-2023": {
+      "acceptance": {
+        "mean_gross_bps": -11.373516591639897,
+        "mean_net_bps": -26.3735165916399,
+        "median_gross_bps": 9.726951367905034,
+        "median_net_bps": -5.273048632094966,
+        "n": 137
+      },
+      "mean_difference_bps": 12.115806210572307,
+      "median_difference_bps": -2.836176605781592,
+      "rejection": {
+        "mean_gross_bps": 0.7422896189324099,
+        "mean_net_bps": -14.25771038106759,
+        "median_gross_bps": 6.890774762123442,
+        "median_net_bps": -8.109225237876558,
+        "n": 176
+      }
+    },
+    "SOLUSDT-2024": {
+      "acceptance": {
+        "mean_gross_bps": -2.0650214128475604,
+        "mean_net_bps": -17.06502141284756,
+        "median_gross_bps": 2.1657180455110927,
+        "median_net_bps": -12.834281954488908,
+        "n": 195
+      },
+      "mean_difference_bps": -10.544563918171958,
+      "median_difference_bps": -2.2539641126612824,
+      "rejection": {
+        "mean_gross_bps": -12.609585331019519,
+        "mean_net_bps": -27.609585331019517,
+        "median_gross_bps": -0.08824606715018968,
+        "median_net_bps": -15.08824606715019,
+        "n": 150
+      }
+    }
+  },
+  "symbols": {
+    "BTCUSDT": {
+      "acceptance": {
+        "mean_gross_bps": -2.453665135191794,
+        "mean_net_bps": -17.453665135191795,
+        "median_gross_bps": 3.8126049103382003,
+        "median_net_bps": -11.1873950896618,
+        "n": 519
+      },
+      "mean_difference_bps": 3.099654872137723,
+      "median_difference_bps": -0.9832057297159205,
+      "rejection": {
+        "mean_gross_bps": 0.6459897369459289,
+        "mean_net_bps": -14.354010263054072,
+        "median_gross_bps": 2.82939918062228,
+        "median_net_bps": -12.17060081937772,
+        "n": 455
+      }
+    },
+    "ETHUSDT": {
+      "acceptance": {
+        "mean_gross_bps": -4.310379742003496,
+        "mean_net_bps": -19.310379742003498,
+        "median_gross_bps": 4.53519418444108,
+        "median_net_bps": -10.46480581555892,
+        "n": 504
+      },
+      "mean_difference_bps": 6.13465350775583,
+      "median_difference_bps": 1.5231095591939807,
+      "rejection": {
+        "mean_gross_bps": 1.824273765752334,
+        "mean_net_bps": -13.175726234247666,
+        "median_gross_bps": 6.058303743635061,
+        "median_net_bps": -8.941696256364938,
+        "n": 488
+      }
+    },
+    "SOLUSDT": {
+      "acceptance": {
+        "mean_gross_bps": -3.960656090726933,
+        "mean_net_bps": -18.960656090726932,
+        "median_gross_bps": 6.639936909176343,
+        "median_net_bps": -8.360063090823658,
+        "n": 507
+      },
+      "mean_difference_bps": -5.1572587635034735,
+      "median_difference_bps": -2.1015364111738526,
+      "rejection": {
+        "mean_gross_bps": -9.117914854230406,
+        "mean_net_bps": -24.117914854230406,
+        "median_gross_bps": 4.53840049800249,
+        "median_net_bps": -10.46159950199751,
+        "n": 472
+      }
+    }
+  },
+  "years": {
+    "2022": {
+      "acceptance": {
+        "mean_gross_bps": 0.6197803721885023,
+        "mean_net_bps": -14.380219627811497,
+        "median_gross_bps": 4.30281013349645,
+        "median_net_bps": -10.69718986650355,
+        "n": 544
+      },
+      "mean_difference_bps": -4.2042281654408304,
+      "median_difference_bps": 1.384114092975727,
+      "rejection": {
+        "mean_gross_bps": -3.5844477932523278,
+        "mean_net_bps": -18.584447793252327,
+        "median_gross_bps": 5.686924226472177,
+        "median_net_bps": -9.313075773527823,
+        "n": 452
+      }
+    },
+    "2023": {
+      "acceptance": {
+        "mean_gross_bps": -4.73994447987776,
+        "mean_net_bps": -19.73994447987776,
+        "median_gross_bps": 9.072184784832514,
+        "median_net_bps": -5.927815215167486,
+        "n": 425
+      },
+      "mean_difference_bps": 4.457354344358278,
+      "median_difference_bps": -4.460865688520671,
+      "rejection": {
+        "mean_gross_bps": -0.2825901355194816,
+        "mean_net_bps": -15.28259013551948,
+        "median_gross_bps": 4.611319096311843,
+        "median_net_bps": -10.388680903688158,
+        "n": 517
+      }
+    },
+    "2024": {
+      "acceptance": {
+        "mean_gross_bps": -6.731943585838425,
+        "mean_net_bps": -21.731943585838426,
+        "median_gross_bps": 1.833545136440109,
+        "median_net_bps": -13.166454863559892,
+        "n": 561
+      },
+      "mean_difference_bps": 3.6978283827317178,
+      "median_difference_bps": 1.693985051464379,
+      "rejection": {
+        "mean_gross_bps": -3.0341152031067073,
+        "mean_net_bps": -18.03411520310671,
+        "median_gross_bps": 3.527530187904488,
+        "median_net_bps": -11.472469812095511,
+        "n": 446
+      }
+    }
+  }
+}
