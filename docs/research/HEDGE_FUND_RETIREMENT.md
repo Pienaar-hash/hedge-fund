@@ -61,6 +61,13 @@ checkout from running. No service, timer, job, exchange credential, position or
 order was changed. Runtime and capital state outside the stated inspection remain
 **NOT ESTABLISHED**.
 
+GitHub also retains one active **push webhook to `share.streamlit.io`** (ID
+556611262). Its deployed-app status is not established and the integration was
+not disabled or edited. Research branch/tag publication emits push events;
+downstream webhook behavior was not independently observed. The default-main CI
+workflow runs on pull requests and pushes to main; neither main nor that workflow
+was changed. See `research/results/retirement-20261030/github-integrations.json`.
+
 ## Clean successor and stop
 
 [Hedge Ops](https://github.com/Pienaar-hash/hedge-ops) is private and begins with a

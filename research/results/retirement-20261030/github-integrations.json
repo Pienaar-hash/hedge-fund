@@ -1,0 +1,23 @@
+{
+  "checked_on": "2026-10-30",
+  "existing_push_webhook": {
+    "id": 556611262,
+    "active": true,
+    "events": [
+      "push"
+    ],
+    "destination_host": "share.streamlit.io",
+    "changed": false,
+    "deployed_app_status": "NOT_ESTABLISHED"
+  },
+  "github_actions": {
+    "workflow": ".github/workflows/ci.yml",
+    "triggers": [
+      "pull_request",
+      "push to main"
+    ],
+    "workflow_changed": false
+  },
+  "scope": "Configuration observation only; no Streamlit app, production host, service, credential or capital action",
+  "publication_effect": "Research branch/tag publication emits GitHub push events; downstream webhook behavior was not independently observed"
+}
